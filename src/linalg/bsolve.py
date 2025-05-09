@@ -28,22 +28,29 @@ def _get_ksp(Ap, m_block, rtol, maxit):
     ksp.setHPDDMType(PETSc.KSP.HPDDMType.BCG)
     # ksp.setTolerances(rtol=1e-6, max_it=500)
     pc = ksp.getPC()
+    pc.setBDDCLevels(1)
+    # pc.setLevelsSubKSPType(PETSc.KSP.Type.PREONLY)
+    # pc.setLevelsSubPCType(PETSc.PC.Type.ILU)
     pc.setType('hpddm')
     pc.setHPDDMCoarseCorrectionType(pc.HPDDMCoarseCorrectionType.ADDITIVE)
-    pc.setBDDCLevels(2)
+    
+
+    # ksp.setReusePreconditioner(True)
+    pc.setReusePreconditioner(True)
     opts = PETSc.Options()
 
     opts.insertString(
         # "-pc_hpddm_levels_1_eps_nev 6 "
         # "-pc_hpddm_levels_1_sub_pc_type ilu "
         # "-pc_hpddm_overlap 1 "
+        "-pc_hpddm_coarse_pc_type hypre "
+        "-pc_hpddm_coarse_pc_hypre_type boomeramg "
 
-        "-pc_hpddm_coarse_pc_type cholesky "
-        "-pc_hpddm_coarse_pc_factor_mat_solver_type pastix"
-        "-mat_pastix_threadnbr 8"
+        # "-pc_hpddm_coarse_pc_factor_mat_solver_type pastix"
     )
     
     ksp.setFromOptions()
+    ksp.setUp()
     Xp = PETSc.Mat().createDense(size=(Ap.getSize()[0], m_block),
                                  comm=Ap.getComm())
     _cached[key] = (ksp, Xp)
@@ -86,7 +93,7 @@ def bsolve(A: Union[sp.csr_matrix, PETSc.Mat], B: Union[np.ndarray, PETSc.Mat], 
     else:
         B_is_float = False
 
-    Xp = bsolve_petsc(Ap=A, Bp=B)
+    Xp = bsolve_petsc(Ap=A, Bp=B, rtol=rtol, maxit=maxit)
 
     X = Xp.getDenseArray(readonly=True).copy(order="F") # important to copy, otherwise the pointer would be freed since ksp is garbage collected
 

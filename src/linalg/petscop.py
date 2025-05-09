@@ -56,9 +56,8 @@ def csr_to_aij(A_csr: sp.csr_matrix) -> PETSc.Mat:
     A_loc = A_csr[Istart:Iend]
     indptr, indices, data = A_loc.indptr, A_loc.indices, A_loc.data
 
-    A_p = PETSc.Mat().createSBAIJ(
+    A_p = PETSc.Mat().createAIJ(
             size=A_csr.shape,
-            bsize=1,
             csr=(indptr, indices, data),
             comm=PETSc.COMM_WORLD
             )

@@ -1,14 +1,14 @@
 import numpy as np
 import scipy as sp
 import sksparse.cholmod as cholmod
+from sparse_dot_mkl import dot_product_mkl
 import sparse
 import pyamg
 import warnings
 from .bsolve import bsolve, bsolve_petsc
 import time
 from petsc4py import PETSc
-from .petscop import Tconj, T, rowsum, colsum, dense_to_petsc, csr_to_sbaij, getsub
-from .mm import matmulpetsc
+from .petscop import Tconj, T, rowsum, colsum, dense_to_petsc, csr_to_sbaij, getsub, csr_to_aij
 
 def icgs(u,Q,M=None,return_norm=False,maxiter=30):
     '''
@@ -225,7 +225,7 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         v0 = np.random.randn(1, A.shape[0]).astype(A.dtype)
     
     if B is not None:
-        bnorm = np.sqrt(np.sum(v0.conj()*(B@v0.T).T, axis=-1, keepdims=True))
+        bnorm = np.sqrt(np.sum(v0.conj()*dot_product_mkl(B, v0.T).T, axis=-1, keepdims=True))
     else:
         bnorm = np.linalg.norm(v0, axis=-1, keepdims=True)
 
@@ -240,9 +240,8 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
     bsz, matdim = v0.shape
 
     # adjust whether to use lu solve in scipy or use PETSc's block CG from hpddm
-    Bp = csr_to_sbaij(B)
-    Ap = csr_to_sbaij(A)
-    if M < 5e3 or (M < 1e5 and S > 100): # The matrix is not large, so 
+    Bp = csr_to_aij(B)
+    if M < 1e4 or (M < 5e4 and S > 100): # The matrix is not large, it might goes up to 10^6, 10^7 would the AMG method become efficient than direct solver.
         Bc = B.tocsc()
         Bc = cholmod.cholesky(Bc)
         direct = True
@@ -252,7 +251,7 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
     # Bpb = Bp.convert("dense").getDenseArray()
     # print("hermitian check: ", (Bpb-Bpb.T.conj()))
 
-    Q = np.zeros((bsz, matdim, 2)).astype(v0.dtype)
+    Q = np.asfortranarray(np.zeros((bsz, matdim, 2)).astype(v0.dtype)) # transform to fortran array so Q[:,x] is contiguous in Fortran
     Q[:,:,0] = v0
 
     print(time.time() - start, "blanczos prepare time.")
@@ -267,7 +266,7 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         qi=Q[:,:,i%2] # [bsz, matdim]
 
         ttime = time.time()
-        z = matmulpetsc(Ap, qi.T).T # a must support @ op
+        z = dot_product_mkl(A, qi.T).T # a must support @ op
         print(time.time() - ttime, "MVP time")
         # ai = (qi.conj()*z).sum(axis=-1) # |z>=a_i|q_i> > a_i = <q_i|z> # [bsz, matdim] -> [bsz]
         tmp = (qi_1.conj().transpose(0,2,1) @ z[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
@@ -288,13 +287,13 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         z=z-tmp
 
         # the second round of ortho
-        tmp = (qi_1.conj().transpose(0,2,1) @ (B @ z.T).T[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
+        tmp = (qi_1.conj().transpose(0,2,1) @ (dot_product_mkl(B, z.T)).T[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
         ai += tmp[:, i%2]
         tmp = (qi_1 @ tmp[:,:,None]).squeeze(-1) # [bsz,matdim]
         z=z-tmp
 
         if B is not None:
-            bi = np.sqrt(np.sum(z.conj() * (B @ z.T).T, axis=-1))
+            bi = np.sqrt(np.sum(z.conj() * dot_product_mkl(B, z.T).T, axis=-1))
         else:
             bi = np.linalg.norm(z.conj() * z, axis=-1)
 
