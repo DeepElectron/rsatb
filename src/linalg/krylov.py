@@ -174,7 +174,7 @@ def lanczos(a, v0=None, b=None, M=None, v=3, implicit=True, reorth=True):
     
     return Q, alpha, beta
 
-def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
+def blanczos(A, v0=None, B=None, v: int=30, reorth=False, return_Q=False):
     """
         Batched CG, CR/MINRES solver using lanczos iteraction with restart and selected reorthogonalization.
         The problem setting is: Ax=b, under metric B.
@@ -192,12 +192,12 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         
         Return:
             Q: the generated basis.
-            alpha: (bsz,n,n) elements
-            beta:  (bsz,n+1,n) elements
+            alpha: (bsz,n) elements
+            beta:  (bsz,n+1) elements
     """
 
     # we can put all the sparse matrix multiplication as distributed MPI.
-    start = time.time()
+    # start = time.time()
 
     assert v <= A.shape[0]
     assert A.shape[0] == A.shape[1] and len(A.shape) == 2
@@ -240,22 +240,30 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
     bsz, matdim = v0.shape
 
     # adjust whether to use lu solve in scipy or use PETSc's block CG from hpddm
-    Bp = csr_to_aij(B)
-    if M < 1e4 or (M < 5e4 and S > 100): # The matrix is not large, it might goes up to 10^6, 10^7 would the AMG method become efficient than direct solver.
-        Bc = B.tocsc()
-        Bc = cholmod.cholesky(Bc)
-        direct = True
+    if B is not None:
+        Bp = csr_to_aij(B)
+
+        if M < 1e4 or (M < 5e4 and S > 100): # The matrix is not large, it might goes up to 10^6, 10^7 would the AMG method become efficient than direct solver.
+            Bc = B.tocsc()
+            Bc = cholmod.cholesky(Bc)
+            direct = True
+        else:
+            direct = False
+
+    Q = np.asfortranarray(np.zeros((bsz, matdim, 2)).astype(v0.dtype)) # transform to fortran array so Q[:,:,x] is contiguous in Fortran
+
+    if reorth or return_Q:
+        rQ = np.asfortranarray(np.zeros((bsz, matdim, v)).astype(v0.dtype))
+        rQ[:,:,0] = v0
     else:
-        direct = False
+        rQ = None
+        
 
-    # Bpb = Bp.convert("dense").getDenseArray()
-    # print("hermitian check: ", (Bpb-Bpb.T.conj()))
-
-    Q = np.asfortranarray(np.zeros((bsz, matdim, 2)).astype(v0.dtype)) # transform to fortran array so Q[:,x] is contiguous in Fortran
     Q[:,:,0] = v0
+    
 
-    print(time.time() - start, "blanczos prepare time.")
-    start = time.time()
+    # print(time.time() - start, "blanczos prepare time.")
+    # start = time.time()
 
     for i in range(v):
         if i == 0:
@@ -265,37 +273,43 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         
         qi=Q[:,:,i%2] # [bsz, matdim]
 
-        ttime = time.time()
+        # ttime = time.time()
         z = dot_product_mkl(A, qi.T).T # a must support @ op
-        print(time.time() - ttime, "MVP time")
+        # print(time.time() - ttime, "MVP time")
         # ai = (qi.conj()*z).sum(axis=-1) # |z>=a_i|q_i> > a_i = <q_i|z> # [bsz, matdim] -> [bsz]
         tmp = (qi_1.conj().transpose(0,2,1) @ z[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
+
         ai = tmp[:,i%2]
         
         # z_ = z.copy()
-        print(time.time() - start, " time before bsolve.")
-        start = time.time()
+        # print(time.time() - start, " time before bsolve.")
+        # start = time.time()
         if B is not None: # Then all inner product need to be measured in <b> metric
             if direct:
                 z = Bc.solve_A(z.T).T.astype(B.dtype)
             else:
                 z = bsolve(Bp, z.T).T.astype(B.dtype) # [bsz, matdim]
-        print(time.time() - start, " bsolve time.")
-        start = time.time()
+        # print(time.time() - start, " bsolve time.")
+        # start = time.time()
         # print("Bsolve check: ", np.abs(B @ z.T - z_.T).max())
         tmp = (qi_1 @ tmp[:,:,None]).squeeze(-1) # [bsz,matdim]
         z=z-tmp
 
         # the second round of ortho
-        tmp = (qi_1.conj().transpose(0,2,1) @ (dot_product_mkl(B, z.T)).T[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
+        if B is not None:
+            tmp = (qi_1.conj().transpose(0,2,1) @ dot_product_mkl(B, z.T).T[:,:,None]).squeeze(-1) # [bsz, 1/2, matdim], [bsz, matdim,1] -> [bsz, 1/2]
+        else:
+            tmp = (qi_1.conj().transpose(0,2,1) @ z[:,:,None]).squeeze(-1)
+
         ai += tmp[:, i%2]
+
         tmp = (qi_1 @ tmp[:,:,None]).squeeze(-1) # [bsz,matdim]
         z=z-tmp
 
         if B is not None:
             bi = np.sqrt(np.sum(z.conj() * dot_product_mkl(B, z.T).T, axis=-1))
         else:
-            bi = np.linalg.norm(z.conj() * z, axis=-1)
+            bi = np.linalg.norm(z, axis=-1)
 
         alpha.append(ai)
         beta.append(bi)
@@ -307,22 +321,26 @@ def blanczos(A, v0=None, B=None, v: int=30, reorth=True):
         # enforce orthgonalization again
         if i > 0:
             if reorth:
-                Q_i = bicgs(z, Q, M=B)
+                Q_i = bicgs(z, rQ[:,:,:i+1], M=B)
             else:
                 Q_i = z
         else:
             Q_i = z
         
         Q[:,:,(i+1)%2] = Q_i
+        
+        if return_Q or reorth:
+            rQ[:,:,i+1] = Q_i
+
         v0Q.append(((bnorm * v0.conj()) * Q_i).sum(axis=-1))
 
-        print(time.time() - start, "time after bsolve.")
-        start = time.time()
+        # print(time.time() - start, "time after bsolve.")
+        # start = time.time()
 
         if np.max(abs(bi))<1e-20:
             print('Warning! bad krylov space!')
     
-    return np.stack(v0Q, axis=-1), np.stack(alpha, axis=-1), np.stack(beta, axis=-1)
+    return np.stack(v0Q, axis=-1), np.stack(alpha, axis=-1), np.stack(beta, axis=-1), rQ # [v, S]
 
 def bCGCR(A, v0=None, B=None, vr: int=30, mr: int=10, reorth=True):
     """
