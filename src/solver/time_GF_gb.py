@@ -29,9 +29,9 @@ from graphblas import unary
 import sksparse.cholmod as cholmod
 io = gb.io
         
-def random_trace_evaluation(A_csr, t, S, rng, tau, overlap_matrix = None, overlap=False):
+def random_trace_evaluation(A_csr, t, S, rng, tau, overlap_matrix = None):
 
-    if overlap:
+    if overlap_matrix is not None:
         overlap_matrix = overlap_matrix.tocsc()
         overlap_matrix = cholmod.cholesky(overlap_matrix)
         
@@ -56,7 +56,7 @@ def random_trace_evaluation(A_csr, t, S, rng, tau, overlap_matrix = None, overla
     J0, J1 = jv(0, t_max), jv(1, t_max)
     X1  = -1j*A.mxm(X0)   
 
-    if overlap:
+    if overlap_matrix is not None:
         X1 = X1.to_dense(0)              
         X1 = overlap_matrix.solve_A(X1)
         X1 = gb.Matrix.from_dense(X1, missing_value=0)
@@ -72,7 +72,7 @@ def random_trace_evaluation(A_csr, t, S, rng, tau, overlap_matrix = None, overla
 
         X_mp1 = (A.mxm(X_n) * (-2j)).ewise_add(X_nm1).new()
 
-        if overlap:
+        if overlap_matrix is not None:
             X_mp1 = X_mp1.to_dense(0)              
             X_mp1 = overlap_matrix.solve_A(X_mp1)
             X_mp1 = gb.Matrix.from_dense(X_mp1, missing_value=0)
