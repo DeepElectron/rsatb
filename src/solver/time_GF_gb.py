@@ -4,7 +4,7 @@ Trace estimator for e^{-itA} using the textbook Chebyshev expansion
 
     e^{-izx} = J0(z) + 2 Σ_{m=1}^∞ (-i)^m J_m(z) T_m(x)
 
-*No* spectral scaling is carried out here – the caller must provide
+*No* spectral scaling is carried out here - the caller must provide
 A whose eigenvalues already lie in [-1, 1].
 """
 
@@ -12,13 +12,145 @@ import numpy as np
 from scipy import sparse
 from scipy.linalg import eigvalsh
 from scipy.special import jv
+import scipy as sp
+from typing import Union
 import graphblas as gb
 from graphblas import monoid, binary
 from itertools import count
 from graphblas import unary
 import sksparse.cholmod as cholmod
 io = gb.io
+
+def _tgf(
+        A_csr: sp.sparse.csr_array(), 
+        t_max: Union[int, float], 
+        B_csr: Union[sp.sparse.csr_array(), None]=None, 
+        v0: np.array()=None, 
+        tol: float=1e-14, 
+        verbose=False,
+        trace: bool=True,
+        ): # generate the chebyshev decomposition vector for e^{-itA}
+    
+    n, S = v0.shape
+    assert A_csr.shape[0] == A_csr.shape[1] == n, "The matrix and the samples's dimension should matched!"
+
+    # normalize v0
+    v0 = v0 / np.linalg.norm(v0, axis=0, keepdims=True)
+
+    if verbose:
+        print("─" * 46)
+        print("  Random-trace estimator for  e^{-i t A}")
+        print("─" * 46)
+
+        print(f"  ▸ random vectors S      : {S}")
+        print(f"  ▸ tolerance τ           : {tol:.1e}")
+
+        if B_csr is None:
+            ov_txt = "None"
+        else:
+            ov_txt = f"{B_csr.shape[0]}x{B_csr.shape[1]}"
+        print(f"  ▸ overlap matrix        : {ov_txt}")
+
+        m, n = A_csr.shape
+        print(f"  ▸ matrix A (CSR)        : {m}x{n}  "
+            f"(nnz = {A_csr.nnz:,})")
+
+        print("─" * 46)
+
+    if B_csr is not None:
+        B_solve = cholmod.cholesky(B_csr.tocsc())
+
+    ## The graph blas implementation
+    A = gb.io.from_scipy_sparse(A_csr.astype(np.complex128, copy=False))
+    steps_max = []
+
+    # 2) Random test vectors (dense NumPy → GraphBLAS once)
+    X0    = gb.Matrix.from_dense(v0, missing_value=0) # [n, S]
+    X0conj = X0.apply(unary.conj) # [n, S]
+    
+    if trace:
+        Xi = X0conj.ewise_mult(X0, op=binary.times).reduce_rowwise(monoid.plus).to_dense(0) # [S]
+    else:
+        Xi = X0 # [n, S]
+    steps_max.append(Xi)
+    X1  = -1j*A.mxm(X0)  # [n, S]  
+
+    if B_csr is not None:
+        X1 = X1.to_dense(0)
+        X1 = B_solve.solve_A(X1)
+        X1 = gb.Matrix.from_dense(X1, missing_value=0) # [n, S]
+
+    if trace:
+        Xi = X0conj.ewise_mult(X1, op=binary.times).new().reduce_rowwise(monoid.plus).to_dense(0) # [n, S]
+    else:
+        Xi = X1 # [S]
+
+    steps_max.append(Xi)
+
+    for mp1 in count(2, 1):
+        J_next = jv(mp1, t_max)
+        coeff  = 2 * J_next
+
+        if B_csr is not None:
+            Xi = (A.mxm(X1) * (-2j)).new().to_dense(0)
+            Xi = B_solve.solve_A(Xi)
+            Xi = gb.Matrix.from_dense(Xi, missing_value=0).ewise_add(X0).new()
+        else:
+            Xi = (A.mxm(X1) * (-2j)).ewise_add(X0).new()              
+
+        norm = Xi.apply(unary.conj).ewise_mult(Xi, op=binary.times).new() # [n, S]
+        norm = norm.reduce_rowwise(monoid.plus).to_dense(0) # [S]
+        norm = np.sqrt(norm) * np.abs(coeff)
+        norm = norm.max()
+
+        if verbose:
+            print(f"m = {mp1:2d} (norm = {norm:.2e})", flush=True)
+
+        if norm < tol:
+            max_term = mp1-1
+            if verbose:
+                print(f"converged at m = {mp1:2d} (norm = {norm:.2e})")
+            break
         
+        X0, X1 = X1, Xi
+        if trace:
+            Xi = X0conj.ewise_mult(Xi, op=binary.times).new().reduce_rowwise(monoid.plus).to_dense(0)
+        steps_max.append(Xi)
+    
+    steps_max = n * np.array(steps_max) / S # [n_cheb, n, S] / [n_cheb, S]
+
+    return steps_max
+
+
+def trace_tgf(
+        steps_max,
+        t
+):
+    max_term = len(steps_max)
+    J = jv(np.arange(max_term)[:, np.newaxis], t[np.newaxis,:])
+    J[1:, :] *= 2.0
+
+    traces = np.sum(J.T @ steps_max, axis=1) # [t, n_cheb] x [n_cheb, S] -> [t, S] -> [t]
+
+    return traces
+    
+
+def mat_tgf(
+    steps_max,
+    t,
+    v0,
+):
+    max_term = len(steps_max)
+    J = jv(np.arange(max_term)[:, np.newaxis], t[np.newaxis,:])
+    J[1:, :] *= 2.0
+        
+    vecs = np.einsum("ji,jkl -> ikl", J, steps_max)  # [t, n_cheb] x [n_cheb, n, S] -> [t, n, S]
+
+    # need careful thought about how to avoid memory explode here.
+
+    pass    
+
+
 def random_trace_evaluation(A_csr, t, sampling_number, tau, rng = None, overlap_matrix = None, verbose = False):
     if verbose:
         print("─" * 46)
