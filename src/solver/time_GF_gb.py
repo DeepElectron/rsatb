@@ -19,7 +19,7 @@ from graphblas import unary
 import sksparse.cholmod as cholmod
 io = gb.io
         
-def random_trace_evaluation(A_csr, t, S, tau, rng = None, overlap_matrix = None, verbose = False ):
+def random_trace_evaluation(A_csr, t, sampling_number, tau, rng = None, overlap_matrix = None, verbose = False):
     if verbose:
         print("─" * 46)
         print("  Random-trace estimator for  e^{-i t A}")
@@ -32,7 +32,7 @@ def random_trace_evaluation(A_csr, t, S, tau, rng = None, overlap_matrix = None,
             print(f"  ▸ times t (array)       : len={len(t)}, "
                 f"[min={t.min():.4g}, max={t.max():.4g}]")
 
-        print(f"  ▸ random vectors S      : {S}")
+        print(f"  ▸ random vectors S      : {sampling_number}")
         print(f"  ▸ tolerance τ           : {tau:.1e}")
 
         if overlap_matrix is None:
@@ -65,8 +65,8 @@ def random_trace_evaluation(A_csr, t, S, tau, rng = None, overlap_matrix = None,
     steps_max = []
 
     # 2) Random test vectors (dense NumPy → GraphBLAS once)
-    X0_np = (rng.standard_normal((n, S)) 
-            + 1j*rng.standard_normal((n, S))) / np.sqrt(2)
+    X0_np = (rng.standard_normal((n, sampling_number)) 
+            + 1j*rng.standard_normal((n, sampling_number))) / np.sqrt(2)
     X0    = gb.Matrix.from_dense(X0_np, missing_value=0)
     X0conj = X0.apply(unary.conj)
     
@@ -89,12 +89,12 @@ def random_trace_evaluation(A_csr, t, S, tau, rng = None, overlap_matrix = None,
         J_next = jv(mp1, t_max)
         coeff  = 2 * J_next
 
-        X_mp1 = (A.mxm(X_n) * (-2j)).ewise_add(X_nm1).new()
-
         if overlap_matrix is not None:
-            X_mp1 = X_mp1.to_dense(0)              
+            X_mp1 = (A.mxm(X_n) * (-2j)).new().to_dense(0)
             X_mp1 = overlap_matrix.solve_A(X_mp1)
-            X_mp1 = gb.Matrix.from_dense(X_mp1, missing_value=0)
+            X_mp1 = gb.Matrix.from_dense(X_mp1, missing_value=0).ewise_add(X_nm1).new()
+        else:
+            X_mp1 = (A.mxm(X_n) * (-2j)).ewise_add(X_nm1).new()
 
         X_mp1_coeff = (X_mp1 * coeff).new()                   
 
@@ -109,13 +109,13 @@ def random_trace_evaluation(A_csr, t, S, tau, rng = None, overlap_matrix = None,
         if norm < tau:
             max_term = mp1-1
             if verbose:
-                print(f"   converged at m = {mp1:2d} (norm = {norm:.2e})")
+                print(f"converged at m = {mp1:2d} (norm = {norm:.2e})")
             break
         X0X_mp1 = X0conj.ewise_mult(X_mp1, op=binary.times).new().reduce_rowwise(monoid.plus).to_dense(0)
         steps_max.append(X0X_mp1)
         X_nm1, X_n = X_n, X_mp1
 
-    steps_max = np.array(steps_max)/S
+    steps_max = np.array(steps_max)/sampling_number
 
     J = jv(np.arange(max_term+1)[:, np.newaxis], t[np.newaxis,:])
     J[1:, :] *= 2.0
