@@ -19,13 +19,14 @@ from graphblas import monoid, binary
 from itertools import count
 from graphblas import unary
 import sksparse.cholmod as cholmod
+from scipy.fft import ifft, fftshift
 io = gb.io
 
 def _tgf(
         A_csr: sp.sparse.csr_array, 
         t_max: Union[int, float], 
+        v0: np.ndarray,
         B_csr: Union[sp.sparse.csr_array, None]=None, 
-        v0: np.ndarray=None, 
         tol: float=1e-14, 
         verbose=False,
         trace: bool=True,
@@ -107,7 +108,6 @@ def _tgf(
             print(f"m = {mp1:2d} (norm = {norm:.2e})", flush=True)
 
         if norm < tol:
-            max_term = mp1-1
             if verbose:
                 print(f"converged at m = {mp1:2d} (norm = {norm:.2e})")
             break
@@ -279,7 +279,7 @@ def normalize_small_matrix(A, t):
     t_tilde = t * norm_A
     return A / norm_A, t_tilde 
 
-def normalize_large_matrix(A, t, B=None):
+def normalize_large_matrix(A, B=None):
     """Make a real symmetric CSR matrix with spectrum scaled to [-1,1]."""
 
     
@@ -293,4 +293,72 @@ def normalize_large_matrix(A, t, B=None):
     else:
         A = A - mid_eig[0] * B
 
-    return A / norm_A, t * norm_A, mid_eig[0]
+    return A / norm_A, norm_A, mid_eig[0], max_eig[0], min_eig[0]
+
+
+
+def dos(
+        A_csr: sp.sparse.csr_array, 
+        v0: np.ndarray,
+        B_csr: Union[sp.sparse.csr_array, None]=None, 
+        dE: float=0.01,
+        tol: float=1e-14, 
+        verbose=False,
+        ) -> np.ndarray:
+    
+    A_n, shift, norm_A, max_E, min_E =  normalize_large_matrix(A=A_csr, B=B_csr)    
+
+    E, dE_act = build_energy_grid(min_E, max_E, dE)
+    t = energy_to_time_grid(E, dE_act)
+    t_n = t * norm_A
+    t_max = np.max(np.abs(t_n))
+
+    
+    steps_max= _tgf(A_n, t_max=t_max, B_csr=B_csr, v0=v0 , tol=tol, trace=True, verbose=verbose)
+    trace = trace_tgf(steps_max=steps_max, t=t_n) / np.exp(1j*shift*t)
+
+    dos_calc = np.abs(fftshift(ifft(trace))/ (2*np.pi*dE_act))
+    dos_norm = dos_calc / np.sum(dos_calc) * (max_E - min_E) / len(E)
+    return dos_norm , E 
+    
+def dos_real(
+        A_csr: sp.sparse.csr_array, 
+        B_csr: Union[sp.sparse.csr_array, None]=None, 
+        dE: float=0.01,
+        ) -> np.ndarray:
+    A_n, shift, norm_A, max_E, min_E =  normalize_large_matrix(A=A_csr, B=B_csr)    
+
+    E, dE_act = build_energy_grid(min_E, max_E, dE)
+
+    eig_HS = eigvalsh(A_csr.toarray(), B_csr.toarray())
+
+    f_E = np.zeros_like(E)
+    for i in range(len(eig_HS)):
+        f_E += np.exp(-((E - eig_HS[i])**2) / (dE_act**2)) / (dE_act * np.sqrt(2 * np.pi))
+    
+    return f_E / np.sum(f_E) * (max_E - min_E) / len(E), E
+    
+
+    
+def build_energy_grid(min_E: float, max_E: float, dE: float) -> tuple[np.ndarray, float]:
+    """
+    Return an energy array that *includes* max_E.
+
+    We estimate how many steps fit from min_E to max_E with spacing dE,
+    round to the nearest integer, then generate the grid with np.linspace
+    (endpoint=True ensures the upper bound is kept).
+    """
+    span   = max_E - min_E
+    steps  = int(np.round(span / dE))            # nearest integer number of intervals
+    N      = steps + 1                           # points = intervals + 1
+    E      = np.linspace(min_E, max_E, N, endpoint=True)
+
+    # Actual spacing may differ by < 1 ulp; recompute from array
+    dE_act = E[1] - E[0]
+    return E, dE_act
+
+def energy_to_time_grid(E: np.ndarray, dE: float) -> tuple[np.ndarray, np.ndarray]:
+    N = E.size
+    freq = np.fft.fftfreq(N, d=dE)
+    t = 2*np.pi * np.fft.fftshift(freq)
+    return t
