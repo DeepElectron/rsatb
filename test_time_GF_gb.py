@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 import pathlib
 import os, time
+
+from matplotlib.pylab import eigvalsh
 # ------------------------------------------------------------------ threading
 nthreads = 8
 os.environ["OMP_NUM_THREADS"] = str(nthreads)
@@ -9,7 +11,7 @@ os.environ["OMP_NUM_THREADS"] = str(nthreads)
 from src.data import AtomicData, _keys, OrbitalMapper, block_to_feature
 from src.hs.r2k import R2K
 from src.hs.r2k_sparse import R2KSparse
-from src.solver.time_GF_gb import normalize, random_trace_evaluation
+from src.solver.time_GF_gb import _tgf, normalize_small_matrix, random_trace_evaluation, trace_tgf
 from ase.io import read
 import numpy as np
 import scipy as sp
@@ -66,20 +68,34 @@ def run_single(system: str, sampling_number: int, *, t: float = 2.0, tau: float 
     # ------------------------------------------------------------------ stochastic trace
     tlog("=== 4. Stochastic Chebyshev trace ===")                    ### LOG >
     n = H_.shape[0]
-    H_n, t_n = normalize(H_, t)
+    H_n, t_n =  normalize_small_matrix(H_, t)
     t0 = time.perf_counter()
-    est = random_trace_evaluation(H_n, t=t_n, sampling_number=sampling_number,
-                                  tau=tau, overlap_matrix=S_, verbose=False)
+
+    v0 = np.random.normal(size=(n, sampling_number)) + 1j * np.random.normal(size=(n, sampling_number))
+    
+    steps_max= _tgf(H_n, t_max=t_n, B_csr=S_, v0=v0 , trace=True)
+    trace_z = trace_tgf(steps_max=steps_max, t=t_n)
+
+    trace_l = random_trace_evaluation(H_n, t=t_n, sampling_number=sampling_number,
+                                    tau=tau, rng=None, overlap_matrix=S_, verbose=False)
+    
+     
+    evals = eigvalsh(H_.toarray())
+    trace_true = np.sum(np.exp(-1j * t * evals))
+
+    print(f"trace_t = {trace_true}")
+    print(f"trace_z = {trace_z}")
+    print(f"trace_l = {trace_l}")
     wall_s = time.perf_counter() - t0
 
     return n, H_.nnz, wall_s
 
 # ---------------- parameter grid -------------------------------------------
 SYSTEMS = [
-    "Al", "Al333", "Al444", "Al555",
-    "Al666"]#, "Al777", "Al101010", "Al15151515", "Al20202020",
+    "Al", "Al333", "Al444", "Al555"]
+    #"Al666"]#, "Al777", "Al101010", "Al15151515", "Al20202020",
 #]
-S_LIST = [1, 10, 100, 1000]
+S_LIST = [1, 10, 100]
 CSV_OUT = pathlib.Path("bench_trace_scaling.csv")
 
 # ---------------- run benchmark --------------------------------------------

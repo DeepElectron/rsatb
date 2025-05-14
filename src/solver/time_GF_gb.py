@@ -22,10 +22,10 @@ import sksparse.cholmod as cholmod
 io = gb.io
 
 def _tgf(
-        A_csr: sp.sparse.csr_array(), 
+        A_csr: sp.sparse.csr_array, 
         t_max: Union[int, float], 
-        B_csr: Union[sp.sparse.csr_array(), None]=None, 
-        v0: np.array()=None, 
+        B_csr: Union[sp.sparse.csr_array, None]=None, 
+        v0: np.ndarray=None, 
         tol: float=1e-14, 
         verbose=False,
         trace: bool=True,
@@ -126,6 +126,9 @@ def trace_tgf(
         steps_max,
         t
 ):
+    if np.isscalar(t) or (isinstance(t, np.ndarray) and t.ndim == 0):
+        t = np.array([t])
+
     max_term = len(steps_max)
     J = jv(np.arange(max_term)[:, np.newaxis], t[np.newaxis,:])
     J[1:, :] *= 2.0
@@ -269,9 +272,25 @@ def make_symmetric(n, density, rng, t):
     t_tilde = t * norm_A
     return A / norm_A, t_tilde 
 
-def normalize(A, t):
+def normalize_small_matrix(A, t):
     """Make a real symmetric CSR matrix with spectrum scaled to [-1,1]."""
 
     norm_A = np.max(np.abs(eigvalsh(A.toarray())))
     t_tilde = t * norm_A
     return A / norm_A, t_tilde 
+
+def normalize_large_matrix(A, t, B=None):
+    """Make a real symmetric CSR matrix with spectrum scaled to [-1,1]."""
+
+    
+    max_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="LA", return_eigenvectors=False)
+    min_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="SA", return_eigenvectors=False)
+    mid_eig = (max_eig + min_eig) / 2
+    norm_A = (max_eig[0] - min_eig[0])/2
+
+    if B is None:
+        A = A - mid_eig[0] * sp.sparse.eye(A.shape[0])
+    else:
+        A = A - mid_eig[0] * B
+
+    return A / norm_A, t * norm_A, mid_eig[0]
