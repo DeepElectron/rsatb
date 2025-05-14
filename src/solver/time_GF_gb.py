@@ -19,6 +19,8 @@ from graphblas import monoid, binary
 from itertools import count
 from graphblas import unary
 import sksparse.cholmod as cholmod
+from ..utils.ozaki import ozaki_residues
+
 io = gb.io
 
 def _tgf(
@@ -152,6 +154,69 @@ def mat_tgf(
     # need careful thought about how to avoid memory explode here.
 
     pass    
+
+
+def nocc(
+    A_csr: sp.sparse.csr_array, 
+    B_csr: Union[sp.sparse.csr_array, None]=None, 
+    v0: np.ndarray=None,
+    mu0: Union[float, int]=0.,
+    tol: float=1e-14, 
+    verbose=False,
+    Mcut=1000,
+    R=1e5,
+    kBT=0.025,
+    ntol: float=1e-4,
+    method="pole"
+):
+    assert method == "pole", "Currently, only pole method is supported!"
+
+    poles, res = ozaki_residues(M_cut=1000)
+
+    poles = poles * kBT
+
+    # scale the A_csr
+
+    # compute the chebyshev power vectors
+    steps_max = _tgf(
+                A_csr=A_csr,
+                t_max=4 * np.log(10) / poles[0],
+                B_csr=B_csr,
+                v0=v0,
+                tol=tol,
+                verbose=verbose,
+                trace=True
+                )
+
+    # compute the docc in each spectrum
+    tmin = 0.
+    ts = np.array([])
+    cs = np.array([])
+    for ip, p in poles[::-1]:
+        tmax = 4 * np.log(10) / p
+
+        # generating integration grid
+        if tmax > tmin:
+            h = np.sqrt(12*ntol / (tmax*(p**2)))
+            new_ts = np.append(ts, np.linspace(tmin, tmax, num=int((tmax-tmin)/h)))
+            cs = np.concatenate(cs, trace_tgf(steps_max=steps_max, t=new_ts))
+            ts = np.concatenate(ts, new_ts)
+
+        # compute the expectation at given time steps
+        
+        np.trapezoid(y=(1/2*np.pi) * cs*np.exp(-p*ts), x=ts)
+
+        if tmax > tmin:
+            tmin = tmax
+
+
+
+
+
+
+    
+
+
 
 
 def random_trace_evaluation(A_csr, t, sampling_number, tau, rng = None, overlap_matrix = None, verbose = False):
