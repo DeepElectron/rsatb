@@ -275,7 +275,7 @@ def trace_tgf(
     trn = []
 
     for it, tt in enumerate(nt[::-1]):
-        xt = _tgf(A_csr=An, B_csr=B_csr, dt=tt-tt_, v0=v0, vt0=vt0, verbose=verbose)
+        xt = _evolve_mkl(A_csr=An, B_csr=B_csr, dt=tt-tt_, v0=v0, vt0=vt0, verbose=verbose)
         traces = (xt * v0conj).mean(axis=-1).sum() * n # [n, S], [n, S] -> [n] -> [1]
         tt_ = tt
         trn.append(traces)
