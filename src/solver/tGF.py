@@ -306,7 +306,7 @@ def efermi(
 ):
     assert method == "pole", "Currently, only pole method is supported!"
 
-    poles, res = ozaki_residues(M_cut=1000)
+    poles, res = ozaki_residues(M_cut=Mcut)
 
     poles = poles * kBT
 
@@ -317,34 +317,36 @@ def efermi(
         mu0 = Emid
 
     # compute the chebyshev power vectors
-    steps_max = _tgf(
-                A_csr=A_csr,
-                t_max=4 * np.log(10) / poles[0],
-                B_csr=B_csr,
-                v0=v0,
-                tol=tol,
-                verbose=verbose,
-                trace=True
-                )
 
     # compute the docc in each spectrum
     tmin = 0.
     ts = np.array([])
-    cs = np.array([])
-    for ip, p in poles[::-1]:
+    for p in poles[::-1]:
         tmax = 4 * np.log(10) / p
 
         # generating integration grid
         if tmax > tmin:
             h = np.sqrt(12*ntol / (tmax*(p**2)))
-            new_ts = np.append(ts, np.linspace(tmin, tmax, num=int((tmax-tmin)/h)))
-            cs = np.concatenate(cs, trace_tgf(steps_max=steps_max, t=new_ts))
-            ts = np.concatenate(ts, new_ts)
-
-        if tmax > tmin:
+            new_ts = np.linspace(tmin, tmax, num=int((tmax-tmin)/h))
+            ts = np.concatenate((ts, new_ts))
             tmin = tmax
     
+    if verbose:
+        print("─" * 46)
+        print("  Generated Grid for fermi energy computation. Total t step: {}".format(len(ts)))
+        print("─" * 46)
+        print(" Max t: {}, Min t: {}".format(ts.max(), ts.min()))
+        print("─" * 46)
     
+    cs = trace_tgf(
+        A_csr=A_csr,
+        t=ts,
+        v0=v0,
+        B_csr=B_csr,
+        tol=tol,
+        verbose=verbose
+    )
+
     # add the largest term
     N = (4*kBT*res * np.trapezoid(y=-(cs[None,:]*np.exp(1j*mu0*ts[None,:])*np.exp(-poles[:,None]*ts[None,:])).imag, x=ts, axis=-1)).sum()
     N += -R * np.trapezoid(y=-(cs*np.exp(1j*mu0*ts[None,:])*np.exp(-R*ts)).imag, x=ts)

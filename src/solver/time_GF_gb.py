@@ -19,12 +19,9 @@ from graphblas import monoid, binary
 from itertools import count
 from graphblas import unary
 import sksparse.cholmod as cholmod
-<<<<<<< HEAD
 from ..utils.ozaki import ozaki_residues
 
-=======
 from scipy.fft import ifft, fftshift
->>>>>>> 3dbc9fb1d305bfc911bf42a6fe2f6027b09897a7
 io = gb.io
 
 def _tgf(
