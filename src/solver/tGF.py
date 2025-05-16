@@ -27,6 +27,7 @@ def _evolve_mkl(
         v0: np.ndarray,
         vt0: Union[np.ndarray, None],
         B_csr: Union[sp.sparse.csr_array, None]=None, 
+        B_solve=None,
         tol: float=1e-14, 
         verbose=False,
         ): # generate the chebyshev decomposition vector for e^{-itA}
@@ -72,7 +73,8 @@ def _evolve_mkl(
         print("─" * 46)
 
     if B_csr is not None:
-        B_solve = cholmod.cholesky(B_csr.tocsc())
+        if B_solve is None:
+            B_solve = cholmod.cholesky(B_csr.tocsc())
 
     ## The graph blas implementation
     Xt = 0.
@@ -261,8 +263,11 @@ def trace_tgf(
     tt_ = 0.
     trp = []
 
+    if B_csr is not None:
+        B_solve = cholmod.cholesky(B_csr.tocsc())
+
     for it, tt in enumerate(pt):
-        xt = _evolve_mkl(A_csr=An, B_csr=B_csr, dt=tt-tt_, v0=v0, vt0=vt0, tol=tol, verbose=verbose)
+        xt = _evolve_mkl(A_csr=An, B_csr=B_csr, B_solve=B_solve, dt=tt-tt_, v0=v0, vt0=vt0, tol=tol, verbose=verbose)
         traces = (xt * v0conj).mean(axis=-1).sum() * n # [n, S], [n, S] -> [S] -> [1]
         tt_ = tt
         trp.append(traces)
@@ -275,7 +280,7 @@ def trace_tgf(
     trn = []
 
     for it, tt in enumerate(nt[::-1]):
-        xt = _evolve_mkl(A_csr=An, B_csr=B_csr, dt=tt-tt_, v0=v0, vt0=vt0, verbose=verbose)
+        xt = _evolve_mkl(A_csr=An, B_csr=B_csr, B_solve=B_solve, dt=tt-tt_, v0=v0, vt0=vt0, verbose=verbose)
         traces = (xt * v0conj).mean(axis=-1).sum() * n # [n, S], [n, S] -> [n] -> [1]
         tt_ = tt
         trn.append(traces)
@@ -348,8 +353,8 @@ def efermi(
     )
 
     # add the largest term
-    N = (4*kBT*res * np.trapezoid(y=-(cs[None,:]*np.exp(1j*mu0*ts[None,:])*np.exp(-poles[:,None]*ts[None,:])).imag, x=ts, axis=-1)).sum()
-    N += -R * np.trapezoid(y=-(cs*np.exp(1j*mu0*ts[None,:])*np.exp(-R*ts)).imag, x=ts)
+    N = (4*kBT*res * np.trapezoid(y=(cs[None,:]*np.exp(1j*mu0*ts[None,:])*np.exp(-poles[:,None]*ts[None,:])).imag, x=ts, axis=-1)).sum()
+    N += R * np.trapezoid(y=cs*np.exp(-R*ts), x=ts)
 
     if abs(N - nocc) > ntol:
         if N > nocc:
@@ -362,8 +367,8 @@ def efermi(
     
     # continue if not converge
     while True:
-        N = (4*kBT*res * np.trapezoid(y=-(cs[None,:]*np.exp(1j*mu0*ts[None,:])*np.exp(-poles[:,None]*ts[None,:])).imag, x=ts, axis=-1)).sum()
-        N += -R * np.trapezoid(y=-(cs*np.exp(1j*mu0*ts)*np.exp(-R*ts)).imag, x=ts)
+        N = (4*kBT*res * np.trapezoid(y=(cs[None,:]*np.exp(1j*mu0*ts[None,:])*np.exp(-poles[:,None]*ts[None,:])).imag, x=ts, axis=-1)).sum()
+        N += R * np.trapezoid(y=cs*np.exp(-R*ts), x=ts)
 
         if abs(N - nocc) > ntol:
             if N > nocc:
@@ -371,6 +376,7 @@ def efermi(
             else:
                 Emin = mu0
             mu0 = (Emax+Emin) / 2
+            print(mu0, N, nocc)
         else:
             break
 

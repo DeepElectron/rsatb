@@ -31,7 +31,7 @@ atomicdata = h2k_sparse(atomicdata)
 atomicdata = s2k_sparse(atomicdata)
 
 def test_efermi():
-    S = 1000
+    S = 10000
     H_ = atomicdata[_keys.HAMILTONIAN_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
     S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 
@@ -46,7 +46,7 @@ def test_efermi():
         verbose=True,
         Mcut=1000,
         R=1e5,
-        kBT=0.025,
+        kBT=0.1,
         ntol=1e-3,
     )
 

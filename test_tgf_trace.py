@@ -8,7 +8,7 @@ import h5py
 from src.solver.tGF import trace_tgf
 # np.random.seed(1234)
 
-sysname = "Al666"
+sysname = "Al101010"
 atomicdata = AtomicData.from_ase(read("./src/test/data/"+sysname+".vasp"), r_max=7.4)
 atomicdata = atomicdata.to_dict()
 atomicdata[_keys.KPOINT_KEY] = np.array([[0.,0.2,-0.2]])
