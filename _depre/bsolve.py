@@ -10,6 +10,9 @@ import numpy as np
 import scipy.sparse as sp
 from petsc4py import PETSc
 from typing import Union
+import src.linalg.hpddm as hpddm
+from .hpddm import MatrixCSR
+import ctypes
 import time
 from .petscop import csr_to_sbaij, dense_to_petsc
 from ..utils.tools import float2complex, complex2float, real_csr_to_complex, real_dense_to_complex
@@ -110,3 +113,82 @@ def bsolve_petsc(Ap: PETSc.Mat, Bp: PETSc.Mat, rtol: float=1e-8, maxit: int=500)
     ksp.matSolve(Bp, Xp) # single call does block CG
     # Xp is still PETsc mat format
     return Xp
+
+def bsolve_hpddm(
+        A: Union[sp.csr_array, ctypes.POINTER(hpddm.MatrixCSR)], 
+        B: np.ndarray,
+        X: np.ndarray=None,
+        rtol=1e-6,
+        maxiter=100,
+        M=None,
+        # specific tuning param
+        spd=False,
+        method="bgmres",
+        msg=""
+        ):
+    
+    if isinstance(A, sp.csr_matrix):
+        # transform it into hpddm format
+        n, m = A.shape
+        indptr, indices, data = A.indptr, A.indices, A.data
+        if data.dtype != hpddm.scalar:
+            data = data.astype(hpddm.scalar, copy=False)
+
+        nnz = len(data)
+        A_ = hpddm.matrixCSRCreate(n,m,nnz,data,indptr,indices,False)
+        destroy = True
+    else:
+        A_ = A
+        destroy = False
+    
+    # check if B is F contiguous:
+    if not B.flags.f_contiguous:
+        B = np.asfortranarray(B)
+    
+    if B.dtype != hpddm.scalar:
+        B = B.astype(hpddm.scalar, copy=False)
+        
+    if X is None:
+        X = np.zeros_like(B)
+    else:
+        if X.dtype != hpddm.scalar:
+            X = X.astype(hpddm.scalar, copy=False)
+    
+    @hpddm.precondFunc
+    def precond(y, x, n, m):
+        # pass
+        if hpddm.scalar is not hpddm.underlying: # underlining is c_double, so complex number took two connected address space?
+            factor = 2
+        else:
+            factor = 1
+        ptr = ctypes.cast(x, ctypes.POINTER(hpddm.underlying * factor * m * n))
+        x = np.frombuffer(ptr.contents)
+        ptr = ctypes.cast(y, ctypes.POINTER(hpddm.underlying * factor * m * n))
+        # x,y input are two array pointer on the first element, same as C.
+        y = np.frombuffer(ptr.contents)
+        x = x.view(dtype = hpddm.scalar)
+        y = y.view(dtype = hpddm.scalar)
+        if m > 1:
+            x = np.reshape(x, (n, m), order = 'F')
+            y = np.reshape(y, (n, m), order = 'F')
+        # x[:] = lu.solve(y[:])
+        if M is not None:
+            x[:] = M @ y
+        else:
+            x[:] = y
+    
+    opt = hpddm.optionGet()
+    cmd  = "-hpddm_krylov_method "+method+" -hpddm_max_it "+str(maxiter) + " -hpddm_tol "+str(rtol) + " "
+    if spd:
+        cmd += "-hpddm_operator_spd 1 "
+    
+    cmd = cmd + msg
+    cmd = cmd.encode('ascii')
+    
+    hpddm.optionParse(opt, cmd)
+    hpddm.solve(A_, precond, B, X)
+
+    if destroy:
+        hpddm.matrixCSRDestroy(ctypes.byref(A_))
+    
+    return X

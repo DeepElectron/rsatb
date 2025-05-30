@@ -1,0 +1,14 @@
+mpicxx -c -O3 -std=c++17 propagation.cpp  -I${CONDA_PREFIX}/include/ -I${CONDA_PREFIX}/hpddm/include/ -DMKL_LP64 -L${CONDA_PREFIX}/lib/ -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl
+
+mpicxx -O3 -std=c++17 -DMKL_LP64 -I${CONDA_PREFIX}/include/ -I${CONDA_PREFIX}/hpddm/include/ -c test_propagation.cpp
+
+mpicxx -fopenmp propagation.o test_propagation.o -L${CONDA_PREFIX}/lib -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl -o test_cheb
+
+mpicxx -O3 -std=c++17 test_calc.cpp  -I${CONDA_PREFIX}/include/ -I${CONDA_PREFIX}/hpddm/include/ -DMKL_LP64 -L${CONDA_PREFIX}/lib/ -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl
+
+
+~Used to compile the calc binding lib~
+mpicxx -O3 -std=c++17 -fPIC -shared $(python3 -m pybind11 --includes) calc_bind.cpp  -I${CONDA_PREFIX}/include/ -I${CONDA_PREFIX}/hpddm/include/ -DMKL_LP64 -L${CONDA_PREFIX}/lib/ -Wl,--no-as-needed -lmkl_intel_lp64 -lmkl_gnu_thread -lmkl_core -lgomp -lpthread -lm -ldl -o rsatb$(python3-config --extension-suffix)
+
+~Used to compile the bessel binding lib~
+mpicxx -O3 -std=c++17 -fPIC -shared $(python3 -m pybind11 --includes) bessel_bind.cpp  -I${CONDA_PREFIX}/include/ -o bessel$(python3-config --extension-suffix)

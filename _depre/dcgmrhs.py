@@ -1,10 +1,14 @@
 from sparse_dot_mkl._mkl_interface import (
     MKL,
+    sparse_matrix_t,
     SPARSE_DIAG_NON_UNIT,
     SPARSE_MATRIX_TYPE_SYMMETRIC,
     SPARSE_MATRIX_TYPE_HERMITIAN,
     SPARSE_MATRIX_TYPE_GENERAL,
     SPARSE_FILL_MODE_FULL,
+    SPARSE_FILL_MODE_LOWER,
+    SPARSE_FILL_MODE_UPPER,
+    SPARSE_DIAG_UNIT,
     _mkl_scalar,
     SPARSE_OPERATION_NON_TRANSPOSE
 )
@@ -28,30 +32,43 @@ _mkl_sp_mv_funcs = {
     (True, True): MKL._mkl_sparse_z_mv,
 }
 
-_args = [
+_args_ft = [
             _ctypes.POINTER(MKL.MKL_INT),
             ndpointer(dtype=_ctypes.c_double, ndim=1, flags='C_CONTIGUOUS'),
             _ctypes.POINTER(MKL.MKL_INT),
             ndpointer(dtype=_ctypes.c_double, ndim=1, flags='C_CONTIGUOUS'),
             _ctypes.POINTER(MKL.MKL_INT),
             ndpointer(dtype=MKL.MKL_INT, flags='C_CONTIGUOUS'),
+
             ndpointer(dtype=_ctypes.c_double, flags='C_CONTIGUOUS'),
             ndpointer(dtype=_ctypes.c_double, flags='C_CONTIGUOUS')
         ]
 
-MKL._dcgmrhs_init.argtypes = _args[:4] + [_ctypes.POINTER(MKL.MKL_INT)] + _args[4:]
+_args_tt = [
+            _ctypes.POINTER(MKL.MKL_INT),
+            ndpointer(dtype=_np.cdouble, ndim=1, flags='C_CONTIGUOUS'),
+            _ctypes.POINTER(MKL.MKL_INT),
+            ndpointer(dtype=_np.cdouble, ndim=1, flags='C_CONTIGUOUS'),
+            _ctypes.POINTER(MKL.MKL_INT),
+            ndpointer(dtype=MKL.MKL_INT, flags='C_CONTIGUOUS'),
+
+            ndpointer(dtype=_ctypes.c_double, flags='C_CONTIGUOUS'),
+            ndpointer(dtype=_np.cdouble, flags='C_CONTIGUOUS')
+        ]
+
+MKL._dcgmrhs_init.argtypes = _args_ft[:4] + [_ctypes.POINTER(MKL.MKL_INT)] + _args_ft[4:]
 MKL._dcgmrhs_init.restype = None
 
-MKL._dcgmrhs_check.argtypes = _args
+MKL._dcgmrhs_check.argtypes = _args_ft
 MKL._dcgmrhs_check.restype = None
 
 # MKL._dcgmrhs.argtypes = _args[:4] + [ndpointer(dtype=_ctypes.c_double, flags='C_CONTIGUOUS')] + \
 #     [_args[4]] + [ndpointer(dtype=_ctypes.c_double, flags='C_CONTIGUOUS')] + _args[5:]
 # MKL._dcgmrhs_check.restype = None
-MKL._dcgmrhs.argtypes = _args
+MKL._dcgmrhs.argtypes = _args_ft
 MKL._dcgmrhs.restype = None
 
-MKL._dcgmrhs_get.argtypes = _args + [_ctypes.POINTER(MKL.MKL_INT)]
+MKL._dcgmrhs_get.argtypes = _args_ft + [_ctypes.POINTER(MKL.MKL_INT)]
 
 MKL._dcgmrhs_get.restype = None
 
@@ -98,13 +115,18 @@ def dcgmrhs_init(
 
     if x is None:
         x = _np.zeros((n*nrhs), dtype=_ctypes.c_double)
+        x = x.ravel("F")
     else:
-        nrhs = x.shape[1]
-        x = x.ravel()
+        x = x.ravel("F")
 
     
     ipar, dpar, tmp = _create_empty_temp_arrays(ipar, dpar, tmp, nrhs, (4+nrhs) * n)
-    tmp = tmp.reshape((4+nrhs), n)
+    ipar = ipar.ravel("F")
+    dpar = dpar.ravel("F")
+    tmp = tmp.ravel("F")
+    # tmp = tmp.reshape((n,4+nrhs), order="F")
+    # tmp = _np.ascontiguousarray(tmp)
+    # print(tmp.flags)
 
     ret_val = MKL.MKL_INT()
 
@@ -130,6 +152,10 @@ def dcgmrhs_init(
         raise RuntimeError(
             f"dcgmrhs_init returned {status} (Unknown error))"
         )
+    
+    # ipar[2] = nrhs
+
+    # print(ipar)
 
     return x, ipar, dpar, tmp
 
@@ -319,6 +345,12 @@ def dcgmrhs_get(
 class CGMRHSIterativeSparseSolver(MKLIterativeSparseSolver):
 
     def initialize_solver(self):
+        if self.cplx and self.dbl:
+            MKL._dcgmrhs_init.argtypes = _args_tt[:4] + [_ctypes.POINTER(MKL.MKL_INT)] + _args_tt[4:]
+            MKL._dcgmrhs_check.argtypes = _args_tt
+            MKL._dcgmrhs.argtypes = _args_tt
+            MKL._dcgmrhs_get.argtypes = _args_tt + [_ctypes.POINTER(MKL.MKL_INT)]
+
         self.x, self.ipar, self.dpar, self.tmp = dcgmrhs_init(
             self.n,
             self.b,
@@ -381,13 +413,14 @@ class CGMRHSIterativeSparseSolver(MKLIterativeSparseSolver):
             if return_value == 1:
                 """multiply the matrix by tmp [0:n - 1), put the result in tmp[n:2*n - 1), 
                 and return the control to the dcg/dcgmrhs routine;"""
-
+                # print("Step1")
                 pass # this should not been handelled since ISS class inplement next as update_tmp
             elif return_value == 2:
                 """
                 to perform the stopping tests. If they fail, return the control to the dcg/dcgmrhs routine. 
                 If the stopping tests succeed, it indicates that the solution is found and stored in the x array;
                 """
+                print("Step2")
                 pass
             elif return_value == 3:
                 """
@@ -398,12 +431,13 @@ class CGMRHSIterativeSparseSolver(MKLIterativeSparseSolver):
                 and return the control to the dcgmrhs routine.
                 """
 
-                j = int(self.ipar[2])
-                self.tmp[3 + j, :] = self.tmp[2 + j, :]
+                # j = int(self.ipar[2])
+                # self.tmp[3 + j, :] = self.tmp[2 + j, :]
                 # self.tmp[(2+j)*self.n:(3+j)*self.n] = self.tmp[(3+j)*self.n:(4+j)*self.n]
+                print("Step3")
                 
             elif return_value == 0:
-                self.get_solution()
+                # self.get_solution()
                 break
 
             if self.current_iter > self.max_iter:
@@ -439,27 +473,47 @@ class CGMRHSIterativeSparseSolver(MKLIterativeSparseSolver):
     def update_tmp(self):
         alpha = _mkl_scalar(1., self.cplx, self.dbl)
         beta = _mkl_scalar(0., self.cplx, self.dbl)
+
         _mkl_sp_mv_funcs[(self.dbl, self.cplx)](
             SPARSE_OPERATION_NON_TRANSPOSE,
             alpha,
             self.A,
             self.matrix_A_descr,
-            self.tmp[0, :],
+            self.tmp[:self.n],
             beta,
-            self.tmp[1, :],
+            self.tmp[self.n:2*self.n],
         )
+
+            # self.solve_iteration()
+
+        # print(self.a_tol, self.r_tol)
+        # print(self.tmp[:].reshape(-1,self.n))
+        print(_np.linalg.norm(self.tmp[:].reshape(-1,self.n), axis=-1))
+
+        # _mkl_sp_mv_funcs[(self.dbl, self.cplx)](
+        #     SPARSE_OPERATION_NON_TRANSPOSE,
+        #     alpha,
+        #     self.A,
+        #     self.matrix_A_descr,
+        #     self.tmp[4*self.n:5*self.n],
+        #     beta,
+        #     self.tmp[5*self.n:6*self.n],
+        # )
+
+        # print(self.tmp[self.n*5:self.n*6])
 
 
 def cgmrhs(
     A,
     b,
     x0=None,
-    tol=1e-05,
+    tol=1e-09,
     maxiter=DEFAULT_MAX_ITER,
     M=None,
     Atype="general",
+    unit=True,
     callback=None,
-    atol=None
+    atol=1e-9
 ):
     """
     Call Conjugate Gradient iterative solver and iterate without user input
@@ -489,31 +543,67 @@ def cgmrhs(
     if callback is not None:
         raise NotImplementedError("callback is not supported")
     
-    if Atype == "hermitian":
-        Atype = SPARSE_MATRIX_TYPE_HERMITIAN
-    elif Atype == "symmetric":
-        Atype = SPARSE_MATRIX_TYPE_SYMMETRIC
-    elif Atype == "general":
-        Atype = SPARSE_MATRIX_TYPE_GENERAL
+    if isinstance(A, sparse_matrix_t):
+        cplx = bool(_np.iscomplex(b[0,0]))
+        if b.dtype in [_np.cdouble, _np.double]:
+            dbl = True
+        else:
+            dbl=False
     else:
-        raise ValueError("Atype should be among ['hermitian', 'symmetric', 'general'].")
+        cplx = None,
+        dbl = None
+    
+    if isinstance(Atype, _ctypes.Structure):
+        direct = True
+    else:
+        direct = False
+        if Atype == "hermitian":
+            _Atype = SPARSE_MATRIX_TYPE_HERMITIAN
+            Ftype = SPARSE_FILL_MODE_UPPER
+            if unit:
+                Dtype = SPARSE_DIAG_UNIT
+            else:
+                Dtype = SPARSE_DIAG_NON_UNIT
+        elif Atype == "symmetric":
+            _Atype = SPARSE_MATRIX_TYPE_SYMMETRIC
+            Ftype = SPARSE_FILL_MODE_UPPER
+            if unit:
+                Dtype = SPARSE_DIAG_UNIT
+            else:
+                Dtype = SPARSE_DIAG_NON_UNIT
+        elif Atype == "general":
+            _Atype = SPARSE_MATRIX_TYPE_GENERAL
+            Ftype = SPARSE_FILL_MODE_FULL
+            Dtype = SPARSE_DIAG_NON_UNIT
+        else:
+            raise ValueError("Atype should be among ['hermitian', 'symmetric', 'general'].")
 
 
     with CGMRHSIterativeSparseSolver(
         A,
         b,
+        n=b.shape[0],
         x=x0,
         verbose=False,
         max_iter=maxiter,
         a_tol=atol,
-        r_tol=tol
+        r_tol=tol,
+        cplx=cplx,
+        dbl=dbl,
     ) as cg_solver:
-        cg_solver.set_sparse_matrix_descr(sparse_diag_type_t=Atype)
-
+        
+        if direct:
+            cg_solver.matrix_A_descr = Atype
+        else:
+            cg_solver.set_sparse_matrix_descr(
+                sparse_matrix_type_t=_Atype,
+                sparse_fill_mode_t=Ftype,
+                sparse_diag_type_t=Dtype
+                )
         try:
             x = cg_solver.solve()
         except RuntimeError:
             RuntimeWarning("There is error during the run!")
             return cg_solver.x, cg_solver.final_code
-
+        
         return x, cg_solver.final_code

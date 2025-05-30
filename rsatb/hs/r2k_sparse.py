@@ -16,6 +16,7 @@ class R2KSparse:
             edge_field: str = AtomicDataDict.EDGE_FEATURES_KEY,
             node_field: str = AtomicDataDict.NODE_FEATURES_KEY,
             out_field: str = AtomicDataDict.HAMILTONIAN_KEY,
+            upper=False, # if Upper is true, output only upper half. If False, output full
             dtype=np.float32,
             ):
 
@@ -35,6 +36,7 @@ class R2KSparse:
 
         # get mask_to_basis incase that spin is neglected
         self.mask_to_basis = self.idp.mask_to_basis.copy() # mask
+        self.upper = upper
 
         self.basis = self.idp.basis
         self.idp.get_orbpair_maps()
@@ -157,6 +159,15 @@ class R2KSparse:
         block += sparse.stack(hblock_list).sum(axis=0)
 
         block = block + block.transpose(axes=(0,2,1)).conj()
+        
+        if self.upper:
+            coords, elements = block.coords, block.data
+            # row first order
+            mask = coords[1,:] <= coords[2,:]
+            coords = coords[:,mask]
+            elements = elements[mask]
+            block = sparse.COO(coords, elements, shape=(kpoints.shape[0], norb, norb))
+
         data[self.out_field] = block
 
         return data # here output hamiltonian have their spin orbital connected between each other

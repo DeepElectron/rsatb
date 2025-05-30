@@ -5,10 +5,10 @@ from ase.io import read
 import numpy as np
 import scipy as sp
 import h5py
-from src.solver.tGF import efermi
+from src.solver.tGF import trace_tgf, TGF
 # np.random.seed(1234)
 
-sysname = "Al"
+sysname = "Al202020"
 atomicdata = AtomicData.from_ase(read("./src/test/data/"+sysname+".vasp"), r_max=7.4)
 atomicdata = atomicdata.to_dict()
 atomicdata[_keys.KPOINT_KEY] = np.array([[0.,0.2,-0.2]])
@@ -30,30 +30,55 @@ block_to_feature(data=atomicdata, idp=idp, blocks=H, overlap_blocks=S)
 atomicdata = h2k_sparse(atomicdata)
 atomicdata = s2k_sparse(atomicdata)
 
-def test_efermi():
-    S = 10000
+def test_trace():
+    S = 100
+    t = np.array([-0.3,-0.3,-0.1,0.,0.1,0.2,0.3])
     H_ = atomicdata[_keys.HAMILTONIAN_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
     S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 
     # vals, _ = sp.linalg.eigh(H_.todense(), S_.todense())
 
     v0 = np.random.randn(H_.shape[0], S).astype(H_.dtype)
-    ef = efermi(
-        A_csr=H_, 
-        B_csr=S_, 
+    traces = trace_tgf(
+        A_csr=H_,
+        B_csr=S_,
         v0=v0,
-        nocc=4,
-        verbose=True,
-        Mcut=1000,
-        R=1e5,
-        kBT=0.1,
-        ntol=1e-3,
+        t=t,
+        verbose=True
     )
 
-    print(ef)
+    # true_traces = np.exp(-1j*vals[None,:]*t[:,None]).sum(axis=-1)
+
+    print(traces)
+
+def test_LOP():
+    S = 40
+    dt = 0.1
+    H_ = atomicdata[_keys.HAMILTONIAN_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
+    S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
+
+    tGF = TGF(
+        dt=dt,
+        H=H_,
+        S=S_,
+        verbose=True,
+        tol=1e-7
+    )
+
+    v0 = np.random.randn(H_.shape[0], S).astype(H_.dtype)
+    v0 = v0 / np.linalg.norm(v0, axis=0)
+
+    # val = sp.linalg.eigvalsh(H_.todense(), S_.todense())
+
+    print((v0 * (tGF @ v0)).sum() / (S * (1/H_.shape[0])),)# np.exp(-1j*dt*val).sum())
+
+    # print(tGF @ v0)
+
+
+
 
 
 
 
 if __name__ == "__main__":
-    test_efermi()
+    test_LOP()

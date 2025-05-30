@@ -344,12 +344,16 @@ def normalize_small_matrix(A, t):
     t_tilde = t * norm_A
     return A / norm_A, t_tilde 
 
-def normalize_large_matrix(A, B=None):
+def normalize_large_matrix(A, B=None, Binv=None):
     """Make a real symmetric CSR matrix with spectrum scaled to [-1,1]."""
 
     
-    max_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="LA", return_eigenvectors=False, tol=1e-5)
-    min_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="SA", return_eigenvectors=False, tol=1e-5)
+    max_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="LA", return_eigenvectors=False, tol=1e-1, Minv=Binv)
+    print(max_eig)
+    max_eig += 5 * 1e-1
+    min_eig = sp.sparse.linalg.eigsh(A, k=1, M=B, which="SA", return_eigenvectors=False, tol=1e-1, Minv=Binv)
+    print(min_eig)
+    min_eig -= 5 * 1e-1
     mid_eig = (max_eig + min_eig) / 2
     norm_A = (max_eig[0] - min_eig[0])/2
 

@@ -1,0 +1,38 @@
+[tool.poetry]
+name = "rsatb"
+version = "0.1.0"
+license = "LGPL-3.0"
+description = "A random state method for abinitio tight-binding calculations"
+readme = "README.md"
+repository = "https://github.com/floatingCatty/rsatb"
+
+[tool.poetry.dependencies]
+python = ">=3.9"
+pytest = ">=7.2.0"
+pytest-order = "1.2.0"
+numpy = "*"
+scipy = "*"
+matplotlib = "*"
+ase = "*"
+h5py = ">=3.7.0,<=3.11.0,!=3.10.0"
+lmdb = "1.4.1"
+mpi4py = "*"
+
+[build-system]
+requires = ["poetry-core", "poetry-dynamic-versioning"]
+build-backend = "poetry_dynamic_versioning.backend"
+
+
+[tool.poetry-dynamic-versioning]
+enable = true
+vcs = "git"
+strict = false
+format-jinja = """
+    {%- if distance == 0 -%}
+        {{ serialize_pep440(base, stage, revision) }}
+    {%- elif revision is not none -%}
+        {{ serialize_pep440(base, stage, revision + 1, dev=distance, metadata=[commit]) }}
+    {%- else -%}
+        {{ serialize_pep440(bump_version(base), stage, revision, dev=distance, metadata=[commit]) }}
+    {%- endif -%}
+"""

@@ -13,7 +13,7 @@ import numpy as _np
 import scipy.sparse as _sps
 import ctypes as _ctypes
 
-DEFAULT_ATOL = 0.0
+DEFAULT_ATOL = 1e-5
 DEFAULT_RTOL = 1e-6
 DEFAULT_MAX_ITER = 1000
 
@@ -61,13 +61,15 @@ class MKLIterativeSparseSolver:
         max_iter=DEFAULT_MAX_ITER,
         a_tol=DEFAULT_ATOL,
         r_tol=DEFAULT_RTOL,
+        cplx=None,
+        dbl=None,
         verbose=False,
         n=None,
     ):
 
         # Set solver parameters into this object
         self.current_iter, self.max_iter = 0, max_iter
-        self.a_tol, r_tol = a_tol, r_tol
+        self.a_tol, self.r_tol = a_tol, r_tol
         self.set_sparse_matrix_descr()
 
         # Set the parameter arrays into this object
@@ -84,6 +86,9 @@ class MKLIterativeSparseSolver:
         elif isinstance(A, sparse_matrix_t):
             self.A = A
             self.destroy_A_handle = False
+
+            self.cplx, self.dbl = cplx, dbl
+            assert cplx is not None and dbl is not None
 
         # If A is a scipy sparse matrix, convert it to a sparse matrix
         # handle and flag it for cleanup
@@ -122,7 +127,7 @@ class MKLIterativeSparseSolver:
         # If an initial value vector is passed, make sure the array is 1d
         # Also explicitly copy X (with flatten) so it does not change in place
         if x is not None and ((x.ndim == 2 and x.shape[1] == 1) or (x.ndim == 1)):
-            x = x.flatten()
+            x = x.ravel("F")
 
         elif x is not None and not (x.ndim == 2 and x.shape[0] == n):
             raise ValueError(
@@ -132,21 +137,31 @@ class MKLIterativeSparseSolver:
 
         # If there's no solution vector passed, create one of zeros
         elif x is None:
-            x = _np.zeros(b.shape, dtype=_ctypes.c_double)
-            x = x.flatten()
+            if self.dbl and self.cplx:
+                x = _np.zeros(b.shape, dtype=_np.cdouble)
+            elif self.dbl:
+                x = _np.zeros(b.shape, dtype=_ctypes.c_double)
+            elif self.cplx:
+                raise ValueError("cfloat is not supported now")
+            else:
+                x = _np.zeros(b.shape, dtype=_ctypes.c_float)
+                
+            x = x.ravel("F")
+        
+        self.x = x
 
         # Also check b but don't copy it unless necessary
         if _is_dense_vector(b):
 
             if b.ndim == 2 and b.shape[1] == 1:
-                self.b = b.ravel()
+                self.b = b.ravel("F")
             elif b.ndim != 1:
                 raise ValueError(
                     "B must be 1d or a 2d array; "
                     f"{b.shape} provided"
                 )
             elif not b.data.contiguous:
-                self.b = b.ravel()
+                self.b = b.ravel("F")
             else:
                 self.b = b
         elif not (isinstance(b, _np.ndarray) and b.ndim == 2 and b.shape[0] == n):
@@ -157,9 +172,8 @@ class MKLIterativeSparseSolver:
 
         if b.ndim == 2:
             self.nrhs = b.shape[1]
-            self.b = b.ravel()
+            self.b = b.ravel("F")
         
-
         # Run the initialization
         self.initialize_solver()
         self.set_initial_parameters()
@@ -289,6 +303,7 @@ def _create_empty_temp_arrays(
     elif tmp is None and tmp_size is None:
         raise ValueError("tmp or tmp_size must be provided")
     else:
+        # tmp = _np.zeros(tmp_size, dtype=_np.cdouble)
         tmp = _np.zeros(tmp_size, dtype=_ctypes.c_double)
 
     return ipar, dpar, tmp
