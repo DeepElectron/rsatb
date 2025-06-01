@@ -1,5 +1,4 @@
 // This file contains the sample method used to genereate the random / quasi random samples
-
 #include <mkl.h>
 #include <iostream>
 #include <vector>

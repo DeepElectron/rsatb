@@ -1,11 +1,11 @@
-from src.core.rsatb import tdos
-from src.data import AtomicData, _keys, OrbitalMapper, block_to_feature
+from ..core.rsatb import tdos
+from ..data import AtomicData, _keys, OrbitalMapper, block_to_feature
 import numpy as np
 import h5py
-from src.hs.r2k_sparse import R2KSparse
+from ..hs.r2k_sparse import R2KSparse
 import mpi4py
+import primme
 import ase.io as io
-import os
 
 class timeGF:
     def __init__(self, h_indptr, h_indices, h_data, nsamples, n, s_indptr=None, s_indices=None, s_data=None):
@@ -18,6 +18,7 @@ class timeGF:
         self.nsamples = nsamples
         self.n = n
         self._rescale = 1.
+        self._shift = 1.
         
     def get_samples(self):
 
@@ -28,9 +29,15 @@ class timeGF:
 
         return self.samples
     
-    def rescale(self, factor):
+    def rescale(self, shift, factor):
+        assert shift == 0
+
         self._rescale *= factor
+        self._shift += shift
         self.h_data /= factor
+
+    def rescale_auto(self, shift, factor):
+        pass
 
     def get_dt_fft(self):
         return np.pi / self._rescale
@@ -70,6 +77,8 @@ class timeGF:
 
         return energies, dos
     
+    def band(self, nt):
+        pass
 
     @staticmethod
     def from_atomicdata(cls):

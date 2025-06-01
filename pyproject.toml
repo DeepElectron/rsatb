@@ -6,6 +6,15 @@ description = "A random state method for abinitio tight-binding calculations"
 readme = "README.md"
 repository = "https://github.com/floatingCatty/rsatb"
 
+include = [
+  { path = "rsatb/core/rsatb.cpython-312-x86_64-linux-gnu.so", format = "wheel" },
+  { path = "rsatb/core/rsatb.cpython-312-x86_64-linux-gnu.so", format = "sdist" }
+]
+
+packages = [
+  { include = "rsatb" }
+]
+
 [tool.poetry.dependencies]
 python = ">=3.9"
 pytest = ">=7.2.0"

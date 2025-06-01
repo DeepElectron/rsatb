@@ -1,14 +1,14 @@
 import scipy as sp
 import mpi4py
-from src.data import AtomicData, _keys, OrbitalMapper, block_to_feature
+from rsatb.data import AtomicData, _keys, OrbitalMapper, block_to_feature
 from ase.io import read
 import numpy as np
 import h5py
-from src.hs.r2k_sparse import R2KSparse
+from rsatb.hs.r2k_sparse import R2KSparse
 import ctypes
 
 sysname = "Al"
-atomicdata = AtomicData.from_ase(read("./src/test/data/"+sysname+".vasp"), r_max=7.4)
+atomicdata = AtomicData.from_ase(read("./test/data/"+sysname+".vasp"), r_max=7.4)
 atomicdata = atomicdata.to_dict()
 atomicdata[_keys.KPOINT_KEY] = np.array([[0.,-0.2,0.3]])
 idp = OrbitalMapper(basis={"Al": "4s4p1d"})
@@ -23,8 +23,8 @@ s2k_sparse = R2KSparse(
     upper=True
     )
 
-H = h5py.File("./src/test/data/H_"+sysname+".h5", "r")["0"]
-S = h5py.File("./src/test/data/S_"+sysname+".h5", "r")["0"]
+H = h5py.File("./test/data/H_"+sysname+".h5", "r")["0"]
+S = h5py.File("./test/data/S_"+sysname+".h5", "r")["0"]
 block_to_feature(data=atomicdata, idp=idp, blocks=H, overlap_blocks=S)
 
 atomicdata = h2k_sparse(atomicdata)
@@ -33,7 +33,7 @@ atomicdata = s2k_sparse(atomicdata)
 H_ = atomicdata[_keys.HAMILTONIAN_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 
-from src.solver.rsatb import tdos
+from rsatb.solver.tGF import tdos
 
 ih, jh, h = H_.indptr, H_.indices, H_.data
 ts = np.cumsum([0]+[np.pi/110]*20)
