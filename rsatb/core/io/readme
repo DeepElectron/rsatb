@@ -1,0 +1,4 @@
+This module handling the data io, it may contains the data structure class for reading files from HDF5, CSR format data.
+The data contains the Hamiltonian block in real space format.
+
+This class will be used in model for constructing the Hamiltonian and Overlap.

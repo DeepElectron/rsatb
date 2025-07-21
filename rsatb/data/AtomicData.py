@@ -16,6 +16,8 @@ import ase
 from ase.calculators.singlepoint import SinglePointCalculator
 from ase.calculators.calculator import all_properties as ase_all_properties
 from ase.stress import voigt_6_to_full_3x3_stress, full_3x3_to_voigt_6_stress
+from scipy.sparse._sparsetools import coo_tocsr, csr_sum_duplicates
+from scipy.sparse._sputils import downcast_intp_index
 
 from . import AtomicDataDict
 from .data_np import Data
@@ -41,6 +43,7 @@ _DEFAULT_LONG_FIELDS: Set[str] = {
     AtomicDataDict.ATOMIC_NUMBERS_KEY,
     AtomicDataDict.ATOM_TYPE_KEY,
     AtomicDataDict.BATCH_KEY,
+    AtomicDataDict.PARTITION,
 }
 
 _DEFAULT_NODE_FIELDS: Set[str] = {
@@ -54,7 +57,7 @@ _DEFAULT_NODE_FIELDS: Set[str] = {
     AtomicDataDict.NODE_HAMILTONIAN_KEY,
     AtomicDataDict.NODE_OVERLAP_KEY,
     AtomicDataDict.BATCH_KEY,
-    AtomicDataDict.NODE_SOC_KEY, # new
+    AtomicDataDict.NODE_SOC_KEY # new
 }
 
 _DEFAULT_EDGE_FIELDS: Set[str] = {
@@ -104,7 +107,12 @@ _DEFAULT_GRAPH_FIELDS: Set[str] = {
     AtomicDataDict.ENERGY_EIGENVALUE_KEY, # new # should be nested
     AtomicDataDict.ENERGY_WINDOWS_KEY, # new,
     AtomicDataDict.BAND_WINDOW_KEY, # new,
-    AtomicDataDict.NODE_SOC_SWITCH_KEY # new
+    AtomicDataDict.NODE_SOC_SWITCH_KEY, # new
+    AtomicDataDict.CLUSTER_CONNECTIVITY,
+    AtomicDataDict.CLUSTER_GHOST_LIST,
+    AtomicDataDict.CLUSTER_NODE_RANGE,
+    AtomicDataDict.CLUSTER_EDGE_RANGE,
+    AtomicDataDict.PARTITION
 }
 
 _NODE_FIELDS: Set[str] = set(_DEFAULT_NODE_FIELDS)
@@ -748,7 +756,124 @@ class AtomicData(Data):
         else:
             assert len(batch_atoms) == 1
             return batch_atoms[0]
+    
+    def partition_graph(self, npart, node_weights=None):
+        import pymetis
 
+        idx_dtype = self.edge_index.dtype
+        nnz = self.edge_index.shape[1]
+        data = np.zeros(nnz) # just fill in the need
+
+        # sum duplicate
+        order = np.lexsort(self.edge_index[::-1])
+        coords = tuple(idx[order] for idx in self.edge_index)
+        data = data[order]
+        unique_mask = np.logical_or.reduce([
+            idx[1:] != idx[:-1] for idx in coords
+        ])
+        unique_mask = np.append(True, unique_mask)
+        coords = tuple(idx[unique_mask] for idx in coords)
+        unique_inds, = np.nonzero(unique_mask)
+        data = np.add.reduceat(data, downcast_intp_index(unique_inds), dtype=data.dtype)
+        nnz = len(data)
+
+        major, minor = coords
+
+        M = self.num_nodes
+        indptr = np.empty(M + 1, dtype=idx_dtype)
+        indices = np.empty_like(minor, dtype=idx_dtype)
+
+        coo_tocsr(M, M, nnz, major, minor, data, indptr, indices, data)
+        if node_weights is not None:
+            assert len(node_weights) == M and node_weights.ndim == 1
+            assert node_weights.min() > 0
+            assert node_weights.dtype == np.int32
+            eweights = np.ascontiguousarray(node_weights[major]*node_weights[minor])
+        else:
+            eweights = None
+        opt = pymetis.Options()
+        opt.ncuts   = 40
+        opt.niter   = 50
+        opt.minconn = 1
+        opt.ufactor = 30
+        # opt.contig  = 1
+        
+        _, partition = pymetis.part_graph(npart, xadj=indptr, adjncy=indices, vweights=node_weights, eweights=eweights, options=opt)
+        partition = np.array(partition)
+        # sort the partition
+        sort_index = np.argsort(partition)
+
+        # sort the attrs
+        for fields in _NODE_FIELDS:
+            if hasattr(self, fields):
+                setattr(self, fields, getattr(self, fields)[sort_index])
+        partition = partition[sort_index]
+        setattr(self, AtomicDataDict.PARTITION, partition)
+
+        if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
+            self.edge_index = sort_index[self.edge_index]
+            sort_index = np.argsort(self.edge_index[0])
+            self.edge_index = self.edge_index[:,sort_index]
+
+            for fields in _EDGE_FIELDS:
+                if hasattr(self, fields):
+                    setattr(self, fields, getattr(self, fields)[sort_index])
+
+        # get the range of each cluster's node and edge
+        n_range = np.zeros((npart, 2), dtype=np.int64)
+        e_range = np.zeros((npart, 2), dtype=np.int64)
+
+        # construct connectivity table
+        connectivity = [[]]*npart
+        ghost_list = [[]]*npart
+        edge_part = partition[self.edge_index[0]]
+        nstart = 0
+        estart = 0
+        for i in range(npart):
+            n_range[i][0] = nstart
+            n_range[i][1] = nstart + sum(partition == i)
+            nstart += sum(partition == i)
+
+            cst_nbr = self.edge_index[1][edge_part == i]
+            e_range[i][0] = estart
+            e_range[i][1] = estart + len(cst_nbr)
+            estart += len(cst_nbr)
+            cst_nbr = np.unique(cst_nbr)
+            ghost_list[i] = cst_nbr
+            connectivity[i] = np.unique(partition[cst_nbr])
+
+        setattr(self, AtomicDataDict.CLUSTER_NODE_RANGE, n_range)
+        setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
+        setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
+        setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
+
+        return True
+    
+    def split(self, i):
+        """
+            return the graph of the ith's cluster
+        """
+        assert hasattr(self, AtomicDataDict.PARTITION), "The graph need to be partitioned first before split"
+        # sort the atom
+
+        nstart, nend = getattr(self, AtomicDataDict.CLUSTER_NODE_RANGE)[i]
+        estart, eend = getattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE)[i]
+
+        for fields in _NODE_FIELDS:
+            if hasattr(self, fields):
+                setattr(self, fields, getattr(self, fields)[nstart:nend])
+        self.__num_nodes__ = nend - nstart
+        
+        for fields in _EDGE_FIELDS:
+            if hasattr(self, fields):
+                if fields == AtomicDataDict.EDGE_INDEX_KEY:
+                    setattr(self, AtomicDataDict.EDGE_INDEX_KEY, getattr(self, AtomicDataDict.EDGE_INDEX_KEY)[:,estart:eend])
+                else:
+                    setattr(self, fields, getattr(self, fields)[estart:eend])
+
+        return True
+
+        
     def get_edge_vectors(data: Data) -> np.ndarray:
         data = AtomicDataDict.with_edge_vectors(AtomicData.to_AtomicDataDict(data))
         return data[AtomicDataDict.EDGE_VECTORS_KEY]

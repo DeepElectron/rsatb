@@ -130,7 +130,7 @@ def block_to_feature(data, idp, blocks=False, overlap_blocks=False, orthogonal=F
                     if i in blocks:
                         b_blocks.append(blocks[i][:])
                     elif j in blocks:
-                        b_blocks.append(blocks[j][:].T)
+                        b_blocks.append(blocks[j][:].T) # not taking conjugate since all numbers are real
                     else:
                         b_blocks.append(meta_dtype.zeros((idp.norbs[symbol_i], idp.norbs[symbol_j]), dtype=dtype))
                 # b_blocks = [blocks[i] if i in blocks else blocks[j].T for i,j in zip(ijR, rev_ijR)]
@@ -264,6 +264,6 @@ def feature_to_block(data, idp, overlap: bool = False):
                 if blocks.get(block_index, None) is None:
                     blocks[block_index] = block.T
                 else:
-                    blocks[block_index] += block.T
+                    blocks[block_index] += block.T # so only i<=j is written
                     
     return blocks

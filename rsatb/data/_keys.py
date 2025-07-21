@@ -31,6 +31,16 @@ CELL_KEY: Final[str] = "cell"
 # [n_kpoints, 3] or [n_batch, nkpoints, 3] tensor
 KPOINT_KEY = "kpoint"
 
+PARTITION = "partition"
+
+CLUSTER_CONNECTIVITY = "cluster_connectivity"
+
+CLUSTER_NODE_RANGE = "cluster_node_range"
+
+CLUSTER_EDGE_RANGE = "cluster_edge_range"
+
+CLUSTER_GHOST_LIST = "cluster_ghost_list"
+
 HAMILTONIAN_KEY = "hamiltonian"
 
 OVERLAP_KEY = "overlap"

@@ -3,8 +3,10 @@ from ..data import AtomicData, _keys, OrbitalMapper, block_to_feature
 import numpy as np
 import h5py
 from ..hs.r2k_sparse import R2KSparse
+from ..linalg.mkl_operator import MKLQuantumOperator
+import scipy.sparse as sp
 import mpi4py
-import primme
+import pyamg
 import ase.io as io
 
 class timeGF:
@@ -18,7 +20,7 @@ class timeGF:
         self.nsamples = nsamples
         self.n = n
         self._rescale = 1.
-        self._shift = 1.
+        self._shift = 0.
         
     def get_samples(self):
 
@@ -30,14 +32,56 @@ class timeGF:
         return self.samples
     
     def rescale(self, shift, factor):
-        assert shift == 0
 
         self._rescale *= factor
         self._shift += shift
         self.h_data /= factor
 
-    def rescale_auto(self, shift, factor):
-        pass
+    @property
+    def H(self):
+        return MKLQuantumOperator(self.h_data, self.h_indices, self.h_indptr, shape=(self.n,self.n), upper=True, unit=False)
+    
+    @property
+    def S(self):
+        return MKLQuantumOperator(self.s_data, self.s_indices, self.s_indptr, shape=(self.n,self.n), upper=True, unit=True)
+
+    def rescale_auto(self):
+        # This function have omp threads (used in amg) overlapping with mkl thread (used by H). Current fix is just use CSR H
+        # TODO: write this into c++ code with simple AMG preconditioned BCG with HPDDM, using lib such as AMGCL.
+        S = self.S.to_csr()
+        H = self.H.to_csr()
+        S_csr = sp.csr_matrix((self.s_data, self.s_indices, self.s_indptr), shape=(self.n,self.n), copy=False)
+        H_csr = sp.csr_matrix((self.h_data, self.h_indices, self.h_indptr), shape=(self.n,self.n), copy=False)
+
+        M = pyamg.aggregation.smoothed_aggregation_solver(S) # one copy of S
+
+        shape = M.levels[0].A.shape
+        dtype = M.levels[0].A.dtype
+        def matvec(b):
+            return M.solve(b, cycle="V", tol=1e-12)
+
+        Minv = sp.linalg.LinearOperator(shape, matvec, dtype=dtype)
+
+        emax = sp.linalg.eigsh(H, 1, M=S, Minv=Minv, which="LA", tol=1e-3, return_eigenvectors=False)[0]
+        emin = sp.linalg.eigsh(H, 1, M=S, Minv=Minv, which="SA", tol=1e-3, return_eigenvectors=False)[0]
+        
+        del M
+
+        shift = emax + emin
+        shift /= 2.
+
+        rescale = emax - emin + 4
+        rescale /= 2.
+
+        H_csr -= S_csr * shift # this op will create a new buffer
+        H_csr /= rescale
+
+        self.h_indices = H_csr.indices
+        self.h_data = H_csr.data
+        self.h_indptr = H_csr.indptr
+
+        self._shift += shift
+        self._rescale *= rescale
 
     def get_dt_fft(self):
         return np.pi / self._rescale
@@ -48,11 +92,16 @@ class timeGF:
         ts = ts * self._rescale
 
         samples = self.get_samples()
+        print("Start calculating cdos:")
         corr_dos = tdos(
             self.h_indptr, self.h_indices, self.h_data, samples,
             self.n, self.nsamples, ts,
             self.s_indptr, self.s_indices, self.s_data
         )
+
+        print("End calculating cdos:")
+
+        corr_dos /= np.exp(1j*self._shift*ts/self._rescale)
 
         assert len(corr_dos) == nt+1
 
