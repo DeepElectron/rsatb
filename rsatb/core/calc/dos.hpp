@@ -36,7 +36,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
             MatDenseRestoreColumnVecRead(Psi_in, 0, &v_tmp);
         }
     }
-    std::cout << "Past first proj switch!\n";
 
     cdos[nt] = 1;
     if(proj){
@@ -59,12 +58,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
 
         VecDestroy(&init_tmp);
     }
-
-    std::cout << "Past the second proj switch!\n";
-    
     timeprop_coeff(dt, 1e-14, true, &coeff, &n_bes);
-
-    std::cout << "Hi! inside this function\n";
 
     if constexpr (std::is_same_v<T, Vec>){
         
@@ -84,7 +78,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 Psi_out
                 );
 
-            std::cout << "Hi! passed the first loop!\n";
             if(proj){
                 cdos[nt+it+1] = 0; // give 0 initial value, since proj cdos is computed from accumulating the pdos
 
@@ -110,15 +103,9 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
             VecCopy(Psi_out, Psi_curr);
         }
 
-        std::cout << "Here! Final before Destroy\n";
         VecDestroy(buff); VecDestroy(buff+1); VecDestroy(buff+2);
-        std::cout << "Hi! I guess it is the error here...\n";
         VecDestroy(&Psi_out); VecDestroy(&Psi_curr);
-        std::cout << "Hi! My guess is wrong!\n";
-
     }else{
-        std::cout << "Hi! Mat loop!\n";
-
         Mat buff[4], Psi_out, Psi_curr;
         Vec v_psi_in, v_psi_out, v_psi_curr;
         PetscScalar temp=0;
@@ -130,7 +117,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         MatDuplicate(Psi_in, MAT_COPY_VALUES, &Psi_curr);
 
         for(int it=0; it<nt; ++it){
-            std::cout << "Hi! inside the Mat loop!\n";
             cdos[nt+it+1] = 0;
             if(proj){
                 for (PetscInt i=0; i<n_proj_type; ++i) pcdos[(nt+it+1)*n_proj_type+i] = 0;
@@ -142,8 +128,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 coeff, n_bes,
                 Psi_out
                 );
-
-            std::cout << "Hi! Passed cheby_recur_mult!\n";
 
             for(int in=0; in<nrhs; ++in){
                 temp = 0;
@@ -171,7 +155,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 MatDenseRestoreColumnVecRead(Psi_in, in, &v_psi_in);
                 MatDenseRestoreColumnVecRead(Psi_out, in, &v_psi_out);
             }
-            std::cout << "Hi! Passed cdos compute loop!\n";
+
             cdos[nt+it+1] /= nrhs;
             cdos[nt-it-1] = PetscConj(cdos[nt+it+1]);
             if(proj){
@@ -186,8 +170,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         MatDestroy(buff); MatDestroy(buff+1); MatDestroy(buff+2); MatDestroy(buff+3);
         MatDestroy(&Psi_out); MatDestroy(&Psi_curr);
     }
-
-    std::cout << "Hi! My guess is wrong!\n";
     delete coeff;
 };
 

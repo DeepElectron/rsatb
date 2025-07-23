@@ -142,7 +142,7 @@ TEST(petscTest, TestSetupISOrbital) {
 
     IS isSrc, isDst;
 
-    setup_is_orbital(dm, orb_type, type_weight, 1, &isSrc, &isDst);
+    setup_is_orbital(dm, orb_type, type_weight, &isSrc, &isDst);
 }
 
 

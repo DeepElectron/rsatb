@@ -340,10 +340,11 @@ void setup_is_atomic(DM dm, IS *isSrc, IS *isDst){
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
 };
 
-void setup_is_orbital(DM dm, int *orbtype, int *type_weight, int n_type, IS *isSrc, IS *isDst){
+void setup_is_orbital(DM dm, int *orbtype, int *type_weight, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
     PetscInt vStart,vEnd,off;
+    int ntype = sizeof(type_weight) / sizeof(type_weight[0]);
     DMNetworkGetVertexRange(dm,&vStart,&vEnd);
     for (PetscInt v=vStart; v<vEnd; ++v) {
         DMNetworkIsGhostVertex(dm,v,&ghost);

@@ -49,8 +49,12 @@ public:
         initialize the random samples according to the number of samples n and the method used.
     */
 
-    void compute_dos(int nt, double dE);
+    void compute_dos(int nt, std::string proj_mode, double *dos, double *pdos);
     /* dE defines the energe resolution, which should be scale/nt*/
+
+    void get_nt(double dE, int *nt) {
+        *nt = ceil(_scale_ / dE);
+    };
 };
 }
 

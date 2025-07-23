@@ -271,9 +271,9 @@ TEST(calcTest, TestCDOS) {
             MatSetValue(H,i,j,H_in[i*2+j],INSERT_VALUES);
             MatSetValue(S,i,j,S_in[i*2+j],INSERT_VALUES);
             MatSetValue(m_psi_in,j,i,Psi_in[j],INSERT_VALUES);
-        }
-        
+        }   
     }
+
     MatAssemblyBegin(H,MAT_FINAL_ASSEMBLY);
     MatAssemblyEnd  (H,MAT_FINAL_ASSEMBLY);
     MatAssemblyBegin(S,MAT_FINAL_ASSEMBLY);
@@ -318,6 +318,13 @@ TEST(calcTest, TestCDOS) {
     PetscComplex cdos_mp[21]={0};
     PetscComplex pcdos_mp[42]={0};
     rsatb::calc::corr_dos<Mat>(H, ksp, m_psi_in, 10, true, 2, &isSrc, &isDst, cdos_mp, pcdos_mp);
+    std::cout<<"Function run success!\n";
+    for(int i=0;i<21;++i) std::cout << cdos_mp[i] << " ";
+    std::cout << "\n";
+    for(int i=0;i<42;++i) std::cout << pcdos_mp[i] << " ";
+    std::cout << "\n";
+
+    rsatb::calc::corr_dos<Vec>(H, ksp, v_psi_in, 10, true, 2, &isSrc, &isDst, cdos_mp, pcdos_mp);
     std::cout<<"Function run success!\n";
     for(int i=0;i<21;++i) std::cout << cdos_mp[i] << " ";
     std::cout << "\n";

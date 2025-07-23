@@ -4,6 +4,7 @@
 #include <iostream>
 using namespace rsatb::backend;
 using namespace rsatb::io;
+using namespace rsatb::calc
 
 namespace rsatb{
 
@@ -143,5 +144,32 @@ void Solver::setup_sample(int n, std::string method){
     
 };
 
+void Solver::compute_dos(int nt, std::string proj_mode, int *orbtype, double *dos, double *pdos){
+    /*
+        1. 
+    */
+    bool proj=true;
+    int n_proj_type=1;
+    IS isSrc=nullptr, isDst=nullptr;
+    if(proj_mode=="element"){
+        rsatb::backend::setup_is_atomic(_dm_, &isSrc, &isDst);
+        n_proj_type = sizeof(_atom_type_) / sizeof(_atom_type_[0]);
+    }else if(proj_mode=="orbital"){
+        rsatb::backend::setup_is_orbital(_dm_, orbtype, _type_norb_, &isSrc, &isDst);
+        n_proj_type = *std::max_element(orbtype, orbtype + sizeof(orbtype) / sizeof(orbtype[0]));
+    }else{
+        proj=false;
+    }
+
+    PetscComplex cdos[2*nt+1], pcdos[(2*nt+1)*n_proj_type];
+
+    if(_n_sample_==1){
+        rsatb::calc::corr_dos<Vec>(_H_, _ksp_, _Sample_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos);
+    } else {
+        rsatb::calc::corr_dos<Mat>(_H_, _ksp_, _Samples_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos);
+    }
+
+    // Processing cdos and pcdos to dos and pdos
+};
 
 };

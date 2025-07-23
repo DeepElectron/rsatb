@@ -112,7 +112,7 @@ void setup_KSP(
 
 void setup_is_atomic(DM dm, IS *isSrc, IS *isDst);
 
-void setup_is_orbital(DM dm, int *orbtype, int *type_weight, int n_type, IS *isSrc, IS *isDst);
+void setup_is_orbital(DM dm, int *orbtype, int *type_weight, IS *isSrc, IS *isDst);
 
 }
 
