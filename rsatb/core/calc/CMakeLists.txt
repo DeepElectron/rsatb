@@ -4,7 +4,7 @@ set(CONDA_PREFIX $ENV{CONDA_PREFIX})
 
 add_library(calclib INTERFACE)
 target_compile_features(calclib INTERFACE cxx_std_11)
-target_include_directories(calclib INTERFACE ${CONDA_PREFIX}/petsc/build/include ${CONDA_PREFIX}/petsc/arch-linux-c-opt/include ${CONDA_PREFIX}/include)
+target_include_directories(calclib INTERFACE ../extern/ ${CONDA_PREFIX}/petsc/build/include ${CONDA_PREFIX}/petsc/arch-linux-c-opt/include ${CONDA_PREFIX}/include)
 
 find_library(PETSC_LIB
     NAMES petsc 

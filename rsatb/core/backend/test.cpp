@@ -6,50 +6,50 @@
 
 using namespace rsatb::backend;
 
-// TEST(petscTest, TestGetDMAtomic) {
-//     int n_node=2, n_edge=2;
-//     int edge_index[] = {0,1,1,0};
-//     int atom_type[] = {0,0};
-//     int type_weight[] = {1};
-//     int edge_shift_vec[] = {0,0,0,0,0,0};
-//     double pos[] = {0.5,0.5,0.5,0.0,0.0,0.0};
-//     DM dm;
-//     MPI_Comm comm = MPI_COMM_WORLD;
-//     rsatb::backend::get_dm_atomic(
-//       n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
-//     );
-// }
+TEST(petscTest, TestGetDMAtomic) {
+    int n_node=2, n_edge=2;
+    int edge_index[] = {0,1,1,0};
+    int atom_type[] = {0,0};
+    int type_weight[] = {1};
+    int edge_shift_vec[] = {0,0,0,0,0,0};
+    double pos[] = {0.5,0.5,0.5,0.0,0.0,0.0};
+    DM dm;
+    MPI_Comm comm = MPI_COMM_WORLD;
+    rsatb::backend::get_dm_atomic(
+      n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
+    );
+}
 
-// TEST(petscTest, TestGetDMMatrix) {
-//     int n_node=4, n_edge=6;
-//     int edge_index[] = {0,1,1,0,2,3,3,2,0,2,2,0};
-//     int atom_type[] = {0,0,0,0};
-//     int type_weight[] = {1};
-//     int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
-//     double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
-//     DM dm;
-//     MPI_Comm comm = MPI_COMM_WORLD;
-//     rsatb::backend::get_dm_atomic(
-//       n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
-//     );
-//     Mat mat;
-//     DMCreateMatrix(dm, &mat);
-//     PetscInt first_row, last_row, nghosts;
-//     const PetscInt *ghost_cols;
-//     MatGetOwnershipRange(mat, &first_row, &last_row);
-//     int size;
-//     MPI_Comm_size(comm, &size);
-//     if(size>1){
-//       MatGetGhosts(mat, &nghosts, &ghost_cols);
-//       std::cout << first_row << " " << last_row << " " << nghosts << " " << ghost_cols[0] << "\n";
-//     }else{
-//       MatGetGhosts(mat, &nghosts, &ghost_cols);
-//       std::cout << first_row << " " << last_row << " " << nghosts << "\n";
-//     }
+TEST(petscTest, TestGetDMMatrix) {
+    int n_node=4, n_edge=6;
+    int edge_index[] = {0,1,1,0,2,3,3,2,0,2,2,0};
+    int atom_type[] = {0,0,0,0};
+    int type_weight[] = {1};
+    int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
+    DM dm;
+    MPI_Comm comm = MPI_COMM_WORLD;
+    rsatb::backend::get_dm_atomic(
+      n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
+    );
+    Mat mat;
+    DMCreateMatrix(dm, &mat);
+    PetscInt first_row, last_row, nghosts;
+    const PetscInt *ghost_cols;
+    MatGetOwnershipRange(mat, &first_row, &last_row);
+    int size;
+    MPI_Comm_size(comm, &size);
+    if(size>1){
+      MatGetGhosts(mat, &nghosts, &ghost_cols);
+      std::cout << first_row << " " << last_row << " " << nghosts << " " << ghost_cols[0] << "\n";
+    }else{
+      MatGetGhosts(mat, &nghosts, &ghost_cols);
+      std::cout << first_row << " " << last_row << " " << nghosts << "\n";
+    }
     
     
-//     MatView(mat, PETSC_VIEWER_STDOUT_WORLD);
-// }
+    MatView(mat, PETSC_VIEWER_STDOUT_WORLD);
+}
 
 TEST(petscTest, TestGetAttr) {
     int n_node=4, n_edge=6;
@@ -89,24 +89,61 @@ TEST(petscTest, TestGetAttr) {
 }
 
 
-// TEST(petscTest, TestGetIndex) {
-//     int n_node=4, n_edge=4;
-//     int edge_index[] = {0,1,1,0,2,3,3,2};
-//     int atom_type[] = {0,0,0,0};
-//     int type_weight[] = {1};
-//     int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0};
-//     double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
-//     DM dm;
-//     MPI_Comm comm = MPI_COMM_WORLD;
-//     rsatb::backend::get_dm_atomic(
-//       n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
-//     );
+TEST(petscTest, TestGetIndex) {
+    int n_node=4, n_edge=4;
+    int edge_index[] = {0,1,1,0,2,3,3,2};
+    int atom_type[] = {0,0,0,0};
+    int type_weight[] = {1};
+    int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0};
+    double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
+    DM dm;
+    MPI_Comm comm = MPI_COMM_WORLD;
+    rsatb::backend::get_dm_atomic(
+      n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
+    );
 
-//     int i, j;
-//     PetscInt estart, eend;
-//     DMNetworkGetEdgeRange(dm, &estart, &eend);
-//     rsatb::backend::get_edge_index_from_dm(dm, estart+0, &i, &j);
-// }
+    int i, j;
+    PetscInt estart, eend;
+    DMNetworkGetEdgeRange(dm, &estart, &eend);
+    rsatb::backend::get_edge_index_from_dm(dm, estart+0, &i, &j);
+}
+
+TEST(petscTest, TestSetupISAtomic) {
+    int n_node=4, n_edge=6;
+    int edge_index[] = {0,1,1,0,2,3,3,2,0,3,3,0};
+    int atom_type[] = {0,0,0,0};
+    int type_weight[] = {1};
+    int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
+    DM dm;
+    MPI_Comm comm = MPI_COMM_WORLD;
+    rsatb::backend::get_dm_atomic(
+      n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
+    );
+
+    IS isSrc, isDst;
+
+    setup_is_atomic(dm, &isSrc, &isDst);
+}
+
+TEST(petscTest, TestSetupISOrbital) {
+    int n_node=4, n_edge=6;
+    int edge_index[] = {0,1,1,0,2,3,3,2,0,3,3,0};
+    int atom_type[] = {0,0,0,0};
+    int type_weight[] = {1};
+    int orb_type[] = {0};
+    int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
+    double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
+    DM dm;
+    MPI_Comm comm = MPI_COMM_WORLD;
+    rsatb::backend::get_dm_atomic(
+      n_node, n_edge, edge_index, atom_type, type_weight, edge_shift_vec, pos, &dm, comm
+    );
+
+    IS isSrc, isDst;
+
+    setup_is_orbital(dm, orb_type, type_weight, 1, &isSrc, &isDst);
+}
 
 
 // ------ FIX 2: provide a main that initialises PETSc & MPI ----------

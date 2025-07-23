@@ -2,8 +2,7 @@
 #include "backend/petsc.hpp"
 #include "io/hdf5.hpp"
 #include "hr2hk.hpp"
-
-# define M_PI           3.14159265358979323846
+#include <math.h>
 
 using namespace rsatb::backend;
 using namespace rsatb::io;

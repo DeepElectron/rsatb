@@ -39,14 +39,12 @@ inline void build_bessel_vector(
     }
 
     *n_bes = bes_list.size();
-    double out_bes[*n_bes];
+    *bes_vec = new double[*n_bes];
     int ptr=0;
     for (const auto& f : bes_list) {
-        out_bes[ptr] = bes_list[ptr];
+        (*bes_vec)[ptr] = f;
         ++ptr;
     }
-
-    *bes_vec = out_bes;   
 }
 
 #endif

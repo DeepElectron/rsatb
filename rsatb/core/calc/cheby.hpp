@@ -3,6 +3,7 @@
 
 #include <petsc.h>
 #include <mpi.h>
+#include "bessel.hpp"
 
 
 namespace rsatb::calc{
@@ -13,26 +14,29 @@ void timeprop_coeff(const double& time_step, const double& precision, bool forwa
             PetscComplex **coeff, int *n_bes){
     /* It is strictly the coeff of bessel function. 
     [J_0(z), 2(-i)^m J_m(z), ...]*/
+    /* Always delete the coeff after using this function */
+    
     double *bes_vec;
     const PetscComplex  I(0.0, 1.0);
 
-    build_bessel_vector(time_step, bessel_precision, &bes_vec, &n_bes);
+    build_bessel_vector(time_step, precision, &bes_vec, n_bes);
 
-    size_t num_bes = bes_vec.size();
-    PetscComplex coeff_[n_bes];
+    *coeff =  new PetscComplex[*n_bes];
     if(forward){
-        for (int n = 0; n < n_bes; ++n) {
-            coeff_[n] = 2.0 * std::pow(-I, n) * bes_vec[n];
+        for (int n = 0; n < *n_bes; ++n) {
+            (*coeff)[n] = 2.0 * std::pow(-I, n) * bes_vec[n];
         }
     }else{
-        coeff_[n] = 2.0 * std::pow(I, n) * bes_vec[n];
+        for (int n = 0; n < *n_bes; ++n) {
+            (*coeff)[n] = 2.0 * std::pow(I, n) * bes_vec[n];
+        }
     }
     
     // First coefficient has a factor of 1 while others have 2.
-    coeff_[0] *= 0.5;
-    coeff_[0] *= 0.5;
+    (*coeff)[0] *= 0.5;
+    (*coeff)[0] *= 0.5;
 
-    *coeff = coeff_;
+    delete bes_vec;
 }
 
 
@@ -66,7 +70,7 @@ inline void cheby_iter_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_nex
 inline void cheby_recur(
     Mat H, KSP ksp, Vec Psi_in,
     Vec *buff, // length 3 vec
-    PetscReal *coeff, PetscInt n_coeff, 
+    PetscComplex *coeff, PetscInt n_coeff, 
     Vec Psi_out
     ){
     if(n_coeff < 3)
@@ -94,20 +98,20 @@ inline void cheby_recur(
 
     // compute current scalar output
     VecCopy(Psi_in,Psi_out);
-    VecAXPBYPCZ(Psi_out, (PetscScalar)coeff[1], (PetscScalar)coeff[2], (PetscScalar)coeff[0], buff[0], buff[1]);
+    VecAXPBYPCZ(Psi_out, coeff[1], coeff[2], coeff[0], buff[0], buff[1]);
 
     // Higher-order Chebyshev recurrence
     
     for(std::size_t m = 3; m < n_coeff; ++m){
         cheby_iter(H, ksp, buff[0], buff[1], buff[2]);
-        VecAXPBY(Psi_out, (PetscScalar)coeff[m], 1.0, buff[1]);
+        VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
     }
 }
 
 inline void cheby_recur_mult(
     Mat H, KSP ksp, Mat Psi_in,
     Mat *buff, // length 4 Mat buff
-    PetscReal *coeff, PetscInt n_coeff, 
+    PetscComplex *coeff, PetscInt n_coeff, 
     Mat Psi_out
     ){
     if(n_coeff < 3)
@@ -135,14 +139,14 @@ inline void cheby_recur_mult(
 
     // compute current scalar output
     MatCopy(Psi_in, Psi_out, SAME_NONZERO_PATTERN);
-    MatScale(Psi_out,(PetscScalar)coeff[0]);
-    MatAXPY (Psi_out,(PetscScalar)coeff[1],buff[0],SAME_NONZERO_PATTERN);
-    MatAXPY (Psi_out,(PetscScalar)coeff[2],buff[1],SAME_NONZERO_PATTERN);
+    MatScale(Psi_out, coeff[0]);
+    MatAXPY (Psi_out, coeff[1],buff[0],SAME_NONZERO_PATTERN);
+    MatAXPY (Psi_out, coeff[2],buff[1],SAME_NONZERO_PATTERN);
 
     // Higher-order Chebyshev recurrence
     for(std::size_t m = 3; m < n_coeff; ++m){
         cheby_iter_mult(H, ksp, buff, buff+1, buff+2, buff+3);
-        MatAXPY(Psi_out, (PetscScalar)coeff[m], buff[1], SAME_NONZERO_PATTERN);
+        MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
     }
 }
 

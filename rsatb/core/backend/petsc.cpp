@@ -305,4 +305,77 @@ void setup_KSP(
     KSPSetFromOptions(*ksp);
     KSPSetUp(*ksp);
 };
+
+
+void setup_is_atomic(DM dm, IS *isSrc, IS *isDst){
+    PetscInt nLocal=0;
+    PetscBool ghost;
+    PetscInt vStart,vEnd,off;
+    DMNetworkGetVertexRange(dm,&vStart,&vEnd);
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        DMNetworkIsGhostVertex(dm,v,&ghost);
+        if(!ghost) nLocal++;
+    }
+    PetscInt *src = (PetscInt*)malloc(nLocal*sizeof(*src));
+    PetscInt *dst = (PetscInt*)malloc(nLocal*sizeof(*dst));
+
+    int norb, count=0;
+    AtomData atomdata;
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        DMNetworkIsGhostVertex(dm,v,&ghost);
+        if(!ghost){
+
+            rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
+            DMNetworkGetLocalVecOffset(dm,v,ALL_COMPONENTS,&off);
+            for(int i=0; i<norb; ++i){
+                src[count+i] = off+i;
+                dst[count+i] = atomdata.index;
+                count++;
+            }
+            
+        }
+    }
+
+    ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,src,PETSC_COPY_VALUES,isSrc);
+    ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
+};
+
+void setup_is_orbital(DM dm, int *orbtype, int *type_weight, int n_type, IS *isSrc, IS *isDst){
+    PetscInt nLocal=0;
+    PetscBool ghost;
+    PetscInt vStart,vEnd,off;
+    DMNetworkGetVertexRange(dm,&vStart,&vEnd);
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        DMNetworkIsGhostVertex(dm,v,&ghost);
+        if(!ghost) nLocal++;
+    }
+    int* orbtypemap[n_type];
+    orbtypemap[0] = orbtype;
+    for(int i=0;i<n_type-1;++i){
+        orbtypemap[i+1] = orbtype + type_weight[i];
+    }
+
+    PetscInt *src = (PetscInt*)malloc(nLocal*sizeof(*src));
+    PetscInt *dst = (PetscInt*)malloc(nLocal*sizeof(*dst));
+    int norb, count=0;
+    AtomData atomdata;
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        DMNetworkIsGhostVertex(dm,v,&ghost);
+        if(!ghost){
+            rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
+            DMNetworkGetLocalVecOffset(dm,v,ALL_COMPONENTS,&off);
+            for(int i=0; i<norb; ++i){
+                src[count+i] = off+i;
+                dst[count+i] = orbtypemap[atomdata.type][i];
+                count++;
+            }
+            
+        }
+    }
+
+    ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,src,PETSC_COPY_VALUES,isSrc);
+    ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
+
+};
+
 }

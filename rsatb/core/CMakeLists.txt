@@ -4,6 +4,7 @@ set(CONDA_PREFIX $ENV{CONDA_PREFIX})
 
 add_subdirectory(backend)
 add_subdirectory(io)
+add_subdirectory(calc)
 
 find_library(SLEPC_LIB
     NAMES slepc
