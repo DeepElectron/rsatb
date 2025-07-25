@@ -303,6 +303,7 @@ void setup_KSP(
     
     PetscOptionsInsertString(NULL,opts.c_str());
     KSPSetFromOptions(*ksp);
+    KSPSetTolerances(*ksp, PETSC_DEFAULT, PETSC_DEFAULT, PETSC_DEFAULT, 100);
     KSPSetUp(*ksp);
 };
 
