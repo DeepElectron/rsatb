@@ -19,7 +19,7 @@ from graphblas import monoid, binary
 from itertools import count
 from graphblas import unary
 import sksparse.cholmod as cholmod
-from ..utils.ozaki import ozaki_residues
+from ..rsatb.utils.ozaki import ozaki_residues
 
 from scipy.fft import ifft, fftshift
 io = gb.io

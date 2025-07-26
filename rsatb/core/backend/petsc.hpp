@@ -70,22 +70,22 @@ struct BondData{
     };
 
 PetscErrorCode get_dm_atomic(
-            int n_node,
-            int n_edge,
-            int *edge_index,
-            int *atom_type, 
-            int *type_weight,
-            int *edge_shift_vec,
-            double *pos,
+            const int n_node,
+            const int n_edge,
+            const int *edge_index,
+            const int *atom_type, 
+            const int *type_weight,
+            const int *edge_shift_vec,
+            const double *pos,
             DM *dm,
             MPI_Comm comm
             );
 
 template<typename T>
 void get_attr_from_dm(
-            DM dm,
-            std::string tp,
-            int idx,
+            const DM dm,
+            const std::string tp,
+            const int idx,
             // output
             T *attr,
             int *nvar
@@ -94,8 +94,8 @@ void get_attr_from_dm(
 PetscErrorCode ViewDMNetworkPartition(DM dm, bool detail);
 
 void get_edge_index_from_dm(
-    DM dm,
-    int idx,
+    const DM dm,
+    const int idx,
     // output
     int *i,
     int *j
@@ -110,9 +110,9 @@ void setup_KSP(
     KSP *ksp
 );
 
-void setup_is_atomic(DM dm, IS *isSrc, IS *isDst);
+void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst);
 
-void setup_is_orbital(DM dm, int *orbtype, int *type_weight, IS *isSrc, IS *isDst);
+void setup_is_orbital(const DM dm, const int *orbtype, const int *type_weight, IS *isSrc, IS *isDst);
 
 }
 

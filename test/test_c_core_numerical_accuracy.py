@@ -33,7 +33,7 @@ atomicdata = s2k_sparse(atomicdata)
 H_ = atomicdata[_keys.HAMILTONIAN_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.complex128)
 
-from rsatb.solver.tGF import tdos
+from _depre.tGF import tdos
 
 ih, jh, h = H_.indptr, H_.indices, H_.data
 ts = np.cumsum([0]+[np.pi/110]*20)

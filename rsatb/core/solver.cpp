@@ -1,18 +1,20 @@
 #include "hr2hk.hpp"
+#include "calc/dos.hpp"
 #include "solver.hpp"
 #include <slepc.h>
 #include <iostream>
+#include <algorithm>
 using namespace rsatb::backend;
 using namespace rsatb::io;
-using namespace rsatb::calc
+using namespace rsatb::calc;
 
 namespace rsatb{
 
 Solver::Solver(
     std::string &HFile, std::string &SFile, 
-    int n_atom, int n_edge, 
-    int *atom_type, int *edge_index, int *type_norb, int *edge_shift_vec,
-    double *pos,
+    const int n_atom, const int n_edge, 
+    const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
+    const double *pos,
     MPI_Comm comm
     ): _HFile_(HFile), _SFile_(SFile), _mode_("H5ijR"), _n_atom_(n_atom),
        _n_edge_(n_edge), _atom_type_(atom_type), _edge_index_(edge_index),
@@ -144,7 +146,7 @@ void Solver::setup_sample(int n, std::string method){
     
 };
 
-void Solver::compute_dos(int nt, std::string proj_mode, int *orbtype, double *dos, double *pdos){
+void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, double *pdos){
     /*
         1. 
     */
@@ -161,6 +163,8 @@ void Solver::compute_dos(int nt, std::string proj_mode, int *orbtype, double *do
         proj=false;
     }
 
+    *n_proj = n_proj_type;
+
     PetscComplex cdos[2*nt+1], pcdos[(2*nt+1)*n_proj_type];
 
     if(_n_sample_==1){
@@ -170,6 +174,9 @@ void Solver::compute_dos(int nt, std::string proj_mode, int *orbtype, double *do
     }
 
     // Processing cdos and pcdos to dos and pdos
+    if(rank==0){
+        
+    }
 };
 
 };

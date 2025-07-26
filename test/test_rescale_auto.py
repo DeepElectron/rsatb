@@ -37,7 +37,7 @@ S_ = atomicdata[_keys.OVERLAP_KEY][0].to_scipy_sparse().tocsr().astype(np.comple
 ih, jh, h = H_.indptr, H_.indices, H_.data
 _is, js, s = S_.indptr, S_.indices, S_.data
 
-from rsatb.solver.tGF import timeGF
+from _depre.tGF import timeGF
 import scipy as sp
 import matplotlib.pyplot as plt
 tgf = timeGF(

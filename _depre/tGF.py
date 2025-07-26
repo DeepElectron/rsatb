@@ -1,9 +1,9 @@
 from ..core.rsatb import tdos
-from ..data import AtomicData, _keys, OrbitalMapper, block_to_feature
+from ..rsatb.data import AtomicData, _keys, OrbitalMapper, block_to_feature
 import numpy as np
 import h5py
-from ..hs.r2k_sparse import R2KSparse
-from ..linalg.mkl_operator import MKLQuantumOperator
+from ..rsatb.hs.r2k_sparse import R2KSparse
+from ..rsatb.linalg.mkl_operator import MKLQuantumOperator
 import scipy.sparse as sp
 import mpi4py
 import pyamg

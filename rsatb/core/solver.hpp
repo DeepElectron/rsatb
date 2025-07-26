@@ -19,16 +19,19 @@ private:
     Vec _Sample_;
     KSP _ksp_;
     PC _pc_;
+    
     PetscReal _scale_=1.0, _shift_=0.0;
     MPI_Comm _comm_;
-    int *_atom_type_, *_edge_index_, *_type_norb_, *_edge_shift_vec_, _n_atom_, _n_edge_, _n_sample_;
-    double *_pos_;
+    const int *_atom_type_, *_edge_index_, *_type_norb_, *_edge_shift_vec_, _n_atom_, _n_edge_;
+    int _n_sample_;
+    const double *_pos_;
 public:
+    int rank;
     Solver(
         std::string &HFile, std::string &SFile, 
-        int n_atom, int n_edge, 
-        int *atom_type, int *edge_index, int *type_norb, int *edge_shift_vec,
-        double *pos,
+        const int n_atom, const int n_edge, 
+        const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
+        const double *pos,
         MPI_Comm comm
         );
 
@@ -44,17 +47,24 @@ public:
             3. Setup the KSP class from S.
     */
 
+    void setup_velocityOp();
+    /*
+        This should be called after setup_HS;
+    */
+
     void setup_sample(int n, std::string method);
     /*
         initialize the random samples according to the number of samples n and the method used.
     */
 
-    void compute_dos(int nt, std::string proj_mode, double *dos, double *pdos);
+    void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, double *pdos);
     /* dE defines the energe resolution, which should be scale/nt*/
 
     void get_nt(double dE, int *nt) {
         *nt = ceil(_scale_ / dE);
     };
+
+    void compute_ac();
 };
 }
 

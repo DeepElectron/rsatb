@@ -1,5 +1,5 @@
 # This is the class for random green's function solver
-from ..linalg.krylov import blanczos
+from ..rsatb.linalg import blanczos
 import numpy as np
 import time
 import scipy.sparse as sp

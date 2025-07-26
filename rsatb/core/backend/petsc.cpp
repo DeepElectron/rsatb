@@ -11,13 +11,13 @@
 namespace rsatb::backend{
 
 PetscErrorCode get_dm_atomic(
-            int n_node,
-            int n_edge,
-            int *edge_index,
-            int *atom_type, 
-            int *type_weight,
-            int *edge_shift_vec,
-            double *pos,
+            const int n_node,
+            const int n_edge,
+            const int *edge_index,
+            const int *atom_type, 
+            const int *type_weight,
+            const int *edge_shift_vec,
+            const double *pos,
             DM *dm,
             MPI_Comm comm
             )
@@ -141,7 +141,7 @@ PetscErrorCode get_dm_atomic(
     PetscFunctionReturn(PETSC_SUCCESS);
 };
 
-PetscErrorCode ViewDMNetworkPartition(DM dm, bool detail=false)
+PetscErrorCode ViewDMNetworkPartition(const DM dm, bool detail=false)
 {
     PetscErrorCode ierr;
     PetscInt       vStart,vEnd,eStart,eEnd;
@@ -185,9 +185,9 @@ PetscErrorCode ViewDMNetworkPartition(DM dm, bool detail=false)
 
 template<typename T>
 void get_attr_from_dm(
-            DM dm,
-            std::string tp,
-            int idx,
+            const DM dm,
+            const std::string tp,
+            const int idx,
             // output
             T *attr,
             int *nvar
@@ -231,12 +231,12 @@ void get_attr_from_dm(
         throw std::invalid_argument( "wrong attr_name!" );
     }
 };
-template void get_attr_from_dm<AtomData>(DM, std::string, int, AtomData*, int *nvar);
-template void get_attr_from_dm<BondData>(DM, std::string, int, BondData*, int *nvar);
+template void get_attr_from_dm<AtomData>(const DM, const std::string, const int, AtomData*, int *nvar);
+template void get_attr_from_dm<BondData>(const DM, const std::string, const int, BondData*, int *nvar);
 
 void get_edge_index_from_dm(
-    DM dm,
-    int idx,
+    const DM dm,
+    const int idx,
     // output
     int *i,
     int *j
@@ -260,9 +260,9 @@ void get_edge_index_from_dm(
 // The KSP setup
 
 void setup_KSP(
-    DM dm, 
-    Mat S,
-    int nrhs,
+    const DM dm, 
+    const Mat S,
+    const int nrhs,
     MPI_Comm comm,
     //output
     KSP *ksp
@@ -307,7 +307,7 @@ void setup_KSP(
 };
 
 
-void setup_is_atomic(DM dm, IS *isSrc, IS *isDst){
+void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
     PetscInt vStart,vEnd,off;
@@ -340,7 +340,7 @@ void setup_is_atomic(DM dm, IS *isSrc, IS *isDst){
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
 };
 
-void setup_is_orbital(DM dm, int *orbtype, int *type_weight, IS *isSrc, IS *isDst){
+void setup_is_orbital(const DM dm, const int *orbtype, const int *type_weight, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
     PetscInt vStart,vEnd,off;
@@ -350,9 +350,9 @@ void setup_is_orbital(DM dm, int *orbtype, int *type_weight, IS *isSrc, IS *isDs
         DMNetworkIsGhostVertex(dm,v,&ghost);
         if(!ghost) nLocal++;
     }
-    int* orbtypemap[n_type];
+    const int* orbtypemap[ntype];
     orbtypemap[0] = orbtype;
-    for(int i=0;i<n_type-1;++i){
+    for(int i=0;i<ntype-1;++i){
         orbtypemap[i+1] = orbtype + type_weight[i];
     }
 
