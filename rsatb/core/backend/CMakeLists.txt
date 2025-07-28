@@ -1,39 +1,26 @@
 cmake_minimum_required(VERSION 3.15...4.0)
-project(Calculator LANGUAGES CXX)
-set(CONDA_PREFIX $ENV{CONDA_PREFIX})
+project(backend LANGUAGES CXX)
 
-add_library(petsclib STATIC petsc.cpp petsc.hpp)
-target_compile_features(petsclib PUBLIC cxx_std_11)
-target_include_directories(petsclib PUBLIC ${CONDA_PREFIX}/include ${CONDA_PREFIX}/petsc/build/include ${CONDA_PREFIX}/petsc/arch-linux-c-opt/include)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
-find_library(PETSC_LIB
-    NAMES petsc
-    HINTS ${CONDA_PREFIX}/petsc/arch-linux-c-opt/lib
-)
+if (PROJECT_IS_TOP_LEVEL)
+    find_package(MPI REQUIRED)
+    find_package(GTest REQUIRED)
+    find_package(Threads REQUIRED)
+    find_package(PETSc REQUIRED)
+endif()
+# Wrap into a modern imported target so the rest of your code can stay target-based
+if(NOT TARGET PETSc::PETSc)
+add_library(PETSc::PETSc INTERFACE IMPORTED)
+set_target_properties(PETSc::PETSc PROPERTIES
+  INTERFACE_INCLUDE_DIRECTORIES "${PETSC_INCLUDE_DIR};${PETSCCONF_INCLUDE_DIR}"
+  INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
+endif()
 
-message(STATUS "PETSc library: ${PETSC_LIB}")
+add_library(backend OBJECT petsc.cpp petsc.hpp)
+target_compile_features(backend PUBLIC cxx_std_11)
 
-find_library(MPI_LIB
-    NAMES mpi
-    HINTS ${CONDA_PREFIX}/lib
-)
+target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads PETSc::PETSc)
 
-message(STATUS "MPI library: ${MPI_LIB}")
-
-
-find_library(GTEST_LIB
-    NAMES gtest
-    HINTS ${CONDA_PREFIX}/lib
-)
-
-message(STATUS "GTEST library: ${GTEST_LIB}")
-
-find_library(PTHREAD_LIB NAMES pthread PATHS ${CONDA_PREFIX}/lib)
-
-message(STATUS "PTHREAD library: ${PTHREAD_LIB}")
-
-target_link_libraries(petsclib PUBLIC ${PETSC_LIB} ${PTHREAD_LIB} ${MPI_LIB})
-
-
-add_executable(test_backend ./test.cpp)
-target_link_libraries(test_backend PUBLIC petsclib ${GTEST_LIB})
+add_executable(test_backend ./test.cpp $<TARGET_OBJECTS:backend>)
+target_link_libraries(test_backend PUBLIC backend GTest::gtest)

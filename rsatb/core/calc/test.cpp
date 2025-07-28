@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "cheby.hpp"
 #include "dos.hpp"
+#include "fft.hpp"
 #include <mpi.h>
 #include <iostream>
 
@@ -337,6 +338,27 @@ TEST(calcTest, TestCDOS) {
 }
 
 
+TEST(calcTest, Testfft) {
+    std::complex<double> in[4] = {std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0)};
+    std::complex<double> out[4];
+
+    for(int i=0;i<4;i++){
+        std::cout << in[i] << " ";
+    }
+
+    rsatb::calc::fft_1d(4, in, out);
+
+    for(int i=0;i<4;i++){
+        std::cout << out[i] << " ";
+    }
+    std::cout << "\n";
+
+    GTEST_ASSERT_EQ(out[0], std::complex<double>(4.0, 8.0));
+
+    rsatb::calc::bfft_1d(4, 1, in, out);
+
+    GTEST_ASSERT_EQ(out[0], std::complex<double>(4.0, 8.0));
+}
 
 // TEST(calcTest, TestChebyRecur);
 

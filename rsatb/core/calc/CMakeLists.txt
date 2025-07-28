@@ -1,33 +1,34 @@
 cmake_minimum_required(VERSION 3.15...4.0)
-project(Calculator LANGUAGES CXX)
-set(CONDA_PREFIX $ENV{CONDA_PREFIX})
+project(calc LANGUAGES CXX)
 
-add_library(calclib INTERFACE)
-target_compile_features(calclib INTERFACE cxx_std_11)
-target_include_directories(calclib INTERFACE ../extern/ ${CONDA_PREFIX}/petsc/build/include ${CONDA_PREFIX}/petsc/arch-linux-c-opt/include ${CONDA_PREFIX}/include)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
-find_library(PETSC_LIB
-    NAMES petsc 
-    HINTS ${CONDA_PREFIX}/petsc/arch-linux-c-opt/lib
-)
+if (PROJECT_IS_TOP_LEVEL)
+    find_package(MPI REQUIRED)
+    find_package(GTest REQUIRED)
+    find_package(PETSc REQUIRED)
+    find_package(FFTW REQUIRED)
+endif()
+# Wrap into a modern imported target so the rest of your code can stay target-based
+if(NOT TARGET PETSc::PETSc)
+    add_library(PETSc::PETSc INTERFACE IMPORTED)
+    set_target_properties(PETSc::PETSc PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${PETSC_INCLUDE_DIR};${PETSCCONF_INCLUDE_DIR}"
+      INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
+endif()
 
-message(STATUS "PETSc library: ${PETSC_LIB}")
+if(NOT TARGET FFTW::FFTW)
+    add_library(FFTW::FFTW INTERFACE IMPORTED)
+    set_target_properties(FFTW::FFTW PROPERTIES
+      INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
+      INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+endif()
 
-find_library(GTEST_LIB
-    NAMES gtest
-    HINTS ${CONDA_PREFIX}/lib
-)
+add_library(calc INTERFACE)
+target_compile_features(calc INTERFACE cxx_std_11)
+target_include_directories(calc INTERFACE ../extern/)
 
-message(STATUS "GTEST library: ${GTEST_LIB}")
-
-find_library(MPI_LIB
-    NAMES mpi
-    HINTS ${CONDA_PREFIX}/lib
-)
-
-message(STATUS "MPI library: ${MPI_LIB}")
-
-target_link_libraries(calclib INTERFACE ${PETSC_LIB} ${MPI_LIB})
+target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW)
 
 add_executable(test_calc ./test.cpp)
-target_link_libraries(test_calc PRIVATE calclib ${GTEST_LIB})
+target_link_libraries(test_calc PRIVATE calc GTest::gtest)
