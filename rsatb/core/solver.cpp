@@ -1,12 +1,14 @@
 #include "hr2hk.hpp"
 #include "calc/dos.hpp"
+#include "calc/fft.hpp"
 #include "solver.hpp"
-#include <slepc.h>
 #include <iostream>
 #include <algorithm>
 using namespace rsatb::backend;
 using namespace rsatb::io;
 using namespace rsatb::calc;
+
+double pi = 3.14159265358979324;
 
 namespace rsatb{
 
@@ -107,6 +109,8 @@ void Solver::setup_HS(double Kx, double Ky, double Kz){ /* Setup H and S, how to
     KSPSetUp(_ksp_);
 };
 
+void Solver::setup_velocityOp(){};
+
 void Solver::setup_sample(int n, std::string method){
     if(n==1){
         DMCreateGlobalVector(_dm_, &_Sample_);
@@ -146,9 +150,9 @@ void Solver::setup_sample(int n, std::string method){
     
 };
 
-void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, double *pdos){
+void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos){
     /*
-        1. 
+        We should have dos allocated before this function's call, but instead have pdos unallocated as a unique_ptr, since we do not know the size of the projection before.
     */
     bool proj=true;
     int n_proj_type=1;
@@ -175,7 +179,35 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
 
     // Processing cdos and pcdos to dos and pdos
     if(rank==0){
-        
+        /* Computing the smearing window */
+        PetscComplex factor;
+        for(int i=1;i<nt;++i){
+            factor = 0.5 * (1 + std::cos(pi * i / nt));
+            cdos[nt+i] *= factor;
+            cdos[nt-i] *= factor;
+
+            if(proj){
+                for(int ip=0; ip < n_proj_type; ++ip){ // pcdos have shape [nt, n_proj_type]
+                    pcdos[nt+i+n_proj_type*ip] *= factor;
+                    pcdos[nt-i+n_proj_type*ip] *= factor;
+                }
+            }
+        }
+
+        std::complex<double> temp_dos[2*nt+1], temp_pdos[(2*nt+1)*n_proj_type];
+        ifft_1d(2*nt+1, reinterpret_cast<cd*>(cdos), temp_dos);
+        if(proj) {
+            bifft_1d(2*nt+1, n_proj_type, reinterpret_cast<cd*>(pcdos), temp_pdos);
+            pdos = std::make_unique<double[]>((2*nt+1)*n_proj_type);
+        }
+
+
+        for(int i=0;i<2*nt+1;++i){
+            dos[i] = temp_dos[i].real();
+            if(proj){
+                for(int ip=0; ip<n_proj_type; ++ip) pdos[i+ip*n_proj_type] = temp_pdos[i+ip*n_proj_type].real();
+            }
+        }
     }
 };
 

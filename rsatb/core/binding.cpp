@@ -23,7 +23,7 @@ MPI_Comm *get_mpi_comm(py::object py_comm) {
 
 
 PYBIND11_DECLARE_HOLDER_TYPE(T, std::unique_ptr<T>, true);
-PYBIND11_MODULE(Solver, m) {
+PYBIND11_MODULE(binding, m) {
     // initialize mpi4py's C-API
     if (import_mpi4py() < 0) {
         // mpi4py calls the Python C API
@@ -109,20 +109,21 @@ PYBIND11_MODULE(Solver, m) {
         ){
             
 
-            double *dos, *pdos=nullptr;
+            double dos[2*nt+1];
+            std::unique_ptr<double[]> pdos;
             int n_proj;
 
             solver.compute_dos(nt, proj_mode, orbtype.data(), &n_proj, dos, pdos);
 
-            py::array_t<double> o_dos(nt);
-            py::array_t<double> o_pdos(nt);
+            py::array_t<double> o_dos(2*nt+1);
+            py::array_t<double> o_pdos((2*nt+1)*n_proj);
 
             if(solver.rank == 0){
             
-                std::memcpy(o_dos.mutable_data(), dos, nt * sizeof(double));
+                std::memcpy(o_dos.mutable_data(), dos, (2*nt+1) * sizeof(double));
                 
                 if (proj_mode != "none"){
-                    std::memcpy(o_pdos.mutable_data(), pdos, n_proj * nt * sizeof(double));
+                    std::memcpy(o_pdos.mutable_data(), pdos.get(), n_proj * (2*nt+1) * sizeof(double));
                 }
             }
             

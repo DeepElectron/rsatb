@@ -41,7 +41,8 @@ void bifft_1d(int n, int nb, cd* in, cd* out) {
     /*
         batched transform of size [nb, n] shaped array
     */
-    int ns[nb] = {n};         // FFT size
+    int ns[nb];         // FFT size
+    for(int i=0;i<n;++i) ns[i] = n;
 
     fftw_plan p = fftw_plan_many_dft(
         1, ns, nb,
@@ -61,7 +62,8 @@ void bfft_1d(int n, int nb, cd* in, cd* out) {
     /*
         batched transform of size [nb, n] shaped array
     */
-    int ns[nb] = {n};         // FFT size
+    int ns[nb];         // FFT size
+    for(int i=0;i<n;++i) ns[i] = n;
 
     fftw_plan p = fftw_plan_many_dft(
         1, ns, nb,

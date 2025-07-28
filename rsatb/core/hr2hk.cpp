@@ -124,7 +124,7 @@ void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, do
 
 
 void cal_phase(int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, std::complex<double> *phase){
-    *phase = -2j * M_PI * ((Rx * Ky) + (Ry * Ky) + (Rz * Kz));
+    *phase = std::complex<double>(0.0, -2.0 * M_PI * ((Rx * Ky) + (Ry * Ky) + (Rz * Kz)));
     *phase = std::exp(*phase);
 };
 

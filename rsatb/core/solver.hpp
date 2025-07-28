@@ -3,6 +3,7 @@
 
 #include "hr2hk.hpp"
 #include <slepc.h>
+#include <memory>
 using namespace rsatb::backend;
 using namespace rsatb::io;
 
@@ -57,7 +58,7 @@ public:
         initialize the random samples according to the number of samples n and the method used.
     */
 
-    void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, double *pdos);
+    void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos);
     /* dE defines the energe resolution, which should be scale/nt*/
 
     void get_nt(double dE, int *nt) {

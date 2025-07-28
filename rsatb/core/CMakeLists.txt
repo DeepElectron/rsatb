@@ -69,7 +69,7 @@ target_include_directories(
     solver PUBLIC 
     ./
 )
-target_link_libraries(solver PUBLIC hr2hk calc ${SLEPC_LIB})
+target_link_libraries(solver PUBLIC hr2hk calc backend io ${SLEPC_LIB})
 
 # add the binding lib
 
@@ -86,4 +86,4 @@ target_link_libraries(binding PUBLIC solver)
 install(TARGETS binding DESTINATION .)
 
 add_executable(test ./test.cpp)
-target_link_libraries(test PRIVATE hr2hk backend solver GTest::gtest)
+target_link_libraries(test PRIVATE solver GTest::gtest)
