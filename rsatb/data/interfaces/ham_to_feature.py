@@ -119,8 +119,8 @@ def block_to_feature(data, idp, blocks=False, overlap_blocks=False, orthogonal=F
                 continue
             b_edge_index = edge_index[:, mask]
             b_edge_cell_shift = edge_cell_shift[mask]
-            ijR = np.concatenate([b_edge_index.T+start_id, b_edge_cell_shift], axis=1).astype(np.int64).tolist()
-            rev_ijR = np.concatenate([b_edge_index[[1, 0]].T+start_id, -b_edge_cell_shift], axis=1).astype(np.int64).tolist()
+            ijR = np.concatenate([b_edge_index.T+start_id, b_edge_cell_shift], axis=1).astype(np.int32).tolist()
+            rev_ijR = np.concatenate([b_edge_index[[1, 0]].T+start_id, -b_edge_cell_shift], axis=1).astype(np.int32).tolist()
             ijR = list(map(lambda x: '_'.join(map(str, x)), ijR))
             rev_ijR = list(map(lambda x: '_'.join(map(str, x)), rev_ijR))
 

@@ -35,7 +35,7 @@ PBC = Union[bool, Tuple[bool, bool, bool]]
 # }
 
 
-_DEFAULT_LONG_FIELDS: Set[str] = {
+_DEFAULT_INT_FIELDS: Set[str] = {
     AtomicDataDict.EDGE_INDEX_KEY,
     AtomicDataDict.ENV_INDEX_KEY, # new
     AtomicDataDict.ONSITENV_INDEX_KEY, # new
@@ -120,7 +120,7 @@ _EDGE_FIELDS: Set[str] = set(_DEFAULT_EDGE_FIELDS)
 _ENV_FIELDS: Set[str] = set(_DEFAULT_ENV_FIELDS)
 _ONSITENV_FIELDS: Set[str] = set(_DEFAULT_ONSITENV_FIELDS)
 _GRAPH_FIELDS: Set[str] = set(_DEFAULT_GRAPH_FIELDS)
-_LONG_FIELDS: Set[str] = set(_DEFAULT_LONG_FIELDS)
+_INT_FIELDS: Set[str] = set(_DEFAULT_INT_FIELDS)
 # _NESTED_FIELDS: Set[str] = set(_DEFAULT_NESTED_FIELDS)
 
 
@@ -130,7 +130,7 @@ def register_fields(
     env_fields: Sequence[str] = [],
     onsitenv_fields: Sequence[str] = [],
     graph_fields: Sequence[str] = [],
-    long_fields: Sequence[str] = [],
+    int_fields: Sequence[str] = [],
 ) -> None:
     
     r"""Register fields as being per-atom, per-edge, or per-frame.
@@ -145,7 +145,7 @@ def register_fields(
     env_fields: set = set(env_fields)
     onsitenv_fields: set = set(onsitenv_fields)
     graph_fields: set = set(graph_fields)
-    long_fields: set = set(long_fields)
+    int_fields: set = set(int_fields)
     allfields = node_fields.union(edge_fields, graph_fields, env_fields, onsitenv_fields)
     assert len(allfields) == len(node_fields) + len(edge_fields) + len(graph_fields)
     _NODE_FIELDS.update(node_fields)
@@ -153,7 +153,7 @@ def register_fields(
     _ENV_FIELDS.update(env_fields)
     _ONSITENV_FIELDS.update(onsitenv_fields)
     _GRAPH_FIELDS.update(graph_fields)
-    _LONG_FIELDS.update(long_fields)
+    _INT_FIELDS.update(int_fields)
     if len(set.union(_NODE_FIELDS, _EDGE_FIELDS, _GRAPH_FIELDS)) < (
         len(_NODE_FIELDS) + len(_EDGE_FIELDS) + len(_GRAPH_FIELDS)
     ):
@@ -192,7 +192,7 @@ def _register_field_prefix(prefix: str) -> None:
         env_fields=[prefix + e for e in _ENV_FIELDS],
         onsitenv_fields=[prefix + e for e in _ONSITENV_FIELDS],
         graph_fields=[prefix + e for e in _GRAPH_FIELDS],
-        long_fields=[prefix + e for e in _LONG_FIELDS],
+        int_fields=[prefix + e for e in _INT_FIELDS],
     )
 
 
@@ -213,10 +213,10 @@ def _process_dict(kwargs, ignore_fields=[]):
         if k in ignore_fields:
             continue
 
-        if k in _LONG_FIELDS:
+        if k in _INT_FIELDS:
             # Any property used as an index must be long (or byte or bool, but those are not relevant for atomic scale systems)
             # int32 would pass later checks, but is actually disallowed by torch
-            kwargs[k] = np.asarray(v, dtype=np.int64)
+            kwargs[k] = np.asarray(v, dtype=np.int32)
         # elif k in _NESTED_FIELDS: # we need to transform the input array or tensors into nested tensors
         #     if num_frames > 1:
         #         if isinstance(v, np.ndarray): # this suggest that the dimension for each features are the same
@@ -820,8 +820,8 @@ class AtomicData(Data):
                     setattr(self, fields, getattr(self, fields)[sort_index])
 
         # get the range of each cluster's node and edge
-        n_range = np.zeros((npart, 2), dtype=np.int64)
-        e_range = np.zeros((npart, 2), dtype=np.int64)
+        n_range = np.zeros((npart, 2), dtype=np.int32)
+        e_range = np.zeros((npart, 2), dtype=np.int32)
 
         # construct connectivity table
         connectivity = [[]]*npart
@@ -944,8 +944,8 @@ class AtomicData(Data):
         if hasattr(self, AtomicDataDict.ONSITENV_INDEX_KEY):
             onsitenv_mask = mask[self.onsitenv_index[0]] & mask[self.onsitenv_index[1]]
         # Create an index mapping:
-        new_index = -np.ones((self.num_nodes,), dtype=np.int64)
-        new_index[mask] = np.arange(n_keeping, dtype=np.int64)
+        new_index = -np.ones((self.num_nodes,), dtype=np.int32)
+        new_index[mask] = np.arange(n_keeping, dtype=np.int32)
 
         new_dict = {}
         for k in self.keys:
@@ -1096,6 +1096,10 @@ def neighbor_list_and_relative_vec(
         self_interaction=self_interaction,  # we want edges from atom to itself in different periodic images!
         use_scaled_positions=False,
     )
+
+    first_idex = first_idex.astype(np.int32)
+    second_idex = second_idex.astype(np.int32)
+    shifts = shifts.astype(np.int32)
 
     # Eliminate true self-edges that don't cross periodic boundaries
     # if not self_interaction:

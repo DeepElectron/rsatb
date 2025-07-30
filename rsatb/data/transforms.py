@@ -79,13 +79,13 @@ class TypeMapper:
             self._min_Z = min(valid_atomic_numbers)
             self._max_Z = max(valid_atomic_numbers)
             Z_to_index = np.full(
-                shape=(1 + self._max_Z - self._min_Z,), fill_value=-1, dtype=np.int64
+                shape=(1 + self._max_Z - self._min_Z,), fill_value=-1, dtype=np.int32
             )
             for sym, type in self.chemical_symbol_to_type.items():
                 Z_to_index[ase.data.atomic_numbers[sym] - self._min_Z] = type
             self._Z_to_index = Z_to_index
             self._index_to_Z = np.zeros(
-                (len(self.chemical_symbol_to_type),), dtype=np.int64
+                (len(self.chemical_symbol_to_type),), dtype=np.int32
             )
             for sym, type_idx in self.chemical_symbol_to_type.items():
                 self._index_to_Z[type_idx] = ase.data.atomic_numbers[sym]
@@ -236,10 +236,10 @@ class BondMapper(TypeMapper):
             self.type_to_reduced_bond[i] = bt
         
         ZZ_to_index = np.full(
-                (len(self._Z_to_index), len(self._Z_to_index)), fill_value=-1, dtype=np.int64
+                (len(self._Z_to_index), len(self._Z_to_index)), fill_value=-1, dtype=np.int32
             )
         ZZ_to_reduced_index = np.full(
-                (len(self._Z_to_index), len(self._Z_to_index)), fill_value=-1, dtype=np.int64
+                (len(self._Z_to_index), len(self._Z_to_index)), fill_value=-1, dtype=np.int32
             )
         
         for abond, aidx in self.bond_to_type.items(): # type_names has a ascending order according to atomic number
@@ -255,19 +255,19 @@ class BondMapper(TypeMapper):
         self._ZZ_to_reduced_index = ZZ_to_reduced_index
 
         self._index_to_ZZ = np.zeros(
-                (len(self.bond_to_type),2), dtype=np.int64
+                (len(self.bond_to_type),2), dtype=np.int32
             )
         self._reduced_index_to_ZZ = np.zeros(
-                (len(self.reduced_bond_to_type),2), dtype=np.int64
+                (len(self.reduced_bond_to_type),2), dtype=np.int32
             )
         
         for abond, aidx in self.bond_to_type.items():
             asym, bsym = abond.split("-")
-            self._index_to_ZZ[aidx] = np.asarray([ase.data.atomic_numbers[asym], ase.data.atomic_numbers[bsym]], dtype=np.int64)
+            self._index_to_ZZ[aidx] = np.asarray([ase.data.atomic_numbers[asym], ase.data.atomic_numbers[bsym]], dtype=np.int32)
 
         for abond, aidx in self.reduced_bond_to_type.items():
             asym, bsym = abond.split("-")
-            self._reduced_index_to_ZZ[aidx] = np.asarray([ase.data.atomic_numbers[asym], ase.data.atomic_numbers[bsym]], dtype=np.int64)
+            self._reduced_index_to_ZZ[aidx] = np.asarray([ase.data.atomic_numbers[asym], ase.data.atomic_numbers[bsym]], dtype=np.int32)
 
 
     def transform_atom(self, atomic_numbers):
@@ -612,7 +612,7 @@ class OrbitalMapper(BondMapper):
 
         # TODO: get the mapping from list basis to full basis
         self.basis_to_full_basis = {}
-        self.atom_norb = np.zeros(len(self.type_names), dtype=np.int64)
+        self.atom_norb = np.zeros(len(self.type_names), dtype=np.int32)
         for ib in self.basis.keys():
             count_dict = {"s":0, "e":0, "p":0, "q":0, "d":0, "j":0, "f":0, "o":0, "g":0, "h":0, "i":0, "k":0, "l":0, "m":0}
             self.basis_to_full_basis.setdefault(ib, {})

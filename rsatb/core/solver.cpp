@@ -2,13 +2,12 @@
 #include "calc/dos.hpp"
 #include "calc/fft.hpp"
 #include "solver.hpp"
+#include <math.h>
 #include <iostream>
 #include <algorithm>
 using namespace rsatb::backend;
 using namespace rsatb::io;
 using namespace rsatb::calc;
-
-double pi = 3.14159265358979324;
 
 namespace rsatb{
 
@@ -26,7 +25,10 @@ Solver::Solver(
         _H_(nullptr), _S_(nullptr),
         _Samples_(nullptr), _Sample_(nullptr),
         _ksp_(nullptr), _pc_(nullptr)
-    {};
+    {
+        PetscInitialize(nullptr, nullptr, nullptr, nullptr);
+        SlepcInitialize(nullptr, nullptr, nullptr, nullptr);
+    };
 
 Solver::~Solver() { /* destructor */
     if(_H_) MatDestroy(&_H_);
@@ -38,9 +40,12 @@ Solver::~Solver() { /* destructor */
     }else{
         if(_Samples_) MatDestroy(&_Samples_);
     }
+    SlepcFinalize();
+    PetscFinalize();
 }
 
 void Solver::setup_graph(){ /* Setup the DM, we assume here the graph information is already initialized in the class constructor method */
+    
     rsatb::backend::get_dm_atomic(
         _n_atom_, _n_edge_, _edge_index_, _atom_type_, _type_norb_, _edge_shift_vec_, _pos_, &_dm_, _comm_
     );
@@ -159,10 +164,12 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     IS isSrc=nullptr, isDst=nullptr;
     if(proj_mode=="element"){
         rsatb::backend::setup_is_atomic(_dm_, &isSrc, &isDst);
-        n_proj_type = sizeof(_atom_type_) / sizeof(_atom_type_[0]);
+        n_proj_type = *std::max_element(_atom_type_, _atom_type_ + _n_atom_);
     }else if(proj_mode=="orbital"){
         rsatb::backend::setup_is_orbital(_dm_, orbtype, _type_norb_, &isSrc, &isDst);
-        n_proj_type = *std::max_element(orbtype, orbtype + sizeof(orbtype) / sizeof(orbtype[0]));
+        int norb=0;
+        for(int i=0; i<_n_atom_;i++) norb += _type_norb_[norb];
+        n_proj_type = *std::max_element(orbtype, orbtype + norb);
     }else{
         proj=false;
     }
@@ -182,7 +189,7 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
         /* Computing the smearing window */
         PetscComplex factor;
         for(int i=1;i<nt;++i){
-            factor = 0.5 * (1 + std::cos(pi * i / nt));
+            factor = 0.5 * (1 + std::cos(M_PI * i / nt));
             cdos[nt+i] *= factor;
             cdos[nt-i] *= factor;
 

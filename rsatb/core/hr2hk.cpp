@@ -64,7 +64,7 @@ void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, do
     PetscBool ghost;
     AtomData atomdata_i, atomdata_j;
     BondData bonddata;
-    int inorb, jnorb, atmidx_i, atmidx_j, m, n, flag;
+    int inorb, jnorb, atmidx_i, atmidx_j, m, n, flag, Rx, Ry, Rz;
     bool found;
     double *v=nullptr;
 
@@ -86,6 +86,18 @@ void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, do
             }else{
                 throw std::runtime_error("The h5file is corrupted !");
             }
+
+            // Set block for petsc index (i,i) with different R
+            for(int iR=0; iR < atomdata_i.NR; ++iR){
+                Rx=atomdata_i.R[3*iR]; Ry=atomdata_i.R[3*iR+1]; Rz=atomdata_i.R[3*iR+2];
+                flag = (*handler).read_from_ijR_dense(atmidx_i,atmidx_i,Rx,Ry,Rz, &m,&n,&v,&found);
+
+                if(flag==0){
+                    if(found) SetBlockR2K(mat, dm, i, i, inorb, inorb, Rx, Ry, Rz, Kx, Ky, Kz, v);
+                }else{
+                    throw std::runtime_error("The h5file is corrupted !");
+            }
+            }
         }
         
         
@@ -102,18 +114,20 @@ void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, do
         rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", i, &atomdata_i, &inorb);
         rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", j, &atomdata_j, &jnorb);
 
-        atmidx_i=static_cast<int>(atomdata_i.index);
-        atmidx_j=static_cast<int>(atomdata_j.index);
+        if (inorb > 0 && jnorb > 0){ // careful for those ghost nodes.
+            atmidx_i=static_cast<int>(atomdata_i.index);
+            atmidx_j=static_cast<int>(atomdata_j.index);
 
-        flag = (*handler).read_from_ijR_dense(atmidx_i,atmidx_j,bonddata.Rx,bonddata.Ry,bonddata.Rz, &m,&n,&v,&found);
+            flag = (*handler).read_from_ijR_dense(atmidx_i,atmidx_j,bonddata.Rx,bonddata.Ry,bonddata.Rz, &m,&n,&v,&found);
 
-        if(flag==0){
-            
-            if(found) {
-                SetBlockR2K(mat, dm, i, j, inorb, jnorb, bonddata.Rx,bonddata.Ry,bonddata.Rz, Kx, Ky, Kx, v);
+            if(flag==0){
+                
+                if(found) {
+                    SetBlockR2K(mat, dm, i, j, inorb, jnorb, bonddata.Rx,bonddata.Ry,bonddata.Rz, Kx, Ky, Kx, v);
+                }
+            }else{
+                throw std::runtime_error("The h5file is corrupted !");
             }
-        }else{
-            throw std::runtime_error("The h5file is corrupted !");
         }
     }
 

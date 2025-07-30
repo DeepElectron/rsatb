@@ -1,1 +1,3 @@
-PETSC_DIR=$CONDA_PREFIX/petsc/build/ PETSC_ARCH="../arch-linux-c-opt" HDF5_ROOT="${CONDA_PREFIX}" cmake -S. -Bbuild
+PETSC_DIR=$CONDA_PREFIX/petsc/build/ PETSC_ARCH="../arch-linux-c-opt" HDF5_ROOT="${CONDA_PREFIX}" MPI_ROOT="${CONDA_PREFIX}" cmake -S. -Bbuild
+
+# We need to also specify MPI_ROOT since the MPI used by mpi4py, petsc and our code does not match.

@@ -69,13 +69,24 @@ PYBIND11_MODULE(binding, m) {
                 // 2.
                 MPI_Comm *comm = get_mpi_comm(py_comm); // what we get is the ptr to Comm;
 
-
                 // 3. Skip
+                std::cout << "n_edge: " << n_edge << "\n";
+                std::cout << "n_edge: " << n_atom << "\n";
+                for(int i=0;i<n_atom;++i) std::cout<<atom_type.data()[i]<<" ";
+                std::cout<<"\n";
+                for(int i=0;i<n_edge;++i) std::cout<<edge_index.data()[i]<<" ";
+                std::cout<<"\n";
 
                 return std::make_unique<rsatb::Solver>(HFile, SFile, n_atom, n_edge, 
                     atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), pos.data(), *comm);
 
-        }))
+        }),
+        py::keep_alive<1,4>(),
+        py::keep_alive<1,5>(),
+        py::keep_alive<1,6>(),
+        py::keep_alive<1,7>(),
+        py::keep_alive<1,8>() 
+        )
         .def("setup_graph", &rsatb::Solver::setup_graph)
 
         .def("setup_HS", [](

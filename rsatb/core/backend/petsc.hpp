@@ -62,7 +62,8 @@ double2petscreal(int n, const double *in,
 
 struct AtomData{
         PetscReal x, y, z;
-        PetscInt index, type;
+        PetscInt index, type, nR, NR;
+        PetscInt *R;
     };
 
 struct BondData{

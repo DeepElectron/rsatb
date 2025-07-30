@@ -201,14 +201,14 @@ def with_batch(data: Type) -> Type:
         return data
     else:
         pos = data[_keys.POSITIONS_KEY]
-        batch = np.zeros(len(pos), dtype=np.int64)
+        batch = np.zeros(len(pos), dtype=np.int32)
         data[_keys.BATCH_KEY] = batch
         # ugly way to make a tensor of [0, len(pos)], but it avoids transfers or casts
         data[_keys.BATCH_PTR_KEY] = np.arange(
             start=0,
             stop=len(pos) + 1,
             step=len(pos),
-            dtype=np.int64
+            dtype=np.int32
         )
         
         return data

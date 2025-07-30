@@ -53,7 +53,7 @@ TEST(petscTest, TestGetDMMatrix) {
 
 TEST(petscTest, TestGetAttr) {
     int n_node=4, n_edge=6;
-    int edge_index[] = {0,1,1,0,2,3,3,2,0,3,3,0};
+    int edge_index[] = {0,0,1,0,2,3,3,2,0,3,3,0};
     int atom_type[] = {0,0,0,0};
     int type_weight[] = {1};
     int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
@@ -75,14 +75,11 @@ TEST(petscTest, TestGetAttr) {
     std::cout << "Vertex Range:\t" << nstart << "\t" << nend << " on rank\t" << rank << " \n";
     std::cout << "Edge Range:\t" << estart << "\t" << eend << " on rank\t" << rank << " \n";
     rsatb::backend::get_attr_from_dm<rsatb::backend::AtomData>(dm, "atom", nstart, &node, &nvar);
-    #if defined(PETSC_USE_COMPLEX)
-    PetscScalar   *cplx  = NULL;
-    PetscMalloc1(1,&cplx);
-    *cplx = PetscCMPLX(0.0,0.0);
-    ASSERT_EQ(node.x, *cplx);
-    #else
     ASSERT_EQ(node.x, 0.0);
-    #endif
+    ASSERT_EQ(node.R[0], 0);
+    std::cout << "node 0 " << node.R[0] << node.R[1] << node.R[2] << "\n";
+
+    
     rsatb::backend::BondData edge;
     rsatb::backend::get_attr_from_dm<rsatb::backend::BondData>(dm, "edge", estart, &edge, &nvar);
     ASSERT_EQ(edge.Rx, 0);

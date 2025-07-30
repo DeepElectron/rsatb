@@ -115,13 +115,13 @@ class Batch(Data):
                             tmp = f"{key}_{j}_batch"
                             batch[tmp] = [] if i == 0 else batch[tmp]
                             batch[tmp].append(
-                                np.full((size,), i, dtype=np.int64)
+                                np.full((size,), i, dtype=np.int32)
                             )
                     else:
                         tmp = f"{key}_batch"
                         batch[tmp] = [] if i == 0 else batch[tmp]
                         batch[tmp].append(
-                            np.full((size,), i, dtype=np.int64)
+                            np.full((size,), i, dtype=np.int32)
                         )
 
             if hasattr(data, "__num_nodes__"):
@@ -131,7 +131,7 @@ class Batch(Data):
 
             num_nodes = data.num_nodes
             if num_nodes is not None:
-                item = np.full((num_nodes,), i, dtype=np.int64)
+                item = np.full((num_nodes,), i, dtype=np.int32)
                 batch.batch.append(item)
                 batch.ptr.append(batch.ptr[-1] + num_nodes)
 
@@ -239,7 +239,7 @@ class Batch(Data):
         # elif isinstance(idx, Tensor) and idx.dtype == torch.bool:
         #     idx = idx.flatten().nonzero(as_tuple=False).flatten().tolist()
 
-        elif isinstance(idx, np.ndarray) and idx.dtype == np.int64:
+        elif isinstance(idx, np.ndarray) and idx.dtype == np.int32:
             idx = idx.flatten().tolist()
 
         elif isinstance(idx, np.ndarray) and idx.dtype == np.bool_:

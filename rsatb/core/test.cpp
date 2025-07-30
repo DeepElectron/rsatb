@@ -55,7 +55,7 @@ TEST(petscTest, TestSetBlockR2K) {
 
 TEST(petscTest, TestSetMatrixR2K) {
     int n_node=3, n_edge=6;
-    int edge_index[] = {0, 2, 0, 1, 1, 2, 2, 0, 1, 0, 2, 1};
+    int edge_index[] = {0, 1, 1, 1, 1, 1, 2, 0, 1, 0, 2, 1};
     int atom_type[] = {0,0,0};
     int type_weight[] = {4};
     int edge_shift_vec[] = {0,  0,  0,  0,  0,  1,  0,  0,  0,  0,  0,  0,  0,  0, -1,  0,  0,  0};

@@ -7,7 +7,7 @@ from .AtomicData import (
     _NODE_FIELDS,
     _EDGE_FIELDS,
     _GRAPH_FIELDS,
-    _LONG_FIELDS,
+    _INT_FIELDS,
 )
 from .interfaces import block_to_feature, feature_to_block
 from .transforms import OrbitalMapper
@@ -25,5 +25,5 @@ __all__ = [
     _NODE_FIELDS,
     _EDGE_FIELDS,
     _GRAPH_FIELDS,
-    _LONG_FIELDS,
+    _INT_FIELDS,
 ]

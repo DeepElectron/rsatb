@@ -7,8 +7,7 @@ readme = "README.md"
 repository = "https://github.com/floatingCatty/rsatb"
 
 include = [
-  { path = "rsatb/core/rsatb.cpython-312-x86_64-linux-gnu.so", format = "wheel" },
-  { path = "rsatb/core/rsatb.cpython-312-x86_64-linux-gnu.so", format = "sdist" }
+  { path = "rsatb/core/build/binding.cpython-312-x86_64-linux-gnu.so", format = "wheel" }
 ]
 
 packages = [

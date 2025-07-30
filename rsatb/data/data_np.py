@@ -87,7 +87,7 @@ class Data(object):
             else:
                 self[key] = item
 
-        if edge_index is not None and edge_index.dtype != np.int64:
+        if edge_index is not None and edge_index.dtype != np.int32:
             raise ValueError(
                 (
                     f"Argument `edge_index` needs to be of type `torch.long` but "
@@ -95,7 +95,7 @@ class Data(object):
                 )
             )
 
-        if face is not None and face.dtype != np.int64:
+        if face is not None and face.dtype != np.int32:
             raise ValueError(
                 (
                     f"Argument `face` needs to be of type `torch.long` but found "
@@ -352,19 +352,19 @@ class Data(object):
 
     def debug(self):
         if self.edge_index is not None:
-            if self.edge_index.dtype != np.int64:
+            if self.edge_index.dtype != np.int32:
                 raise RuntimeError(
                     (
                         "Expected edge indices of dtype {}, but found dtype " " {}"
-                    ).format(np.int64, self.edge_index.dtype)
+                    ).format(np.int32, self.edge_index.dtype)
                 )
 
         if self.face is not None:
-            if self.face.dtype != np.int64:
+            if self.face.dtype != np.int32:
                 raise RuntimeError(
                     (
                         "Expected face indices of dtype {}, but found dtype " " {}"
-                    ).format(np.int64, self.face.dtype)
+                    ).format(np.int32, self.face.dtype)
                 )
 
         if self.edge_index is not None:

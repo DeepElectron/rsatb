@@ -10,24 +10,38 @@ try:
 except ImportError:
     MPI = None
 
-from .tools import split_list, split_range, get_datetime
-
 
 __all__ = ["MPIEnv"]
 
 
-class MPIEnv:
+class MPIMultiLevel:
     """
-    Wrapper over MPI4PY APIs.
+    Multilevel MPICommunicator. Currently, two level partition is supported.
+    The global ranks are divided into subgroups, with sub comminicator.
+    The global ranks own a master comm that commute between subgroups by grouping the submaster ranks.
+    The communication method are wrapped and performed in different level.
+
+    There are three level of comm here:
+        0. The submaster comm
+        1. The subgroup comm
+        2. The global comm
 
     Attributes
     ----------
     __comm: 'mpi4py.MPI.Intracomm' class
         default global mpi communicator
-    __rank: integer
+    __rank: int
         id of this process in mpi communicator
-    __size: integer
+    __size: int
         number of processes in mpi communicator
+    __subcomm:  'mpi4py.MPI.Intracomm' class
+        sub communicator of the subgroup
+    __subrank:  int
+        the subrank of the process in its subgroup
+    __subsize: int
+        the size of the subgroup this rank belongs to
+    __color: int
+        the subgroup number
     """
     def __init__(self, enable_mpi: bool = False,
                  verbose: bool = False) -> None:
@@ -40,18 +54,24 @@ class MPIEnv:
         if enable_mpi:
             if MPI is not None:
                 self.__comm = MPI.COMM_WORLD
-                self.__subcomm = self.__comm
-                self.color = 0
                 self.__rank = self.__comm.Get_rank()
                 self.__size = self.__comm.Get_size()
+                self.__subcomm = self.__comm
+                self.__subrank = 0
+                self.__n_group = 1
+                self.__color = 0
+                self.__subsize = self.__size
             else:
                 raise ImportError("MPI4PY cannot be imported")
         else:
             self.__comm = None
-            self.__subcomm = self.__comm
-            self.color = 0
             self.__rank = 0
             self.__size = 1
+            self.__color = 0
+            self.__n_group = 1
+            self.__subcomm = self.__comm
+            self.__subrank = 0
+            self.__subsize = self.__size
         
         self.__color_all = [0] * self.__size
 
@@ -94,31 +114,50 @@ class MPIEnv:
         return order
     
     def partition(self, n_group):
-        color_all = []
-        for i in range(n_group-1):
-            color_all += [i] * self.__size // n_group
+
+        if n_group == 1:
+            self.__master_comm = None
+            return True
         
-        color_all += [n_group-1] * self.__size % n_group
+        color_all = []
+        group_count = []
+        for i in range(n_group-1):
+            group_count += [self.__size // n_group]
+            color_all += [i] * group_count[-1]
+            
+        group_count += [self.__size % n_group]
+        color_all += [n_group-1] * group_count[-1]
+
+        if float(self.__size % n_group) / float(self.__size // n_group) < 0.8:
+            raise RuntimeWarning("Group partition is ", group_count, " , bad allocation!")
 
         self.__color_all = color_all
         color = self.__color_all[self.__rank]
 
         # create sub comm:
         self.__subcomm = self.__comm.split(color=color, key=self.__rank)
+        self.__color = color
         # Optional: check if the current process is in the new_comm
         if self.__subcomm != MPI.COMM_NULL:
             new_rank = self.__subcomm.Get_rank()
             new_size = self.__subcomm.Get_size()
             print(f"Global rank {self.__rank} is in the new_comm with local rank {new_rank} and size {new_size}")
+            self.__subrank = new_rank
+            self.__subsize = new_size
         else:
             print(f"Global rank {self.__rank} is not in the new_comm")
 
+        # create the master comm for subgroup masters
+        if self.__subrank == 0:
+            self.__master_comm = self.__comm.split(color=0, key=self.__rank)
+            self.__master_rank = self.__master_comm.Get_rank()
+        self.__n_group = n_group
+        self.group_count = group_count
+
         return True
 
-
-
     def dist_list(self, raw_list: List[Any],
-                  algorithm: str = "range") -> List[Any]:
+                  algorithm: str = "range", level=2) -> List[Any]:
         """
         Distribute a list over processes.
 
@@ -127,18 +166,38 @@ class MPIEnv:
             or "range"
         :return: sublist assigned to this process
         """
-        return split_list(raw_list, self.__size, algorithm)[self.__rank]
+        if level == 0:
+            if self.is_submaster:
+                return split_list(raw_list, self.__n_group, algorithm)[self.__master_rank]
+            else:
+                return None
+        elif level == 1:
+            return split_list(raw_list, self.__subsize, algorithm)[self.__subrank]
+        elif level == 2:
+            return split_list(raw_list, self.__size, algorithm)[self.__rank]
+        else:
+            raise RuntimeError("The level only support 0 / 1 / 2 !")
 
-    def dist_range(self, n_max: int) -> range:
+    def dist_range(self, n_max: int, level=2) -> range:
         """
         Distribute range(n_max) over processes.
 
         :param n_max: upper bound of the range
         :return: subrange assigned to this process
         """
-        return split_range(n_max, num_group=self.__size)[self.__rank]
+        if level == 0:
+            if self.is_submaster:
+                return split_range(n_max, num_group=self.__n_group)[self.__master_rank]
+            else:
+                return None
+        elif level == 1:
+            return split_range(n_max, num_group=self.__subsize)[self.__subrank]
+        elif level == 2:
+            return split_range(n_max, num_group=self.__size)[self.__rank]
+        else:
+            raise RuntimeError("The level only support 0 / 1 / 2 !")
 
-    def dist_bound(self, n_max: int) -> Tuple[int, int]:
+    def dist_bound(self, n_max: int, level=2) -> Tuple[int, int]:
         """
         Same as dist_range, but returns the lower and upper bounds.
         Both of the bounds are close, i.e. [i_min, i_max].
@@ -146,11 +205,15 @@ class MPIEnv:
         :param n_max: upper bound of range
         :return: lower and upper bounds of subrange assigned to this process
         """
-        i_index = self.dist_range(n_max)
-        i_min, i_max = min(i_index), max(i_index)
+        i_index = self.dist_range(n_max, level=level)
+        if self.is_submaster:
+            i_min, i_max = min(i_index), max(i_index)
+        else:
+            i_min, i_max = None, None
+
         return i_min, i_max
 
-    def reduce(self, data_local: np.ndarray) -> np.ndarray:
+    def reduce(self, data_local: np.ndarray, level=2) -> np.ndarray:
         """
         Reduce local data to master process.
 
@@ -158,17 +221,38 @@ class MPIEnv:
         :return: summed data from data_local
         """
         if self.mpi_enabled:
-            if self.is_master:
-                data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                order=self.__get_array_order(data_local))
+            if level == 2:
+                if self.is_master:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__comm.Reduce(data_local, data, op=MPI.SUM, root=0)
+            elif level == 1:
+                if self.is_submaster:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__subcomm.Reduce(data_local, data, op=MPI.SUM, root=0)
+            elif level == 0:
+                if self.is_submaster:
+                    if self.is_master:
+                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                        order=self.__get_array_order(data_local))
+                    else:
+                        data = None
+                    
+                    self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
             else:
-                data = None
-            self.__comm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
+
         else:
             data = data_local
+
         return data
 
-    def all_reduce(self, data_local: np.ndarray) -> np.ndarray:
+    def all_reduce(self, data_local: np.ndarray, level=2) -> np.ndarray:
         """
         Reduce local data and broadcast to all processes.
 
@@ -176,14 +260,26 @@ class MPIEnv:
         :return: summed data from data_local
         """
         if self.mpi_enabled:
-            data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                            order=self.__get_array_order(data_local))
-            self.__comm.Allreduce(data_local, data, op=MPI.SUM)
+            if level == 2:
+                data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                order=self.__get_array_order(data_local))
+                self.__comm.Allreduce(data_local, data, op=MPI.SUM)
+            elif level == 1:
+                data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                order=self.__get_array_order(data_local))
+                self.__subcomm.Allreduce(data_local, data, op=MPI.SUM)
+            elif level == 0:
+                if self.is_submaster:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                    self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
+            else:
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
         else:
             data = data_local
         return data
 
-    def average(self, data_local: np.ndarray) -> np.ndarray:
+    def average(self, data_local: np.ndarray, level=2) -> np.ndarray:
         """
         Average results over random samples and store results to master process.
 
@@ -191,19 +287,42 @@ class MPIEnv:
         :return: averaged data from data_local
         """
         if self.mpi_enabled:
-            if self.is_master:
-                data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                order=self.__get_array_order(data_local))
+            if level == 2:
+                if self.is_master:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__comm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                if self.is_master:
+                    data /= self.__size
+            elif level == 1:
+                if self.is_submaster:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__subcomm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                if self.is_submaster:
+                    data /= self.__subsize
+            elif level == 0:
+                if self.is_submaster:
+                    if self.is_master:
+                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                        order=self.__get_array_order(data_local))
+                    else:
+                        data = None
+                    self.__subcomm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                    if self.is_master:
+                        data /= self.__n_group
             else:
-                data = None
-            self.__comm.Reduce(data_local, data, op=MPI.SUM, root=0)
-            if self.is_master:
-                data /= self.__size
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
+
         else:
             data = data_local
         return data
 
-    def all_average(self, data_local: np.ndarray) -> np.ndarray:
+    def all_average(self, data_local: np.ndarray, level=2) -> np.ndarray:
         """
         Average results over random samples broadcast to all process.
 
@@ -211,15 +330,29 @@ class MPIEnv:
         :return: averaged data from data_local
         """
         if self.mpi_enabled:
-            data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                            order=self.__get_array_order(data_local))
-            self.__comm.Allreduce(data_local, data, op=MPI.SUM)
-            data /= self.__size
+            if level == 2:
+                data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                order=self.__get_array_order(data_local))
+                self.__comm.Allreduce(data_local, data, op=MPI.SUM)
+                data /= self.__size
+            elif level == 1:
+                data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                order=self.__get_array_order(data_local))
+                self.__subcomm.Allreduce(data_local, data, op=MPI.SUM)
+                data /= self.__subsize
+            elif level == 0:
+                if self.is_submaster:
+                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                order=self.__get_array_order(data_local))
+                    self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
+                    data /= self.__n_group
+            else:
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
         else:
             data = data_local
         return data
 
-    def bcast(self, data_local: np.ndarray) -> None:
+    def bcast(self, data_local: np.ndarray, level=2) -> None:
         """
         Broadcast data from master to other processes.
 
@@ -227,12 +360,60 @@ class MPIEnv:
         :return: None
         """
         if self.mpi_enabled:
-            self.__comm.Bcast(data_local, root=0)
+            if level == 2:
+                self.__comm.Bcast(data_local, root=0)
+            elif level == 1:
+                self.__subcomm.Bcast(data_local, root=0)
+            elif level == 0:
+                if self.is_submaster:
+                    self.__master_comm.Bcast(data_local, root=0)
+            else:
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
+        
 
-    def barrier(self) -> None:
+    def barrier(self, level=2) -> None:
         """Wrapper for self.comm.Barrier."""
         if self.mpi_enabled:
-            self.__comm.Barrier()
+            if level == 2:
+                self.__comm.Barrier()
+            elif level == 1:
+                self.__subcomm.Barrier()
+            elif level == 0:
+                self.__master_comm.Barrier()
+            else:
+                raise RuntimeError("The level only support 0 / 1 / 2 !")
+
+
+    def gather(self, data_local: np.ndarray, level=2) -> np.ndarray:
+
+        if self.mpi_enabled:
+            shape = data_local.shape
+            if level == 2:
+                shape[0] = shape[0] * self.__size
+                if self.is_master:
+                    data = np.zeros(shape, dtype=data_local.dtype, order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__comm.Gather(data_local, data, root=0)
+            elif level == 1:
+                shape[0] = shape[0] * self.__subsize
+                if self.is_master:
+                    data = np.zeros(shape, dtype=data_local.dtype, order=self.__get_array_order(data_local))
+                else:
+                    data = None
+                self.__subcomm.Gather(data_local, data, root=0)
+            elif level == 0:
+                if self.is_submaster:
+                    shape[0] = shape[0] * self.__n_group
+                    if self.is_master:
+                        data = np.zeros(shape, dtype=data_local.dtype, order=self.__get_array_order(data_local))
+                    else:
+                        data = None
+                    self.__master_comm.Gather(data_local, data, root=0)
+        else:
+            data = data_local
+
+        return data
 
     def print(self, text: str = "") -> None:
         """
@@ -268,6 +449,10 @@ class MPIEnv:
     def is_master(self) -> bool:
         """Determine whether this is the master process."""
         return self.__rank == 0
+    
+    @property
+    def is_submaster(self) -> bool:
+        return self.__subrank == 0
 
     @property
     def rank(self) -> int:
@@ -281,6 +466,10 @@ class MPIEnv:
     @property
     def group(self, rank) -> int:
         return self.__group_vec[rank]
+    
+    @property
+    def color(self) -> int:
+        return self.__color
 
 
     @property
