@@ -32,7 +32,7 @@ if __name__== "__main__":
 
     print(nt)
 
-    dos = solver.compute_dos(100, "none", np.array([0,0,0]))
+    dos = solver.compute_dos(250, "none", np.array([0,0,0]))
     print(dos)
     
     import matplotlib.pyplot as plt

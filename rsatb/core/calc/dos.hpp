@@ -71,6 +71,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         VecCopy(Psi_in, Psi_curr);
 
         for(int it=0; it<nt; ++it){
+            std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
             cheby_recur(
                 H, ksp, Psi_curr,
                 buff, // length 3 vec
@@ -117,6 +118,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         MatDuplicate(Psi_in, MAT_COPY_VALUES, &Psi_curr);
 
         for(int it=0; it<nt; ++it){
+            std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
             cdos[nt+it+1] = 0;
             if(proj){
                 for (PetscInt i=0; i<n_proj_type; ++i) pcdos[(nt+it+1)*n_proj_type+i] = 0;

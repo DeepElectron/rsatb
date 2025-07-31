@@ -1,6 +1,7 @@
 #include "hr2hk.hpp"
 #include "calc/dos.hpp"
 #include "calc/fft.hpp"
+#include "calc/sample.hpp"
 #include "solver.hpp"
 #include <math.h>
 #include <iostream>
@@ -69,10 +70,27 @@ void Solver::setup_HS(double Kx, double Ky, double Kz){ /* Setup H and S, how to
     EPSCreate(_comm_, &eps);
     EPSSetOperators(eps, _H_, _S_);
     EPSSetProblemType(eps, EPS_GHEP);
+    // EPSSetType(eps,EPSLANCZOS);
+    // EPSLanczosSetReorthog(eps,EPS_LANCZOS_REORTHOG_LOCAL);
+    EPSSetTolerances(eps,1e-3,50);
+    EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
     // EPSSetThreshold(eps,1e-4,PETSC_FALSE); // abs, rel
     EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
     // EPSSetType(eps,EPSKRYLOVSCHUR);
+
+    // config the KSP internel of SLEPC
+    ST st;  KSP ksp;  PC pc;
+    EPSGetST(eps,&st);                 // grab the ST
+    STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
+    KSPSetType(ksp,KSPCG);
+    KSPGetPC(ksp,&pc);
+    PCSetType(pc,PCGAMG);
+    PCGAMGSetType(pc, PCGAMGAGG);
+    KSPSetReusePreconditioner(ksp, PETSC_TRUE);
+    KSPSetTolerances(ksp,1e-8, PETSC_CURRENT, PETSC_CURRENT, PETSC_CURRENT);
+
     EPSSetUp(eps);
+
     EPSSolve(eps);
     EPSGetConverged(eps, &nconv);
     EPSGetEigenpair(eps,0,&emax, NULL, NULL, NULL);
@@ -132,15 +150,18 @@ void Solver::setup_sample(int n, std::string method){
     if(method=="gauss"){
         PetscRandom r;
         PetscRandomCreate(_comm_, &r);
+        PetscRandomSetType(r, PETSCRAND48);
+        PetscRandomSetInterval(r, 0.0, 1.0);
         if(_n_sample_==1){
-            VecSetRandom(_Sample_, r);
+            // VecSetRandom(_Sample_, r);
+            VecSetGaussianRandom(_Sample_, r);
             VecNormalize(_Sample_, NULL);
         }else{
-            PetscReal norms[n];
-            MatSetRandom(_Samples_, r);
+            // MatSetRandom(_Samples_, r);
             Vec col;
             for (PetscInt j = 0; j < n; ++j) {
                 MatDenseGetColumnVec(_Samples_,j,&col);
+                VecSetGaussianRandom(col, r);
                 VecNormalize(col,NULL);
                 MatDenseRestoreColumnVec(_Samples_,j,&col);
             }
