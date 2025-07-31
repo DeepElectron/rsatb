@@ -94,7 +94,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                     cdos[nt+it+1] += pcdos[(nt+it+1)*n_proj_type+i];
                     // copy pdos to negative time
                     pcdos[(nt-it)*n_proj_type-i-1] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);
-                    }
+                }
             }else{
                 VecDot(Psi_in, Psi_out, cdos + (nt+it+1));
             }

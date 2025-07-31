@@ -28,7 +28,7 @@ PetscErrorCode get_dm_atomic(
     PetscInt n_edge_reduced = n_edge_petsc;
     PetscInt self_loops_count[n_node];
 
-    std::cout << "N_EDGE: " << n_edge_reduced << "\n";
+    // std::cout << "N_EDGE: " << n_edge_reduced << "\n";
     // for(int i=0; i<n_node; ++i) std::cout << edge_index[i] << " ";
     // std::cout << "\n";
 
@@ -70,9 +70,9 @@ PetscErrorCode get_dm_atomic(
             }
         }
 
-        std::cout << "N_EDGE_REDUCED: " << n_edge_reduced << "\n";
+        // std::cout << "N_EDGE_REDUCED: " << n_edge_reduced << "\n";
 
-        std::cout << "Here 0 \n";
+        // std::cout << "Here 0 \n";
 
         // handle the PETScInt and int mismatch
         PetscCall(int2petscint(n_node, atom_type, &atom_type_petsc, &free_atom_type));
@@ -106,7 +106,7 @@ PetscErrorCode get_dm_atomic(
         PetscCall(int2petscint(n_edge*3, edge_shift_vec, &edge_shift_vec_petsc, &free_edge_shift_vec));
         PetscCall(double2petscreal(n_node*3, pos, &pos_petsc, &free_pos_petsc));
 
-        std::cout << "Here 1 \n" << n_edge_reduced << "\n" << edge_index_petsc[0] << "\n";
+        // std::cout << "Here 1 \n" << n_edge_reduced << "\n" << edge_index_petsc[0] << "\n";
 
         if(n_edge_reduced>0){
             DMNetworkAddSubnetwork(
@@ -117,7 +117,7 @@ PetscErrorCode get_dm_atomic(
                 &netnum
             );
         }else{
-            std::cout << "Here 1.6 \n";
+            // std::cout << "Here 1.6 \n";
             DMNetworkAddSubnetwork(
                 *dm, "atomicdata", 
                 1,
@@ -129,11 +129,11 @@ PetscErrorCode get_dm_atomic(
 
 
         // std::cout << "NETNUM on rank " << rank << " " << netnum << "\n";
-        std::cout << "Here 1.5 \n";
+        // std::cout << "Here 1.5 \n";
 
         DMNetworkLayoutSetUp(*dm);
 
-        std::cout << "Here 2 \n";
+        // std::cout << "Here 2 \n";
 
         // add components
         PetscInt nstart, nend;
@@ -176,7 +176,7 @@ PetscErrorCode get_dm_atomic(
             DMNetworkAddComponent(*dm, nend, atomdata_key, &atomdata[atom_index], 0); // add 0 dof ghost node for n_edge_reduced == 0 case.
         }
 
-        std::cout << "Here 3 \n";
+        // std::cout << "Here 3 \n";
 
         PetscInt estart, eend;
         DMNetworkGetEdgeRange(*dm, &estart, &eend);
@@ -216,7 +216,7 @@ PetscErrorCode get_dm_atomic(
             }
         }
 
-        std::cout << "Here 4 \n";
+        // std::cout << "Here 4 \n";
         // add a check to see if all self edge is added.
         for (int in=0; in < n_node; ++in){
             if(atomdata[in].nR < atomdata[in].NR) throw std::runtime_error("The self-edge are not correctly filled! ");
@@ -225,15 +225,15 @@ PetscErrorCode get_dm_atomic(
         DMSetUp(*dm);
 
         DMNetworkDistribute(dm, 0);
-        std::cout << "Here 5 \n";
+        // std::cout << "Here 5 \n";
         if(free_atom_type) {PetscCall(PetscFree(atom_type_petsc));}
-        std::cout << "Here 6 \n";
+        // std::cout << "Here 6 \n";
         if(free_edge_index) {PetscCall(PetscFree(edge_index_petsc));}
-        std::cout << "Here 7 \n";
+        // std::cout << "Here 7 \n";
         if(free_type_weight) {PetscCall(PetscFree(type_weight_petsc));}
-        std::cout << "Here 8 \n";
+        // std::cout << "Here 8 \n";
         if(free_edge_shift_vec) {PetscCall(PetscFree(edge_shift_vec_petsc));}
-        std::cout << "Here 9 \n";
+        // std::cout << "Here 9 \n";
         if(free_pos_petsc) {PetscCall(PetscFree(pos_petsc));}
 
     } else {

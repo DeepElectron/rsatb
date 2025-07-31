@@ -28,6 +28,7 @@ Solver::Solver(
     {
         PetscInitialize(nullptr, nullptr, nullptr, nullptr);
         SlepcInitialize(nullptr, nullptr, nullptr, nullptr);
+        MPI_Comm_rank(_comm_, &rank);
     };
 
 Solver::~Solver() { /* destructor */
@@ -89,7 +90,7 @@ void Solver::setup_HS(double Kx, double Ky, double Kz){ /* Setup H and S, how to
 
     // scale and shift the H/S
     MatAXPY(_H_, -_shift_, _S_, SAME_NONZERO_PATTERN);
-    MatScale(_H_, _scale_);
+    MatScale(_H_, 1/_scale_);
 
     EPSDestroy(&eps);
 
@@ -110,6 +111,7 @@ void Solver::setup_HS(double Kx, double Ky, double Kz){ /* Setup H and S, how to
         KSPSetType(_ksp_, KSPHPDDM);
         KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_BCG);
     }
+    KSPSetTolerances(_ksp_, 1e-9, PETSC_CURRENT, PETSC_CURRENT, PETSC_CURRENT);
     PCSetUp(_pc_);
     KSPSetUp(_ksp_);
 };
@@ -161,6 +163,8 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     */
     bool proj=true;
     int n_proj_type=1;
+    std::complex<double> imI(0.0, 1.0); 
+
     IS isSrc=nullptr, isDst=nullptr;
     if(proj_mode=="element"){
         rsatb::backend::setup_is_atomic(_dm_, &isSrc, &isDst);
@@ -188,31 +192,43 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     if(rank==0){
         /* Computing the smearing window */
         PetscComplex factor;
-        for(int i=1;i<nt;++i){
-            factor = 0.5 * (1 + std::cos(M_PI * i / nt));
-            cdos[nt+i] *= factor;
-            cdos[nt-i] *= factor;
+        // cdos[nt] *= std::exp(-imI*_shift_*M_PI*nt/_scale_);
+        // if(proj){
+        //     for(int ip=0; ip < n_proj_type; ++ip){ // pcdos have shape [nt, n_proj_type]
+        //         pcdos[nt+n_proj_type*ip] *= std::exp(-imI*_shift_*M_PI*nt/_scale_);
+        //     }
+        // }
+        for(int i=1;i<nt+1;++i){
+            factor = 0.5 * (1 + std::cos(M_PI * (i-1) / nt));
+            cdos[nt+i] *= factor * std::exp(-imI*_shift_*M_PI*i/_scale_);
+            cdos[nt-i] *= factor * std::exp(imI*_shift_*M_PI*i/_scale_);
 
             if(proj){
                 for(int ip=0; ip < n_proj_type; ++ip){ // pcdos have shape [nt, n_proj_type]
-                    pcdos[nt+i+n_proj_type*ip] *= factor;
-                    pcdos[nt-i+n_proj_type*ip] *= factor;
+                    pcdos[nt+i+n_proj_type*ip] *= factor * std::exp(-imI*_shift_*M_PI*i/_scale_);
+                    pcdos[nt-i+n_proj_type*ip] *= factor * std::exp(imI*_shift_*M_PI*i/_scale_);
                 }
             }
         }
 
-        std::complex<double> temp_dos[2*nt+1], temp_pdos[(2*nt+1)*n_proj_type];
-        ifft_1d(2*nt+1, reinterpret_cast<cd*>(cdos), temp_dos);
+        for(int i=0;i<2*nt+1;++i) std::cout << cdos[i] << " ";
+        std::cout << "\n";
+
+        std::complex<double> temp_dos[2*nt], temp_pdos[(2*nt)*n_proj_type];
+        ifft_1d(2*nt, reinterpret_cast<cd*>(cdos+1), temp_dos);
         if(proj) {
-            bifft_1d(2*nt+1, n_proj_type, reinterpret_cast<cd*>(pcdos), temp_pdos);
-            pdos = std::make_unique<double[]>((2*nt+1)*n_proj_type);
+            bifft_1d(2*nt, n_proj_type, reinterpret_cast<cd*>(pcdos+n_proj_type), temp_pdos);
+            pdos = std::make_unique<double[]>(2*nt*n_proj_type);
         }
 
-
-        for(int i=0;i<2*nt+1;++i){
-            dos[i] = temp_dos[i].real();
+        for(int i=0;i<nt;++i){
+            dos[i] = std::abs(temp_dos[nt+i]);
+            dos[nt+i] = std::abs(temp_dos[i]);
             if(proj){
-                for(int ip=0; ip<n_proj_type; ++ip) pdos[i+ip*n_proj_type] = temp_pdos[i+ip*n_proj_type].real();
+                for(int ip=0; ip<n_proj_type; ++ip) {
+                    pdos[i+ip*n_proj_type] = std::abs(temp_pdos[nt+i+ip*n_proj_type]);
+                    pdos[nt+i+ip*n_proj_type] = std::abs(temp_pdos[i+ip*n_proj_type]);
+                }
             }
         }
     }

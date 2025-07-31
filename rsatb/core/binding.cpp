@@ -70,12 +70,12 @@ PYBIND11_MODULE(binding, m) {
                 MPI_Comm *comm = get_mpi_comm(py_comm); // what we get is the ptr to Comm;
 
                 // 3. Skip
-                std::cout << "n_edge: " << n_edge << "\n";
-                std::cout << "n_edge: " << n_atom << "\n";
-                for(int i=0;i<n_atom;++i) std::cout<<atom_type.data()[i]<<" ";
-                std::cout<<"\n";
-                for(int i=0;i<n_edge;++i) std::cout<<edge_index.data()[i]<<" ";
-                std::cout<<"\n";
+                // std::cout << "n_edge: " << n_edge << "\n";
+                // std::cout << "n_edge: " << n_atom << "\n";
+                // for(int i=0;i<n_atom;++i) std::cout<<atom_type.data()[i]<<" ";
+                // std::cout<<"\n";
+                // for(int i=0;i<n_edge;++i) std::cout<<edge_index.data()[i]<<" ";
+                // std::cout<<"\n";
 
                 return std::make_unique<rsatb::Solver>(HFile, SFile, n_atom, n_edge, 
                     atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), pos.data(), *comm);
@@ -120,21 +120,21 @@ PYBIND11_MODULE(binding, m) {
         ){
             
 
-            double dos[2*nt+1];
+            double dos[2*nt];
             std::unique_ptr<double[]> pdos;
             int n_proj;
 
             solver.compute_dos(nt, proj_mode, orbtype.data(), &n_proj, dos, pdos);
 
-            py::array_t<double> o_dos(2*nt+1);
-            py::array_t<double> o_pdos((2*nt+1)*n_proj);
+            py::array_t<double> o_dos(2*nt);
+            py::array_t<double> o_pdos((2*nt)*n_proj);
 
             if(solver.rank == 0){
             
-                std::memcpy(o_dos.mutable_data(), dos, (2*nt+1) * sizeof(double));
+                std::memcpy(o_dos.mutable_data(), dos, 2*nt * sizeof(double));
                 
                 if (proj_mode != "none"){
-                    std::memcpy(o_pdos.mutable_data(), pdos.get(), n_proj * (2*nt+1) * sizeof(double));
+                    std::memcpy(o_pdos.mutable_data(), pdos.get(), n_proj * 2*nt * sizeof(double));
                 }
             }
             
