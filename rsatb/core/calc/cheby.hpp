@@ -34,7 +34,6 @@ void timeprop_coeff(const double& time_step, const double& precision, bool forwa
     
     // First coefficient has a factor of 1 while others have 2.
     (*coeff)[0] *= 0.5;
-    (*coeff)[0] *= 0.5;
 
     delete bes_vec;
 }

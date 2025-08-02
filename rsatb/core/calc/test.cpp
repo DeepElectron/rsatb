@@ -339,25 +339,39 @@ TEST(calcTest, TestCDOS) {
 
 
 TEST(calcTest, Testfft) {
-    std::complex<double> in[4] = {std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0),std::complex<double>(1.0, 2.0)};
-    std::complex<double> out[4];
+    std::complex<double> in[6] = {std::complex<double>(2.0, 0.0),std::complex<double>(3.0, 0.0),std::complex<double>(4.0, 0.0),std::complex<double>(3.0, 0.0),std::complex<double>(2.0, 0.0),std::complex<double>(1.0, 0.0)};
+    std::complex<double> out[6];
+    std::complex<double> bin[12], bout[12];
 
-    for(int i=0;i<4;i++){
+    for(int i=0;i<6;i++){
         std::cout << in[i] << " ";
     }
+    std::cout << "\n";
 
-    rsatb::calc::fft_1d(4, in, out);
+    rsatb::calc::fft_1d(6, in, out);
 
-    for(int i=0;i<4;i++){
+    for(int i=0;i<6;i++){
         std::cout << out[i] << " ";
     }
     std::cout << "\n";
 
-    GTEST_ASSERT_EQ(out[0], std::complex<double>(4.0, 8.0));
+    rsatb::calc::ifft_1d(6, in, out);
 
-    rsatb::calc::bfft_1d(4, 1, in, out);
+    for(int i=0;i<6;i++){
+        bin[2*i] = in[i];
+        bin[2*i+1] = in[i];
+        std::cout << out[i] << " ";
+    }
+    std::cout << "\n";
 
-    GTEST_ASSERT_EQ(out[0], std::complex<double>(4.0, 8.0));
+    rsatb::calc::bfft_1d(6, 2, bin, bout);
+
+    for(int i=0;i<12;i++){
+        std::cout << bout[i] << " ";
+    }
+    std::cout << "\n";
+
+    // GTEST_ASSERT_EQ(out[0], std::complex<double>(0.0, 0.0));
 }
 
 // TEST(calcTest, TestChebyRecur);

@@ -82,7 +82,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
             if(proj){
                 cdos[nt+it+1] = 0; // give 0 initial value, since proj cdos is computed from accumulating the pdos
 
-                VecPointwiseMult(Psi_curr, Psi_in, Psi_out);
+                VecPointwiseMult(Psi_curr, Psi_out, Psi_in); // TODO: This work because Psi_in have no imaginary part, if not, need more consideration
                 VecZeroEntries(sum);
                 VecScatterBegin(scat,Psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
                 VecScatterEnd  (scat,Psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
@@ -94,10 +94,10 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 for (PetscInt i=0; i<n_proj_type; ++i) {
                     cdos[nt+it+1] += pcdos[(nt+it+1)*n_proj_type+i];
                     // copy pdos to negative time
-                    pcdos[(nt-it)*n_proj_type-i-1] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);
+                    pcdos[(nt-it-1)*n_proj_type+i] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);
                 }
             }else{
-                VecDot(Psi_in, Psi_out, cdos + (nt+it+1));
+                VecDot(Psi_out, Psi_in, cdos + (nt+it+1)); // notice the order of out and in
             }
             // copy dos to negative time
             cdos[nt-it-1] = PetscConj(cdos[nt+it+1]);
@@ -151,7 +151,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                     }
                     VecRestoreArrayRead(sum, &pv);
                 }else{
-                    VecDot(v_psi_in, v_psi_out, &temp);
+                    VecDot(v_psi_out, v_psi_in, &temp);
                 }
                 cdos[nt+it+1] += temp;
                 MatDenseRestoreColumnVecRead(Psi_in, in, &v_psi_in);
@@ -178,4 +178,3 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
 template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*);
 template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*);
 }
-

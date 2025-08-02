@@ -21,10 +21,10 @@ private:
     KSP _ksp_;
     PC _pc_;
     
-    PetscReal _scale_=1.0, _shift_=0.0;
+    PetscReal _scale_=-1.0, _shift_=0.0;
     MPI_Comm _comm_;
     const int *_atom_type_, *_edge_index_, *_type_norb_, *_edge_shift_vec_, _n_atom_, _n_edge_;
-    int _n_sample_;
+    int _n_sample_=-1;
     const double *_pos_;
 public:
     int rank;
@@ -33,14 +33,14 @@ public:
         const int n_atom, const int n_edge, 
         const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
         const double *pos,
-        MPI_Comm comm
+        MPI_Comm comm, std::string options=" "
         );
 
     ~Solver();
 
     void setup_graph(); /* Setup the DM, we assume here the graph information is already initialized in the class constructor method */
 
-    void setup_HS(double Kx, double Ky, double Kz);
+    void setup_HS(double Kx, double Ky, double Kz, double emin=0.0, double emax=0.0);
     /* 
         Steps:
             1. create HS from DM, assembled them according to the class initialization method (h5ijR or atomicdata or others);

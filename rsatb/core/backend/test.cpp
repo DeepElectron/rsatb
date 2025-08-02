@@ -108,8 +108,8 @@ TEST(petscTest, TestGetIndex) {
 TEST(petscTest, TestSetupISAtomic) {
     int n_node=4, n_edge=6;
     int edge_index[] = {0,1,1,0,2,3,3,2,0,3,3,0};
-    int atom_type[] = {0,0,0,0};
-    int type_weight[] = {1};
+    int atom_type[] = {0,0,1,1};
+    int type_weight[] = {3,3};
     int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
     DM dm;
@@ -127,8 +127,8 @@ TEST(petscTest, TestSetupISOrbital) {
     int n_node=4, n_edge=6;
     int edge_index[] = {0,1,1,0,2,3,3,2,0,3,3,0};
     int atom_type[] = {0,0,0,0};
-    int type_weight[] = {1};
-    int orb_type[] = {0};
+    int type_weight[] = {3};
+    int orb_type[] = {0,1,1};
     int edge_shift_vec[] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0};
     double pos[] = {0.0,0.5,0.5,0.0,0.0,0.0,0.0,0.5,0.0,0.0,0.0,0.5};
     DM dm;
@@ -139,7 +139,7 @@ TEST(petscTest, TestSetupISOrbital) {
 
     IS isSrc, isDst;
 
-    setup_is_orbital(dm, orb_type, type_weight, &isSrc, &isDst);
+    setup_is_orbital(dm, orb_type, 1, type_weight, &isSrc, &isDst);
 }
 
 

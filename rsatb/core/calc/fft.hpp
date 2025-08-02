@@ -39,17 +39,17 @@ void ifft_1d(int n, cd *in, cd *out){
 
 void bifft_1d(int n, int nb, cd* in, cd* out) {
     /*
-        batched transform of size [nb, n] shaped array
+        batched transform of size [n, nb] shaped array
     */
-    int ns[nb];         // FFT size
-    for(int i=0;i<n;++i) ns[i] = n;
+    int ns[1];         // FFT size
+    ns[0] = n;
 
     fftw_plan p = fftw_plan_many_dft(
         1, ns, nb,
         reinterpret_cast<fftw_complex*>(in), nullptr,
-        1, n,
+        nb, 1,
         reinterpret_cast<fftw_complex*>(out), nullptr,
-        1, n,
+        nb, 1,
         FFTW_BACKWARD, FFTW_ESTIMATE
     );
 
@@ -62,15 +62,15 @@ void bfft_1d(int n, int nb, cd* in, cd* out) {
     /*
         batched transform of size [nb, n] shaped array
     */
-    int ns[nb];         // FFT size
-    for(int i=0;i<n;++i) ns[i] = n;
+    int ns[1];         // FFT size
+    ns[0] = n;
 
     fftw_plan p = fftw_plan_many_dft(
         1, ns, nb,
         reinterpret_cast<fftw_complex*>(in), nullptr,
-        1, n,
+        nb, 1,
         reinterpret_cast<fftw_complex*>(out), nullptr,
-        1, n,
+        nb, 1,
         FFTW_FORWARD, FFTW_ESTIMATE
     );
 

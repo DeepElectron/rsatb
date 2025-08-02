@@ -38,7 +38,7 @@ PYBIND11_MODULE(binding, m) {
             py::array_t<int, py::array::c_style | py::array::forcecast> edge_index, 
             py::array_t<int, py::array::c_style | py::array::forcecast> type_norb, 
             py::array_t<int, py::array::c_style | py::array::forcecast> edge_shift_vec,
-            py::object py_comm) {
+            py::object py_comm, std::string options) {
 
                 // Get the buffers
                 py::buffer_info at_bf = atom_type.request(), ei_bf = edge_index.request(), tn_bf = type_norb.request();
@@ -78,26 +78,42 @@ PYBIND11_MODULE(binding, m) {
                 // std::cout<<"\n";
 
                 return std::make_unique<rsatb::Solver>(HFile, SFile, n_atom, n_edge, 
-                    atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), pos.data(), *comm);
+                    atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), pos.data(), *comm, options);
 
         }),
         py::keep_alive<1,4>(),
         py::keep_alive<1,5>(),
         py::keep_alive<1,6>(),
         py::keep_alive<1,7>(),
-        py::keep_alive<1,8>() 
+        py::keep_alive<1,8>(),
+        py::arg("HFile"),
+        py::arg("SFile"),
+        py::arg("atom_type"),
+        py::arg("pos"),
+        py::arg("edge_index"),
+        py::arg("type_norb"),
+        py::arg("edge_shift_vec"),
+        py::arg("py_comm"),
+        py::arg("options")=" "
         )
         .def("setup_graph", &rsatb::Solver::setup_graph)
 
         .def("setup_HS", [](
             rsatb::Solver &solver, // Since python call self as the first arg
-            py::array_t<double, py::array::c_style | py::array::forcecast> kpoint
+            py::array_t<double, py::array::c_style | py::array::forcecast> kpoint,
+            float emin,
+            float emax
         ){
+            double demin=emin, demax=emax;
             py::buffer_info kp_bf = kpoint.request();
             if (kp_bf.size != 3)
                 throw std::runtime_error("kpoint format error");
-            solver.setup_HS(kpoint.data()[0], kpoint.data()[1], kpoint.data()[2]);
-        })
+            solver.setup_HS(kpoint.data()[0], kpoint.data()[1], kpoint.data()[2], demin, demax);
+        },
+        py::arg("kpoint"),
+        py::arg("emin") = 0.0f,
+        py::arg("emax") = 0.0f
+        )
 
         .def("setup_velocityOp", &rsatb::Solver::setup_velocityOp)
 
@@ -139,7 +155,12 @@ PYBIND11_MODULE(binding, m) {
             }
             
             return std::make_tuple(o_dos, o_pdos);
-        })
+        },
+        py::keep_alive<1,4>(),
+        py::arg("nt"),
+        py::arg("proj_mode") = "none",
+        py::arg("orbtype") = py::array_t<int>()
+        )
 
         .def("__repr__", [](rsatb::Solver &a){
             return "<rsatb.Solver c++ driver>";

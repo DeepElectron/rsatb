@@ -428,16 +428,17 @@ void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
     PetscInt vStart,vEnd,off;
-    DMNetworkGetVertexRange(dm,&vStart,&vEnd);
-    for (PetscInt v=vStart; v<vEnd; ++v) {
-        DMNetworkIsGhostVertex(dm,v,&ghost);
-        if(!ghost) nLocal++;
-    }
-    PetscInt *src = (PetscInt*)malloc(nLocal*sizeof(*src));
-    PetscInt *dst = (PetscInt*)malloc(nLocal*sizeof(*dst));
-
     int norb, count=0;
     AtomData atomdata;
+    DMNetworkGetVertexRange(dm,&vStart,&vEnd);
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
+        DMNetworkIsGhostVertex(dm,v,&ghost);
+        if(!ghost) nLocal += norb;
+    }
+    PetscInt src[nLocal];
+    PetscInt dst[nLocal];
+
     for (PetscInt v=vStart; v<vEnd; ++v) {
         DMNetworkIsGhostVertex(dm,v,&ghost);
         if(!ghost){
@@ -445,9 +446,9 @@ void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
             rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
             DMNetworkGetLocalVecOffset(dm,v,ALL_COMPONENTS,&off);
             for(int i=0; i<norb; ++i){
-                src[count+i] = off+i;
-                dst[count+i] = atomdata.index;
-                count++;
+                src[count] = off+i;
+                dst[count] = atomdata.index;
+                count += 1;
             }
             
         }
@@ -455,41 +456,54 @@ void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
 
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,src,PETSC_COPY_VALUES,isSrc);
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
+
 };
 
-void setup_is_orbital(const DM dm, const int *orbtype, const int *type_weight, IS *isSrc, IS *isDst){
+void setup_is_orbital(const DM dm, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
     PetscInt vStart,vEnd,off;
-    int ntype = sizeof(type_weight) / sizeof(type_weight[0]);
+    int norb, count=0;
+    AtomData atomdata;
+
     DMNetworkGetVertexRange(dm,&vStart,&vEnd);
     for (PetscInt v=vStart; v<vEnd; ++v) {
+        rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
         DMNetworkIsGhostVertex(dm,v,&ghost);
-        if(!ghost) nLocal++;
+        if(!ghost) nLocal += norb;
     }
-    const int* orbtypemap[ntype];
+    const int* orbtypemap[n_atom_type];
     orbtypemap[0] = orbtype;
-    for(int i=0;i<ntype-1;++i){
+    for(int i=0;i<n_atom_type-1;++i){
         orbtypemap[i+1] = orbtype + type_weight[i];
     }
 
-    PetscInt *src = (PetscInt*)malloc(nLocal*sizeof(*src));
-    PetscInt *dst = (PetscInt*)malloc(nLocal*sizeof(*dst));
-    int norb, count=0;
-    AtomData atomdata;
+    // std::cout << orbtypemap[0][0] << orbtypemap[0][1] << orbtypemap[0][2] << "\n";
+
+    PetscInt src[nLocal];
+    PetscInt dst[nLocal];
+
     for (PetscInt v=vStart; v<vEnd; ++v) {
         DMNetworkIsGhostVertex(dm,v,&ghost);
         if(!ghost){
             rsatb::backend::get_attr_from_dm<AtomData>(dm, "atom", v, &atomdata, &norb);
             DMNetworkGetLocalVecOffset(dm,v,ALL_COMPONENTS,&off);
             for(int i=0; i<norb; ++i){
-                src[count+i] = off+i;
-                dst[count+i] = orbtypemap[atomdata.type][i];
-                count++;
+                src[count] = off+i;
+                // std::cout << "Here! " << atomdata.type << " " << i << " " << orbtypemap[atomdata.type][i] <<"\n";
+                dst[count] = orbtypemap[atomdata.type][i];
+                count += 1;
             }
-            
         }
     }
+
+    // std::cout << "Here!!!!! \n";
+    // std::cout << nLocal << "\n";
+
+    // for(int i=0;i<nLocal;++i) std::cout << src[i] << " ";
+    // std::cout << "\n";
+    // for(int i=0;i<nLocal;++i) std::cout << dst[i] << " ";
+    // std::cout << "\n";
 
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,src,PETSC_COPY_VALUES,isSrc);
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
