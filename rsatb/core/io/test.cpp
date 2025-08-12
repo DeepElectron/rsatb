@@ -6,12 +6,12 @@
 using namespace rsatb::io;
 
 TEST(ioTest, TestH5ClassInit) {
-    std::string path = "/nessa/users/zhanghao/dev/rsatb/test/data/H_Al.h5";
+    std::string path = "../../test/data/H_Al.h5";
     rsatb::io::HDF5Handler hd(path);
 }
 
 TEST(ioTest, TestH5GetBlock) {
-    std::string path = "/nessa/users/zhanghao/dev/rsatb/test/data/H_Al333.h5";
+    std::string path = "../../test/data/H_Al333.h5";
     rsatb::io::HDF5Handler hd(path);
     int i=2,j=0,Rx=0,Ry=0,Rz=1;
     int m,n;

@@ -2,6 +2,7 @@
 #include "cheby.hpp"
 #include "dos.hpp"
 #include "fft.hpp"
+#include "fermi_dirac.hpp"
 #include <mpi.h>
 #include <iostream>
 
@@ -374,6 +375,95 @@ TEST(calcTest, Testfft) {
     // GTEST_ASSERT_EQ(out[0], std::complex<double>(0.0, 0.0));
 }
 
+TEST(calcTest, TestMFN){
+    const PetscScalar H_in[]={0.46500671, -0.38921396, -0.38921396, -0.52943857};
+    const PetscScalar S_in[]={0.53371569, -0.0947521 , -0.0947521 ,  0.76628431};
+    const PetscScalar prev[]={-1.16125422*PETSC_i, -0.15076596*PETSC_i};
+    const PetscScalar curr[]={-0.79143568,  0.59208448};
+    const PetscScalar next[]={0.0,0.0};
+    const PetscScalar next_tgt[]={1.13431303*PETSC_i, 0.14726822*PETSC_i};
+
+    Mat  H,S;
+    Vec  v_prev,v_curr,v_next;
+    KSP  ksp;
+
+    MatCreateSeqDense(PETSC_COMM_SELF,2,2,NULL,&H);
+    MatCreateSeqDense(PETSC_COMM_SELF,2,2,NULL,&S);
+
+    for (PetscInt i=0; i<2; ++i){
+        for (PetscInt j=0; j<2; ++j){
+            MatSetValue(H,i,j,H_in[i*2+j],INSERT_VALUES);
+            MatSetValue(S,i,j,S_in[i*2+j],INSERT_VALUES);
+        }
+    }
+    MatAssemblyBegin(H,MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd  (H,MAT_FINAL_ASSEMBLY);
+    MatAssemblyBegin(S,MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd  (S,MAT_FINAL_ASSEMBLY);
+
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,prev,    &v_prev);
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,curr,    &v_curr);
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,next,    &v_next);
+
+    /* Set the ksp */
+    KSPCreate(PETSC_COMM_SELF,&ksp);
+    // KSPSetDM(ksp, dm);
+    KSPSetOperators(ksp,S,S);
+    KSPSetType(ksp, KSPPREONLY);
+    KSPSetUp(ksp);
+
+    rsatb::calc::fermi_dirac_krylov(MPI_COMM_WORLD, H, ksp, v_curr, v_next, 300.0, -0.9, 1e-14);
+
+    VecView(v_next,PETSC_VIEWER_STDOUT_SELF);
+
+}
+
+
+TEST(calcTest, TestFermiKPM){
+    const PetscScalar H_in[]={0.46500671, -0.38921396, -0.38921396, -0.52943857};
+    const PetscScalar S_in[]={0.53371569, -0.0947521 , -0.0947521 ,  0.76628431};
+    const PetscScalar prev[]={-1.16125422*PETSC_i, -0.15076596*PETSC_i};
+    const PetscScalar curr[]={-0.79143568,  0.59208448};
+    const PetscScalar next[]={0.0,0.0};
+    const PetscScalar next_tgt[]={0.17984554, 0.3707678};
+
+    Mat  H,S;
+    Vec  v_prev,v_curr,v_next;
+    KSP  ksp;
+
+    MatCreateSeqDense(PETSC_COMM_SELF,2,2,NULL,&H);
+    MatCreateSeqDense(PETSC_COMM_SELF,2,2,NULL,&S);
+
+    for (PetscInt i=0; i<2; ++i){
+        for (PetscInt j=0; j<2; ++j){
+            MatSetValue(H,i,j,H_in[i*2+j],INSERT_VALUES);
+            MatSetValue(S,i,j,S_in[i*2+j],INSERT_VALUES);
+        }
+    }
+    MatAssemblyBegin(H,MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd  (H,MAT_FINAL_ASSEMBLY);
+    MatAssemblyBegin(S,MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd  (S,MAT_FINAL_ASSEMBLY);
+
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,prev,    &v_prev);
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,curr,    &v_curr);
+    VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,next,    &v_next);
+
+    /* Set the ksp */
+    KSPCreate(PETSC_COMM_SELF,&ksp);
+    // KSPSetDM(ksp, dm);
+    KSPSetOperators(ksp,S,S);
+    KSPSetType(ksp, KSPPREONLY);
+    KSPSetUp(ksp);
+
+    rsatb::calc::fermi_dirac_kpm(
+        H, ksp, v_curr, v_next, 300.0, 0.0, 1.0, 0.0, 500, 1e-14
+    ); // 10K 1996 moment for 1e-14 acc
+
+    VecView(v_curr,PETSC_VIEWER_STDOUT_SELF);
+    VecView(v_next,PETSC_VIEWER_STDOUT_SELF);
+
+}
 // TEST(calcTest, TestChebyRecur);
 
 // TEST(calcTest, TestChebyRecurMult);
@@ -381,8 +471,10 @@ TEST(calcTest, Testfft) {
 int main(int argc, char** argv)
 {
     PetscInitialize(&argc, &argv, nullptr, nullptr);
+    SlepcInitialize(&argc, &argv, nullptr, nullptr);
     ::testing::InitGoogleTest(&argc, argv);
     int result = RUN_ALL_TESTS();
+    SlepcFinalize();
     PetscFinalize();
     return result;
 }

@@ -60,7 +60,7 @@ TEST(petscTest, TestSetMatrixR2K) {
     int type_weight[] = {4};
     int edge_shift_vec[] = {0,  0,  0,  0,  0,  1,  0,  0,  0,  0,  0,  0,  0,  0, -1,  0,  0,  0};
     double pos[] = {0.0000, 0.0000, 3.2000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 1.6000};
-    std::string path = "/nessa/users/zhanghao/dev/rsatb/test/data/C_chain_3_H.h5";
+    std::string path = "../../test/data/C_chain_3_H.h5";
     rsatb::io::HDF5Handler hd(path);
     DM dm;
     MPI_Comm comm = MPI_COMM_WORLD;
@@ -200,8 +200,8 @@ TEST(petscTest, TestSolverInit) {
        18.93883635, 10.93434227,  4.41814146, 21.64438441, 12.49639116,
         8.83628293};
 
-    std::string HFile = "/nessa/users/zhanghao/dev/rsatb/test/data/H_Al333.h5";
-    std::string SFile = "/nessa/users/zhanghao/dev/rsatb/test/data/S_Al333.h5";
+    std::string HFile = "../../test/data/H_Al333.h5";
+    std::string SFile = "../../test/data/S_Al333.h5";
     
     
     rsatb::Solver solver(

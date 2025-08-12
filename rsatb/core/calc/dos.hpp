@@ -126,7 +126,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
 
             cheby_recur_mult(
                 H, ksp, Psi_curr,
-                buff, // length 3 vec
+                buff, // length 4 vec
                 coeff, n_bes,
                 Psi_out
                 );
@@ -163,7 +163,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
             if(proj){
                 for (PetscInt i=0; i<n_proj_type; ++i) {
                     pcdos[(nt+it+1)*n_proj_type+i] /= nrhs;
-                    pcdos[(nt-it)*n_proj_type-i-1] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);    
+                    pcdos[(nt-it-1)*n_proj_type+i] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);    
                 }
             }
             MatCopy(Psi_out, Psi_curr, SAME_NONZERO_PATTERN);

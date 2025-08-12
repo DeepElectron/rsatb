@@ -121,6 +121,51 @@ Therefore, we can adopt different sampling and average technique to improve the 
 $$
 \rho(r) = \frac{1}{2\pi S}\sum_{p=0}^{S-1}\int dt \left[\left( \left(e^{-iS^{-1}Ht}\sqrt{f_F(S^{-1}H)}S^{-1/2}\vec{a}^{(p)}\right)\cdot \vec{\phi}(r)\right)^2\right]
 $$
+
+# KPM
+KPM is a method using chebyshev polynomial and the smooth kernel to approximate a function f(x):
+
+$$
+f(x)=\frac{1}{2}c_0T_0(x)+\sum_{k=1}^\infty c_kT_k(x)
+$$
+Where $c_k=\frac{2}{\pi}\int^1_{-1}{\frac{dx}{\sqrt{1-x^2}}f(x)T_k(x)}$.
+
+For example, when computing the dos: 
+The $1/\sqrt{1-x^2}$ can be moved out and we only need to evaluate the factor $\mu=\frac{2}{\pi}\int^1_{-1}dxf(x)T_k(x)$.
+$$
+\begin{aligned}
+\rho(E)&=\frac{1}{N}\text{Tr}\left(\delta(E-\hat{H})\right)\\
+&=\frac{1}{N}\sum_n \delta\left(E-E_n\right)
+\end{aligned}
+$$
+The moment of which is evaluated using:
+$$
+\begin{aligned}
+c_k&=\frac{2}{N\pi}\int_{-1}^{1}dE \sum_n\delta(E-E_n)T_k(E)\\
+&=\frac{2}{N\pi}\sum_nT_k(E_n)\\
+&=\frac{2}{N\pi}\text{Tr}\left(T_k(\hat{H})\right)
+\end{aligned}
+$$
+
+The KPM is also able to approximate matrix function. For general matrix function $f(\hat{H})$, its scalar function is $f(x)$. Then, once the momente is known, we can evaluate the matrix function using:
+$$f(\hat{H})=\frac{1}{2}c_0T_0(\hat{H})+\sum_{k=1}^\infty c_kT_k(\hat{H})$$
+with:
+$$c_k=\frac{2}{\pi}\int^1_{-1}{\frac{dx}{\sqrt{1-x^2}}f(x)T_k(x)}$$
+To evaluate this more conveniently, we take $x=\text{cos}(\theta)$, and having $T_k(x)=\text{cos}(k\cdot\text{arccos(x)})$, we arrived:
+$$
+\begin{aligned}
+c_k&=\frac{2}{\pi}\int^1_{-1}d\cos(\theta)\frac{1}{|\sin(\theta)|}f(\cos(\theta))\cos(k\theta)\\
+&=\frac{2}{\pi}\int^\pi_{0}d\theta f(\cos(\theta))\cos(k\theta)
+\end{aligned}
+$$
+The above factor can be approximated via the fast-fourier transform.
+$$
+f(E)=\frac{1}{1+e^{\beta (E-\mu)}}=\frac{1}{1+e^{\beta (w\tilde{E}+b-\mu)}}=\frac{1}{1+e^{w\beta((b-\mu)/w)}e^{w\beta (\tilde{E})}}
+$$
+
+# Velocity Op
+
+
 # Optical Conductivity
 TBPM one looks nice, we should first implement that
 

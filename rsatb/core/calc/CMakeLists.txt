@@ -24,11 +24,20 @@ if(NOT TARGET FFTW::FFTW)
       INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
 endif()
 
+if(NOT TARGET SLEPC_LIB)
+  find_library(SLEPC_LIB
+      NAMES slepc
+      HINTS ${PETSC_INCLUDE_DIR}/../lib
+  )
+
+  message(STATUS "SLEPC library: ${SLEPC_LIB}")
+endif()
+
 add_library(calc INTERFACE)
 target_compile_features(calc INTERFACE cxx_std_11)
 target_include_directories(calc INTERFACE ../extern/)
 
-target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW)
+target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW ${SLEPC_LIB})
 
 add_executable(test_calc ./test.cpp)
 target_link_libraries(test_calc PRIVATE calc GTest::gtest)
