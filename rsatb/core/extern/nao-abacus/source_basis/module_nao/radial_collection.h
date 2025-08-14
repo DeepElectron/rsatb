@@ -24,10 +24,10 @@ class RadialCollection
     ~RadialCollection();
 
     /// Builds the collection from (orbital) files.
-    void build(const int nfile, const std::string* const file, const char ftype = '\0', MPI_Comm comm = MPI_COMM_WORLD);
+    void build(const int nfile, const std::string* const file, const char ftype = '\0', const int p = 0, MPI_Comm comm = MPI_COMM_WORLD);
 
     /// Builds the collection from RadialCollection objects and another radius cutoff.
-    void build(const RadialCollection* nls, double radius = 0.0);
+    void build(const RadialCollection* nls, double radius = 0.0, const int p = 0);
 
     /**
      * @name Getters
@@ -125,6 +125,7 @@ class RadialCollection
     int nchi_ = 0;          ///< total number of NumericalRadial objects in the collection
     int nzeta_max_ = 0;     ///< maximum number of distinct radial functions given a type & angular momentum
     double rcut_max_ = 0.0; ///< maximum cutoff radius among all NumericalRadial objects
+    int p_ = 0;             /// ZYZH: the factor of r^p multiply with \psi(r)
 
     RadialSet** radset_ = nullptr;
 

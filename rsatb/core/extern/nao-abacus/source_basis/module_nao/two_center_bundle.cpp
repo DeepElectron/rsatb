@@ -6,7 +6,7 @@
 #include "source_basis/module_nao/real_gaunt_table.h"
 #include <memory>
 
-void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, MPI_Comm comm)
+void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, const int p, MPI_Comm comm)
 {
     std::vector<std::string> file_orb(ntype);
     int rank;
@@ -22,15 +22,15 @@ void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const s
 #endif
 
     orb_ = std::unique_ptr<RadialCollection>(new RadialCollection);
-    orb_->build(ntype, file_orb.data()); // automatically detect file type
+    orb_->build(ntype, file_orb.data(), '\0', p); // automatically detect file type
 }
 
-void TwoCenterBundle::build_orb_onsite(const double& radius)
+void TwoCenterBundle::build_orb_onsite(const double& radius, const int p)
 {
     if (radius > 0)
     {
         orb_onsite_ = std::unique_ptr<RadialCollection>(new RadialCollection);
-        orb_onsite_->build(orb_.get(), radius);
+        orb_onsite_->build(orb_.get(), radius, p);
     }
 }
 

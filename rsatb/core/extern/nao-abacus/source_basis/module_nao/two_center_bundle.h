@@ -14,8 +14,8 @@ class TwoCenterBundle
     TwoCenterBundle& operator=(TwoCenterBundle&&) = default;
 
     // NOTE: some variables might be set only on RANK-0
-    void build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, MPI_Comm comm=MPI_COMM_WORLD);
-    void build_orb_onsite(const double& radius);
+    void build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, const int p = 0, MPI_Comm comm=MPI_COMM_WORLD);
+    void build_orb_onsite(const double& radius, const int p = 0);
 
     void tabulate();
 

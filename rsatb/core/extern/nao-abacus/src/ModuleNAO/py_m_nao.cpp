@@ -45,7 +45,7 @@ void bind_m_nao(py::module& m)
             )pbdoc")
         .def(
             "build",
-            [](RadialCollection& self, int nfile, const py::list& file_list, char ftype, py::object py_comm) {
+            [](RadialCollection& self, int nfile, const py::list& file_list, char ftype, const int p, py::object py_comm) {
                 std::vector<std::string> files;
                 files.reserve(nfile);
                 for (auto file: file_list)
@@ -53,12 +53,13 @@ void bind_m_nao(py::module& m)
                     files.push_back(file.cast<std::string>());
                 }
                 MPI_Comm comm = get_mpi_comm(py_comm);
-                self.build(nfile, files.data(), ftype, comm);
+                self.build(nfile, files.data(), ftype, p, comm);
             },
             "Builds the collection from (orbital) files",
             "nfile"_a,
             "file_list"_a,
             "ftype"_a = '\0',
+            "p"_a = 0,
             "py_comm"_a = py::none()
             )
         .def("set_transformer",

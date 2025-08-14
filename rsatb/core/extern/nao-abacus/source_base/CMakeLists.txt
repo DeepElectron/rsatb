@@ -19,6 +19,7 @@ if (PROJECT_IS_TOP_LEVEL)
     include_directories(./module_container)
 endif()
 
+set(MKL_INTERFACE lp64)
 find_package(MKL CONFIG REQUIRED)
 target_link_libraries(base PUBLIC container MKL::MKL)
 add_subdirectory(module_device)

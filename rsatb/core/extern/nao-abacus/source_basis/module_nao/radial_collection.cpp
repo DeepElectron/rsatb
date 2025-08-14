@@ -97,6 +97,7 @@ void RadialCollection::cleanup()
     lmax_ = -1;
     nchi_ = 0;
     nzeta_max_ = 0;
+    p_ = 0;
 }
 
 void RadialCollection::iter_build()
@@ -129,7 +130,7 @@ void RadialCollection::iter_build()
     }
 }
 
-void RadialCollection::build(const RadialCollection* nls, const double radius)
+void RadialCollection::build(const RadialCollection* nls, const double radius, const int p)
 {
     cleanup();
     this->ntype_ = nls->ntype();
@@ -138,17 +139,18 @@ void RadialCollection::build(const RadialCollection* nls, const double radius)
     this->lmax_ = nls->lmax();
     this->nchi_ = nls->nchi();
     this->nzeta_max_ = nls->nzeta_max();
+    this->p_ = p;
 
     for (int itype = 0; itype < ntype_; ++itype)
     {
         radset_[itype] = new AtomicRadials;
-        static_cast<AtomicRadials*>(radset_[itype])->build(nls->radset_[itype], itype, this->rcut_max_);
+        static_cast<AtomicRadials*>(radset_[itype])->build(nls->radset_[itype], itype, this->rcut_max_, this->p_);
     }
 
     iter_build();
 }
 
-void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, MPI_Comm comm)
+void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, const int p, MPI_Comm comm)
 {
 
     cleanup();
@@ -183,7 +185,7 @@ void RadialCollection::build(const int nfile, const std::string* const file, con
           default: // not supposed to happend
             std::cout << "RadialCollection::build, Unrecognized file: " + file[itype] << std::endl;
         }
-        radset_[itype]->build(file[itype], itype, nullptr, comm);
+        radset_[itype]->build(file[itype], itype, p, nullptr, comm);
     }
 
     delete[] file_type;
@@ -197,6 +199,7 @@ void RadialCollection::build(const int nfile, const std::string* const file, con
 
     iter_build();
     set_rcut_max();
+    this->p_ = p;
 }
 
 void RadialCollection::set_transformer(ModuleBase::SphericalBesselTransformer sbt, const int update)

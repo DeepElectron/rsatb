@@ -26,12 +26,13 @@ class RadialCollection(_RadialCollection):
         self, 
         nfile: int, 
         file_list: List[str], 
-        ftype: str = '\0'
+        ftype: str = '\0',
+        p: int = 0
     ) -> None:
         """
         Builds the collection from (orbital) files.
         """
-        super().build(nfile, file_list, ftype)
+        super().build(nfile, file_list, ftype, p)
     
     def set_transformer(
         self, 

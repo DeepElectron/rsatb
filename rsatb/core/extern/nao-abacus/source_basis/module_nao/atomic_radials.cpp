@@ -20,7 +20,7 @@ AtomicRadials& AtomicRadials::operator=(const AtomicRadials& rhs)
     return *this;
 }
 
-void AtomicRadials::build(const std::string& file, const int itype, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::build(const std::string& file, const int itype, const int p, std::ofstream* ptr_log, MPI_Comm comm)
 {
     // deallocates all arrays and reset variables (excluding sbt_)
     cleanup();
@@ -60,7 +60,7 @@ void AtomicRadials::build(const std::string& file, const int itype, std::ofstrea
     }
 
     itype_ = itype;
-    read_abacus_orb(ifs, ptr_log, comm);
+    read_abacus_orb(ifs, p, ptr_log, comm);
     set_rcut_max();
 
     if (rank == 0)
@@ -69,7 +69,7 @@ void AtomicRadials::build(const std::string& file, const int itype, std::ofstrea
     }
 }
 
-void AtomicRadials::build(RadialSet* const other, const int itype, const double rcut)
+void AtomicRadials::build(RadialSet* const other, const int itype, const double rcut, const int p)
 {
     this->symbol_ = other->symbol();
     this->lmax_ = other->lmax();
@@ -94,7 +94,20 @@ void AtomicRadials::build(RadialSet* const other, const int itype, const double 
         // if the cutoff radius is larger than the original one, just copy the orbitals
         if (rcut >= other->cbegin()[ichi].rcut())
         {
-            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue, 0, izeta, symbol_, itype, false);
+            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue, p, izeta, symbol_, itype, false);
+            /*
+                void build(const int l,
+                        const bool for_r_space,
+                        const int ngrid,
+                        const double* const grid,
+                        const double* const value,
+                        const int p = 0,
+                        const int izeta = 0,
+                        const std::string symbol = "",
+                        const int itype = 0,
+                        const bool init_sbt = true
+                );
+            */
         }
         else
         {
@@ -109,7 +122,7 @@ void AtomicRadials::build(RadialSet* const other, const int itype, const double 
     }
 }
 
-void AtomicRadials::read_abacus_orb(std::ifstream& ifs, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstream* ptr_log, MPI_Comm comm)
 {
     /*
      * Read the orbital file.
@@ -270,7 +283,7 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, std::ofstream* ptr_log, 
             is_read[index(l, izeta)] = true;
 
             // skip the initialization of sbt_ in this stage
-            chi_[index(l, izeta)].build(l, true, ngrid, rgrid, rvalue, 0, izeta, symbol_, itype_, false);
+            chi_[index(l, izeta)].build(l, true, ngrid, rgrid, rvalue, p, izeta, symbol_, itype_, false);
             chi_[index(l, izeta)].normalize();
         }
     }

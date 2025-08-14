@@ -55,6 +55,7 @@ class RadialSet
      */
     virtual void build(const std::string&,             ///< file name
                        const int = 0,                  ///< the element index in calculation
+                       const int = 0,                  /// ZYZH: The p value, see for NumericalRadial class
                        std::ofstream* const = nullptr, ///< output file stream for logging
                        MPI_Comm comm = MPI_COMM_WORLD         ///< MPI rank
                        ) {}

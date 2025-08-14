@@ -35,11 +35,12 @@ class AtomicRadials : public RadialSet
     //! Build the class from an orbital file
     void build(const std::string& file,          //!< orbital file name
                const int itype = 0,              //!< element index in calculation
+               const int p = 0,
                std::ofstream* ptr_log = nullptr, //!< output file stream for logging
                MPI_Comm comm = MPI_COMM_WORLD   //!< MPI comm
     );
 
-    void build(RadialSet* const other, const int itype, const double rcut);
+    void build(RadialSet* const other, const int itype, const double rcut, const int p = 0);
 
     //! Get the energy cutoff as given by the orbital file
     double orb_ecut() const { return orb_ecut_; }
@@ -49,6 +50,7 @@ class AtomicRadials : public RadialSet
 
     //! Read the orbital file in the ABACUS format
     void read_abacus_orb(std::ifstream& ifs,               //!< input file stream from orbital file
+                         const int p = 0, 
                          std::ofstream* ptr_log = nullptr, //!< output file stream for logging
                          MPI_Comm comm = MPI_COMM_WORLD   //!< MPI comm
     );
