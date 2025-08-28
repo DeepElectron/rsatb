@@ -11,6 +11,7 @@ OBJECT
   two_center_bundle.cpp
 )
 
+
 if(ENABLE_COVERAGE)
   add_coverage(numerical_atomic_orbitals)
 endif()

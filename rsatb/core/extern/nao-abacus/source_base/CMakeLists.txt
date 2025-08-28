@@ -17,11 +17,13 @@ add_library(
 if (PROJECT_IS_TOP_LEVEL)
     include_directories(./module_device)
     include_directories(./module_container)
+    set(MKL_INTERFACE lp64)
+    find_package(MKL CONFIG REQUIRED)
+    list(APPEND math_libs MKL::MKL)
 endif()
 
-set(MKL_INTERFACE lp64)
-find_package(MKL CONFIG REQUIRED)
-target_link_libraries(base PUBLIC container MKL::MKL)
+
+target_link_libraries(base PUBLIC container ${math_libs})
 add_subdirectory(module_device)
 add_subdirectory(module_container)
 

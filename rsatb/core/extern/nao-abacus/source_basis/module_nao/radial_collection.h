@@ -24,10 +24,10 @@ class RadialCollection
     ~RadialCollection();
 
     /// Builds the collection from (orbital) files.
-    void build(const int nfile, const std::string* const file, const char ftype = '\0', const int p = 0, MPI_Comm comm = MPI_COMM_WORLD);
+    void build(const int nfile, const std::string* const file, const char ftype = '\0', const int p = 0, const int pm = 0, MPI_Comm comm = MPI_COMM_WORLD);
 
     /// Builds the collection from RadialCollection objects and another radius cutoff.
-    void build(const RadialCollection* nls, double radius = 0.0, const int p = 0);
+    void build(const RadialCollection* nls, double radius = 0.0);
 
     /**
      * @name Getters
@@ -37,13 +37,19 @@ class RadialCollection
     int ntype() const { return ntype_; }
     int lmax(const int itype) const { return radset_[itype]->lmax(); }
     int lmax() const { return lmax_; }
+    int lmin() const { return lmin_; }
+    int lmin(const int itype) const { return radset_[itype]->lmin(); }
     double rcut_max(const int itype) const { return radset_[itype]->rcut_max(); }
     double rcut_max() const { return rcut_max_; }
     int nzeta(const int itype, const int l) const { return radset_[itype]->nzeta(l); }
     int nzeta_max(const int itype) const { return radset_[itype]->nzeta_max(); }
     int nzeta_max() const { return nzeta_max_; }
+    int nphi_max() const { return nphi_max_; }
+    int norb(const int itype, const int l) const { return radset_[itype]->norb(l); }
     int nchi() const { return nchi_; }
+    int p() const { return p_; }
     int nchi(const int itype) const { return radset_[itype]->nchi(); }
+    int nphi(const int itype) const { return radset_[itype]->nphi(); }
 
     const NumericalRadial& operator()(const int itype, const int l, const int izeta) const
     {
@@ -122,8 +128,10 @@ class RadialCollection
   private:
     int ntype_ = 0;         ///< number of RadialSet in the collection
     int lmax_ = -1;         ///< maximum angular momentum of all NumericalRadial objects in the collection
+    int lmin_ = 99999;
     int nchi_ = 0;          ///< total number of NumericalRadial objects in the collection
     int nzeta_max_ = 0;     ///< maximum number of distinct radial functions given a type & angular momentum
+    int nphi_max_ = 0;
     double rcut_max_ = 0.0; ///< maximum cutoff radius among all NumericalRadial objects
     int p_ = 0;             /// ZYZH: the factor of r^p multiply with \psi(r)
 

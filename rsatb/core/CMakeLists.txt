@@ -9,7 +9,46 @@ find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PETSc REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
-find_package(FFTW REQUIRED)
+# find_package(FFTW REQUIRED)
+
+# add math_libs
+if(DEFINED ENV{MKLROOT} AND NOT DEFINED MKLROOT)
+    set(MKLROOT "$ENV{MKLROOT}")
+endif()
+
+if(MKLROOT)
+    set(MKL_INTERFACE lp64)
+    set(USE_OPENMP ON)
+    if(USE_OPENMP)
+        find_package(OpenMP REQUIRED)
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        add_link_options(${OpenMP_CXX_LIBRARIES})
+    endif()
+    find_package(MKL REQUIRED)
+    add_definitions(-D__MKL)
+    include_directories(${MKL_INCLUDE} ${MKL_INCLUDE}/fftw)
+
+    list(APPEND math_libs IntelMKL::MKL)
+
+    if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
+    list(APPEND math_libs -lifcore)
+    endif()
+else()
+    find_package(LAPACK REQUIRED)
+    find_package(FFTW REQUIRED)
+    add_compile_definitions(__FFTW)
+    if(NOT TARGET FFTW::FFTW)
+        add_library(FFTW::FFTW INTERFACE IMPORTED)
+        set_target_properties(FFTW::FFTW PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
+            INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+    endif()
+    include_directories(${FFTW_INCLUDE_DIRS})
+    message(STATUS "FFTW_INCLUDE_DIRS: ${FFTW_INCLUDE_DIRS}")
+    list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK)
+endif()
+
+
 # Wrap into a modern imported target so the rest of your code can stay target-based
 if(NOT TARGET PETSc::PETSc)
     add_library(PETSc::PETSc INTERFACE IMPORTED)
@@ -18,15 +57,16 @@ if(NOT TARGET PETSc::PETSc)
       INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
 endif()
 
-if(NOT TARGET FFTW::FFTW)
-    add_library(FFTW::FFTW INTERFACE IMPORTED)
-    set_target_properties(FFTW::FFTW PROPERTIES
-      INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
-      INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
-endif()
+# if(NOT TARGET FFTW::FFTW)
+#     add_library(FFTW::FFTW INTERFACE IMPORTED)
+#     set_target_properties(FFTW::FFTW PROPERTIES
+#       INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
+#       INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+# endif()
 
 add_subdirectory(backend)
 add_subdirectory(io)
+add_subdirectory(extern/nao-abacus)
 add_subdirectory(calc)
 
 find_library(SLEPC_LIB
@@ -49,25 +89,25 @@ find_package(pybind11 CONFIG REQUIRED)
 
 
 # add hr2hk lib
-add_library(hr2hk OBJECT hr2hk.cpp hr2hk.hpp $<TARGET_OBJECTS:backend>)
+add_library(hr2hk SHARED hr2hk.cpp hr2hk.hpp $<TARGET_OBJECTS:backend>)
 target_compile_features(hr2hk PUBLIC cxx_std_11)
 
-# target_include_directories(
-#     hr2hklib PUBLIC
-#     ./ 
-#     ${CONDA_PREFIX}/include 
-#     ${CONDA_PREFIX}/petsc/build/include 
-#     ${CONDA_PREFIX}/petsc/arch-linux-c-opt/include
-#     )
+target_include_directories(
+    hr2hk PUBLIC
+    ./ 
+    ./extern/nao-abacus/
+    ./extern/nao-abacus/source_base/module_container 
+    ./extern/nao-abacus/source_base/module_device 
+    )
 
-target_link_libraries(hr2hk PUBLIC backend io)
+target_link_libraries(hr2hk PUBLIC backend io base numerical_atomic_orbitals)
 
 # add solver lib
 add_library(solver SHARED solver.cpp solver.hpp)
 target_compile_features(solver PUBLIC cxx_std_11)
 target_include_directories(
     solver PUBLIC 
-    ./
+    ./ 
 )
 target_link_libraries(solver PUBLIC hr2hk calc backend io ${SLEPC_LIB})
 

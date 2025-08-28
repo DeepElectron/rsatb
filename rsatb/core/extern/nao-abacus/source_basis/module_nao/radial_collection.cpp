@@ -11,6 +11,7 @@
 RadialCollection::RadialCollection(const RadialCollection& other) :
     ntype_(other.ntype_),
     lmax_(other.lmax_),
+    lmin_(other.lmin_),
     nchi_(other.nchi_),
     nzeta_max_(other.nzeta_max_),
     rcut_max_(other.rcut_max_),
@@ -43,6 +44,7 @@ RadialCollection& RadialCollection::operator=(const RadialCollection& rhs)
 
     ntype_ = rhs.ntype_;
     lmax_ = rhs.lmax_;
+    lmin_ = rhs.lmin_;
     nchi_ = rhs.nchi_;
     nzeta_max_ = rhs.nzeta_max_;
     rcut_max_ = rhs.rcut_max_;
@@ -95,6 +97,7 @@ void RadialCollection::cleanup()
 
     ntype_ = 0;
     lmax_ = -1;
+    lmin_ = -1;
     nchi_ = 0;
     nzeta_max_ = 0;
     p_ = 0;
@@ -130,27 +133,29 @@ void RadialCollection::iter_build()
     }
 }
 
-void RadialCollection::build(const RadialCollection* nls, const double radius, const int p)
+void RadialCollection::build(const RadialCollection* nls, const double radius)
 {
     cleanup();
     this->ntype_ = nls->ntype();
     this->rcut_max_ = radius>0.0?radius:nls->rcut_max();
     this->radset_ = new RadialSet*[ntype_];
     this->lmax_ = nls->lmax();
+    this->lmin_ = nls->lmin();
     this->nchi_ = nls->nchi();
     this->nzeta_max_ = nls->nzeta_max();
-    this->p_ = p;
+    this->nphi_max_ = nls->nphi_max();
+    this->p_ = nls->p();
 
     for (int itype = 0; itype < ntype_; ++itype)
     {
         radset_[itype] = new AtomicRadials;
-        static_cast<AtomicRadials*>(radset_[itype])->build(nls->radset_[itype], itype, this->rcut_max_, this->p_);
+        static_cast<AtomicRadials*>(radset_[itype])->build(nls->radset_[itype], itype, this->rcut_max_);
     }
 
     iter_build();
 }
 
-void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, const int p, MPI_Comm comm)
+void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, const int p, const int pm, MPI_Comm comm)
 {
 
     cleanup();
@@ -185,7 +190,7 @@ void RadialCollection::build(const int nfile, const std::string* const file, con
           default: // not supposed to happend
             std::cout << "RadialCollection::build, Unrecognized file: " + file[itype] << std::endl;
         }
-        radset_[itype]->build(file[itype], itype, p, nullptr, comm);
+        radset_[itype]->build(file[itype], itype, p, pm, nullptr, comm);
     }
 
     delete[] file_type;
@@ -193,8 +198,10 @@ void RadialCollection::build(const int nfile, const std::string* const file, con
     for (int itype = 0; itype < ntype_; ++itype)
     {
         lmax_ = std::max(lmax_, radset_[itype]->lmax());
+        lmin_ = std::min(lmin_, radset_[itype]->lmin());
         nchi_ += radset_[itype]->nchi();
         nzeta_max_ = std::max(nzeta_max_, radset_[itype]->nzeta_max());
+        nphi_max_ = std::max(nphi_max_, radset_[itype]->nphi());
     }
 
     iter_build();

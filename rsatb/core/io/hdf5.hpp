@@ -15,7 +15,7 @@ class HDF5Handler
         std::string FILE_NAME;
         H5::Group group;
     public:
-        explicit HDF5Handler(std::string &FILE_NAME): FILE_NAME(FILE_NAME), file(FILE_NAME, H5F_ACC_RDONLY), group(file.openGroup("0"))
+        explicit HDF5Handler(const std::string &FILE_NAME): FILE_NAME(FILE_NAME), file(FILE_NAME, H5F_ACC_RDONLY), group(file.openGroup("0"))
         {}
 
         int read_from_ijR_dense(

@@ -20,7 +20,7 @@ AtomicRadials& AtomicRadials::operator=(const AtomicRadials& rhs)
     return *this;
 }
 
-void AtomicRadials::build(const std::string& file, const int itype, const int p, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::build(const std::string& file, const int itype, const int p, const int pm, std::ofstream* ptr_log, MPI_Comm comm)
 {
     // deallocates all arrays and reset variables (excluding sbt_)
     cleanup();
@@ -60,7 +60,7 @@ void AtomicRadials::build(const std::string& file, const int itype, const int p,
     }
 
     itype_ = itype;
-    read_abacus_orb(ifs, p, ptr_log, comm);
+    read_abacus_orb(ifs, p, pm, ptr_log, comm);
     set_rcut_max();
 
     if (rank == 0)
@@ -69,11 +69,13 @@ void AtomicRadials::build(const std::string& file, const int itype, const int p,
     }
 }
 
-void AtomicRadials::build(RadialSet* const other, const int itype, const double rcut, const int p)
+void AtomicRadials::build(RadialSet* const other, const int itype, const double rcut)
 {
     this->symbol_ = other->symbol();
     this->lmax_ = other->lmax();
+    this->lmin_ = other->lmin();
     this->nchi_ = other->nchi();
+    this->nphi_ = other->nphi();
     this->nzeta_max_ = other->nzeta_max();
     this->itype_ = itype;
     this->symbol_ = other->symbol();
@@ -87,6 +89,7 @@ void AtomicRadials::build(RadialSet* const other, const int itype, const double 
     for (int ichi = 0; ichi < this->nchi_; ichi++)
     {
         const int l = other->cbegin()[ichi].l();
+        const int p = other->cbegin()[ichi].pr();
         int ngrid = other->cbegin()[ichi].nr();
         const double* rgrid = other->cbegin()[ichi].rgrid();
         const double* rvalue = other->cbegin()[ichi].rvalue();
@@ -117,12 +120,12 @@ void AtomicRadials::build(RadialSet* const other, const int itype, const double 
             ngrid = rvalue_new.size();
             // projgen(l, ngrid, rgrid, rvalue, rcut, 20, rvalue_new);
             // build the new on-site orbitals
-            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue_new.data(), 0, izeta, symbol_, itype, false);
+            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue_new.data(), p, izeta, symbol_, itype, false);
         }
     }
 }
 
-void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, const int pm, std::ofstream* ptr_log, MPI_Comm comm)
 {
     /*
      * Read the orbital file.
@@ -165,10 +168,22 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
 #ifdef __DEBUG
                 assert(lmax_ >= 0);
 #endif
+                lmax_ += pm;
+                lmin_ = (pm >= 0) ? pm : 0;
+
                 nzeta_ = new int[lmax_ + 1];
-                for (int l = 0; l <= lmax_; ++l)
+                norb_ = new int[lmax_ + 1];
+                std::fill(nzeta_, nzeta_+lmax_+1, 0);
+                std::fill(norb_, norb_+lmax_+1, 0);
+                for (int l = pm; l <= lmax_; ++l)
                 {
-                    ifs >> tmp >> tmp >> tmp >> nzeta_[l]; // skip "Number" "of" "Xorbital-->"
+                    if (l >= 0)
+                    {
+                        ifs >> tmp >> tmp >> tmp >> nzeta_[l]; // skip "Number" "of" "Xorbital-->"
+                        norb_[l] = nzeta_[l] * (2*l+1);
+                    } else {
+                        ifs >> tmp >> tmp >> tmp >> tmp; // tmp ignore this orbital
+                    }
                 }
             }
             else if (tmp == "Mesh")
@@ -191,11 +206,13 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
          * 3. a map from (l, izeta) to 1-d array index in chi_
          *                                                                              */
         nchi_ = 0;
-        for (int l = 0; l <= lmax_; ++l)
+        nphi_ = 0;
+        for (int l = lmin_; l <= lmax_; ++l)
         {
             nchi_ += nzeta_[l];
+            nphi_ += norb_[l];
         }
-        nzeta_max_ = *std::max_element(nzeta_, nzeta_ + lmax_ + 1);
+        nzeta_max_ = *std::max_element(nzeta_+lmin_, nzeta_ + lmax_ + 1);
         indexing(); // build index_map_
     }
 
@@ -203,8 +220,10 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
     Parallel_Common::bcast_string(symbol_, comm);
     Parallel_Common::bcast_double(orb_ecut_, comm);
     Parallel_Common::bcast_int(lmax_, comm);
+    Parallel_Common::bcast_int(lmin_, comm);
 
     Parallel_Common::bcast_int(nchi_, comm);
+    Parallel_Common::bcast_int(nphi_, comm);
     Parallel_Common::bcast_int(nzeta_max_, comm);
 
     Parallel_Common::bcast_int(ngrid, comm);
@@ -214,11 +233,13 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
     if (rank != 0)
     {
         nzeta_ = new int[lmax_ + 1];
+        norb_ = new int[lmax_ + 1];
         index_map_ = new int[(lmax_ + 1) * nzeta_max_];
     }
 
 #ifdef __MPI
     Parallel_Common::bcast_int(nzeta_, lmax_ + 1, comm);
+    Parallel_Common::bcast_int(norb_, lmax_ + 1, comm);
     Parallel_Common::bcast_int(index_map_, (lmax_ + 1) * nzeta_max_, comm);
 #endif
 
@@ -237,7 +258,7 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
         is_read[i] = false;
     }
 
-    for (int l = 0; l <= lmax_; ++l)
+    for (int l = lmin_; l <= lmax_; ++l)
     {
         for (int izeta = 0; izeta < nzeta_[l]; ++izeta)
         {
@@ -261,7 +282,7 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, std::ofstre
                     }
                     int read_l, read_izeta;
                     ifs >> tmp >> read_l >> read_izeta;
-                    if (l == read_l && izeta == read_izeta)
+                    if (l == read_l+pm && izeta == read_izeta)
                     {
                         break;
                     }

@@ -32,17 +32,17 @@ PYBIND11_MODULE(binding, m) {
     }
     py::class_<rsatb::Solver>(m, "Solver")
         .def(py::init([](
-            std::string &HFile, std::string &SFile,
-            py::array_t<int, py::array::c_style | py::array::forcecast> atom_type, 
-            py::array_t<double, py::array::c_style | py::array::forcecast> pos,
-            py::array_t<int, py::array::c_style | py::array::forcecast> edge_index, 
-            py::array_t<int, py::array::c_style | py::array::forcecast> type_norb, 
-            py::array_t<int, py::array::c_style | py::array::forcecast> edge_shift_vec,
-            py::object py_comm, std::string options) {
-
+                py::array_t<int, py::array::c_style | py::array::forcecast> atom_type, 
+                py::array_t<double, py::array::c_style | py::array::forcecast> cell,
+                py::array_t<double, py::array::c_style | py::array::forcecast> pos,
+                py::array_t<int, py::array::c_style | py::array::forcecast> edge_index, 
+                py::array_t<int, py::array::c_style | py::array::forcecast> type_norb, 
+                py::array_t<int, py::array::c_style | py::array::forcecast> edge_shift_vec,
+                py::object py_comm, std::string options
+            ){
                 // Get the buffers
                 py::buffer_info at_bf = atom_type.request(), ei_bf = edge_index.request(), tn_bf = type_norb.request();
-                py::buffer_info esv_bf = edge_shift_vec.request();
+                py::buffer_info esv_bf = edge_shift_vec.request(), cell_bf = cell.request();
                 py::buffer_info pos_bf = pos.request();
 
                 /*
@@ -65,6 +65,8 @@ PYBIND11_MODULE(binding, m) {
                     throw std::runtime_error("type_norb must be 1D");
                 if (esv_bf.ndim != 2 || esv_bf.size != 3*n_edge)
                     throw std::runtime_error("edge_shift_vec must be 2D with shape [n_edge, 3]");
+                if (cell_bf.ndim = 2 || cell_bf.size != 9)
+                    throw std::runtime_error("cell must be 2D with shape [3, 3]");
 
                 // 2.
                 MPI_Comm *comm = get_mpi_comm(py_comm); // what we get is the ptr to Comm;
@@ -77,46 +79,89 @@ PYBIND11_MODULE(binding, m) {
                 // for(int i=0;i<n_edge;++i) std::cout<<edge_index.data()[i]<<" ";
                 // std::cout<<"\n";
 
-                return std::make_unique<rsatb::Solver>(HFile, SFile, n_atom, n_edge, 
-                    atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), pos.data(), *comm, options);
+                return std::make_unique<rsatb::Solver>(n_atom, n_edge, 
+                    atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), 
+                    cell.data(), pos.data(), *comm, options);
 
-        }),
-        py::keep_alive<1,4>(),
-        py::keep_alive<1,5>(),
-        py::keep_alive<1,6>(),
-        py::keep_alive<1,7>(),
-        py::keep_alive<1,8>(),
-        py::arg("HFile"),
-        py::arg("SFile"),
-        py::arg("atom_type"),
-        py::arg("pos"),
-        py::arg("edge_index"),
-        py::arg("type_norb"),
-        py::arg("edge_shift_vec"),
-        py::arg("py_comm"),
-        py::arg("options")=" "
+            }),
+            py::keep_alive<1,2>(),
+            py::keep_alive<1,3>(),
+            py::keep_alive<1,4>(),
+            py::keep_alive<1,5>(),
+            py::keep_alive<1,6>(),
+            py::keep_alive<1,7>(),
+            py::arg("atom_type"),
+            py::arg("cell"),
+            py::arg("pos"),
+            py::arg("edge_index"),
+            py::arg("type_norb"),
+            py::arg("edge_shift_vec"),
+            py::arg("py_comm"),
+            py::arg("options")=" "
         )
         .def("setup_graph", &rsatb::Solver::setup_graph)
 
-        .def("setup_HS", [](
-            rsatb::Solver &solver, // Since python call self as the first arg
-            py::array_t<double, py::array::c_style | py::array::forcecast> kpoint,
-            float emin,
-            float emax
-        ){
-            double demin=emin, demax=emax;
-            py::buffer_info kp_bf = kpoint.request();
-            if (kp_bf.size != 3)
-                throw std::runtime_error("kpoint format error");
-            solver.setup_HS(kpoint.data()[0], kpoint.data()[1], kpoint.data()[2], demin, demax);
-        },
-        py::arg("kpoint"),
-        py::arg("emin") = 0.0f,
-        py::arg("emax") = 0.0f
+        .def("setup_K", &rsatb::Solver::setup_K)
+
+        .def("setup_S_h5", [](rsatb::Solver &solver, const std::string &SFile)
+            {
+                solver.setup_S(SFile);
+            },
+            py::arg("SFile")
         )
 
-        .def("setup_velocityOp", &rsatb::Solver::setup_velocityOp)
+        .def("setup_S_orb", [](
+            rsatb::Solver &solver, 
+            std::vector<std::string> file_orb0, 
+            const std::string& orbital_dir
+            ){
+                if (file_orb0.size() != solver.ntype())
+                    throw std::runtime_error("The length of the input orbitals does not match the number of chemical elements.");
+                solver.setup_S(file_orb0.data(), orbital_dir);
+            },
+            py::arg("file_orb0"),
+            py::arg("orbital_dir") = "./"
+        )
 
+        .def("setup_R_h5", [](
+            rsatb::Solver &solver,
+            const std::string &RxFile,
+            const std::string &RyFile,
+            const std::string &RzFile
+            ){
+                solver.setup_R(RxFile, RyFile, RzFile);
+            },
+            py::arg("RxFile")="",
+            py::arg("RyFile")="",
+            py::arg("RzFile")=""    
+        )
+
+        .def("setup_R_orb", [](
+            rsatb::Solver &solver, 
+            std::vector<std::string> file_orb0, 
+            const std::string& orbital_dir
+            ){
+                solver.setup_R(file_orb0.data(), orbital_dir);
+            },
+            py::arg("file_orb0"),
+            py::arg("orbital_dir") = "./"
+        )
+
+        .def("setup_H_h5", [](
+            rsatb::Solver &solver, // Since python call self as the first arg
+            const std::string &HFile,
+            float emin,
+            float emax
+            ){
+
+                double demin=emin, demax=emax;
+                solver.setup_H(HFile, demin, demax);
+            },
+            py::arg("HFile"),
+            py::arg("emin") = 0.0f,
+            py::arg("emax") = 0.0f
+        )
+        
         .def("setup_sample", &rsatb::Solver::setup_sample)
 
         .def("get_nt", [](

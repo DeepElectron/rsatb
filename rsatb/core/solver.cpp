@@ -13,20 +13,18 @@ using namespace rsatb::calc;
 namespace rsatb{
 
 Solver::Solver(
-    std::string &HFile, std::string &SFile, 
     const int n_atom, const int n_edge, 
     const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
-    const double *pos,
+    const double *cell, const double *pos,
     MPI_Comm comm,
     std::string options
-    ): _HFile_(HFile), _SFile_(SFile), _mode_("H5ijR"), _n_atom_(n_atom),
-       _n_edge_(n_edge), _atom_type_(atom_type), _edge_index_(edge_index),
-       _type_norb_(type_norb), _edge_shift_vec_(edge_shift_vec), _pos_(pos), _comm_(comm),
-       _Hhd_(_HFile_), _Shd_(_SFile_),
+    ): _n_atom_(n_atom), _n_edge_(n_edge), _atom_type_(atom_type), _edge_index_(edge_index),
+       _type_norb_(type_norb), _edge_shift_vec_(edge_shift_vec), _cell_(cell), _pos_(pos), _comm_(comm),
        _dm_(nullptr),
         _H_(nullptr), _S_(nullptr),
         _Samples_(nullptr), _Sample_(nullptr),
-        _ksp_(nullptr), _pc_(nullptr)
+        _ksp_(nullptr), _pc_(nullptr), 
+        _ntype_((*std::max_element(atom_type, atom_type+n_atom))+1)
     {
         // PetscOptionsSetValue(NULL, "-info", "stacking.log:ksp,pc");
         // PetscOptionsSetValue(NULL, "-log_view", ":profiling.log");
@@ -43,7 +41,7 @@ Solver::~Solver() { /* destructor */
     if(_ksp_) KSPDestroy(&_ksp_);
     if(_n_sample_==1){
         if(_Sample_) VecDestroy(&_Sample_);
-    }else{
+    }else if (_n_sample_ > 1) {
         if(_Samples_) MatDestroy(&_Samples_);
     }
     SlepcFinalize();
@@ -60,14 +58,13 @@ void Solver::setup_graph(){ /* Setup the DM, we assume here the graph informatio
     rsatb::backend::ViewDMNetworkPartition(_dm_, false);
 };
 
-void Solver::setup_HS(double Kx, double Ky, double Kz, double emin, double emax){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
-    if (_n_sample_==-1) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian and Overlap Operator.");
+void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
+    if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian.");
+    if ( !_kpoint_ready_ )  throw std::runtime_error("Please setup kpoint before configuring the Hamiltonian.");
+    if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before configuring the Hamiltonian.");
     
-    DMCreateMatrix(_dm_, &_H_);
-    setMatrixR2K(_H_, _dm_, &_Hhd_, Kx, Ky, Kz);
+    this->set_mat_from_h5(&_H_, HFile);
 
-    DMCreateMatrix(_dm_, &_S_);
-    setMatrixR2K(_S_, _dm_, &_Shd_, Kx, Ky, Kz);
     PetscScalar _emax_, _emin_;
 
     if (emax <= emin) { // in this case we think the input emin, emax is not meaningful
@@ -125,8 +122,8 @@ void Solver::setup_HS(double Kx, double Ky, double Kz, double emin, double emax)
     _shift_ = (_emax_ + _emin_).real() / 2;
 
     // scale and shift the H/S
-    MatAXPY(_H_, -_shift_, _S_, SAME_NONZERO_PATTERN);
-    MatScale(_H_, 1/_scale_);
+    MatAXPY(_H_, -(PetscScalar)_shift_, _S_, SAME_NONZERO_PATTERN);
+    MatScale(_H_, (PetscScalar)(1/_scale_));
     
 
     /* Setup the KSP solver also, need test*/
@@ -137,6 +134,7 @@ void Solver::setup_HS(double Kx, double Ky, double Kz, double emin, double emax)
     KSPGetPC(_ksp_,&_pc_);
     KSPSetReusePreconditioner(_ksp_, PETSC_TRUE);
     // KSPSetInitialGuessNonzero(_ksp_, PETSC_TRUE);
+
     if(_n_sample_== 1){
         KSPSetType(_ksp_, KSPCG);
     }else{
@@ -167,9 +165,9 @@ void Solver::setup_HS(double Kx, double Ky, double Kz, double emin, double emax)
     PCSetUp(_pc_);
     KSPSetFromOptions(_ksp_);
     KSPSetUp(_ksp_);
-};
 
-void Solver::setup_velocityOp(){};
+    _hamiltonian_ready_ = true;
+};
 
 void Solver::setup_sample(int n, std::string method){
     if(n==1){
@@ -220,6 +218,8 @@ void Solver::setup_sample(int n, std::string method){
     }else {
         throw std::invalid_argument("sampling method inappropriate, need to choose from gauss/hutch/hutch++");
     }
+
+    _samples_ready_ = true;
     
 };
 
@@ -227,6 +227,12 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     /*
         We should have dos allocated before this function's call, but instead have pdos unallocated as a unique_ptr, since we do not know the size of the projection before.
     */
+
+    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_) ) 
+    { 
+        throw std::runtime_error("Not ready for computing dos, setup: 1. samples, 2. kpoint 3. Overlap 4. Hamiltonian first!"); 
+    }
+
     bool proj=true;
     int n_proj_type=1;
     std::complex<double> imI(0.0, 1.0); 

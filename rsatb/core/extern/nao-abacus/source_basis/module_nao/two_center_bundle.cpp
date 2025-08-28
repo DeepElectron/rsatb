@@ -6,7 +6,7 @@
 #include "source_basis/module_nao/real_gaunt_table.h"
 #include <memory>
 
-void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, const int p, MPI_Comm comm)
+void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const std::string& orbital_dir, MPI_Comm comm)
 {
     std::vector<std::string> file_orb(ntype);
     int rank;
@@ -22,15 +22,19 @@ void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const s
 #endif
 
     orb_ = std::unique_ptr<RadialCollection>(new RadialCollection);
-    orb_->build(ntype, file_orb.data(), '\0', p); // automatically detect file type
+    orbp_ = std::unique_ptr<RadialCollection>(new RadialCollection);
+    orbm_ = std::unique_ptr<RadialCollection>(new RadialCollection);
+    orb_->build(ntype, file_orb.data(), '\0', 0); // automatically detect file type
+    orbp_->build(ntype, file_orb.data(), '\0', -1, 1, comm);
+    orbm_->build(ntype, file_orb.data(), '\0', -1, -1, comm);
 }
 
-void TwoCenterBundle::build_orb_onsite(const double& radius, const int p)
+void TwoCenterBundle::build_orb_onsite(const double& radius)
 {
     if (radius > 0)
     {
         orb_onsite_ = std::unique_ptr<RadialCollection>(new RadialCollection);
-        orb_onsite_->build(orb_.get(), radius, p);
+        orb_onsite_->build(orb_.get(), radius);
     }
 }
 
@@ -38,54 +42,38 @@ void TwoCenterBundle::tabulate()
 {
     ModuleBase::SphericalBesselTransformer sbt(true);
     orb_->set_transformer(sbt);
-//     if (beta_) { beta_->set_transformer(sbt); }
-//     if (alpha_) {
-//         alpha_->set_transformer(sbt);
-// }
+    if (orbp_) {
+        orbp_->set_transformer(sbt);
+        orbm_->set_transformer(sbt);
+    }
     if (orb_onsite_) {
         orb_onsite_->set_transformer(sbt);
-}
+    }
 
     //================================================================
     //              build two-center integration tables
     //================================================================
     // set up a universal radial grid
     double rmax = orb_->rcut_max();
-    // if (beta_) { rmax = std::max(rmax, beta_->rcut_max()); }
-    // if (alpha_) { rmax = std::max(rmax, alpha_->rcut_max()); }
     double dr = 0.01;
     double cutoff = 2.0 * rmax;
     int nr = static_cast<int>(rmax / dr) + 1;
 
     orb_->set_uniform_grid(true, nr, cutoff, 'i', true);
-    // if (beta_) { beta_->set_uniform_grid(true, nr, cutoff, 'i', true); }
-    // if (alpha_) { alpha_->set_uniform_grid(true, nr, cutoff, 'i', true);}
     if (orb_onsite_) {  orb_onsite_->set_uniform_grid(true, nr, cutoff, 'i', true);}
+    if (orbp_) { orbp_->set_uniform_grid(true, nr, cutoff, 'i', true); }
+    if (orbm_) { orbm_->set_uniform_grid(true, nr, cutoff, 'i', true); }
 
     // build TwoCenterIntegrator objects
-    kinetic_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    kinetic_orb->tabulate(*orb_, *orb_, 'T', nr, cutoff);
-    ModuleBase::Memory::record("TwoCenterTable: Kinetic", kinetic_orb->table_memory());
+    // kinetic_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
+    // kinetic_orb->tabulate(*orb_, *orb_, 'T', nr, cutoff);
+    // ModuleBase::Memory::record("TwoCenterTable: Kinetic", kinetic_orb->table_memory());
 
     overlap_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    overlap_orb->tabulate(*orb_, *orb_, 'S', nr, cutoff);
-    ModuleBase::Memory::record("TwoCenterTable: Overlap", overlap_orb->table_memory());
+    overlap_orb->tabulate(*orb_, *orbp_, *orbm_, nr, cutoff);
+    ModuleBase::Memory::record("TwoCenterTable: Overlap & Position Op", overlap_orb->table_memory());
 
-    // if (beta_)
-    // {
-    //     overlap_orb_beta = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    //     overlap_orb_beta->tabulate(*orb_, *beta_, 'S', nr, cutoff);
-    //     ModuleBase::Memory::record("TwoCenterTable: Nonlocal", overlap_orb_beta->table_memory());
-    // }
-
-    // if (alpha_)
-    // {
-    //     overlap_orb_alpha = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    //     overlap_orb_alpha->tabulate(*orb_, *alpha_, 'S', nr, cutoff);
-    //     ModuleBase::Memory::record("TwoCenterTable: Descriptor", overlap_orb_alpha->table_memory());
-    // }
-
-    if (orb_onsite_)
+    if (orb_onsite_) // seems like orb_onsite_ is used for for DFT+U, not sure.
     {
         overlap_orb_onsite = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
         overlap_orb_onsite->tabulate(*orb_, *orb_onsite_, 'S', nr, cutoff);
@@ -103,10 +91,10 @@ void TwoCenterBundle::tabulate(const double lcao_ecut,
 {
     ModuleBase::SphericalBesselTransformer sbt(true);
     orb_->set_transformer(sbt);
-//     beta_->set_transformer(sbt);
-//     if (alpha_) {
-//         alpha_->set_transformer(sbt);
-// }
+    if (orbp_) {
+        orbp_->set_transformer(sbt);
+        orbm_->set_transformer(sbt);
+    }
     if (orb_onsite_) {
         orb_onsite_->set_transformer(sbt);
 }
@@ -126,44 +114,24 @@ void TwoCenterBundle::tabulate(const double lcao_ecut,
     }
 
     orb_->set_grid(false, nk, kgrid.data(), 't');
-    // beta_->set_grid(false, nk, kgrid.data(), 't');
-    // if (alpha_)
-    // {
-    //     alpha_->set_grid(false, nk, kgrid.data(), 't');
-    // }
     if (orb_onsite_)
     {
         orb_onsite_->set_grid(false, nk, kgrid.data(), 't');
     }
+    if (orbp_) { orbp_->set_grid(false, nk, kgrid.data(), 't'); }
+    if (orbm_) { orbm_->set_grid(false, nk, kgrid.data(), 't'); }
 
     // "st" stands for overlap (s) and kinetic (t)
     const double cutoff_st = std::min(lcao_rmax, 2.0 * orb_->rcut_max());
     const int nr_st = static_cast<int>(cutoff_st / lcao_dr) + 5;
 
-    kinetic_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    kinetic_orb->tabulate(*orb_, *orb_, 'T', nr_st, cutoff_st);
-    ModuleBase::Memory::record("TwoCenterTable: Kinetic", kinetic_orb->table_memory());
+    // kinetic_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
+    // kinetic_orb->tabulate(*orb_, *orb_, 'T', nr_st, cutoff_st);
+    // ModuleBase::Memory::record("TwoCenterTable: Kinetic", kinetic_orb->table_memory());
 
     overlap_orb = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    overlap_orb->tabulate(*orb_, *orb_, 'S', nr_st, cutoff_st);
-    ModuleBase::Memory::record("TwoCenterTable: Overlap", overlap_orb->table_memory());
-
-    // overlap between orbital and beta (for nonlocal potential)
-    // const double cutoff_nl = std::min(lcao_rmax, orb_->rcut_max() + beta_->rcut_max());
-    // const int nr_nl = static_cast<int>(cutoff_nl / lcao_dr) + 5;
-    // overlap_orb_beta = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    // overlap_orb_beta->tabulate(*orb_, *beta_, 'S', nr_nl, cutoff_nl);
-    // ModuleBase::Memory::record("TwoCenterTable: Nonlocal", overlap_orb_beta->table_memory());
-
-    // overlap between orbital and deepks projector
-    // if (alpha_)
-    // {
-    //     const double cutoff_alpha = std::min(lcao_rmax, orb_->rcut_max() + alpha_->rcut_max());
-    //     const int nr_alpha = static_cast<int>(cutoff_alpha / lcao_dr) + 5;
-    //     overlap_orb_alpha = std::unique_ptr<TwoCenterIntegrator>(new TwoCenterIntegrator);
-    //     overlap_orb_alpha->tabulate(*orb_, *alpha_, 'S', nr_alpha, cutoff_alpha);
-    //     ModuleBase::Memory::record("TwoCenterTable: Descriptor", overlap_orb_beta->table_memory());
-    // }
+    overlap_orb->tabulate(*orb_, *orbp_, *orbm_, nr_st, cutoff_st);
+    ModuleBase::Memory::record("TwoCenterTable: Overlap & Position Op", overlap_orb->table_memory());
 
     // overlap between orbital and "onsite orbital" (for DFT+U)
     if (orb_onsite_)

@@ -56,6 +56,13 @@ class TwoCenterIntegrator
                   const double cutoff
     );
 
+    void tabulate(const RadialCollection& bra,
+                  const RadialCollection& ketp,
+                  const RadialCollection& ketm,
+                  const int nr,
+                  const double cutoff
+    );
+
     /*!
      * @brief Compute the two-center integrals.
      *
@@ -97,6 +104,37 @@ class TwoCenterIntegrator
                    double* grad_out = nullptr
     ) const;
 
+    // compute the overlap and position matrix
+    void calculate(const int itype1, 
+                   const int l1, 
+                   const int izeta1, 
+                   const int m1, 
+                   const int itype2,
+                   const int l2,
+                   const int izeta2,
+                   const int m2,
+                   const ModuleBase::Vector3<double>& vR, // R = R2 - R1
+                   const ModuleBase::Vector3<double>& R2,
+                   double* outS = nullptr,
+                   double* outRx = nullptr,
+                   double* outRy = nullptr,
+                   double* outRz = nullptr
+    ) const;
+
+    // compute two center part of the position matrix <i(0)|r-R|j(r-R)>  // with no + R<i(0)||j(r-R)>
+    void calculate_pos2c(const int itype1, 
+                       const int l1, 
+                       const int izeta1, 
+                       const int m1, 
+                       const int itype2,
+                       const int l2,
+                       const int izeta2,
+                       const int m2,
+                       const char alpha,
+                       const ModuleBase::Vector3<double>& vR, // vR = R2 - R1
+                       double* out = nullptr
+    ) const;
+
     /*!
      * @brief Compute a batch of two-center integrals.
      *
@@ -114,12 +152,20 @@ class TwoCenterIntegrator
     ) const;
 
     /// Returns the amount of heap memory used by table_ (in bytes).
-    size_t table_memory() const { return table_.memory(); }
+    size_t table_memory() const {
+          size_t mem = table_.memory();
+          if (is_tabulated_pos_) { 
+              mem += tablep_.memory();
+              mem += tablem_.memory();
+          }
+
+          return mem;
+       }
 
   private:
-    bool is_tabulated_;
+    bool is_tabulated_, is_tabulated_pos_;
     char op_;
-    TwoCenterTable table_;
+    TwoCenterTable table_, tablep_, tablem_;
 
     /*!
      * @brief Returns the index of (l,m) in the array of spherical harmonics.

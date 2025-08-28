@@ -37,7 +37,10 @@ add_library(calc INTERFACE)
 target_compile_features(calc INTERFACE cxx_std_11)
 target_include_directories(calc INTERFACE ../extern/)
 
-target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW ${SLEPC_LIB})
-
+if (PROJECT_IS_TOP_LEVEL)
+  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW ${SLEPC_LIB})
+else()
+  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc ${math_libs} ${SLEPC_LIB})
+endif()
 add_executable(test_calc ./test.cpp)
 target_link_libraries(test_calc PRIVATE calc GTest::gtest)

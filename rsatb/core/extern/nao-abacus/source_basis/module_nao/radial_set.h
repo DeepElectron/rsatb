@@ -56,6 +56,7 @@ class RadialSet
     virtual void build(const std::string&,             ///< file name
                        const int = 0,                  ///< the element index in calculation
                        const int = 0,                  /// ZYZH: The p value, see for NumericalRadial class
+                       const int = 0,                  /// ZYZH: The pm value, see for AtomicRadials class
                        std::ofstream* const = nullptr, ///< output file stream for logging
                        MPI_Comm comm = MPI_COMM_WORLD         ///< MPI rank
                        ) {}
@@ -86,11 +87,14 @@ class RadialSet
     const std::string& symbol() const { return symbol_; }
     int itype() const { return itype_; }
     int lmax() const { return lmax_; }
+    int lmin() const { return lmin_; }
     double rcut_max() const { return rcut_max_; }
 
     int nzeta(const int l) const { return (l >= 0 && l <= lmax_) ? nzeta_[l] : 0; }
+    int norb(const int l) const { return (l >= 0 && l <= lmax_) ? norb_[l] : 0; }
     int nzeta_max() const { return nzeta_max_; }
     int nchi() const { return nchi_; }
+    int nphi() const { return nphi_; }
 
     const NumericalRadial& chi(const int l, const int izeta);
     const NumericalRadial* cbegin() const { return chi_; }
@@ -119,11 +123,14 @@ class RadialSet
     std::string symbol_ = "";   ///< usually the chemical symbol
     int itype_ = 0;             ///< usually the index for element in calculation
     int lmax_ = -1;             ///< maximum angular momentum among all NumericalRadial objects
+    int lmin_ = 99999;
     double rcut_max_ = 0.0;     ///< maximum rcut (NOT rmax!) among all NumericalRadial objects
 
     int* nzeta_ = nullptr;      ///< number of NumericalRadial objects for each angular momentum
+    int* norb_ = nullptr;
     int nzeta_max_ = 0;         ///< maximum number of NumericalRadial objects among each angular momentum
     int nchi_ = 0;              ///< total number of NumericalRadial objects
+    int nphi_ = 0;              ///< total number of the basis function
 
     NumericalRadial* chi_ = nullptr; ///< array of NumericalRadial objects
 

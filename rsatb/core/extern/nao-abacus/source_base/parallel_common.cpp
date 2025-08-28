@@ -28,7 +28,7 @@ void Parallel_Common::bcast_string(std::string& object, MPI_Comm comm) // Peize 
 void Parallel_Common::bcast_string(std::string* object, const int n, MPI_Comm comm) // Peize Lin fix bug 2019-03-18
 {
     for (int i = 0; i < n; i++)
-        bcast_string(object[i]);
+        bcast_string(object[i], comm);
     return;
 }
 

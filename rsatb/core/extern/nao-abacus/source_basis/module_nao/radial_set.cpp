@@ -15,6 +15,7 @@
 RadialSet::~RadialSet()
 {
     delete[] nzeta_;
+    delete[] norb_;
     delete[] chi_;
     delete[] index_map_;
 }
@@ -23,10 +24,13 @@ RadialSet::RadialSet(const RadialSet& other) :
     symbol_(other.symbol_),
     itype_(other.itype_),
     lmax_(other.lmax_),
+    lmin_(other.lmin_),
     rcut_max_(other.rcut_max_),
     nzeta_(nullptr),
+    norb_(nullptr),
     nzeta_max_(other.nzeta_max_),
     nchi_(other.nchi_),
+    nphi_(other.nphi_),
     chi_(nullptr),
     index_map_(nullptr)
 {
@@ -37,6 +41,9 @@ RadialSet::RadialSet(const RadialSet& other) :
 
     nzeta_ = new int[lmax_ + 1];
     std::memcpy(nzeta_, other.nzeta_, (lmax_ + 1) * sizeof(int));
+
+    norb_ = new int[lmax_ + 1];
+    std::memcpy(norb_, other.norb_, (lmax_ + 1) * sizeof(int));
 
     index_map_ = new int[(lmax_ + 1) * nzeta_max_];
     std::memcpy(index_map_, other.index_map_, (lmax_ + 1) * nzeta_max_ * sizeof(int));
@@ -58,11 +65,14 @@ RadialSet& RadialSet::operator=(const RadialSet& rhs)
     symbol_ = rhs.symbol_;
     itype_ = rhs.itype_;
     lmax_ = rhs.lmax_;
+    lmin_ = rhs.lmin_;
     rcut_max_ = rhs.rcut_max_;
     nzeta_max_ = rhs.nzeta_max_;
     nchi_ = rhs.nchi_;
+    nphi_ = rhs.nphi_;
 
     delete[] nzeta_;
+    delete[] norb_;
     delete[] chi_;
     delete[] index_map_;
     nzeta_ = nullptr;
@@ -73,6 +83,9 @@ RadialSet& RadialSet::operator=(const RadialSet& rhs)
     {
         nzeta_ = new int[lmax_ + 1];
         std::memcpy(nzeta_, rhs.nzeta_, (lmax_ + 1) * sizeof(int));
+
+        norb_ = new int[lmax_ + 1];
+        std::memcpy(norb_, rhs.norb_, (lmax_ + 1) * sizeof(int));
 
         index_map_ = new int[(lmax_ + 1) * nzeta_max_];
         std::memcpy(index_map_, rhs.index_map_, (lmax_ + 1) * nzeta_max_ * sizeof(int));
@@ -172,11 +185,14 @@ void RadialSet::cleanup()
     symbol_ = "";
     itype_ = 0;
     lmax_ = -1;
+    lmin_ = 99999;
 
     delete[] nzeta_;
     nzeta_ = nullptr;
     nzeta_max_ = 0;
+    norb_ = nullptr;
     nchi_ = 0;
+    nphi_ = 0;
 
     delete[] chi_;
     chi_ = nullptr;

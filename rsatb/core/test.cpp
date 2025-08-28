@@ -55,10 +55,10 @@ TEST(petscTest, TestSetBlockR2K) {
 
 TEST(petscTest, TestSetMatrixR2K) {
     int n_node=3, n_edge=6;
-    int edge_index[] = {0, 1, 1, 1, 1, 1, 2, 0, 1, 0, 2, 1};
+    int edge_index[] = {0, 1, 1, 1, 1, 1, 2, 0, 1, 0, 0, 2};
     int atom_type[] = {0,0,0};
     int type_weight[] = {4};
-    int edge_shift_vec[] = {0,  0,  0,  0,  0,  1,  0,  0,  0,  0,  0,  0,  0,  0, -1,  0,  0,  0};
+    int edge_shift_vec[] = {0,  0,  0,  0,  0,  1,  0,  0,  -1,  0,  0,  -1,  0,  0, 0,  0,  0,  1};
     double pos[] = {0.0000, 0.0000, 3.2000, 0.0000, 0.0000, 0.0000, 0.0000, 0.0000, 1.6000};
     std::string path = "../../test/data/C_chain_3_H.h5";
     rsatb::io::HDF5Handler hd(path);
@@ -72,7 +72,7 @@ TEST(petscTest, TestSetMatrixR2K) {
     Mat mat, mat2, mat3;
     DMCreateMatrix(dm, &mat);
     setMatrixR2K(mat, dm, &hd, 0., 0., 0.);
-    MatDuplicate(mat, MAT_SHARE_NONZERO_PATTERN, &mat2);
+    MatDuplicate(mat, MAT_COPY_VALUES, &mat2);
     MatConjugate(mat2);
     MatTranspose(mat2, MAT_INITIAL_MATRIX, &mat3);
     MatAXPY(mat, -1.0, mat3, SAME_NONZERO_PATTERN);
@@ -199,25 +199,96 @@ TEST(petscTest, TestSolverInit) {
         7.81024447,  8.83628293, 16.23328831,  9.37229337,  0.        ,
        18.93883635, 10.93434227,  4.41814146, 21.64438441, 12.49639116,
         8.83628293};
+    
+    double cell[9] = {16.2332878113, 0.0, 0.0, 8.1166439056, 14.0584396315, 0.0, 8.1166439056, 4.6861465438, 13.2544239951};
 
     std::string HFile = "../../test/data/H_Al333.h5";
     std::string SFile = "../../test/data/S_Al333.h5";
     
     
     rsatb::Solver solver(
-        HFile, SFile, 
         n_atom, n_edge, 
         atom_type, edge_index, type_norb, edge_shift_vec,
-        pos, MPI_COMM_WORLD
+        cell, pos, MPI_COMM_WORLD
     );
 
     std::cout << "Solver init SUCCESS!\n";
 
     solver.setup_graph();
     std::cout << "Solver setup_graph SUCCESS!\n";
-    solver.setup_HS(0.5,0.5,0.5);
-    std::cout << "Solver setup_HS SUCCESS!\n";
     solver.setup_sample(2, "gauss");
+    std::cout << "Solver setup_sample SUCCESS!\n";
+    solver.setup_K(0.5,0.5,0.5);
+    std::cout << "Solver setup_K SUCCESS!\n";
+    solver.setup_S(SFile);
+    std::cout << "Solver setup_S SUCCESS!\n";
+    Mat Sh5copy, SorbT;
+    MatDuplicate(solver.S(), MAT_COPY_VALUES, &Sh5copy);
+
+    std::string file_orb0[1] = {"Al_gga_7au_100Ry_4s4p1d.orb"};
+    std::string root = "../../test/data/";
+    solver.setup_S(file_orb0, root);
+    PetscScalar va;
+    std::cout << "######## Analytical: "  << std::endl;
+    for (PetscInt i=0; i<7; ++i) {
+        for (PetscInt j=0; j<7; ++j) {
+            MatGetValue(solver.S(), i, j, &va);
+            std::cout << va.real() << "\t";
+        }
+        std::cout << "\n";
+    }
+
+    std::cout << "######## predicted: "  << std::endl;
+    for (PetscInt i=0; i<7; ++i) {
+        for (PetscInt j=0; j<7; ++j) {
+            MatGetValue(Sh5copy, i, j, &va);
+            std::cout << va.real() << "\t";
+        }
+        std::cout << "\n";
+    }
+
+    MatTranspose(solver.S(), MAT_INITIAL_MATRIX, &SorbT);
+    MatAXPY(SorbT, -1., solver.S(), SAME_NONZERO_PATTERN);
+    MatAXPY(Sh5copy, -1., solver.S(), SAME_NONZERO_PATTERN);
+
+    
+    PetscReal nSd, nS, nST;
+    MatNorm(solver.S(), NORM_FROBENIUS, &nS);
+    MatNorm(Sh5copy, NORM_FROBENIUS, &nSd);
+    MatNorm(SorbT, NORM_FROBENIUS, &nST);
+    std::cout << "The norm of the overlap: " << nS << std::endl;
+    std::cout << "The norm of the overlap deriv: " << nSd << std::endl;
+    std::cout << "The norm of the overlap transpose of analytical one: " << nST << std::endl;
+
+    solver.setup_H(HFile);
+    std::cout << "Solver setup_H SUCCESS!\n";   // Estimated Emax : (47.4771,0)  Emin : (-105.726,0)
+
+    solver.setup_R(file_orb0, root);
+
+    std::cout << "######## computed Rx: "  << std::endl;
+    for (PetscInt i=21; i<28; ++i) {
+        for (PetscInt j=21; j<28; ++j) {
+            MatGetValue(solver.Rx(), i, j, &va);
+            std::cout << va.real() << "\t";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "######## computed Ry: "  << std::endl;
+    for (PetscInt i=21; i<28; ++i) {
+        for (PetscInt j=21; j<28; ++j) {
+            MatGetValue(solver.Ry(), i, j, &va);
+            std::cout << va.real() << "\t";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "######## computed Rz: "  << std::endl;
+    for (PetscInt i=21; i<28; ++i) {
+        for (PetscInt j=21; j<28; ++j) {
+            MatGetValue(solver.Rz(), i, j, &va);
+            std::cout << va.real() << "\t";
+        }
+        std::cout << "\n";
+    }
 }
 
 int main(int argc, char** argv)
