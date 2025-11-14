@@ -13,6 +13,7 @@ test/py2c/PP_ORB/
 examples/_*
 *.dat
 *log*
+*.mtx
 rsatb/test/data/**/out*/config_*.json
 bandstructure.npy
 run_config.json

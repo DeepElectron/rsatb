@@ -44,6 +44,23 @@ double2petscscalar(int n, const double *in,
 }
 
 static inline PetscErrorCode
+cdouble2petscscalar(int n, const std::complex<double> *in,
+                   PetscScalar **out,
+                   PetscBool *needs_free)
+{
+  PetscFunctionBegin;
+#if defined(PETSC_USE_COMPLEX)
+  *out = (PetscScalar*)in;           /* alias – types have same size */
+  if (needs_free) *needs_free = PETSC_FALSE;
+#else
+  PetscCall(PetscMalloc1(n,out));
+  for (PetscInt k=0; k<(PetscInt)n; ++k) (*out)[k] = in[k].real;
+  if (needs_free) *needs_free = PETSC_TRUE;
+#endif
+  PetscFunctionReturn(PETSC_SUCCESS);
+}
+
+static inline PetscErrorCode
 double2petscreal(int n, const double *in,
                    PetscReal **out,
                    PetscBool *needs_free)
@@ -67,7 +84,7 @@ struct AtomData{
     };
 
 struct BondData{
-        PetscInt Rx, Ry, Rz;
+        PetscInt Rx, Ry, Rz; // TODO: optimizable, can stored all repetitive edge into one to avoid traffic in hr2hk.
     };
 
 PetscErrorCode get_dm_atomic(
@@ -81,6 +98,13 @@ PetscErrorCode get_dm_atomic(
             DM *dm,
             MPI_Comm comm
             );
+
+PetscErrorCode form_local_edge_list(
+            DM dm,
+            int *src,
+            int *tgt,
+            MPI_Comm comm
+);
 
 template<typename T>
 void get_attr_from_dm(

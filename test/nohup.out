@@ -1,0 +1,22 @@
+-----------------------------
+Rank 0 local vertices 335872-336895, edges 0-335871
+-----------------------------
+Rank 0 local vertices 335872-336895, edges 0-335871
+[0]PETSC ERROR: ------------------------------------------------------------------------
+[0]PETSC ERROR: Caught signal number 1 Hang up: Some other process (or the batch system) has told this process to end
+[0]PETSC ERROR: Try option -start_in_debugger or -on_error_attach_debugger
+[0]PETSC ERROR: or see https://petsc.org/release/faq/#valgrind and https://petsc.org/release/faq/
+[0]PETSC ERROR: configure using --with-debugging=yes, recompile, link, and run 
+[0]PETSC ERROR: to get more information on the crash.
+--------------------------------------------------------------------------
+MPI_ABORT was invoked on rank 0 in communicator MPI_COMM_WORLD
+  Proc: [[57200,0],0]
+  Errorcode: 59
+
+NOTE: invoking MPI_ABORT causes Open MPI to kill all MPI processes.
+You may or may not see output from other processes, depending on
+exactly when Open MPI kills them.
+--------------------------------------------------------------------------
+-----------------------------
+Rank 0 local vertices 299008-300031, edges 0-299007
+The e3nn is not installed, mapper cannot handle irreps related maps, be careful!

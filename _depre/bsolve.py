@@ -37,7 +37,6 @@ def _get_ksp(Ap, m_block, rtol, maxit):
     pc.setType('hpddm')
     pc.setHPDDMCoarseCorrectionType(pc.HPDDMCoarseCorrectionType.ADDITIVE)
     
-
     # ksp.setReusePreconditioner(True)
     pc.setReusePreconditioner(True)
     opts = PETSc.Options()

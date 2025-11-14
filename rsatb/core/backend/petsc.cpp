@@ -207,18 +207,20 @@ PetscErrorCode get_dm_atomic(
                 p += 1;
             } else {
                 /* Fill the node */
-                PetscInt pp = atomdata[edge_index[ie]].nR;
-                atomdata[edge_index[ie]].R[3*pp] = edge_shift_vec_petsc[ie*3];
-                atomdata[edge_index[ie]].R[3*pp+1] = edge_shift_vec_petsc[ie*3+1];
-                atomdata[edge_index[ie]].R[3*pp+2] = edge_shift_vec_petsc[ie*3+2];
+                PetscInt pp = atomdata[edge_index[2*ie]].nR;
+                atomdata[edge_index[2*ie]].R[3*pp] = edge_shift_vec_petsc[ie*3];
+                atomdata[edge_index[2*ie]].R[3*pp+1] = edge_shift_vec_petsc[ie*3+1];
+                atomdata[edge_index[2*ie]].R[3*pp+2] = edge_shift_vec_petsc[ie*3+2];
 
-                atomdata[edge_index[ie]].nR += 1;
+                atomdata[edge_index[2*ie]].nR += 1;
             }
         }
+
 
         // std::cout << "Here 4 \n";
         // add a check to see if all self edge is added.
         for (int in=0; in < n_node; ++in){
+            // std::cout << atomdata[in].nR << " " << atomdata[in].NR << std::endl;
             if(atomdata[in].nR < atomdata[in].NR) throw std::runtime_error("The self-edge are not correctly filled! ");
         }
 
@@ -246,7 +248,6 @@ PetscErrorCode get_dm_atomic(
             // reinterpret_cast<PetscInt*>(edge_index), 
             &netnum
         );
-
         // std::cout << "NETNUM on rank " << rank << " " << netnum << "\n";
 
         DMNetworkLayoutSetUp(*dm);
@@ -269,11 +270,12 @@ PetscErrorCode ViewDMNetworkPartition(const DM dm, bool detail=false)
     ierr = DMNetworkGetVertexRange(dm,&vStart,&vEnd);CHKERRQ(ierr);
     ierr = DMNetworkGetEdgeRange  (dm,&eStart,&eEnd);CHKERRQ(ierr);
 
-    PetscPrintf(comm,
+    PetscSynchronizedPrintf(comm,
                 "-----------------------------\n"
                 "Rank %d local vertices %lld-%lld, edges %lld-%lld\n",
                 rank,(long long)vStart,(long long)(vEnd-1),
                     (long long)eStart,(long long)(eEnd-1));
+    PetscSynchronizedFlush(comm, PETSC_STDOUT);
 
     if(detail){
         /* Vertices */
@@ -447,7 +449,7 @@ void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
             DMNetworkGetLocalVecOffset(dm,v,ALL_COMPONENTS,&off);
             for(int i=0; i<norb; ++i){
                 src[count] = off+i;
-                dst[count] = atomdata.index;
+                dst[count] = atomdata.type;
                 count += 1;
             }
             

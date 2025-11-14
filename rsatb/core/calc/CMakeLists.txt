@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15...4.0)
-project(calc LANGUAGES CXX)
+project(calc LANGUAGES CXX C Fortran)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
@@ -8,6 +8,7 @@ if (PROJECT_IS_TOP_LEVEL)
     find_package(GTest REQUIRED)
     find_package(PETSc REQUIRED)
     find_package(FFTW REQUIRED)
+    find_package(DBCSR 2.0.0 CONFIG REQUIRED)
 endif()
 # Wrap into a modern imported target so the rest of your code can stay target-based
 if(NOT TARGET PETSc::PETSc)
@@ -38,9 +39,9 @@ target_compile_features(calc INTERFACE cxx_std_11)
 target_include_directories(calc INTERFACE ../extern/)
 
 if (PROJECT_IS_TOP_LEVEL)
-  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW ${SLEPC_LIB})
+  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc FFTW::FFTW ${SLEPC_LIB} DBCSR::dbcsr_c)
 else()
-  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc ${math_libs} ${SLEPC_LIB})
+  target_link_libraries(calc INTERFACE MPI::MPI_CXX PETSc::PETSc ${math_libs} ${SLEPC_LIB} DBCSR::dbcsr_c)
 endif()
 add_executable(test_calc ./test.cpp)
 target_link_libraries(test_calc PRIVATE calc GTest::gtest)

@@ -1,41 +1,129 @@
-# Formula handbook
+# RSATB Formula Handbook
 
-## Operator and Matrix Function under Non-orthogonal basis
-Here we derive the formula for random state non-orthogonal basis calculation.
+## Electronic Structure with non-orthogonal basis
+We are caring about the eigenvalue problem like:
+$$
+\hat{H}\psi=E\psi
+$$
+Where $\hat{H}$ composed only bilinear term with creation and annihilation operator.
 
-For the single particle electronic problem under non-orthognal basis:
+Now defining the basis set $|i\rangle$, where $\langle i|j\rangle=S_{ij}$, so it is non-orthogonal. By writing the operator in the basis, we get a generalized eigenvalue problem:
+
+$$
+HC_n=E_nSC_n
+$$
+
+We can form another set of basis by writing:
+$$
+|\tilde{i}\rangle=\sum_k(S^{-1})_{ik}|k\rangle
+$$
+Using this as the left basis vector, we have:
+$$
+\langle\tilde{i}|j\rangle=\delta_{ij}
+$$
+
+By inserting the new dual basis in the left and use the original basis as right vector, we can get the form:
+$$
+\left(S^{-1}H\right)C_n=E_nC_n
+$$
+
+### Second Quantization
+The above dual basis setting is good for a lot of properties calculation. However, some properties are derived using field theory, which requires the second quantized representation. Here we will derive the convention for that. 
+
+Now, using this new set of left and right basis to define the second quantized operator:
+$$
+\langle r|\tilde{i}\rangle=\tilde{\phi}_i(r), \langle r|j\rangle=\phi_j(r)
+$$
+The field operator is defined by differentiating the left and right as:
+$$
+\begin{aligned}
+\hat{\psi}(r)&=\sum_i\phi_i(r)\hat{c}_i,\\
+\hat{\psi}^\dagger(r)&=\sum_i\phi^*_i(r)\hat{c}^\dagger_i=\sum_{ik}\phi^*_i(r)\left(S^{-1}\right)_{ik}\tilde{c}^\dagger_k=\sum_{k}\tilde{\phi}^*_k(r)\tilde{c}^\dagger_k
+\end{aligned}
+$$
+Where the normal operator $\hat{c}^\dagger,\hat{c}$ attribute to orbital $\phi(r)$, $\tilde{c}^\dagger, \tilde{c}$ attribute to $\tilde{\phi}(r)$.
+
+We can verify that this field operator follows the cananical algebra relations.
+Now, time to expand the Hamiltonian. Considering only the non-interacting Hamiltonian $\hat{H}$, using the defined operator:
+$$
+\int drdr'\hat{\psi}^\dagger(r)\hat{H}\hat{\psi}(r')=\sum_{ij}H_{ij}\hat{c}_i^\dagger\hat{c}_j=\sum_{ij}(S^{-1}H)_{ij}\tilde{c}_i^\dagger\hat{c}_j
+$$
+
+Equivalent in the previous version, once the dual basis is chosen, the Hamiltonian is rewritten as $S^{-1}H$ under the new basis sets.
+
+### Matrix Function
+Here it is good to use the matrix form:
 $$
 \begin{align*}
 HC_n&=E_nSC_n \equiv \\ 
 S^{-1/2}HS^{-1/2}\cdot S^{1/2}C_n&=E_n S^{1/2}C_n
 \end{align*}
 $$
-The literature often call $S^{1/2}C_n$ as the wave vector under lowdin basis.
+The literature often call $S^{1/2}C_n$ as the wave vector under **lowdin basis**.
 
-Next, let's represent the density operator in different form.
+If we are to compute the matrix function of the Hamiltonian $f(\hat{H})$ under the non-orthogonal basis, denoted as $F(H,S)$, we surely have:
+$$
+S^{-1/2}F(H,S)S^{-1/2}\cdot S^{1/2}C_n=f(E_n)S^{1/2}C_n
+$$
+We therefore knows that:
+$$S^{-1/2}F(H,S)S^{-1/2}=f(S^{-1/2}HS^{-1/2})\equiv \\
+F(H,S)=S^{1/2}f(S^{-1/2}HS^{-1/2})S^{1/2}=Sf(S^{-1}H)
+$$
+Taking the reduced density operator for example:
 $$
 \begin{align*}
-\hat{\rho}&=\sum_nf_F(E_n)|\Psi_n\rangle\langle\Psi_n|\\
-&=f_F(\hat{H})\\
-&=\int d\epsilon\left[ f_F(\epsilon)\delta(\epsilon-\hat{H})\right]\\
-&=-\frac{1}{\pi}\int d\epsilon\left[ f_F(\epsilon)\Im[\hat{G^r}]\right]
+% \hat{\rho}&=\sum_nf_F(E_n)|\Psi_n\rangle\langle\Psi_n|\\
+\hat{\rho}&=f_F(\hat{H})\\
+% &=\int d\epsilon\left[ f_F(\epsilon)\delta(\epsilon-\hat{H})\right]\\
+% &=-\frac{1}{\pi}\int d\epsilon\left[ f_F(\epsilon)\Im[\hat{G^r}]\right]
 \end{align*}
 $$
-When representing under the basis:
+Where $f_F$ is the fermi-dirac function. Using the result above, we have:
+$$
+\rho=Sf(S^{-1}H)
+$$
+
+### Composition of Operators
+Sometimes, we need to evaluate the matrix element of composition of operators under non-orthogonal basis, for example $\hat{A}\hat{B}$, by inserting the resolution of identity: 
+$$
+\langle\phi_i|\hat{A}\hat{B}|\phi_j\rangle=AS^{-1}B
+$$
+
+### Trace
+If we what to evaluate the trace of some matrix function, we should notice that, this is slightly different than computing the matrix itself, since:
 $$
 \begin{align*}
-\rho_{ij}&=\sum_n f_F(E_n)\langle\phi_i|\Psi_n\rangle\langle\Psi_n|\phi_j\rangle\\
-&=\sum_n f_F(E_n)S_{ik}C_{nk}C^*_{nl}S_{lj}
+\text{Tr}\left[f(\hat{H})\right]&=\text{Tr}\left[f(S^{-1/2}HS^{-1/2})\right]\\
+&=\text{Tr}\left[f(S^{-1}H)\right]
 \end{align*}
 $$
-If computing the real space density:
+for the similarity transformation does not change the trace.
+
+The reason behind it is, the trace defined in non-orthogonal operation is different than the orthogonal one - which directly sum up the diagonal elements. For convenience and consistency, when we want to evaluate the trace of operators or operators composition, we need to make sure they are all implemented in the dual basis. If an operator are written in the original basis as:
+$$
+A_{ij} = \langle\phi_i|\hat{A}|\phi_j\rangle
+$$
+Then 
+$$
+\text{Tr}\left[\hat{A}\right]=\text{Tr}\left[S^{-1}A\right]
+$$
+
+### Real Space Properties
+We again use density matrix as an example. Since the density matrix is frequently used to reconstruct the charge density $\rho(r)$, therefore, we are often care with another form:
 $$
 \begin{align*}
 \langle r|\hat{\rho}|r\rangle&=\sum_{n,i,j}f_F(E_n)C_{ni}C^*_{nj}\phi_i(r)\phi^*_j(r)\\
 &=\sum_{ij}\left(S^{-1}\rho S^{-1}\right)_{ij}\phi_i(r)\phi^*_j(r)
 \end{align*}
 $$
-For convenience, we often what $\tilde{\rho}=\left(S^{-1}\rho S^{-1}\right)$. This equals to:
+Since we have:
+$$
+\begin{align*}
+\rho_{ij}&=\sum_n f_F(E_n)\langle\phi_i|\Psi_n\rangle\langle\Psi_n|\phi_j\rangle\\
+&=\sum_n f_F(E_n)S_{ik}C_{nk}C^*_{nl}S_{lj}
+\end{align*}
+$$
+For convenience, we often compute $\tilde{\rho}=\left(S^{-1}\rho S^{-1}\right)$. This equals to:
 $$
 \begin{align*}
 \tilde{\rho}&=S^{-1/2}f_F(S^{-1/2}HS^{-1/2})S^{-1/2}\\
@@ -50,15 +138,6 @@ $$
 The matrix $q_{i,j}=\sum_{n}q(E_n)C_{ni}C_{nj}^*$ can be estimated using: $g(S^{-1}H)S^{-1}$.
 
 **NOTE**: $\text{Tr}\left[q(\hat{H})\right]$ does not equals to $\text{Tr}\left[q(S^{-1}H)S^{-1}\right]$.
-
-If instead, we want to estimate the trace of the matrix function of the Hamiltonian operator: $\text{Tr}\left[f(\hat{H})\right]$:
-$$
-\begin{align*}
-\text{Tr}\left[f(\hat{H})\right]&=\text{Tr}\left[f(S^{-1/2}HS^{-1/2})\right]\\
-&=\text{Tr}\left[f(S^{-1}H)\right]
-\end{align*}
-$$
-Since similarity transformation does not change the trace.
 
 ## FFT for Fourier Transform
 
@@ -346,17 +425,143 @@ Y_{lm}(\hat{r})Y_{1-1}(\hat{r})=\tilde{C}_{lm,1-1}^{l+1,-m+1}Y_{l+1,-m+1}(\hat{r
 $$
 
 
-<!-- $$
-\begin{align*}
-\delta(m_1+1,M), m_1\in(-l,l),M\in(-l+1,l-1)/\in(-l,l)/\in(-l-1,l+1)
-\end{align*}
+## Linear Responce Theory
+The conductivity is defined as the linear relation of the current and the electrostatic force:
 $$
-(0,1,2), (0),(-1,0,1),(-2,-1,0,1,2)
-(-2,-1,0) -->
+\mathbf{J}=\sigma \mathbf{f}=\sigma\left(\mathbf{E}+\mathbf{v}\times\mathbf{B}\right)
+$$
+This can be seen as a special case of the linear responce, where we assume that the system's responce to a small externel field is sufficiently linear. But it can be spatial and time resolved. It have some alike relations as:
+$$j(r,t)=\int dr'\int_{-\infty}^t dt' \sigma(r-r',t-t')V(r', t')$$
 
-# Optical Conductivity
-TBPM one looks nice, we should first implement that
+### Kubo Formula
+Considering a system under externel perturbation:
+$$
+\hat{H}+\hat{H}'=\hat{H}-\int d^3r\sum_ih_i(\mathbf{r},t)\hat{A}_i(\mathbf{r})
+$$
 
-# Drude Conductivity
+If our goal is to observe $A_i(t)$, which is:
+$$
+\text{Tr}\left[\hat{\rho}(t)\hat{A}_i(\mathbf{r})\right]
+$$
+
+We can write the density operator as time independent part and perturbative correction: $$\hat{\rho}(t)=\hat{\rho}_{eq}+\delta\hat{\rho}(t)$$, using:
+$$
+i\frac{\partial \hat{\rho}(t)}{\partial t}=\left[\hat{H}+\hat{H}',\hat{\rho}(t)\right]
+$$
+We can arrive in this formula:
+$$
+\delta\hat{\rho}(t)=-i\int_{-\infty}^tdt'e^{-\hat{H}(t-t')}\left[\hat{H}',\hat{\rho}_{eq}\right]e^{\hat{H}(t-t')}
+$$
+Therefore the observable's expecation is:
+$$
+\begin{aligned}
+\delta\langle\hat{A}_i(\mathbf{r})\rangle(t)&=\text{Tr}\left[\delta\hat{\rho}(t)\hat{A}_i(\mathbf{r})\right]\\
+&=i\int_{-\infty}^tdt'\int d^3r'\sum_j\text{Tr}\left\{\hat{\rho}_{eq}\left[\hat{A}_i(\mathbf{r},t)\hat{A}_j(\mathbf{r}',t')\right]\right\}h_j(\mathbf{r}',t')\\
+&=\int_{-\infty}^\infty dt'\int d^3r'\sum_j\mathcal{X}_{A_i,A_j}^R(\mathbf{r},\mathbf{r}',t,t')h_j(\mathbf{r}',t')
+\end{aligned}
+$$
+Here $$\hat{A}_i(\mathbf{r},t)=e^{i\hat{H}t}\hat{A}_i(\mathbf{r})e^{-i\hat{H}t}$$
+
+Here we have a general form of the **responce function**, or the general **susceptibility** defined as:
+$$
+\mathcal{X}_{A_i,A_j}^R(\mathbf{r},\mathbf{r}',t,t')=i\Theta(t-t')\left\langle\left[\hat{A}_i(\mathbf{r},t),\hat{A}_j(\mathbf{r}',t')\right]\right\rangle
+$$
+
+You can derive from the properties of the trace, the responce function is shift invariant in time, therefore:
+$$
+\mathcal{X}^R_{A_i,A_j}(\mathbf{r},\mathbf{r}',t-t')
+$$
+
+
+### Minimal Coupling
+For a particle under QM definition:
+$$
+\hat{H}=\frac{\mathbf{p}^2}{2m}+V
+$$
+By incooperating the vector field:
+$$
+\begin{aligned}
+\hat{H}(\mathbf{A})&=\frac{(p-q\mathbf{A})^2}{2m}+V\\
+&=\frac{\mathbf{p}^2}{2m}+V-q\mathbf{v}\cdot\mathbf{A}+\frac{1}{2m}q^2\mathbf{A}\cdot\mathbf{A}
+\end{aligned}
+$$
+We can derived the current operator by taking the derivative of $\hat{H}$ w.r.t. the $\mathbf{A}$. 
+
+**NOTE**: There are very deep physics inside this definition, and why it works connected with the gauge theory of electrodynamics and the microscopic description (lagrangian) of the charged particles. Currently I haven't learn the electrodynamics and the gauge field theory, need to read more later.
+
+$$
+\mathbf{j}=-q\mathbf{v}+\frac{q^2}{m}\mathbf{A}
+$$
+
+Written is the kubo formula, the externel potential will be:
+$$
+\hat{H}_{ext}=\mathbf{j}\cdot\mathbf{A}
+$$
+
+The kubo formula becomes:
+$$
+\begin{aligned}
+\delta\langle j_\alpha\rangle(t)&=\sum_\beta\int_{-\infty}^\infty dt'\mathcal{X}_{\alpha\beta}^R(t-t')A_\beta(t')\\
+\mathcal{X}_{\alpha\beta}^R(t)&=i\Theta(t)\left\langle\left[j_\alpha(t), j_\beta(0)\right]\right\rangle
+\end{aligned}
+$$
+
+The conductivity is derived by transforming the above equation into fourier space, and recalls that $\mathbf{j}=\mathbf{\sigma}\mathbf{E}$, and using $\mathbf{E}(\omega)=i\omega\mathbf{A}(\omega)$, $j=-vq$ we will have a form of $\sigma$:
+$$
+\sigma_{\alpha\beta}(\omega)=\frac{q^2}{\omega}\int_0^\infty\text{Tr}\left\{\hat{\rho}_{eq}\left[v_\alpha(t),v_\beta(0)\right]\right\}e^{-i(\omega+i\eta)t} dt
+$$
+
+### Optical Conductivity
+Further simplification can be achieved using Wick theorem and with non-interacting particles assumption:
+
+The commutator can be written as thermal average:
+$$\langle v_\alpha(t)v_\beta(0)\rangle-\langle v_\beta(0)v_\alpha(t)\rangle$$
+Considering the first term:
+$$
+\langle v_\alpha(t)v_\beta(0)\rangle=[v_\alpha(t)]_{ij}[v_\beta(0)]_{kl}\langle c^\dagger_i c_jc^\dagger_k c_l\rangle\\
+\langle c^\dagger_i c_jc^\dagger_k c_l\rangle=\langle c^\dagger_i c_j\rangle\langle c^\dagger_k c_l\rangle+\langle c^\dagger_i c_l\rangle\langle c_j c^\dagger_k\rangle=F_{ij}F_{kl}+F_{il}(\delta_{jk}-F_{jk})
+$$
+
+So:
+$$
+\langle v_\alpha(t)v_\beta(0)\rangle-\langle v_\beta(0)v_\alpha(t)\rangle=(1-e^{-\beta \hbar\omega})\sum_{ijkl}F_{il}[v_\alpha(t)]_{ij}(\delta_{jk}-F_{jk})[v_\beta(0)]_{kl}=(1-e^{-\beta \hbar\omega})\text{Tr}\left[F^Tv_\alpha(t)(I-F)v_\beta\right]
+$$
+The factor comes from the **KMS** condition. So optical conductivity can be written as:
+
+$$
+\sigma_{\alpha\beta}(\omega)=\frac{q^2(1-e^{-\beta \hbar\omega})}{\omega}\int_0^\infty\text{Tr}\left[F^Tv_\alpha(t)(I-F)v_\beta\right]e^{-i(\omega+i\eta)t}dt
+$$
+
+Written in non-orthogonal basis, since it requires Wick theorem and second quantized format, we need to strictly use the dual basis derived in the begining.
+
+The main target is the same, evaluting the correlator:
+$$
+\langle v_\alpha(t)v_\beta(0)\rangle
+$$
+Here:
+$$
+\begin{aligned}
+v_\alpha(t)&=e^{i\hat{H}t}i\left[\hat{H},\hat{r}_\alpha\right]e^{-i\hat{H}t}\\
+v_\alpha&=i\left[\hat{H},\hat{r}_\alpha\right]
+\end{aligned}
+$$
+
+Expressed in the dual basis:
+$$
+\begin{aligned}
+v_\alpha(t)&=ie^{iS^{-1}Ht}S^{-1}\left[H,r_\alpha\right]e^{-iS^{-1}Ht}\\
+v_\alpha&=iS^{-1}\left[H,r_\alpha\right]
+\end{aligned}
+$$
+With $H, S, r_\alpha$ as known matrix written in the original basis.
+
+So the correlator becomes:
+$$
+\langle v_\alpha(t)v_\beta(0)\rangle=[v_\alpha(t)]_{ij}[v_\beta(0)]_{kl}\langle \tilde{c}^\dagger_i \hat{c}_j\tilde{c}^\dagger_k \hat{c}_l\rangle\\
+\langle \tilde{c}^\dagger_i \hat{c}_j\tilde{c}^\dagger_k \hat{c}_l\rangle=\langle \tilde{c}^\dagger_i \hat{c}_j\rangle\langle \tilde{c}^\dagger_k \hat{c}_l\rangle+\langle \tilde{c}^\dagger_i \hat{c}_l\rangle\langle \hat{c}_j \tilde{c}^\dagger_k\rangle=F_{ij}F_{kl}+F_{il}(\delta_{jk}-F_{jk})
+$$
+But here, $F=f_F(S^{-1}H)$.
+
+## Drude Conductivity
 New FFT method looks great.
 

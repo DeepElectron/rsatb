@@ -65,12 +65,35 @@ inline void cheby_iter_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_nex
     // MatSwap(*T_curr, *T_next);
 }
 
+inline void cheby_iter_adjoint(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next){
+    // T_next = - T_prev + 2 x H x M^(-1) x T_curr
+    KSPSolve(ksp, T_curr, T_next);
+    VecScale(T_next, 2.0);
+    VecScale(T_prev, -1.0);
+    MatMultAdd(H, T_next, T_prev, T_prev);
+
+    VecSwap(T_prev, T_curr);
+}
+
+inline void cheby_iter_adjoint_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp){
+    KSPMatSolve(ksp, *T_curr, *T_tmp);
+    MatMatMult(H, *T_tmp, MAT_REUSE_MATRIX, PETSC_CURRENT, T_next);
+    MatScale(*T_next, 2.0);
+    MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
+
+    Mat tmp=*T_prev;
+    *T_prev = *T_curr; *T_curr = tmp;
+    *T_curr = *T_next; *T_next = tmp;
+    // MatSwap(*T_prev, *T_curr);
+    // MatSwap(*T_curr, *T_next);
+}
+
 
 inline void cheby_recur(
     Mat H, KSP ksp, Vec Psi_in,
     Vec *buff, // length 3 vec
     PetscComplex *coeff, PetscInt n_coeff, 
-    Vec Psi_out
+    Vec Psi_out, bool adjoint=false
     ){
     if(n_coeff < 3)
         throw std::invalid_argument("chebyshev_propagate: need at least three Bessel coefficients");
@@ -81,37 +104,60 @@ inline void cheby_recur(
         VecDuplicateVecs(Psi_in, 3, &buff);
     }
 
-    /* init T_prev(buff[0])
-        S^(-1)H|Psi>    */
-    MatMult(H, Psi_in, buff[0]);
-    // std::cout<<"Here?!\n";
-    KSPSolve(ksp, buff[0], buff[0]);
-    // VecScale(buff[0], alpha1);
+    
+    if( adjoint ){
+        /* init T_prev(buff[0])
+        HS^(-1)|Psi>    */
+        KSPSolve(ksp, Psi_in, buff[1]);
+        MatMult(H, buff[1], buff[0]);
 
-    /* init T_curr(buff[1])
-        2S^(-1)H|buff[0]> - |Psi>
-    */
-    MatMult(H, buff[0], buff[1]);
-    KSPSolve(ksp, buff[1], buff[1]);
-    VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
+         /* init T_curr(buff[1])
+            2HS^(-1)|buff[0]> - |Psi>
+        */
+        
+        KSPSolve(ksp, buff[0], buff[2]);
+        MatMult(H, buff[2], buff[1]);
+        VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
+    } else {
+        /* init T_prev(buff[0])
+        S^(-1)H|Psi>    */
+        MatMult(H, Psi_in, buff[0]);
+        // std::cout<<"Here?!\n";
+        KSPSolve(ksp, buff[0], buff[0]);
+        // VecScale(buff[0], alpha1);
+
+        /* init T_curr(buff[1])
+            2S^(-1)H|buff[0]> - |Psi>
+        */
+        MatMult(H, buff[0], buff[1]);
+        KSPSolve(ksp, buff[1], buff[1]);
+        VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
+    }
 
     // compute current scalar output
     VecCopy(Psi_in,Psi_out);
     VecAXPBYPCZ(Psi_out, coeff[1], coeff[2], coeff[0], buff[0], buff[1]);
 
     // Higher-order Chebyshev recurrence
-    
-    for(std::size_t m = 3; m < n_coeff; ++m){
-        cheby_iter(H, ksp, buff[0], buff[1], buff[2]);
-        VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
+    if ( adjoint ){
+        for(std::size_t m = 3; m < n_coeff; ++m){
+            cheby_iter_adjoint(H, ksp, buff[0], buff[1], buff[2]);
+            VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
+        }
+    } else {
+        for(std::size_t m = 3; m < n_coeff; ++m){
+            cheby_iter(H, ksp, buff[0], buff[1], buff[2]);
+            VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
+        }
     }
+
 }
 
 inline void cheby_recur_mult(
     Mat H, KSP ksp, Mat Psi_in,
     Mat *buff, // length 4 Mat buff
     PetscComplex *coeff, PetscInt n_coeff, 
-    Mat Psi_out
+    Mat Psi_out, bool adjoint=false
     ){
     if(n_coeff < 3)
         throw std::invalid_argument("chebyshev_propagate: need at least three Bessel coefficients");
@@ -125,16 +171,27 @@ inline void cheby_recur_mult(
         MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+3);
     }
     
+    if ( adjoint ){
+        // init T_prev(buff[0])
+        KSPMatSolve(ksp, Psi_in, buff[3]);
+        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_CURRENT, buff);
 
-    // init T_prev(buff[0])
-    MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
-    KSPMatSolve(ksp, buff[3], buff[0]);
+        // init T_curr(buff[1])
+        KSPMatSolve(ksp, buff[0], buff[3]);
+        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_CURRENT, buff+1);
+        MatScale(buff[1], 2.0);
+        MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
+    } else {
+        // init T_prev(buff[0])
+        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
+        KSPMatSolve(ksp, buff[3], buff[0]);
 
-    // init T_curr(buff[1])
-    MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
-    KSPMatSolve(ksp, buff[3], buff[1]);
-    MatScale(buff[1], 2.0);
-    MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
+        // init T_curr(buff[1])
+        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
+        KSPMatSolve(ksp, buff[3], buff[1]);
+        MatScale(buff[1], 2.0);
+        MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
+    }
 
     // compute current scalar output
     MatCopy(Psi_in, Psi_out, SAME_NONZERO_PATTERN);
@@ -142,11 +199,20 @@ inline void cheby_recur_mult(
     MatAXPY (Psi_out, coeff[1],buff[0],SAME_NONZERO_PATTERN);
     MatAXPY (Psi_out, coeff[2],buff[1],SAME_NONZERO_PATTERN);
 
+
     // Higher-order Chebyshev recurrence
-    for(std::size_t m = 3; m < n_coeff; ++m){
-        cheby_iter_mult(H, ksp, buff, buff+1, buff+2, buff+3);
-        MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
+    if ( adjoint ){
+        for(std::size_t m = 3; m < n_coeff; ++m){
+            cheby_iter_adjoint_mult(H, ksp, buff, buff+1, buff+2, buff+3);
+            MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
+        }
+    } else {
+        for(std::size_t m = 3; m < n_coeff; ++m){
+            cheby_iter_mult(H, ksp, buff, buff+1, buff+2, buff+3);
+            MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
+        }
     }
+
 }
 
 };

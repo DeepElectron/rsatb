@@ -24,6 +24,7 @@ def icgs(u,Q,M=None,return_norm=False,maxiter=30):
     Return:
         vector, orthogonalized vector u.
     '''
+
     assert(np.ndim(u)==1)
     uH,QH=u.conj(),Q.conj().T
     alpha=0.5

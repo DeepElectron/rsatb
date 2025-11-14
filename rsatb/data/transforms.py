@@ -7,8 +7,13 @@ import ase.data
 try:
     import e3nn.o3 as o3
 except:
-    print("The e3nn is not installed, mapper cannot handle irreps related maps, be careful!")
-    
+    try:
+        from mpi4py import MPI
+        rank = MPI.COMM_WORLD.Get_rank()
+    except:
+        rank = 0
+    if rank == 0:
+        print("The e3nn is not installed, mapper cannot handle irreps related maps, be careful!")
 import numpy as np
 from . import AtomicData, AtomicDataDict
 

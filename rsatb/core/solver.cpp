@@ -1,5 +1,6 @@
 #include "hr2hk.hpp"
 #include "calc/dos.hpp"
+#include "calc/ac.hpp"
 #include "calc/fft.hpp"
 #include "calc/sample.hpp"
 #include "solver.hpp"
@@ -20,8 +21,8 @@ Solver::Solver(
     std::string options
     ): _n_atom_(n_atom), _n_edge_(n_edge), _atom_type_(atom_type), _edge_index_(edge_index),
        _type_norb_(type_norb), _edge_shift_vec_(edge_shift_vec), _cell_(cell), _pos_(pos), _comm_(comm),
-       _dm_(nullptr),
-        _H_(nullptr), _S_(nullptr),
+       _dm_(nullptr), _auxdm_(nullptr),
+        _H_(nullptr), _S_(nullptr), _Rx_(nullptr), _Ry_(nullptr), _Rz_(nullptr), _Sr_(nullptr),
         _Samples_(nullptr), _Sample_(nullptr),
         _ksp_(nullptr), _pc_(nullptr), 
         _ntype_((*std::max_element(atom_type, atom_type+n_atom))+1)
@@ -31,19 +32,26 @@ Solver::Solver(
         PetscOptionsInsertString(NULL, options.c_str());
         PetscInitialize(nullptr, nullptr, nullptr, nullptr);
         SlepcInitialize(nullptr, nullptr, nullptr, nullptr);
+        c_dbcsr_init_lib(_comm_, nullptr);
         MPI_Comm_rank(_comm_, &rank);
     };
 
 Solver::~Solver() { /* destructor */
     if(_H_) MatDestroy(&_H_);
     if(_S_) MatDestroy(&_S_);
+    if(_Sr_) MatDestroy(&_S_);
+    if(_Rx_) MatDestroy(&_S_);
+    if(_Ry_) MatDestroy(&_S_);
+    if(_Rz_) MatDestroy(&_S_);
     if(_dm_) DMDestroy(&_dm_);
+    if(_auxdm_) DMDestroy(&_dm_);
     if(_ksp_) KSPDestroy(&_ksp_);
     if(_n_sample_==1){
         if(_Sample_) VecDestroy(&_Sample_);
     }else if (_n_sample_ > 1) {
         if(_Samples_) MatDestroy(&_Samples_);
     }
+    c_dbcsr_finalize_lib();
     SlepcFinalize();
     PetscFinalize();
 }
@@ -53,10 +61,35 @@ void Solver::setup_graph(){ /* Setup the DM, we assume here the graph informatio
     rsatb::backend::get_dm_atomic(
         _n_atom_, _n_edge_, _edge_index_, _atom_type_, _type_norb_, _edge_shift_vec_, _pos_, &_dm_, _comm_
     );
-    DMSetMatType(_dm_, MATMPIAIJMKL);
+    int size;
+    MPI_Comm_size(_comm_, &size);
+
+    if(size==1){
+        DMSetMatType(_dm_, MATSEQAIJMKL);
+    }else{
+        DMSetMatType(_dm_, MATMPIAIJMKL);
+    }
+    // DMSetMatType(_dm_, MATAIJ);
 
     rsatb::backend::ViewDMNetworkPartition(_dm_, false);
 };
+
+void Solver::setup_auxgraph(int n_edge, const int *edge_index, const int *edge_shift_vec){
+    rsatb::backend::get_dm_atomic(
+        _n_atom_, n_edge, edge_index, _atom_type_, _type_norb_, edge_shift_vec, _pos_, &_auxdm_, _comm_
+    );
+    int size;
+    MPI_Comm_size(_comm_, &size);
+
+    if(size==1){
+        DMSetMatType(_auxdm_, MATSEQAIJMKL);
+    }else{
+        DMSetMatType(_auxdm_, MATMPIAIJMKL);
+    }
+    // DMSetMatType(_dm_, MATAIJ);
+
+    rsatb::backend::ViewDMNetworkPartition(_auxdm_, false);
+}
 
 void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
     if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian.");
@@ -64,6 +97,25 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
     if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before configuring the Hamiltonian.");
     
     this->set_mat_from_h5(&_H_, HFile);
+    // MatShift(_S_, 0.1);
+
+    // Hermitian check
+
+    // Mat htemp;
+    // PetscReal nrm;
+    // MatHermitianTranspose(_H_, MAT_INITIAL_MATRIX, &htemp);
+    // Mat R;  MatDuplicate(htemp, MAT_COPY_VALUES, &R); 
+    // MatAXPY(R, -1.0, _H_, DIFFERENT_NONZERO_PATTERN);
+    // MatNorm(R, NORM_FROBENIUS, &nrm);
+
+    // std::cout << std::scientific<<std::setprecision(3) << "The largest element of Hermitian test of _H_: " << nrm << std::endl;
+
+    // MatHermitianTranspose(_S_, MAT_INITIAL_MATRIX, &htemp);
+    // MatDuplicate(htemp, MAT_COPY_VALUES, &R); 
+    // MatAXPY(R, -1.0, _S_, DIFFERENT_NONZERO_PATTERN);
+    // MatNorm(R, NORM_FROBENIUS, &nrm);
+
+    // std::cout << std::scientific<<std::setprecision(3) << "The largest element of Hermitian test of _S_: " << nrm << std::endl;
 
     PetscScalar _emax_, _emin_;
 
@@ -74,35 +126,96 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
         EPSCreate(_comm_, &eps);
         EPSSetOperators(eps, _H_, _S_);
         EPSSetProblemType(eps, EPS_GHEP);
-        // EPSSetType(eps,EPSLANCZOS);
-        // EPSLanczosSetReorthog(eps,EPS_LANCZOS_REORTHOG_LOCAL);
-        EPSSetTolerances(eps,1e-3,50);
-        EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
-        // EPSSetThreshold(eps,1e-4,PETSC_FALSE); // abs, rel
-        EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
-        // EPSSetType(eps,EPSKRYLOVSCHUR);
 
-        // config the KSP internel of SLEPC
+         // config the KSP internel of SLEPC
         ST st;  KSP ksp;  PC pc;
         EPSGetST(eps,&st);                 // grab the ST
         STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
         KSPSetType(ksp,KSPCG);
         KSPGetPC(ksp,&pc);
+        // STSetType(st, STSINVERT);
         KSPSetReusePreconditioner(ksp, PETSC_TRUE);
+        
+        // EPSSetType(eps,EPSLANCZOS);
+        // EPSLanczosSetReorthog(eps,EPS_LANCZOS_REORTHOG_LOCAL);
+        EPSSetTolerances(eps,1e-3,50);
+        // EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
+        EPSSetDimensions(eps,1,100,100);
+        // EPSSetThreshold(eps,1e-4,PETSC_FALSE); // abs, rel
+        EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
+        // EPSSetType(eps,EPSKRYLOVSCHUR);
+
 
         // Set for pc
         PCSetType(pc, PCASM);
         PCASMSetSubMatType(pc, MATSEQAIJMKL);
+        // PCASMSetSubMatType(pc, MATSEQAIJ);
         PCASMSetOverlap(pc, 0);
         PetscOptionsInsertString(NULL,"-sub_pc_type icc");
 
+        // PCSetType(pc,PCGAMG);
+        // PCGAMGSetType(pc, PCGAMGAGG);
+        // PCGAMGSetGraphSymmetrize(pc, PETSC_TRUE);
+        // // PCGAMGSetSquareGraph(pc, 1);
+
+        // PCGAMGSetAggressiveLevels(pc,0);
+        // PetscReal thr = 0.15;                 /* try 0.12 first; 0.08–0.15 is a good band */
+        // PCGAMGSetThreshold(pc, &thr, 1);
+        
+        // PCGAMGSetCoarseEqLim(pc, 2200);
+        // PCGAMGSetNSmooths(pc, 4);
+
+        // PCGAMGSetReuseInterpolation(pc, PETSC_TRUE);
+        // // KSPSetDiagonalScale(ksp, PETSC_TRUE);
+        // // KSPSetDiagonalScaleFix(ksp, PETSC_TRUE);
+
+        // PetscOptionsSetValue(NULL, "-pc_mg_cycle_type", "w");
+        // PetscOptionsSetValue(NULL, "-mg_levels_ksp_type", "chebyshev");
+        // PetscOptionsSetValue(NULL, "-mg_levels_ksp_max_it", "4");
+
+        // PetscOptionsSetValue(NULL, "-mg_levels_pc_type", "jacobi");
+        // PetscOptionsSetValue(NULL, "-sub_pc_type", "cholesky");
+
+        // PetscOptionsSetValue(NULL, "-mg_coarse_ksp_type", "preonly");
+        // PetscOptionsSetValue(NULL, "-mg_coarse_pc_type", "cholesky");
+
         KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
 
+        // temp
+        BV V;
+        EPSGetBV(eps, &V);
+        // BVSetMatrix(V,NULL,PETSC_FALSE);
+        BVSetDefiniteTolerance(V, 1e-9);
+
         EPSSetUp(eps);
+        EPSView(eps, PETSC_VIEWER_STDOUT_WORLD);
 
         EPSSolve(eps);
         EPSGetConverged(eps, &nconv);
         EPSGetEigenpair(eps,0,&_emax_, NULL, NULL, NULL);
+
+        
+
+        // EPSReset(eps);
+
+        // //temp
+        // EPSSetOperators(eps, _H_, _S_);
+        // EPSSetProblemType(eps, EPS_GHEP);
+        // EPSSetTolerances(eps,1e-3,50);
+        // EPSSetDimensions(eps,1,100,100);
+        // EPSSetWhichEigenpairs(eps, EPS_SMALLEST_REAL);
+        // EPSGetST(eps,&st);                 // grab the ST
+        // STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
+
+        // KSPSetType(ksp,KSPCG);
+        // KSPGetPC(ksp,&pc);
+        // KSPSetReusePreconditioner(ksp, PETSC_TRUE);
+        // PCSetType(pc, PCASM);
+        // PCASMSetSubMatType(pc, MATSEQAIJMKL);
+        // PCASMSetOverlap(pc, 0);
+        // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
+        // KSPSetTolerances(ksp,1e-13, 1e-15, PETSC_CURRENT, PETSC_CURRENT);
+        // EPSSetUp(eps);
 
         EPSSetWhichEigenpairs(eps, EPS_SMALLEST_REAL);
         EPSSolve(eps);
@@ -148,6 +261,7 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
     // ASM + ICC(1)
     PCSetType(_pc_, PCASM);
     PCASMSetSubMatType(_pc_, MATSEQAIJMKL);
+    // PCASMSetSubMatType(_pc_, MATSEQAIJ);
     PCASMSetOverlap(_pc_, 0);
     PetscOptionsInsertString(NULL,"-sub_pc_type icc");
 
@@ -162,7 +276,7 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
     // PCGAMGSetReuseInterpolation(_pc_, PETSC_TRUE);
 
     KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
-    PCSetUp(_pc_);
+    // PCSetUp(_pc_);
     KSPSetFromOptions(_ksp_);
     KSPSetUp(_ksp_);
 
@@ -309,4 +423,71 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     }
 };
 
+void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, double *omegas){
+    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _position_ready_) ) 
+    { 
+        throw std::runtime_error("Not ready for computing ac, setup: 1. samples, 2. kpoint 3. Overlap 4. Hamiltonian 5. position first!"); 
+    }
+
+    double beta = 1.0 / (temp * 8.617333262e-5);
+    double ac_prefactor = this->norb() / this->volume();
+
+    double t_step = 3.14159265358979323846 / _scale_;
+
+    for( int i=0; i<nt+1; ++i ){
+        omegas[i] = i * _scale_ / (nt+1);
+    }
+
+    PetscComplex cac[(nt+1)*6];
+    if(_n_sample_==1){
+        rsatb::calc::corr_ac<Vec>(
+            _H_, _Rx_, _Ry_, _Rz_, _ksp_,
+            _Sample_, nt, temp, mu, _scale_, _shift_,
+            n_kpm, 1e-14, cac
+        );
+    } else {
+        rsatb::calc::corr_ac<Mat>(
+            _H_, _Rx_, _Ry_, _Rz_, _ksp_,
+            _Samples_, nt, temp, mu, _scale_, _shift_,
+            n_kpm, 1e-14, cac
+        );
+    }
+
+    int idx;
+    for( int iac=0; iac<6; ++iac ){
+        for( int iw=0; iw<=nt; ++iw ){
+            idx = iw*6+iac;
+            ac[idx] = 0.0;
+            if (omegas[iw] != 0){
+                for( int it=0; it<=nt; ++it ){
+                    // idx = iw*6+iac
+                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
+                }
+                ac[idx] = ac_prefactor * t_step * ac[idx] * (exp(-beta * omegas[iw]) - 1) / omegas[iw];
+            }
+            
+
+        }
+    }
+}
+
+
+// void Solver::compute_fermi_dirac(int n_kpm, double temp, double mu, double *occ){
+//     if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_) ) 
+//     { 
+//         throw std::runtime_error("Not ready for computing dos, setup: 1. samples, 2. kpoint 3. Overlap 4. Hamiltonian first!"); 
+//     }
+
+    
+//     if (_n_sample_>1){
+//         rsatb::calc::fermi_dirac_kpm<Mat>(_H_, _ksp_, _Sample_, );
+//     }
+//     else{
+//         Vec ovec;
+//         VecDuplicate(_Sample_, ovec);
+//         rsatb::calc::fermi_dirac_kpm<Vec>(_H_, _ksp_, _Samples_, ovec, temp, mu, _scale_, _shift_, n_kpm);
+//     }
+
+
+// }
 };

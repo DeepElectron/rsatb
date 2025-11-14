@@ -15,8 +15,6 @@ class RSATB(MPIEnv):
             self, 
             basis,
             atomicdata: AtomicData,
-            HFile:str=None,
-            SFile:str=None,
             n_group:int=1, # maximum number of processes per k
             enable_mpi=False,
             verbose=False
@@ -37,18 +35,15 @@ class RSATB(MPIEnv):
         # partition the atomic graph if needed.
         # atomicdata.partition(self.n_group)
         
-        if HFile is not None and SFile is not None:
-            self.solver = Solver(
-                HFile, SFile, 
-                atomicdata[_keys.ATOM_TYPE_KEY].ravel(), 
-                atomicdata[_keys.POSITIONS_KEY],
-                atomicdata[_keys.EDGE_INDEX_KEY].T,
-                self.idp.atom_norb,
-                atomicdata[_keys.EDGE_CELL_SHIFT_KEY],
-                self.__subcomm
-                ) # c++ implementation
-        else:
-            raise NotImplementedError("Other initialization method is not maded yet.")
+        self.solver = Solver(
+            atomicdata[_keys.ATOM_TYPE_KEY].ravel(), 
+            atomicdata[_keys.CELL_KEY].revel(),
+            atomicdata[_keys.POSITIONS_KEY],
+            atomicdata[_keys.EDGE_INDEX_KEY].T,
+            self.idp.atom_norb,
+            atomicdata[_keys.EDGE_CELL_SHIFT_KEY],
+            self.__subcomm
+        ) # c++ implementation
         
         self.__kpoint_set__ = False
         self.__sample_set__ = False

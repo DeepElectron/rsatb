@@ -1,3 +1,6 @@
+#ifndef FERMI_DIRAC
+#define FERMI_DIRAC
+
 #include <petsc.h>
 #include <slepc.h>
 #include "cheby.hpp"
@@ -54,7 +57,6 @@ inline void fermi_dirac_krylov(MPI_Comm comm, Mat H, KSP ksp, Vec Psi_in, Vec Ps
     /* Optional—tell SLEPc the operator is (non-)Hermitian */
     MatSetOption(A,MAT_HERMITIAN,PETSC_FALSE);
     // 1 / (1+e^{a (x-mu)}), r = 1/(1+q), q = e^{beta p}, p = x-mu
-
 
     // MFN op
     MFNCreate(comm, &mfn);
@@ -205,11 +207,29 @@ inline void fermi_dirac(double E, double beta, double mu, double *out){
     }
 }
 
+inline void shifted_fermi_dirac(double E, double beta, double mu, double shift, double *out){
+    double tmp = 0.0;
+    double factor = std::exp(shift);
+    if (E >= mu) {
+        tmp = std::exp(beta * (mu - E)) / factor;
+        *out = tmp / (1.0 + tmp);
+    } else {
+        tmp = std::exp(beta * (E - mu)) * factor;
+        *out = 1.0 / (1.0 + tmp);
+    }
+}
+
+// 1/(1+x)=a/(1+a)/, a= 1/x
+// 1/(1+e^{beta*sc (H-sh-mu+sh)/sc})=1/(1+e^{beta*(H-mu)})
+// = 1/(1+e^{beta*sc [(H-sh)/sc-(mu-sh)/sc]}
+
 template<typename T>
-inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, double mu, double scale, double shift, int n_kpm, double eps=1e-14){
+inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, double mu, double scale, double shift, int n_kpm, 
+  double eps=1e-14, bool adjoint=false){
     double dE = M_PI / n_kpm;
     double mu_re = (mu - shift) / scale;
     double beta_re = scale / (temp * 8.617333262e-5);
+    double shift_re = shift / (temp * 8.617333262e-5);
 
     PetscComplex *coeff;
     PetscInt matdim, nrhs;
@@ -241,7 +261,7 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
     for (int i = 0; i < n_kpm - 1; ++i) {
       if ((std::abs(static_cast<cd>(tmp_coeff[i])) <= eps) && (std::abs(static_cast<cd>(tmp_coeff[i + 1])) <= eps)) {
         n_kpm_ = i;
-        break;
+        break; // The truncation method need to be verify
       }
     }
 
@@ -261,9 +281,10 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 3 vec
           tmp_coeff, n_kpm_, 
-          Psi_out
+          Psi_out, adjoint
       );
 
+      VecDestroy(buff); VecDestroy(buff+1); VecDestroy(buff+2);
     }else{
       Mat buff[4];
       PetscScalar temp=0;
@@ -277,13 +298,17 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 4 Mat
           tmp_coeff, n_kpm_,
-          Psi_out
+          Psi_out, adjoint
       );
+
+      MatDestroy(buff); MatDestroy(buff+1); MatDestroy(buff+2); MatDestroy(buff+3);
     }
 
 };
 
-template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double);
-template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double);
+template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double, bool);
+template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double, bool);
 
 }
+
+#endif

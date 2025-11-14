@@ -65,7 +65,7 @@ PYBIND11_MODULE(binding, m) {
                     throw std::runtime_error("type_norb must be 1D");
                 if (esv_bf.ndim != 2 || esv_bf.size != 3*n_edge)
                     throw std::runtime_error("edge_shift_vec must be 2D with shape [n_edge, 3]");
-                if (cell_bf.ndim = 2 || cell_bf.size != 9)
+                if (cell_bf.ndim != 2 || cell_bf.size != 9)
                     throw std::runtime_error("cell must be 2D with shape [3, 3]");
 
                 // 2.
@@ -101,6 +101,28 @@ PYBIND11_MODULE(binding, m) {
         )
         .def("setup_graph", &rsatb::Solver::setup_graph)
 
+        .def("setup_auxgraph", [](
+            rsatb::Solver &solver,
+            py::array_t<int, py::array::c_style | py::array::forcecast> edge_index, 
+            py::array_t<int, py::array::c_style | py::array::forcecast> edge_shift_vec
+            ){
+                py::buffer_info ei_bf = edge_index.request();
+                py::buffer_info esv_bf = edge_shift_vec.request();
+
+                if (ei_bf.ndim != 2)
+                    throw std::runtime_error("edge_index must be 2D of length 2*n_edge");
+                size_t n_edge = ei_bf.size / 2;
+                if (esv_bf.ndim != 2 || esv_bf.size != 3*n_edge)
+                    throw std::runtime_error("edge_shift_vec must be 2D with shape [n_edge, 3]");
+
+                solver.setup_auxgraph(n_edge, edge_index.data(), edge_shift_vec.data());
+            },
+            py::keep_alive<1,2>(),
+            py::keep_alive<1,3>(),
+            py::arg("edge_index"),
+            py::arg("edge_shift_vec")
+        )
+
         .def("setup_K", &rsatb::Solver::setup_K)
 
         .def("setup_S_h5", [](rsatb::Solver &solver, const std::string &SFile)
@@ -123,6 +145,12 @@ PYBIND11_MODULE(binding, m) {
             py::arg("orbital_dir") = "./"
         )
 
+        .def("test_Sinv", &rsatb::Solver::test_Sinv)
+
+        .def("Ssqrtm", &rsatb::Solver::Ssqrtm, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("factor")=0.31)
+
+        .def("Ssqrtm_sparse", &rsatb::Solver::Ssqrtm_sparse, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("factor")=0.31)
+
         .def("setup_R_h5", [](
             rsatb::Solver &solver,
             const std::string &RxFile,
@@ -138,7 +166,7 @@ PYBIND11_MODULE(binding, m) {
 
         .def("setup_R_orb", [](
             rsatb::Solver &solver, 
-            std::vector<std::string> file_orb0, 
+            const std::vector<std::string> &file_orb0, 
             const std::string& orbital_dir
             ){
                 solver.setup_R(file_orb0.data(), orbital_dir);
@@ -163,6 +191,8 @@ PYBIND11_MODULE(binding, m) {
         )
         
         .def("setup_sample", &rsatb::Solver::setup_sample)
+
+        .def("export_S", &rsatb::Solver::export_S)
 
         .def("get_nt", [](
             rsatb::Solver &solver,
@@ -205,6 +235,32 @@ PYBIND11_MODULE(binding, m) {
         py::arg("nt"),
         py::arg("proj_mode") = "none",
         py::arg("orbtype") = py::array_t<int>()
+        )
+
+        .def("compute_ac", [](
+            rsatb::Solver &solver,
+            int nt, int n_kpm,
+            double temp, double mu
+        ){
+            double ac[6*(nt+1)], omegas[nt+1];
+            solver.compute_ac(nt, n_kpm, temp, mu, ac, omegas);
+
+            py::array_t<double> o_ac(6*(nt+1));
+            py::array_t<double> o_omegas(nt+1);
+
+            if(solver.rank == 0){
+            
+                std::memcpy(o_ac.mutable_data(), ac, 6*(nt+1) * sizeof(double));
+                std::memcpy(o_omegas.mutable_data(), omegas, (nt+1) * sizeof(double));
+                
+            }
+
+            return std::make_tuple(o_ac, o_omegas);
+        },
+        py::arg("nt"),
+        py::arg("n_kpm"),
+        py::arg("temp"),
+        py::arg("mu")
         )
 
         .def("__repr__", [](rsatb::Solver &a){

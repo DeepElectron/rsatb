@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15...4.0)
-project(rsatb LANGUAGES CXX)
+project(rsatb LANGUAGES CXX Fortran C)
 set(CONDA_PREFIX $ENV{CONDA_PREFIX})
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
@@ -9,6 +9,7 @@ find_package(GTest REQUIRED)
 find_package(Threads REQUIRED)
 find_package(PETSc REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
+find_package(DBCSR 2.0.0 CONFIG REQUIRED)
 # find_package(FFTW REQUIRED)
 
 # add math_libs

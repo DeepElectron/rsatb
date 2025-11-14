@@ -1,3 +1,6 @@
+#ifndef KPM
+#define KPM
+
 #include <math.h>
 
 namespace rsatb::calc{
@@ -13,3 +16,5 @@ inline void jackson_kernel(int n, double *out)
     }
 }
 }
+
+#endif
