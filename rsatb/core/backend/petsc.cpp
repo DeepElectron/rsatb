@@ -461,6 +461,38 @@ void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst){
 
 };
 
+void setup_is_atomic(DMAtomic &dm_atomic, IS *isSrc, IS *isDst){
+    PetscInt nLocal=0;
+    bool ghost;
+    PetscInt vStart,vEnd,off;
+    int norb, count=0, tp;
+
+    dm_atomic.get_vertex_range_local(&vStart, &vEnd);
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        dm_atomic.get_atom_norb(v, &norb);
+        ghost = dm_atomic.atom_is_ghost(v);
+        if(!ghost) nLocal += norb;
+    }
+    PetscInt src[nLocal];
+    PetscInt dst[nLocal];
+
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        ghost = dm_atomic.atom_is_ghost(v);
+        if(!ghost){
+            dm_atomic.get_atom_norb(v, &norb);
+            dm_atomic.get_offset_local(v, &off);
+            dm_atomic.get_atom_type(v, &tp);
+            for(int i=0; i<norb; ++i){
+                src[count] = off+i;
+                dst[count] = tp;
+                count += 1;
+            }   
+        }
+    }
+    ISCreateGeneral(PetscObjectComm((PetscObject)(dm_atomic.dm())),nLocal,src,PETSC_COPY_VALUES,isSrc);
+    ISCreateGeneral(PetscObjectComm((PetscObject)(dm_atomic.dm())),nLocal,dst,PETSC_COPY_VALUES,isDst);
+};
+
 void setup_is_orbital(const DM dm, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst){
     PetscInt nLocal=0;
     PetscBool ghost;
@@ -511,5 +543,56 @@ void setup_is_orbital(const DM dm, const int *orbtype, const int &n_atom_type, c
     ISCreateGeneral(PetscObjectComm((PetscObject)dm),nLocal,dst,PETSC_COPY_VALUES,isDst);
 
 };
+
+void setup_is_orbital(DMAtomic &dm_atomic, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst){
+    PetscInt nLocal=0;
+    bool ghost;
+    PetscInt vStart,vEnd,off;
+    int norb, count=0, tp;
+
+    dm_atomic.get_vertex_range_local(&vStart, &vEnd);
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        dm_atomic.get_atom_norb(v, &norb);
+        ghost = dm_atomic.atom_is_ghost(v);
+        if(!ghost) nLocal += norb;
+    }
+    const int* orbtypemap[n_atom_type];
+    orbtypemap[0] = orbtype;
+    for(int i=0;i<n_atom_type-1;++i){
+        orbtypemap[i+1] = orbtype + type_weight[i];
+    }
+
+    // std::cout << orbtypemap[0][0] << orbtypemap[0][1] << orbtypemap[0][2] << "\n";
+    PetscInt src[nLocal];
+    PetscInt dst[nLocal];
+
+    for (PetscInt v=vStart; v<vEnd; ++v) {
+        ghost = dm_atomic.atom_is_ghost(v);
+        if(!ghost){
+            dm_atomic.get_atom_norb(v, &norb);
+            dm_atomic.get_offset_local(v, &off);
+            dm_atomic.get_atom_type(v, &tp);
+            for(int i=0; i<norb; ++i){
+                src[count] = off+i;
+                // std::cout << "Here! " << atomdata.type << " " << i << " " << orbtypemap[atomdata.type][i] <<"\n";
+                dst[count] = orbtypemap[tp][i];
+                count += 1;
+            }
+        }
+    }
+
+    // std::cout << "Here!!!!! \n";
+    // std::cout << nLocal << "\n";
+
+    // for(int i=0;i<nLocal;++i) std::cout << src[i] << " ";
+    // std::cout << "\n";
+    // for(int i=0;i<nLocal;++i) std::cout << dst[i] << " ";
+    // std::cout << "\n";
+
+    ISCreateGeneral(PetscObjectComm((PetscObject)(dm_atomic.dm())),nLocal,src,PETSC_COPY_VALUES,isSrc);
+    ISCreateGeneral(PetscObjectComm((PetscObject)(dm_atomic.dm())),nLocal,dst,PETSC_COPY_VALUES,isDst);
+
+};
+
 
 }

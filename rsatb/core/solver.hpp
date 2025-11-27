@@ -16,7 +16,7 @@ class Solver
 {
 private:
     /* data */
-    DM _dm_, _auxdm_;
+    std::unique_ptr<DMAtomic> _dm_atomic_;
     Mat _H_, _S_, _Sr_, _Rx_, _Ry_, _Rz_, _Samples_;
     Vec _Sample_;
     KSP _ksp_;
@@ -24,20 +24,16 @@ private:
     
     PetscReal _scale_=-1.0, _shift_=0.0, _Kx_, _Ky_, _Kz_;
     MPI_Comm _comm_;
-    bool _kpoint_ready_=false, _overlap_ready_=false, _hamiltonian_ready_=false, _position_ready_=false, _samples_ready_=false;
-
-    const int *_atom_type_, *_edge_index_, *_type_norb_, *_edge_shift_vec_, _n_atom_, _n_edge_, _ntype_;
+    bool _kpoint_ready_=false, _overlap_ready_=false, _hamiltonian_ready_=false, _position_ready_=false, _samples_ready_=false, _sqrtm_ready_=false;
     int _n_sample_=-1;
-    const double *_pos_, *_cell_;
     double _cdn_;
 
     void set_mat_from_h5(Mat *mat, const std::string &MatFile){
         HDF5Handler _hd_(MatFile);
-        DMCreateMatrix(_dm_, mat);
+        DMCreateMatrix(_dm_atomic_->dm(), mat);
         MatConvert(*mat, "aijmkl", MAT_INPLACE_MATRIX, mat);
-        setMatrixR2K(*mat, _dm_, &_hd_, 
+        setMatrixR2K(*mat, *_dm_atomic_, &_hd_, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
-        // MatSetType(*mat, MATMPIAIJMKL);
     }
 
     void check_density(Mat mat){
@@ -57,17 +53,13 @@ private:
 public:
     int rank;
     Solver(
-        const int n_atom, const int n_edge, 
-        const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
+        const size_t n_atom, const size_t N_atom, const size_t atom_offset, const size_t n_edge, const size_t N_edge,
+        const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
         const double *cell, const double *pos,
         MPI_Comm comm, std::string options=" "
         );
 
     ~Solver();
-
-    void setup_graph(); /* Setup the DM, we assume here the graph information is already initialized in the class constructor method */
-
-    void setup_auxgraph(int n_edge, const int *edge_index, const int *edge_shift_vec); /* Setup auxilliary DM, incase sometimes we need a enlarged matrix structure with a different rcut - therefore update edge_index and edge_shift_vec*/
 
     void setup_K(double Kx, double Ky, double Kz){
         _Kx_ = static_cast<PetscReal>(Kx);
@@ -86,95 +78,13 @@ public:
     }
 
     void setup_S(const std::string* file_orb0, const std::string& orbital_dir){
-        DMCreateMatrix(_dm_, &_S_);
+        DMCreateMatrix(_dm_atomic_->dm(), &_S_);
         MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
-        setMatrixR2K(_S_, _dm_, _cell_, _ntype_, file_orb0, orbital_dir, 
+        setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(), _dm_atomic_->n_type(), file_orb0, orbital_dir, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
         MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
         MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
 
-        // Mat ST;
-        // MatTranspose(_S_, MAT_INITIAL_MATRIX, &ST);
-        // MatView(ST, PETSC_VIEWER_STDOUT_WORLD);
-        // MatAXPY(ST, -1., _S_, SAME_NONZERO_PATTERN);
-        // PetscReal nST, nS;
-        // MatNorm(ST, NORM_FROBENIUS, &nST);
-        // MatNorm(_S_, NORM_FROBENIUS, &nS);
-        // std::cout << "The norm of the overlap: " << nS << std::endl;
-        // std::cout << "The norm of the overlap deriv: " << nST << std::endl;
-
-        // check the smallest eigenvalue of S
-        // EPS eps;
-        // PetscInt nconv=1;
-        // PetscScalar eigmin, eigmax;
-        // ST st; KSP ksp; PC pc;
-        // Mat SH;
-
-        // // MatShift(_S_, 100.0);
-
-        // EPSCreate(_comm_, &eps);
-        // EPSSetOperators(eps, _S_, NULL);
-        // EPSSetProblemType(eps, EPS_HEP);
-        // EPSSetTolerances(eps,1e-6,50);
-        // // EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
-        // EPSSetDimensions(eps,1,100,100);
-        // EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
-
-        // EPSSolve(eps);
-        // EPSGetConverged(eps, &nconv);
-        // EPSGetEigenpair(eps,0,&eigmax, NULL, NULL, NULL);
-
-        // EPSGetST(eps, &st);
-        // STGetKSP(st,&ksp);
-        // KSPSetType(ksp,KSPCG);
-        // KSPSetDM(ksp, _dm_);
-        // KSPSetDMActive(ksp,PETSC_FALSE);
-        // KSPGetPC(ksp,&pc);
-        // KSPSetReusePreconditioner(ksp, PETSC_TRUE);
-        // KSPSetFromOptions(ksp);
-
-        // // PCSetType(pc, PCASM);
-        // // PCASMSetOverlap(pc, 0);
-        // // PCASMSetTotalSubdomains(pc, 8, NULL, NULL);
-        // // PetscOptionsInsertString(NULL,"-sub_pc_type cholesky ");
-        // // PCASMSetSubMatType(pc, MATSEQAIJMKL);
-        // // PCFactorSetShiftType(pc, MAT_SHIFT_NONZERO);
-        // // PCFactorSetShiftAmount(pc, 0.1);
-
-        // PCSetType(pc,PCGAMG);
-        // PCGAMGSetType(pc, PCGAMGAGG);
-        // PCGAMGSetGraphSymmetrize(pc, PETSC_TRUE);
-        // // PCGAMGSetSquareGraph(pc, 1);
-        // // PCGAMGSetAggressiveLevels(pc,0);
-        // // PetscReal thr = 0.15;                 /* try 0.12 first; 0.08–0.15 is a good band */
-        // // PCGAMGSetThreshold(pc, &thr, 1);
-        // // PCGAMGSetLowMemoryFilter(pc, PETSC_TRUE);
-        // // PCGAMGSetCoarseEqLim(pc, 2200);
-        // // PCGAMGSetNSmooths(pc, 1);
-
-
-        // STSetType(st, STSINVERT);
-        // EPSSetWhichEigenpairs(eps, EPS_TARGET_REAL);
-        // EPSSetTarget(eps, 0.0);
-
-        // EPSSolve(eps);
-        // EPSGetConverged(eps, &nconv);
-        // EPSGetEigenpair(eps,0,&eigmin, NULL, NULL, NULL);
-
-        // EPSDestroy(&eps);
-
-        // _cdn_ = eigmax.real() / eigmin.real();
-
-        // std::cout << "The conditional number: " << eigmax.real() << "/" << eigmin.real() << " = " << _cdn_ << std::endl;
-        // if (eigmin.real() < 0 || std::abs(eigmin.imag()) > 0) {
-        //     throw std::runtime_error("The overlap matrix is not positive definite, wrong input!");
-        // }
-
-        // MatShift(_S_, -100.0);
-
-        // MatScale(_S_, 0.5);
-        // MatCreateHermitianTranspose(_S_, &SH);
-        // MatAXPY(_S_, 1.0, SH, SAME_NONZERO_PATTERN);
         _overlap_ready_ = true;
     }
 
@@ -182,10 +92,11 @@ public:
         if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before testing the S inverse.");
         if ( !_kpoint_ready_ )  throw std::runtime_error("Please setup kpoint before testing the S inverse.");
         if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before testing the S inverse.");
+        if ( !_sqrtm_ready_ ) throw std::runtime_error("Please setup S^1/2 before configuring the Hamiltonian.");
 
         // setup KSP
         KSPCreate(_comm_,&_ksp_);
-        KSPSetDM(_ksp_, _dm_);
+        KSPSetDM(_ksp_, _dm_atomic_->dm());
         KSPSetDMActive(_ksp_,PETSC_FALSE);
         KSPSetOperators(_ksp_,_S_,_S_);
         KSPGetPC(_ksp_,&_pc_);
@@ -224,14 +135,8 @@ public:
         Mat Sinv;
 
         MatCreateNormalHermitian(_Sr_, &Sinv);
-        // MatHermitianTranspose(_Sr_, MAT_INITIAL_MATRIX, &SrH);
         PCSetType(_pc_, PCMAT);
-        // MatCompositeSetType(Sinv, MAT_COMPOSITE_MULTIPLICATIVE);
-        // MatCompositeAddMat(Sinv, _Sr_);
-        // MatCompositeAddMat(Sinv, SrH);
         PCSetOperators(_pc_, _S_, Sinv);
-        // KSPGetPC(_ksp_,&_pc_); 
-        // PCSetType(_pc_, PCNONE); // or your preconditioner
         KSPSetFromOptions(_ksp_);
         KSPSetUp(_ksp_);
 
@@ -247,13 +152,41 @@ public:
             KSPMatSolve(_ksp_, _Samples_, test_vec);
             MatDestroy(&test_vec);
         }
+
+        KSPDestroy(&_ksp_);
     }
 
-    void Ssqrtm(double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31){
-        DMCreateMatrix(_dm_, &_Sr_);
+    void Ssqrtm(double tol=1e-7, double sptol=1e-6, int maxit = 20, bool verbose=false){
+        DMCreateMatrix(_dm_atomic_->dm(), &_Sr_);
         MatAssemblyBegin(_Sr_, MAT_FINAL_ASSEMBLY);
         MatAssemblyEnd(_Sr_, MAT_FINAL_ASSEMBLY);
-        rsatb::calc::isqrtm(_S_, _dm_, tol, sptol, maxit, factor, &_Sr_);
+
+        // get the largest eigenvalue of S
+        EPS eps;
+        PetscInt nconv=1;
+        PetscScalar eigmax;
+
+        EPSCreate(_comm_, &eps);
+        EPSSetOperators(eps, _S_, NULL);
+        EPSSetProblemType(eps, EPS_HEP);
+        EPSSetTolerances(eps,1e-3,50);
+        // EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
+        EPSSetDimensions(eps,1,100,100);
+        EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
+
+        EPSSolve(eps);
+        EPSGetConverged(eps, &nconv);
+        EPSGetEigenpair(eps,0,&eigmax, NULL, NULL, NULL);
+
+        EPSDestroy(&eps);
+
+        if (_dm_atomic_->rank()==0 && verbose){
+            std::cout << "The largest eigenvalue of overlap S: " << eigmax.real() << std::endl;
+        }
+
+        double factor = 1.0 / std::sqrt(eigmax.real() + 0.1);
+
+        rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
         MatConvert(_Sr_, "aijmkl", MAT_INPLACE_MATRIX, &_Sr_);
 
         // check whether _Sr_ works well
@@ -263,7 +196,11 @@ public:
         // MatMatMult(tmp, _S_, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &tmp2);
         // MatShift(tmp2, -1.0);
         // MatNorm(tmp2, NORM_INFINITY, &norm);
-        // std::cout << "ZSZ-I norm: " << norm << std::endl;
+        // if (_dm_atomic_->rank()==0 && verbose){
+        //     std::cout << "ZSZ-I norm: " << norm << std::endl;
+        // }
+
+        // MatDestroy(&tmp); MatDestroy(&tmp2);
 
 
         // check
@@ -286,91 +223,8 @@ public:
         // PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATRIXMARKET);
         // MatView(_Sr_, viewer);
         // PetscViewerDestroy(&viewer);
-    }
 
-    void Ssqrtm_sparse(double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31){
-        PetscReal error = 999.0;
-        // PetscReal thres = filter;
-        int nnorb = this->norb();
-        int count = 0;
-        Mat ZT=NULL, tmp1=NULL, tmp2=NULL; // D=ZSZ, Z=_Sr_
-        
-        if (!_Sr_) DMCreateMatrix(_dm_, &_Sr_);
-        MatAssemblyBegin(_Sr_, MAT_FINAL_ASSEMBLY);
-        MatAssemblyEnd(_Sr_, MAT_FINAL_ASSEMBLY);
-        MatSetOption(_Sr_, MAT_HERMITIAN, PETSC_TRUE);
-        MatConvert(_Sr_, "aijkokkos", MAT_INPLACE_MATRIX, &_Sr_);
-        MatConvert(_S_, "aijkokkos", MAT_INPLACE_MATRIX, &_S_); // Convert S temperarily
-        // init _Sr_ & ZT
-        MatZeroEntries(_Sr_);
-        MatShift(_Sr_, factor);
-
-        this->check_density(_S_);
-
-        while (error > tol && count < maxit)
-        {
-            /* code */
-            // PetscInt ars, are, brs, bre;
-            // MatGetOwnershipRange(_Sr_, &ars, &are);
-            // MatGetOwnershipRange(ZT, &brs, &bre);
-            // std::cout << ars << " " << brs << " " << are << " " << bre << std::endl; 
-            // assert(ars==brs && are==bre);
-            
-            // MatCopy(_Sr_, ZT, DIFFERENT_NONZERO_PATTERN);
-            // MatHermitianTranspose(ZT, MAT_INPLACE_MATRIX, &ZT);
-            if (ZT) MatDestroy(&ZT);
-            MatHermitianTranspose(_Sr_, MAT_INITIAL_MATRIX, &ZT);
-            if (tmp1) MatDestroy(&tmp1);
-            MatMatMult(ZT, _S_, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &tmp1);
-            MatConvert(tmp1, MATAIJ, MAT_INPLACE_MATRIX, &tmp1);
-            MatFilter(tmp1, sptol, PETSC_TRUE, PETSC_TRUE);
-            MatConvert(tmp1, "aijkokkos", MAT_INPLACE_MATRIX, &tmp1);
-            if (tmp2) MatDestroy(&tmp2);
-            MatMatMult(tmp1, _Sr_, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &tmp2);
-            MatConvert(tmp2, MATAIJ, MAT_INPLACE_MATRIX, &tmp2);
-            MatFilter(tmp2, sptol, PETSC_TRUE, PETSC_TRUE);
-            MatConvert(tmp2, "aijkokkos", MAT_INPLACE_MATRIX, &tmp2);
-            
-
-            // check error with nZ
-            MatShift(tmp2, -1.0);
-            MatNorm(tmp2, NORM_INFINITY, &error);
-            MatShift(tmp2, 1.0);
-
-            if (rank == 0){
-                std::cout << "Recursive Factorization of S: current error - " << error  << std::endl;
-            }
-
-            // compute DD
-            if (tmp1) MatDestroy(&tmp1);
-            MatMatMult(tmp2, tmp2, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &tmp1);
-            MatConvert(tmp1, MATAIJ, MAT_INPLACE_MATRIX, &tmp1);
-            MatFilter(tmp1, sptol, PETSC_TRUE, PETSC_TRUE);
-            MatConvert(tmp1, "aijkokkos", MAT_INPLACE_MATRIX, &tmp1);
-
-            // compute DD = 0.375 * DD - 1.25 * ZSZ + 1.875 * I
-            MatScale(tmp1, 0.375);
-            MatAXPY(tmp1, -1.25, tmp2, DIFFERENT_NONZERO_PATTERN);
-            MatShift(tmp1, 1.875);
-            MatConvert(tmp1, MATAIJ, MAT_INPLACE_MATRIX, &tmp1);
-            MatFilter(tmp1, sptol, PETSC_TRUE, PETSC_TRUE);
-            MatConvert(tmp1, "aijkokkos", MAT_INPLACE_MATRIX, &tmp1);
-            
-            // compute _Sr_ = _Sr_ @ DD
-            if (tmp2) MatDestroy(&tmp2);
-            MatMatMult(_Sr_, tmp1, MAT_INITIAL_MATRIX, PETSC_DETERMINE, &tmp2);
-            MatConvert(tmp2, MATAIJ, MAT_INPLACE_MATRIX, &tmp2);
-            MatFilter(tmp2, sptol, PETSC_TRUE, PETSC_TRUE);
-            MatConvert(tmp2, "aijkokkos", MAT_INPLACE_MATRIX, &tmp2);
-            MatCopy(tmp2, _Sr_, DIFFERENT_NONZERO_PATTERN);
-
-            this->check_density(_Sr_);
-            
-            count ++;
-        }
-
-        MatDestroy(&ZT); MatDestroy(&tmp1); MatDestroy(&tmp2);
-        MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
+        _sqrtm_ready_ = true;
     }
 
     void setup_R(const std::string &RxFile, const std::string &RyFile, const std::string &RzFile){
@@ -378,9 +232,9 @@ public:
         if (RyFile.size() > 0) this->set_mat_from_h5(&_Ry_, RyFile);
         if (RzFile.size() > 0) this->set_mat_from_h5(&_Rz_, RzFile);
 
-        // MatSetType(_Rx_, MATMPIAIJMKL);
-        // MatSetType(_Ry_, MATMPIAIJMKL);
-        // MatSetType(_Rz_, MATMPIAIJMKL);
+        MatSetType(_Rx_, "aijmkl");
+        MatSetType(_Ry_, "aijmkl");
+        MatSetType(_Rz_, "aijmkl");
 
         if ((RxFile.size() > 0) || (RyFile.size() > 0) || (RyFile.size() > 0))
             _position_ready_ = true;
@@ -388,17 +242,17 @@ public:
 
     void setup_R(const std::string* file_orb0, const std::string& orbital_dir){
         Mat s_check;
-        DMCreateMatrix(_dm_, &s_check);
-        DMCreateMatrix(_dm_, &_Rx_);
-        DMCreateMatrix(_dm_, &_Ry_);
-        DMCreateMatrix(_dm_, &_Rz_);
+        DMCreateMatrix(_dm_atomic_->dm(), &s_check);
+        DMCreateMatrix(_dm_atomic_->dm(), &_Rx_);
+        DMCreateMatrix(_dm_atomic_->dm(), &_Ry_);
+        DMCreateMatrix(_dm_atomic_->dm(), &_Rz_);
 
         MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
         MatConvert(_Rx_, "aijmkl", MAT_INPLACE_MATRIX, &_Rx_);
         MatConvert(_Ry_, "aijmkl", MAT_INPLACE_MATRIX, &_Ry_);
         MatConvert(_Rz_, "aijmkl", MAT_INPLACE_MATRIX, &_Rz_);
 
-        setMatrixR2K(s_check, _dm_, _cell_, _ntype_, file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
+        setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
 
         if (_overlap_ready_){ // check if the s_check equals or close to the overlap prepared.
             MatAXPY(s_check, -1.0, _S_, SAME_NONZERO_PATTERN);
@@ -415,7 +269,7 @@ public:
         _position_ready_ = true;
     }
 
-    void setup_H(const std::string &HFile, double emin=0.0, double emax=0.0);
+    void setup_H_h5(const std::string &HFile, double emin=0.0, double emax=0.0, bool verbose=false);
     /* 
         Steps:
             1. create HS from DM, assembled them according to the class initialization method (h5ijR or atomicdata or others);
@@ -439,7 +293,7 @@ public:
         PetscViewerDestroy(&viewer);
     }
 
-    void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos);
+    void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos, double *omegas, bool verbose=false);
     /* dE defines the energe resolution, which should be scale/nt*/
 
     void compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, double *omegas);
@@ -451,20 +305,23 @@ public:
     };
 
     /* Getters */
-    int ntype() { return _ntype_; }
+    int ntype() { return  _dm_atomic_->n_type(); }
     int norb() {
         int matdim = 0;
-        for(int i=0; i<_n_atom_; ++i) matdim += _type_norb_[_atom_type_[i]];
+        for(int i=0; i<_dm_atomic_->n_atom(); ++i) matdim += _dm_atomic_->type_norb()[_dm_atomic_->atom_type()[i]];
+
+        MPI_Allreduce(MPI_IN_PLACE, &matdim, 1, MPI_INT, MPIU_SUM, _comm_);
         return matdim;
     }
 
     double volume() {
-        return _cell_[0]*(_cell_[4]*_cell_[8] - _cell_[5]*_cell_[7]) \
-             - _cell_[1]*(_cell_[3]*_cell_[8] - _cell_[5]*_cell_[6]) \
-             + _cell_[2]*(_cell_[3]*_cell_[7] - _cell_[4]*_cell_[6]);
+        const double *cl = _dm_atomic_->cell();
+        return cl[0]*(cl[4]*cl[8] - cl[5]*cl[7]) \
+             - cl[1]*(cl[3]*cl[8] - cl[5]*cl[6]) \
+             + cl[2]*(cl[3]*cl[7] - cl[4]*cl[6]);
     }
 
-    DM dm() { return _dm_; }
+    DMAtomic& dm_atomic() { return *_dm_atomic_; }
     
     Mat S() { return _S_; }
     Mat H() { return _H_; }

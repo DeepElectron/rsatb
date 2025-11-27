@@ -18,10 +18,13 @@ set_target_properties(PETSc::PETSc PROPERTIES
   INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
 endif()
 
-add_library(backend OBJECT petsc.cpp petsc.hpp dbcsr.hpp)
+add_library(backend OBJECT petsc.cpp petsc.hpp dbcsr.hpp petsc_hack.h)
 target_compile_features(backend PUBLIC cxx_std_11)
 
 target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads PETSc::PETSc DBCSR::dbcsr_c)
 
 add_executable(test_backend ./test.cpp $<TARGET_OBJECTS:backend>)
 target_link_libraries(test_backend PUBLIC backend GTest::gtest)
+
+add_executable(test_dm_atomic ./test_dmplex.cpp $<TARGET_OBJECTS:backend>)
+target_link_libraries(test_dm_atomic PUBLIC backend GTest::gtest)

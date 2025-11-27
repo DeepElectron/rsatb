@@ -7,9 +7,9 @@
 
 namespace rsatb::calc{
 
-void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31, Mat *mat_isqrt=nullptr){
+void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31, Mat *mat_isqrt=nullptr, bool verbose=false){
     if (*mat_isqrt==nullptr) {
-        DMCreateMatrix(dm, mat_isqrt);
+        DMCreateMatrix(dm_atomic.dm(), mat_isqrt);
         MatAssemblyBegin(*mat_isqrt, MAT_FINAL_ASSEMBLY);
         MatAssemblyEnd(*mat_isqrt, MAT_FINAL_ASSEMBLY);
     }
@@ -24,7 +24,7 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
     double norm, norm_base, norm_pre=0;
     PetscInt vStart, vEnd;
     int nLocal, NGlobal;
-    PetscBool ghost;
+    bool ghost;
 
     // check_density(mat);
     double error = 999.0;
@@ -35,13 +35,13 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
     // learn how to use DBCSR to efficiently compute matrix multiplication and purification based calculation
 
     MPI_Comm comm;
-    PetscObjectGetComm((PetscObject)dm, &comm);
+    PetscObjectGetComm((PetscObject)dm_atomic.dm(), &comm);
     MPI_Comm_rank(comm, &rank);
 
-    DMNetworkGetVertexRange(dm, &vStart, &vEnd);
+    dm_atomic.get_vertex_range_local(&vStart, &vEnd);
     nLocal = 0;
     for(int k=vStart; k<vEnd; ++k){
-        DMNetworkIsGhostVertex(dm,k,&ghost);
+        ghost = dm_atomic.atom_is_ghost(k);
         if(!ghost){
             nLocal++;
         }
@@ -50,8 +50,9 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
     NGlobal = nLocal;
     MPI_Allreduce(MPI_IN_PLACE, &NGlobal, 1, MPI_INT, MPIU_SUM, comm);
 
-    DMat2DBCSR(mat, dm, &S, 'H');
-    DMat2DBCSR(*mat_isqrt, dm, &Z, 'N');
+    DMat2DBCSR(mat, dm_atomic, &S, 'H');
+    DMat2DBCSR(*mat_isqrt, dm_atomic, &Z, 'N');
+
     c_dbcsr_get_distribution(S, &dist);
 
     // double _Complex tr_d = mk_c99(0.0, 0.0);
@@ -72,21 +73,29 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
     c_dbcsr_create_new(&tmp2, "tmp2", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
     c_dbcsr_finalize(tmp2);
 
-
-
     // create I with complex*16 type
     c_dbcsr_create_new(&I, "I", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
     c_dbcsr_reserve_diag_blocks(I);
     // fill each diagonal block with an identity (1 on sub-diagonal)
     bool sum = false;                                // overwrite
-    int bs;
+    int bs, my_rank;
+    MPI_Comm group;
+    c_dbcsr_get_group(tmp1, &group);
+    MPI_Comm_rank(group, &my_rank);
+    int my_coords[2], *crows=nullptr, *ccols=nullptr;
+    MPI_Cart_coords(group, my_rank, 2, my_coords);
+    c_dbcsr_distribution_get(dist, &crows, &ccols, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr);
+
     std::complex<double> scale=1.0;
     for (int bi = 0; bi < NGlobal; ++bi) {
-        bs = blksize[bi];                       // block size
-        std::vector<std::complex<double>> blk((size_t)bs*bs, 0.0);
-        for (int k=0; k<bs; ++k) blk[(size_t)k*bs + k] = 1.0;
+        if (crows[bi]==my_coords[0] && ccols[bi]==my_coords[1]) {
+            bs = blksize[bi];                       // block size
+            std::vector<std::complex<double>> blk((size_t)bs*bs, 0.0);
+            for (int k=0; k<bs; ++k) blk[(size_t)k*bs + k] = 1.0;
 
-        c_dbcsr_put_block2d_z_api(I, bi, bi, blk.data(), bs, bs, &sum, &scale);
+            c_dbcsr_put_block2d_z_api(I, bi, bi, blk.data(), bs, bs, &sum, &scale);
+        }
+        
     }
     c_dbcsr_finalize(I);
 
@@ -121,7 +130,7 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
 
     while (norm/norm_base > tol && count < maxit && std::abs(norm_pre-norm) / norm_base > 0.1*tol)
     {
-        if (rank == 0){
+        if (rank == 0 && verbose){
             std::cout << "Recursive Factorization of S: current error: F norm - " << norm << " relative F norm - " << norm / norm_base  << std::endl;
         }
 
@@ -156,9 +165,14 @@ void isqrtm(Mat mat, DM dm, double tol=1e-7, double sptol=1e-6, int maxit = 20, 
         count ++;
     }
 
-    std::cout << "Recursive Factorization of S: Converge at F norm - " << norm << " relative F norm - " << norm / norm_base << std::endl;
+    if (rank == 0 && verbose) {
+        std::cout << "Recursive Factorization of S: Converge at F norm - " << norm << " relative F norm - " << norm / norm_base << std::endl;
+    }
+
+    // PetscReal norm;
+    // MatNorm(*mat_isqrt, NORM_INFINITY, &norm);
     
-    DBCSR2Mat(dm, Z, mat_isqrt);
+    DBCSR2Mat(dm_atomic, Z, mat_isqrt);
     c_dbcsr_release(&S);
     c_dbcsr_release(&tmp1);
     c_dbcsr_release(&tmp2);

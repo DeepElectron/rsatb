@@ -57,10 +57,12 @@ class MPIMultiLevel:
                 self.__rank = self.__comm.Get_rank()
                 self.__size = self.__comm.Get_size()
                 self.__subcomm = self.__comm
-                self.__subrank = 0
+                self.__subrank = self.__rank
+                self.__subsize = self.__size
                 self.__n_group = 1
                 self.__color = 0
-                self.__subsize = self.__size
+                self.__master_comm = None
+                self.__master_rank = None
             else:
                 raise ImportError("MPI4PY cannot be imported")
         else:
@@ -70,10 +72,13 @@ class MPIMultiLevel:
             self.__color = 0
             self.__n_group = 1
             self.__subcomm = self.__comm
-            self.__subrank = 0
+            self.__subrank = self.rank
             self.__subsize = self.__size
+            self.__master_comm = None
+            self.__master_rank = None
         
         self.__color_all = [0] * self.__size
+        self.verbose = verbose
 
         # Print simulation details
         if verbose:
@@ -116,17 +121,17 @@ class MPIMultiLevel:
     def partition(self, n_group):
 
         if n_group == 1:
-            self.__master_comm = None
             return True
+        elif n_group > self.__size:
+            raise ValueError("The #group should not exceed the world size of process.")
         
         color_all = []
         group_count = []
-        for i in range(n_group-1):
-            group_count += [self.__size // n_group]
-            color_all += [i] * group_count[-1]
-            
-        group_count += [self.__size % n_group]
-        color_all += [n_group-1] * group_count[-1]
+        q, r = divmod(self.__size, n_group)
+        group_count = [q + 1 if i < r else q for i in range(n_group)]
+
+        for g, cnt in enumerate(group_count):
+            color_all.extend([g] * cnt)
 
         if float(self.__size % n_group) / float(self.__size // n_group) < 0.8:
             raise RuntimeWarning("Group partition is ", group_count, " , bad allocation!")
@@ -147,10 +152,18 @@ class MPIMultiLevel:
         else:
             print(f"Global rank {self.__rank} is not in the new_comm")
 
-        # create the master comm for subgroup masters
         if self.__subrank == 0:
-            self.__master_comm = self.__comm.split(color=0, key=self.__rank)
+            master_color = 0
+        else:
+            master_color = MPI.UNDEFINED
+
+        # create the master comm for subgroup masters
+        self.__master_comm = self.__comm.split(color=master_color, key=self.__rank)
+        if self.__master_comm != MPI.COMM_NULL:
             self.__master_rank = self.__master_comm.Get_rank()
+        else:
+            self.__master_rank = None
+            
         self.__n_group = n_group
         self.group_count = group_count
 
@@ -167,6 +180,9 @@ class MPIMultiLevel:
         :return: sublist assigned to this process
         """
         if level == 0:
+            if self.__master_comm is None:
+                return raw_list
+            
             if self.is_submaster:
                 return split_list(raw_list, self.__n_group, algorithm)[self.__master_rank]
             else:
@@ -186,6 +202,8 @@ class MPIMultiLevel:
         :return: subrange assigned to this process
         """
         if level == 0:
+            if self.__master_comm is None:
+                return 
             if self.is_submaster:
                 return split_range(n_max, num_group=self.__n_group)[self.__master_rank]
             else:
@@ -312,7 +330,7 @@ class MPIMultiLevel:
                                         order=self.__get_array_order(data_local))
                     else:
                         data = None
-                    self.__subcomm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                    self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
                     if self.is_master:
                         data /= self.__n_group
             else:
@@ -387,7 +405,7 @@ class MPIMultiLevel:
     def gather(self, data_local: np.ndarray, level=2) -> np.ndarray:
 
         if self.mpi_enabled:
-            shape = data_local.shape
+            shape = list(data_local.shape)
             if level == 2:
                 shape[0] = shape[0] * self.__size
                 if self.is_master:
@@ -397,13 +415,15 @@ class MPIMultiLevel:
                 self.__comm.Gather(data_local, data, root=0)
             elif level == 1:
                 shape[0] = shape[0] * self.__subsize
-                if self.is_master:
+                if self.is_submaster:
                     data = np.zeros(shape, dtype=data_local.dtype, order=self.__get_array_order(data_local))
                 else:
                     data = None
                 self.__subcomm.Gather(data_local, data, root=0)
             elif level == 0:
-                if self.is_submaster:
+                if self.__master_comm is None:
+                    data = data_local
+                elif self.is_submaster:
                     shape[0] = shape[0] * self.__n_group
                     if self.is_master:
                         data = np.zeros(shape, dtype=data_local.dtype, order=self.__get_array_order(data_local))
@@ -463,9 +483,9 @@ class MPIMultiLevel:
         """
         return self.__rank
 
-    @property
-    def group(self, rank) -> int:
-        return self.__group_vec[rank]
+    # @property
+    # def group(self, rank) -> int:
+    #     return self.__group_vec[rank]
     
     @property
     def color(self) -> int:
@@ -480,6 +500,14 @@ class MPIMultiLevel:
         :return: number of MPI processes
         """
         return self.__size
+    
+    @property
+    def subsize(self) -> int:
+        return self.__subsize
+    
+    @property
+    def subcomm(self):
+        return self.__subcomm
 
 
 def split_list(raw_list: List[Any],

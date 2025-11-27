@@ -32,6 +32,7 @@ PYBIND11_MODULE(binding, m) {
     }
     py::class_<rsatb::Solver>(m, "Solver")
         .def(py::init([](
+                py::array_t<int, py::array::c_style | py::array::forcecast> atom_index,
                 py::array_t<int, py::array::c_style | py::array::forcecast> atom_type, 
                 py::array_t<double, py::array::c_style | py::array::forcecast> cell,
                 py::array_t<double, py::array::c_style | py::array::forcecast> pos,
@@ -41,7 +42,7 @@ PYBIND11_MODULE(binding, m) {
                 py::object py_comm, std::string options
             ){
                 // Get the buffers
-                py::buffer_info at_bf = atom_type.request(), ei_bf = edge_index.request(), tn_bf = type_norb.request();
+                py::buffer_info ai_bf = atom_index.request(), at_bf = atom_type.request(), ei_bf = edge_index.request(), tn_bf = type_norb.request();
                 py::buffer_info esv_bf = edge_shift_vec.request(), cell_bf = cell.request();
                 py::buffer_info pos_bf = pos.request();
 
@@ -53,6 +54,8 @@ PYBIND11_MODULE(binding, m) {
                 */
             
                 // 1.
+                if (ai_bf.ndim != 1)
+                    throw std::runtime_error("atom_index must be a 1D array of length n_atom");
                 if (at_bf.ndim != 1)
                     throw std::runtime_error("atom_type must be a 1D array of length n_atom");
                 size_t n_atom = at_bf.size;
@@ -70,6 +73,11 @@ PYBIND11_MODULE(binding, m) {
 
                 // 2.
                 MPI_Comm *comm = get_mpi_comm(py_comm); // what we get is the ptr to Comm;
+                size_t N_atom=n_atom, N_edge=n_edge, atom_offset=0;
+
+                MPI_Allreduce(MPI_IN_PLACE, &N_atom, 1, MPI_INT, MPI_SUM, *comm);
+                MPI_Allreduce(MPI_IN_PLACE, &N_edge, 1, MPI_INT, MPI_SUM, *comm);
+                MPI_Exscan(&n_atom, &atom_offset, 1, MPI_INT, MPI_SUM, *comm);
 
                 // 3. Skip
                 // std::cout << "n_edge: " << n_edge << "\n";
@@ -79,10 +87,9 @@ PYBIND11_MODULE(binding, m) {
                 // for(int i=0;i<n_edge;++i) std::cout<<edge_index.data()[i]<<" ";
                 // std::cout<<"\n";
 
-                return std::make_unique<rsatb::Solver>(n_atom, n_edge, 
-                    atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), 
+                return std::make_unique<rsatb::Solver>(n_atom, N_atom, atom_offset, n_edge, N_edge,
+                    atom_index.data(), atom_type.data(), edge_index.data(), type_norb.data(), edge_shift_vec.data(), 
                     cell.data(), pos.data(), *comm, options);
-
             }),
             py::keep_alive<1,2>(),
             py::keep_alive<1,3>(),
@@ -90,6 +97,8 @@ PYBIND11_MODULE(binding, m) {
             py::keep_alive<1,5>(),
             py::keep_alive<1,6>(),
             py::keep_alive<1,7>(),
+            py::keep_alive<1,8>(),
+            py::arg("atom_index"),
             py::arg("atom_type"),
             py::arg("cell"),
             py::arg("pos"),
@@ -98,29 +107,6 @@ PYBIND11_MODULE(binding, m) {
             py::arg("edge_shift_vec"),
             py::arg("py_comm"),
             py::arg("options")=" "
-        )
-        .def("setup_graph", &rsatb::Solver::setup_graph)
-
-        .def("setup_auxgraph", [](
-            rsatb::Solver &solver,
-            py::array_t<int, py::array::c_style | py::array::forcecast> edge_index, 
-            py::array_t<int, py::array::c_style | py::array::forcecast> edge_shift_vec
-            ){
-                py::buffer_info ei_bf = edge_index.request();
-                py::buffer_info esv_bf = edge_shift_vec.request();
-
-                if (ei_bf.ndim != 2)
-                    throw std::runtime_error("edge_index must be 2D of length 2*n_edge");
-                size_t n_edge = ei_bf.size / 2;
-                if (esv_bf.ndim != 2 || esv_bf.size != 3*n_edge)
-                    throw std::runtime_error("edge_shift_vec must be 2D with shape [n_edge, 3]");
-
-                solver.setup_auxgraph(n_edge, edge_index.data(), edge_shift_vec.data());
-            },
-            py::keep_alive<1,2>(),
-            py::keep_alive<1,3>(),
-            py::arg("edge_index"),
-            py::arg("edge_shift_vec")
         )
 
         .def("setup_K", &rsatb::Solver::setup_K)
@@ -147,9 +133,7 @@ PYBIND11_MODULE(binding, m) {
 
         .def("test_Sinv", &rsatb::Solver::test_Sinv)
 
-        .def("Ssqrtm", &rsatb::Solver::Ssqrtm, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("factor")=0.31)
-
-        .def("Ssqrtm_sparse", &rsatb::Solver::Ssqrtm_sparse, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("factor")=0.31)
+        .def("Ssqrtm", &rsatb::Solver::Ssqrtm, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("verbose")=false)
 
         .def("setup_R_h5", [](
             rsatb::Solver &solver,
@@ -179,15 +163,17 @@ PYBIND11_MODULE(binding, m) {
             rsatb::Solver &solver, // Since python call self as the first arg
             const std::string &HFile,
             float emin,
-            float emax
+            float emax,
+            bool verbose
             ){
 
                 double demin=emin, demax=emax;
-                solver.setup_H(HFile, demin, demax);
+                solver.setup_H_h5(HFile, demin, demax, verbose);
             },
             py::arg("HFile"),
             py::arg("emin") = 0.0f,
-            py::arg("emax") = 0.0f
+            py::arg("emax") = 0.0f,
+            py::arg("verbose") = false
         )
         
         .def("setup_sample", &rsatb::Solver::setup_sample)
@@ -207,34 +193,39 @@ PYBIND11_MODULE(binding, m) {
             rsatb::Solver &solver,
             int nt,
             std::string proj_mode,
-            py::array_t<int, py::array::c_style | py::array::forcecast> orbtype
+            py::array_t<int, py::array::c_style | py::array::forcecast> orbtype,
+            bool verbose
         ){
             
 
             double dos[2*nt];
+            double omegas[2*nt];
             std::unique_ptr<double[]> pdos;
             int n_proj;
-
-            solver.compute_dos(nt, proj_mode, orbtype.data(), &n_proj, dos, pdos);
+            
+            solver.compute_dos(nt, proj_mode, orbtype.data(), &n_proj, dos, pdos, omegas, verbose);
 
             py::array_t<double> o_dos(2*nt);
+            py::array_t<double> o_omegas(2*nt);
             py::array_t<double> o_pdos((2*nt)*n_proj);
 
             if(solver.rank == 0){
             
                 std::memcpy(o_dos.mutable_data(), dos, 2*nt * sizeof(double));
+                std::memcpy(o_omegas.mutable_data(), omegas, 2*nt * sizeof(double));
                 
                 if (proj_mode != "none"){
                     std::memcpy(o_pdos.mutable_data(), pdos.get(), n_proj * 2*nt * sizeof(double));
                 }
             }
             
-            return std::make_tuple(o_dos, o_pdos);
+            return std::make_tuple(o_dos, o_pdos, o_omegas);
         },
         py::keep_alive<1,4>(),
         py::arg("nt"),
         py::arg("proj_mode") = "none",
-        py::arg("orbtype") = py::array_t<int>()
+        py::arg("orbtype") = py::array_t<int>(),
+        py::arg("verbose") = false
         )
 
         .def("compute_ac", [](

@@ -51,6 +51,7 @@ _DEFAULT_NODE_FIELDS: Set[str] = {
     AtomicDataDict.NODE_FEATURES_KEY,
     AtomicDataDict.NODE_ATTRS_KEY,
     AtomicDataDict.ATOMIC_NUMBERS_KEY,
+    AtomicDataDict.ATOM_INDEX_KEY,
     AtomicDataDict.ATOM_TYPE_KEY,
     AtomicDataDict.FORCE_KEY,
     AtomicDataDict.PER_ATOM_ENERGY_KEY,
@@ -757,67 +758,85 @@ class AtomicData(Data):
             assert len(batch_atoms) == 1
             return batch_atoms[0]
     
-    def partition_graph(self, npart, node_weights=None):
+    def partition_graph(self, npart, node_weights=None, comm=None, split=False):
         import pymetis
+        from mpi4py import MPI
 
-        idx_dtype = self.edge_index.dtype
-        nnz = self.edge_index.shape[1]
-        data = np.zeros(nnz) # just fill in the need
+        if comm is None:
+            comm = MPI.COMM_WORLD
 
-        # sum duplicate
-        order = np.lexsort(self.edge_index[::-1])
-        coords = tuple(idx[order] for idx in self.edge_index)
-        data = data[order]
-        unique_mask = np.logical_or.reduce([
-            idx[1:] != idx[:-1] for idx in coords
-        ])
-        unique_mask = np.append(True, unique_mask)
-        coords = tuple(idx[unique_mask] for idx in coords)
-        unique_inds, = np.nonzero(unique_mask)
-        data = np.add.reduceat(data, downcast_intp_index(unique_inds), dtype=data.dtype)
-        nnz = len(data)
+        rank = comm.Get_rank()
 
-        major, minor = coords
+        if rank == 0:
+            idx_dtype = self.edge_index.dtype
+            nnz = self.edge_index.shape[1]
+            data = np.zeros(nnz) # just fill in the need
 
-        M = self.num_nodes
-        indptr = np.empty(M + 1, dtype=idx_dtype)
-        indices = np.empty_like(minor, dtype=idx_dtype)
+            # sum duplicate
+            order = np.lexsort(self.edge_index[::-1])
+            coords = tuple(idx[order] for idx in self.edge_index)
+            # data = data[order]
+            unique_mask = np.logical_or.reduce([
+                idx[1:] != idx[:-1] for idx in coords
+            ])
+            unique_mask = np.append(True, unique_mask)
+            coords = tuple(idx[unique_mask] for idx in coords)
+            unique_inds, = np.nonzero(unique_mask)
+            data = np.add.reduceat(data, downcast_intp_index(unique_inds), dtype=data.dtype)
+            nnz = len(data)
 
-        coo_tocsr(M, M, nnz, major, minor, data, indptr, indices, data)
-        if node_weights is not None:
-            assert len(node_weights) == M and node_weights.ndim == 1
-            assert node_weights.min() > 0
-            assert node_weights.dtype == np.int32
-            eweights = np.ascontiguousarray(node_weights[major]*node_weights[minor])
+            major, minor = coords
+
+            M = self.num_nodes
+            indptr = np.empty(M + 1, dtype=idx_dtype)
+            indices = np.empty_like(minor, dtype=idx_dtype)
+
+            coo_tocsr(M, M, nnz, major, minor, data, indptr, indices, data)
+
+            if node_weights is not None:
+                assert len(node_weights) == M and node_weights.ndim == 1
+                assert node_weights.min() > 0
+                assert node_weights.dtype == np.int32
+                eweights = np.ascontiguousarray(node_weights[major]*node_weights[minor])
+            else:
+                eweights = None
+
+            opt = pymetis.Options()
+            opt.ncuts   = 40
+            opt.niter   = 50
+            opt.minconn = 1
+            opt.ufactor = 30
+            # opt.contig  = 1
+            
+            _, partition = pymetis.part_graph(npart, xadj=indptr, adjncy=indices, vweights=node_weights, eweights=eweights, options=opt)
+            # sort the partition
+            partition = np.asarray(partition, dtype=np.int32)
+            sort_index = np.argsort(partition).astype(np.int32).ravel() # also the new atom_index
+            partition = partition[sort_index].ravel()
         else:
-            eweights = None
-        opt = pymetis.Options()
-        opt.ncuts   = 40
-        opt.niter   = 50
-        opt.minconn = 1
-        opt.ufactor = 30
-        # opt.contig  = 1
-        
-        _, partition = pymetis.part_graph(npart, xadj=indptr, adjncy=indices, vweights=node_weights, eweights=eweights, options=opt)
-        partition = np.array(partition)
-        # sort the partition
-        sort_index = np.argsort(partition)
+            sort_index = np.zeros(self.num_nodes, dtype=np.int32)
+            partition = np.zeros(self.num_nodes, dtype=np.int32)
+
+        comm.Bcast(sort_index, root=0)
+        comm.Bcast(partition, root=0)
 
         # sort the attrs
         for fields in _NODE_FIELDS:
             if hasattr(self, fields):
                 setattr(self, fields, getattr(self, fields)[sort_index])
-        partition = partition[sort_index]
+        setattr(self, AtomicDataDict.ATOM_INDEX_KEY, sort_index)
         setattr(self, AtomicDataDict.PARTITION, partition)
 
         if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
-            self.edge_index = sort_index[self.edge_index]
-            sort_index = np.argsort(self.edge_index[0])
-            self.edge_index = self.edge_index[:,sort_index]
+            atom_index_map = np.zeros(len(sort_index), dtype=np.int32)
+            atom_index_map[sort_index] = np.arange(len(sort_index))
+            self.edge_index = atom_index_map[self.edge_index]
+            edge_sort_index = np.argsort(self.edge_index[0])
+            self.edge_index = self.edge_index[:,edge_sort_index]
 
             for fields in _EDGE_FIELDS:
                 if hasattr(self, fields):
-                    setattr(self, fields, getattr(self, fields)[sort_index])
+                    setattr(self, fields, getattr(self, fields)[edge_sort_index])
 
         # get the range of each cluster's node and edge
         n_range = np.zeros((npart, 2), dtype=np.int32)
@@ -829,10 +848,12 @@ class AtomicData(Data):
         edge_part = partition[self.edge_index[0]]
         nstart = 0
         estart = 0
+
         for i in range(npart):
+            natom = sum(partition == i)
             n_range[i][0] = nstart
-            n_range[i][1] = nstart + sum(partition == i)
-            nstart += sum(partition == i)
+            n_range[i][1] = nstart + natom
+            nstart += natom
 
             cst_nbr = self.edge_index[1][edge_part == i]
             e_range[i][0] = estart
@@ -846,6 +867,15 @@ class AtomicData(Data):
         setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
         setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
         setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
+
+        if rank == 0:
+            print("############### The partition result ##############")
+            for i in range(len(connectivity)):
+                print("rank ", i, ": connected to ", len(connectivity[i]), " neighbour.")
+
+        if split:
+            assert comm.Get_size() == npart, "The split can only be called  with npart=MPI size"
+            self.split(rank)
 
         return True
     
@@ -866,10 +896,9 @@ class AtomicData(Data):
         
         for fields in _EDGE_FIELDS:
             if hasattr(self, fields):
-                if fields == AtomicDataDict.EDGE_INDEX_KEY:
-                    setattr(self, AtomicDataDict.EDGE_INDEX_KEY, getattr(self, AtomicDataDict.EDGE_INDEX_KEY)[:,estart:eend])
-                else:
                     setattr(self, fields, getattr(self, fields)[estart:eend])
+
+        setattr(self, AtomicDataDict.EDGE_INDEX_KEY, getattr(self, AtomicDataDict.EDGE_INDEX_KEY)[:,estart:eend])
 
         return True
 

@@ -50,6 +50,8 @@ PBC_KEY: Final[str] = "pbc"
 ATOMIC_NUMBERS_KEY: Final[str] = "atomic_numbers"
 # [n_atom, 1] long tensor
 ATOM_TYPE_KEY: Final[str] = "atom_types"
+
+ATOM_INDEX_KEY: Final[str] = "atom_index"
 # [n_batch, n_kpoint, n_orb]
 ENERGY_EIGENVALUE_KEY: Final[str] = "eigenvalue"
 

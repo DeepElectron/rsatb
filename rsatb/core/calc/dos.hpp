@@ -5,7 +5,7 @@
 namespace rsatb::calc{
 
 template<typename T>
-void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *isSrc, IS *isDst, PetscComplex *cdos, PetscComplex *pcdos){
+void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *isSrc, IS *isDst, PetscComplex *cdos, PetscComplex *pcdos, bool verbose=false){
     /*
         1. Create Bessel grid and time grid;
         2. Do orbital selection according if computing pdos
@@ -16,6 +16,11 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
     double dt = M_PI;
     PetscComplex *coeff;
     PetscInt matdim, nrhs;
+    MPI_Comm comm;
+    PetscObjectGetComm((PetscObject)H, &comm);
+    int rank;
+    MPI_Comm_rank(comm, &rank);
+
     if constexpr (std::is_same_v<T, Vec>){
         VecGetSize(Psi_in, &matdim);
     } else {
@@ -71,7 +76,10 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         VecCopy(Psi_in, Psi_curr);
 
         for(int it=0; it<nt; ++it){
-            std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
+            if ( rank == 0 && verbose){
+                std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
+            }
+
             cheby_recur(
                 H, ksp, Psi_curr,
                 buff, // length 3 vec
@@ -118,7 +126,9 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
         MatDuplicate(Psi_in, MAT_COPY_VALUES, &Psi_curr);
 
         for(int it=0; it<nt; ++it){
-            std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
+            if (rank == 0 && verbose){
+                std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
+            }
             cdos[nt+it+1] = 0;
             if(proj){
                 for (PetscInt i=0; i<n_proj_type; ++i) pcdos[(nt+it+1)*n_proj_type+i] = 0;
@@ -175,6 +185,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
     delete coeff;
 };
 
-template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*);
-template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*);
+template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool);
+template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool);
 }

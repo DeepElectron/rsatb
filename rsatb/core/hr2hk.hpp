@@ -11,10 +11,16 @@ namespace rsatb{
 
 PetscErrorCode SetBlockR2K(Mat mat, DM dm, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v);
 
+PetscErrorCode SetBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v);
+
 void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, double Ky, double Kz);
+
+void setMatrixR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, rsatb::io::HDF5Handler *handler, double Kx, double Ky, double Kz);
 
 // used only for computing overlap and position operator currently.
 void setMatrixR2K(Mat S, DM dm, const double* cell, int ntype, const std::string* file_orb0, const std::string& orbital_dir, double Kx, double Ky, double Kz, Mat Rx=nullptr, Mat Ry=nullptr, Mat Rz=nullptr);
+
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell, int ntype, const std::string* file_orb0, const std::string& orbital_dir, double Kx, double Ky, double Kz, Mat Rx=nullptr, Mat Ry=nullptr, Mat Rz=nullptr);
 
 void cal_phase(int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, std::complex<double> *phase);
 

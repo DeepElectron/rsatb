@@ -14,18 +14,16 @@ using namespace rsatb::calc;
 namespace rsatb{
 
 Solver::Solver(
-    const int n_atom, const int n_edge, 
-    const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
+    const size_t n_atom, const size_t N_atom, const size_t atom_offset, const size_t n_edge, const size_t N_edge, 
+    const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
     const double *cell, const double *pos,
     MPI_Comm comm,
     std::string options
-    ): _n_atom_(n_atom), _n_edge_(n_edge), _atom_type_(atom_type), _edge_index_(edge_index),
-       _type_norb_(type_norb), _edge_shift_vec_(edge_shift_vec), _cell_(cell), _pos_(pos), _comm_(comm),
-       _dm_(nullptr), _auxdm_(nullptr),
+    ): 
+        _comm_(comm),
         _H_(nullptr), _S_(nullptr), _Rx_(nullptr), _Ry_(nullptr), _Rz_(nullptr), _Sr_(nullptr),
         _Samples_(nullptr), _Sample_(nullptr),
-        _ksp_(nullptr), _pc_(nullptr), 
-        _ntype_((*std::max_element(atom_type, atom_type+n_atom))+1)
+        _ksp_(nullptr), _pc_(nullptr)
     {
         // PetscOptionsSetValue(NULL, "-info", "stacking.log:ksp,pc");
         // PetscOptionsSetValue(NULL, "-log_view", ":profiling.log");
@@ -34,17 +32,24 @@ Solver::Solver(
         SlepcInitialize(nullptr, nullptr, nullptr, nullptr);
         c_dbcsr_init_lib(_comm_, nullptr);
         MPI_Comm_rank(_comm_, &rank);
+        
+        _dm_atomic_ = std::make_unique<DMAtomic>(
+            n_atom, N_atom, atom_offset, n_edge, N_edge,
+            atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
+            cell, pos,
+            comm
+        );
+
+        DMSetMatType(_dm_atomic_->dm(), "aijmkl");
     };
 
 Solver::~Solver() { /* destructor */
     if(_H_) MatDestroy(&_H_);
     if(_S_) MatDestroy(&_S_);
-    if(_Sr_) MatDestroy(&_S_);
-    if(_Rx_) MatDestroy(&_S_);
-    if(_Ry_) MatDestroy(&_S_);
-    if(_Rz_) MatDestroy(&_S_);
-    if(_dm_) DMDestroy(&_dm_);
-    if(_auxdm_) DMDestroy(&_dm_);
+    if(_Sr_) MatDestroy(&_Sr_);
+    if(_Rx_) MatDestroy(&_Rx_);
+    if(_Ry_) MatDestroy(&_Ry_);
+    if(_Rz_) MatDestroy(&_Rz_);
     if(_ksp_) KSPDestroy(&_ksp_);
     if(_n_sample_==1){
         if(_Sample_) VecDestroy(&_Sample_);
@@ -56,46 +61,13 @@ Solver::~Solver() { /* destructor */
     PetscFinalize();
 }
 
-void Solver::setup_graph(){ /* Setup the DM, we assume here the graph information is already initialized in the class constructor method */
-    
-    rsatb::backend::get_dm_atomic(
-        _n_atom_, _n_edge_, _edge_index_, _atom_type_, _type_norb_, _edge_shift_vec_, _pos_, &_dm_, _comm_
-    );
-    int size;
-    MPI_Comm_size(_comm_, &size);
-
-    if(size==1){
-        DMSetMatType(_dm_, MATSEQAIJMKL);
-    }else{
-        DMSetMatType(_dm_, MATMPIAIJMKL);
-    }
-    // DMSetMatType(_dm_, MATAIJ);
-
-    rsatb::backend::ViewDMNetworkPartition(_dm_, false);
-};
-
-void Solver::setup_auxgraph(int n_edge, const int *edge_index, const int *edge_shift_vec){
-    rsatb::backend::get_dm_atomic(
-        _n_atom_, n_edge, edge_index, _atom_type_, _type_norb_, edge_shift_vec, _pos_, &_auxdm_, _comm_
-    );
-    int size;
-    MPI_Comm_size(_comm_, &size);
-
-    if(size==1){
-        DMSetMatType(_auxdm_, MATSEQAIJMKL);
-    }else{
-        DMSetMatType(_auxdm_, MATMPIAIJMKL);
-    }
-    // DMSetMatType(_dm_, MATAIJ);
-
-    rsatb::backend::ViewDMNetworkPartition(_auxdm_, false);
-}
-
-void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
+void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool verbose){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
     if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian.");
     if ( !_kpoint_ready_ )  throw std::runtime_error("Please setup kpoint before configuring the Hamiltonian.");
     if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before configuring the Hamiltonian.");
+    if ( !_sqrtm_ready_ ) throw std::runtime_error("Please setup S^1/2 before configuring the Hamiltonian.");
     
+    // std::cout << "Here? Setup H!" << std::endl;
     this->set_mat_from_h5(&_H_, HFile);
     // MatShift(_S_, 0.1);
 
@@ -133,12 +105,12 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
         STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
         KSPSetType(ksp,KSPCG);
         KSPGetPC(ksp,&pc);
-        // STSetType(st, STSINVERT);
+
         KSPSetReusePreconditioner(ksp, PETSC_TRUE);
         
         // EPSSetType(eps,EPSLANCZOS);
         // EPSLanczosSetReorthog(eps,EPS_LANCZOS_REORTHOG_LOCAL);
-        EPSSetTolerances(eps,1e-3,50);
+        EPSSetTolerances(eps,1e-2,50);
         // EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
         EPSSetDimensions(eps,1,100,100);
         // EPSSetThreshold(eps,1e-4,PETSC_FALSE); // abs, rel
@@ -147,37 +119,20 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
 
 
         // Set for pc
-        PCSetType(pc, PCASM);
-        PCASMSetSubMatType(pc, MATSEQAIJMKL);
+        // PCSetType(pc, PCMAT);
+        // PCASMSetSubMatType(pc, MATSEQAIJMKL);
         // PCASMSetSubMatType(pc, MATSEQAIJ);
-        PCASMSetOverlap(pc, 0);
-        PetscOptionsInsertString(NULL,"-sub_pc_type icc");
+        // PCASMSetOverlap(pc, 0);
+        // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
 
-        // PCSetType(pc,PCGAMG);
-        // PCGAMGSetType(pc, PCGAMGAGG);
-        // PCGAMGSetGraphSymmetrize(pc, PETSC_TRUE);
-        // // PCGAMGSetSquareGraph(pc, 1);
+        Mat Sinv;
 
-        // PCGAMGSetAggressiveLevels(pc,0);
-        // PetscReal thr = 0.15;                 /* try 0.12 first; 0.08–0.15 is a good band */
-        // PCGAMGSetThreshold(pc, &thr, 1);
-        
-        // PCGAMGSetCoarseEqLim(pc, 2200);
-        // PCGAMGSetNSmooths(pc, 4);
-
-        // PCGAMGSetReuseInterpolation(pc, PETSC_TRUE);
-        // // KSPSetDiagonalScale(ksp, PETSC_TRUE);
-        // // KSPSetDiagonalScaleFix(ksp, PETSC_TRUE);
-
-        // PetscOptionsSetValue(NULL, "-pc_mg_cycle_type", "w");
-        // PetscOptionsSetValue(NULL, "-mg_levels_ksp_type", "chebyshev");
-        // PetscOptionsSetValue(NULL, "-mg_levels_ksp_max_it", "4");
-
-        // PetscOptionsSetValue(NULL, "-mg_levels_pc_type", "jacobi");
-        // PetscOptionsSetValue(NULL, "-sub_pc_type", "cholesky");
-
-        // PetscOptionsSetValue(NULL, "-mg_coarse_ksp_type", "preonly");
-        // PetscOptionsSetValue(NULL, "-mg_coarse_pc_type", "cholesky");
+        MatCreateNormalHermitian(_Sr_, &Sinv);
+        PCSetType(pc, PCMAT);
+        PCSetOperators(pc, _S_, Sinv);
+        STSetPreconditionerMat(st, Sinv);
+        KSPSetFromOptions(ksp);
+        KSPSetUp(ksp);
 
         KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
 
@@ -188,34 +143,11 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
         BVSetDefiniteTolerance(V, 1e-9);
 
         EPSSetUp(eps);
-        EPSView(eps, PETSC_VIEWER_STDOUT_WORLD);
+        // EPSView(eps, PETSC_VIEWER_STDOUT_WORLD);
 
         EPSSolve(eps);
         EPSGetConverged(eps, &nconv);
         EPSGetEigenpair(eps,0,&_emax_, NULL, NULL, NULL);
-
-        
-
-        // EPSReset(eps);
-
-        // //temp
-        // EPSSetOperators(eps, _H_, _S_);
-        // EPSSetProblemType(eps, EPS_GHEP);
-        // EPSSetTolerances(eps,1e-3,50);
-        // EPSSetDimensions(eps,1,100,100);
-        // EPSSetWhichEigenpairs(eps, EPS_SMALLEST_REAL);
-        // EPSGetST(eps,&st);                 // grab the ST
-        // STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
-
-        // KSPSetType(ksp,KSPCG);
-        // KSPGetPC(ksp,&pc);
-        // KSPSetReusePreconditioner(ksp, PETSC_TRUE);
-        // PCSetType(pc, PCASM);
-        // PCASMSetSubMatType(pc, MATSEQAIJMKL);
-        // PCASMSetOverlap(pc, 0);
-        // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
-        // KSPSetTolerances(ksp,1e-13, 1e-15, PETSC_CURRENT, PETSC_CURRENT);
-        // EPSSetUp(eps);
 
         EPSSetWhichEigenpairs(eps, EPS_SMALLEST_REAL);
         EPSSolve(eps);
@@ -223,7 +155,9 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
         EPSGetEigenpair(eps,0,&_emin_, NULL, NULL, NULL);
         EPSDestroy(&eps);
 
-        std::cout<<"Estimated Emax : "<< _emax_ << "  Emin : " << _emin_ <<"\n";
+        if (_dm_atomic_->rank() == 0 && verbose){
+            std::cout<<"Estimated Emax : "<< _emax_ << "  Emin : " << _emin_ <<"\n";
+        }
     } else {
         _emax_ = emax;
         _emin_ = emin; 
@@ -241,7 +175,7 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
 
     /* Setup the KSP solver also, need test*/
     KSPCreate(_comm_,&_ksp_);
-    KSPSetDM(_ksp_, _dm_);
+    KSPSetDM(_ksp_, _dm_atomic_->dm());
     KSPSetDMActive(_ksp_,PETSC_FALSE);
     KSPSetOperators(_ksp_,_S_,_S_);
     KSPGetPC(_ksp_,&_pc_);
@@ -254,17 +188,25 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
         KSPSetType(_ksp_, KSPHPDDM);
         KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_BCG);
     }
+    
+    // approximated invert square root
+
+    Mat Sinv;
+
+    MatCreateNormalHermitian(_Sr_, &Sinv);
+    PCSetType(_pc_, PCMAT);
+    PCSetOperators(_pc_, _S_, Sinv);
+
     // ICC(1), Fast in serial
     // PCSetType(_pc_, PCICC);
     // PCFactorSetLevels(_pc_, 1);
 
     // ASM + ICC(1)
-    PCSetType(_pc_, PCASM);
-    PCASMSetSubMatType(_pc_, MATSEQAIJMKL);
-    // PCASMSetSubMatType(_pc_, MATSEQAIJ);
-    PCASMSetOverlap(_pc_, 0);
-    PetscOptionsInsertString(NULL,"-sub_pc_type icc");
-
+    // PCSetType(_pc_, PCASM);
+    // PCASMSetSubMatType(_pc_, MATSEQAIJMKL);
+    // // PCASMSetSubMatType(_pc_, MATSEQAIJ);
+    // PCASMSetOverlap(_pc_, 0);
+    // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
 
     // GAMG performance profile
     // PCSetType(_pc_,PCGAMG);
@@ -285,20 +227,20 @@ void Solver::setup_H(const std::string &HFile, double emin, double emax){ /* Set
 
 void Solver::setup_sample(int n, std::string method){
     if(n==1){
-        DMCreateGlobalVector(_dm_, &_Sample_);
+        DMCreateGlobalVector(_dm_atomic_->dm(), &_Sample_);
     }else{
         PetscInt global_rows, local_rows;
         Vec tmp;
 
-        DMGetGlobalVector(_dm_, &tmp);               // Get temporary vector from DM
+        DMGetGlobalVector(_dm_atomic_->dm(), &tmp);               // Get temporary vector from DM
         VecGetSize(tmp, &global_rows);
         VecGetLocalSize(tmp, &local_rows);
-        DMRestoreGlobalVector(_dm_, &tmp);
+        DMRestoreGlobalVector(_dm_atomic_->dm(), &tmp);
 
-        MatCreate(PetscObjectComm((PetscObject)_dm_), &_Samples_);
+        MatCreate(PetscObjectComm((PetscObject)(_dm_atomic_->dm())), &_Samples_);
         MatSetSizes(_Samples_, local_rows, PETSC_DECIDE, global_rows, n);
         MatSetType(_Samples_, MATDENSE);
-        MatSetDM(_Samples_, _dm_);
+        MatSetDM(_Samples_, _dm_atomic_->dm());
         MatSetUp(_Samples_);
     }
     _n_sample_ = n;
@@ -337,14 +279,14 @@ void Solver::setup_sample(int n, std::string method){
     
 };
 
-void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos){
+void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos, double *omegas, bool verbose){
     /*
         We should have dos allocated before this function's call, but instead have pdos unallocated as a unique_ptr, since we do not know the size of the projection before.
     */
 
-    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_) ) 
+    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _sqrtm_ready_) ) 
     { 
-        throw std::runtime_error("Not ready for computing dos, setup: 1. samples, 2. kpoint 3. Overlap 4. Hamiltonian first!"); 
+        throw std::runtime_error("Not ready for computing dos, setup: 1. samples, 2. kpoint 3. Overlap 4. S^-1/2 5. Hamiltonian first!"); 
     }
 
     bool proj=true;
@@ -352,26 +294,26 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     std::complex<double> imI(0.0, 1.0); 
 
     IS isSrc, isDst;
-    int n_atom_type = (*std::max_element(_atom_type_, _atom_type_ + _n_atom_))+1;
+    int n_atom_type = _dm_atomic_->n_type();
     if(proj_mode=="element"){
-        rsatb::backend::setup_is_atomic(_dm_, &isSrc, &isDst);
+        rsatb::backend::setup_is_atomic(*_dm_atomic_, &isSrc, &isDst);
         n_proj_type = n_atom_type;
     }else if(proj_mode=="orbital"){
         int norb=0;
-        for(int i=0; i<n_atom_type;i++) norb += _type_norb_[i];
+        for(int i=0; i<n_atom_type;i++) norb += _dm_atomic_->type_norb()[i];
         n_proj_type = (*std::max_element(orbtype, orbtype + norb))+1;
-        rsatb::backend::setup_is_orbital(_dm_, orbtype, n_atom_type, _type_norb_, &isSrc, &isDst);
+        rsatb::backend::setup_is_orbital(*_dm_atomic_, orbtype, n_atom_type, _dm_atomic_->type_norb(), &isSrc, &isDst);
     }else{
         proj=false;
     }
-    *n_proj = n_proj_type;
+    if(n_proj!=nullptr) *n_proj = n_proj_type;
 
     PetscComplex cdos[2*nt+1], pcdos[(2*nt+1)*n_proj_type];
 
     if(_n_sample_==1){
-        rsatb::calc::corr_dos<Vec>(_H_, _ksp_, _Sample_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos);
+        rsatb::calc::corr_dos<Vec>(_H_, _ksp_, _Sample_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose);
     } else {
-        rsatb::calc::corr_dos<Mat>(_H_, _ksp_, _Samples_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos);
+        rsatb::calc::corr_dos<Mat>(_H_, _ksp_, _Samples_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose);
     }
 
 
@@ -385,6 +327,7 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
         //         pcdos[nt+n_proj_type*ip] *= std::exp(-imI*_shift_*M_PI*nt/_scale_);
         //     }
         // }
+
         for(int i=1;i<nt+1;++i){
             poscorr = std::exp(imI*_shift_*M_PI*i/_scale_);
             negcorr = std::exp(-imI*_shift_*M_PI*i/_scale_);
@@ -413,6 +356,8 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
         for(int i=0;i<nt;++i){
             dos[i] = std::abs(temp_dos[nt+i]);
             dos[nt+i] = std::abs(temp_dos[i]);
+            omegas[i] = (i-nt) * _scale_ / nt + _shift_;
+            omegas[nt+i] = i * _scale_ / nt + _shift_;
             if(proj){
                 for(int ip=0; ip<n_proj_type; ++ip) {
                     pdos[i*n_proj_type+ip] = std::abs(temp_pdos[(i+nt)*n_proj_type+ip]);
@@ -424,9 +369,9 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
 };
 
 void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, double *omegas){
-    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _position_ready_) ) 
+    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _position_ready_ && _sqrtm_ready_) ) 
     { 
-        throw std::runtime_error("Not ready for computing ac, setup: 1. samples, 2. kpoint 3. Overlap 4. Hamiltonian 5. position first!"); 
+        throw std::runtime_error("Not ready for computing ac, setup: 1. samples, 2. kpoint 3. Overlap 4. S^-1/2 5. Hamiltonian 6. position first!"); 
     }
 
     double beta = 1.0 / (temp * 8.617333262e-5);
