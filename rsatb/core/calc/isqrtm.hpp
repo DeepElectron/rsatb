@@ -17,11 +17,11 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     MatZeroEntries(*mat_isqrt);
     MatShift(*mat_isqrt, factor);
 
-    dbcsr_matrix Z, S, tmp1, tmp2, I;
+    dbcsr_matrix Z, S, tmp1, tmp2, tmp3, I;
     dbcsr_distribution dist;
     long long int cflop=0;
     int count=0, rank;
-    double norm, norm_base, norm_pre=0;
+    double norm, norm_pre=0, dyn_sptol, st_sptol=0.1*sptol;
     PetscInt vStart, vEnd;
     int nLocal, NGlobal;
     bool ghost;
@@ -73,6 +73,9 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     c_dbcsr_create_new(&tmp2, "tmp2", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
     c_dbcsr_finalize(tmp2);
 
+    c_dbcsr_create_new(&tmp3, "tmp2", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
+    c_dbcsr_finalize(tmp3);
+
     // create I with complex*16 type
     c_dbcsr_create_new(&I, "I", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
     c_dbcsr_reserve_diag_blocks(I);
@@ -110,10 +113,9 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     c_dbcsr_add_z(tmp2, I, 1.0, -1.0);
     bool local=false;
     // std::cout << "Here?" << std::endl;
-    norm_base = c_dbcsr_frobenius_norm(tmp2, &local);
+    norm = c_dbcsr_maxabs(tmp2);
     c_dbcsr_add_z(tmp2, I, 1.0, 1.0);
     // std::cout << "Here?" << std::endl;
-    norm = norm_base;
 
     // std::cout << "Here?" << std::endl;
 
@@ -128,11 +130,14 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     // MatNorm(newm, NORM_FROBENIUS, &nrm);
     // std::cout << c_norm << " " << nrm << std::endl;
 
-    while (norm/norm_base > tol && count < maxit && std::abs(norm_pre-norm) / norm_base > 0.1*tol)
+    while (norm > tol && count < maxit && std::abs(norm_pre-norm) > 0.005*norm)
     {
         if (rank == 0 && verbose){
-            std::cout << "Recursive Factorization of S: current error: F norm - " << norm << " relative F norm - " << norm / norm_base  << std::endl;
+            std::cout << "Recursive Factorization of S: current error: maxabs norm - " << norm  << std::endl;
         }
+
+        // dyn_sptol = std::max(sptol, norm*0.001); // the initial tol cannot be too large, this will break the physics of Z, making Z\dagger Z does not equals to S^{-1}
+        // dyn_sptol = sptol;
 
         norm_pre = norm;
 
@@ -142,31 +147,31 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
         c_dbcsr_add_z(tmp1, tmp2, 0.375, -1.25);
         c_dbcsr_add_z(tmp1, I, 1.0, 1.875);
         
-        c_dbcsr_filter(tmp1, &sptol, nullptr, nullptr, nullptr);
-        c_dbcsr_multiply_z('N', 'N', 1.0, Z, tmp1, 0.0, tmp2, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+        c_dbcsr_filter(tmp1, &st_sptol, nullptr, nullptr, nullptr);
+
+        c_dbcsr_multiply_z('N', 'N', 1.0, Z, tmp1, 0.0, tmp3, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
         // c_dbcsr_copy(&Z, tmp2, nullptr, nullptr, nullptr, nullptr, nullptr);
-        c_dbcsr_add_z(Z, tmp2, 0.0, 1.0);
-        
+        c_dbcsr_add_z(Z, tmp3, 0.0, 1.0);
+        c_dbcsr_filter(Z, &st_sptol, nullptr, nullptr, nullptr);
 
-        // double _Complex tr_d = mk_c99(0.0, 0.0);
-        // c_dbcsr_trace_z(Z, &tr_d);
-
-        // std::cout << std::complex<double>(tr_d) << std::endl;
-
-        // this->check_density(_Sr_);
-
-        c_dbcsr_multiply_z('C', 'N', 1.0, Z, S, 0.0, tmp1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
-        c_dbcsr_multiply_z('N', 'N', 1.0, tmp1, Z, 0.0, tmp2, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+        // next X, tmp1 = P, tmp2 = X
+        if ( norm < 1e-1 && ((count + 1) % 5 != 0) ){
+            c_dbcsr_multiply_z('C', 'N', 1.0, tmp1, tmp2, 0.0, tmp3, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+            c_dbcsr_multiply_z('N', 'N', 1.0, tmp3, tmp1, 0.0, tmp2, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+        } else {
+            c_dbcsr_multiply_z('C', 'N', 1.0, Z, S, 0.0, tmp3, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+            c_dbcsr_multiply_z('N', 'N', 1.0, tmp3, Z, 0.0, tmp2, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+        }
 
         c_dbcsr_add_z(tmp2, I, 1.0, -1.0);
-        norm = c_dbcsr_frobenius_norm(tmp2, nullptr);
+        norm = c_dbcsr_maxabs(tmp2);
         c_dbcsr_add_z(tmp2, I, 1.0,  1.0);
         
         count ++;
     }
 
     if (rank == 0 && verbose) {
-        std::cout << "Recursive Factorization of S: Converge at F norm - " << norm << " relative F norm - " << norm / norm_base << std::endl;
+        std::cout << "Recursive Factorization of S: Converge at maxabs norm - " << norm << std::endl;
     }
 
     // PetscReal norm;
@@ -176,6 +181,7 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     c_dbcsr_release(&S);
     c_dbcsr_release(&tmp1);
     c_dbcsr_release(&tmp2);
+    c_dbcsr_release(&tmp3);
     c_dbcsr_release(&I);
     c_dbcsr_distribution_release(&dist);
 };
