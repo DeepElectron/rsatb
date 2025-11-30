@@ -143,9 +143,17 @@ install(TARGETS binding solver hr2hk DESTINATION rsatb/core)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 # Manually add DBCSR path since it's in a non-standard location
 set(DBCSR_LIB_PATH "${CMAKE_SOURCE_DIR}/../../deps/install/lib64")
-set_target_properties(binding PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
-set_target_properties(solver PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
-set_target_properties(hr2hk PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
+
+# Extract PETSc lib dir manually to ensure it's in RPATH (fixes local deployment issues)
+list(GET PETSC_LIBRARIES 0 PETSC_MAIN_LIB)
+get_filename_component(PETSC_LIB_DIR "${PETSC_MAIN_LIB}" DIRECTORY)
+
+# Extract SLEPc lib dir manually
+get_filename_component(SLEPC_LIB_DIR "${SLEPC_LIB}" DIRECTORY)
+
+set_target_properties(binding PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
+set_target_properties(solver PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
+set_target_properties(hr2hk PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
 
 add_executable(test ./test.cpp)
 target_link_libraries(test PRIVATE solver GTest::gtest)
