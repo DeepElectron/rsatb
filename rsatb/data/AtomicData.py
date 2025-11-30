@@ -758,6 +758,152 @@ class AtomicData(Data):
             assert len(batch_atoms) == 1
             return batch_atoms[0]
     
+    def partition_graph_hilbert(self, npart, comm=None, split=False):
+        """
+        Partition the graph using Hilbert curve (Z-curve approximation) for scalability.
+        This avoids gathering the full graph on rank 0.
+        """
+        from mpi4py import MPI
+        if comm is None:
+            comm = MPI.COMM_WORLD
+        
+        rank = comm.Get_rank()
+        
+        # 1. Get positions (assume they are available on all ranks or at least rank 0 for now)
+        # For true scalability, this should be distributed, but AtomicData currently holds full pos.
+        # If AtomicData is initialized on all ranks with full pos, this is fast.
+        
+        pos = self.pos
+        
+        # 2. Discretize positions to integer grid
+        # Normalize to [0, 1] first
+        pos_min = pos.min(axis=0)
+        pos_max = pos.max(axis=0)
+        pos_norm = (pos - pos_min) / (pos_max - pos_min + 1e-9)
+        
+        n_bits = 21
+        max_val = (1 << n_bits) - 1
+        coords = (pos_norm * max_val).astype(np.int32)
+        
+        # 3. Compute Z-curve index (Morton code)
+        # Interleave bits: ... z1 y1 x1 z0 y0 x0
+        x = coords[:, 0].astype(np.uint64)
+        y = coords[:, 1].astype(np.uint64)
+        z = coords[:, 2].astype(np.uint64)
+        
+        code = np.zeros(x.shape, dtype=np.uint64)
+        for i in range(n_bits):
+            code |= ((x >> i) & 1) << (3*i)
+            code |= ((y >> i) & 1) << (3*i + 1)
+            code |= ((z >> i) & 1) << (3*i + 2)
+            
+        # 4. Sort atoms by Z-curve index
+        sort_index = np.argsort(code).astype(np.int32)
+        
+        # 5. Partition into equal chunks
+        partition = np.zeros(self.num_nodes, dtype=np.int32)
+        chunk_size = self.num_nodes // npart
+        for i in range(npart):
+            start = i * chunk_size
+            end = (i + 1) * chunk_size if i < npart - 1 else self.num_nodes
+            partition[sort_index[start:end]] = i
+            
+        # Re-order partition array to match original atom order? 
+        # No, we want to re-order atoms to match partition order (locality).
+        # So we keep sort_index as the mapping.
+        
+        # The existing partition_graph logic sorts atoms by partition ID.
+        # Here sort_index ALREADY sorts by partition ID (since partition is monotonic with sort_index).
+        
+        # Broadcast if needed (though here we computed it on all ranks if self.pos is on all ranks)
+        # If self.pos is only on rank 0, we need to broadcast.
+        # Assuming self.pos is available.
+        
+        # 6. Apply sorting to data
+        # sort the attrs
+        for fields in _NODE_FIELDS:
+            if hasattr(self, fields):
+                setattr(self, fields, getattr(self, fields)[sort_index])
+        setattr(self, AtomicDataDict.ATOM_INDEX_KEY, sort_index)
+        setattr(self, AtomicDataDict.PARTITION, partition[sort_index]) # partition array was in sorted order, need to match sorted atoms
+
+        # Fix partition array: 
+        # partition array constructed above: partition[k] is partition ID of k-th atom in SORTED order.
+        # After reordering atoms by sort_index, the new k-th atom IS the k-th atom in sorted order.
+        # So the partition array corresponding to the NEW atom order is just the 'partition' array we built.
+        setattr(self, AtomicDataDict.PARTITION, partition)
+
+        if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
+            # Remap edge indices
+            # Old index i -> New index map[i]
+            # map[sort_index[k]] = k
+            atom_index_map = np.zeros(len(sort_index), dtype=np.int32)
+            atom_index_map[sort_index] = np.arange(len(sort_index))
+            
+            self.edge_index = atom_index_map[self.edge_index]
+            
+            # Sort edges by source node (row-majorish) for better access
+            edge_sort_index = np.argsort(self.edge_index[0])
+            self.edge_index = self.edge_index[:,edge_sort_index]
+
+            for fields in _EDGE_FIELDS:
+                if hasattr(self, fields):
+                    setattr(self, fields, getattr(self, fields)[edge_sort_index])
+
+        # 7. Compute Cluster Ranges and Connectivity
+        # This part is similar to original partition_graph, can be refactored or copied.
+        # For now, copy essential logic.
+        
+        n_range = np.zeros((npart, 2), dtype=np.int32)
+        e_range = np.zeros((npart, 2), dtype=np.int32)
+        connectivity = [[]]*npart
+        ghost_list = [[]]*npart
+        
+        # Partition array is already aligned with current (sorted) atoms
+        edge_part = partition[self.edge_index[0]]
+        
+        nstart = 0
+        estart = 0
+        
+        for i in range(npart):
+            natom = np.sum(partition == i)
+            n_range[i][0] = nstart
+            n_range[i][1] = nstart + natom
+            nstart += natom
+
+            # Edges belonging to partition i
+            # Since we sorted edges by source node, and source nodes are sorted by partition,
+            # edges for partition i should be contiguous.
+            # But let's be safe and count.
+            mask = (edge_part == i)
+            count = np.sum(mask)
+            
+            e_range[i][0] = estart
+            e_range[i][1] = estart + count
+            estart += count
+            
+            # Connectivity
+            cst_nbr = self.edge_index[1][mask]
+            cst_nbr = np.unique(cst_nbr)
+            ghost_list[i] = cst_nbr
+            connectivity[i] = np.unique(partition[cst_nbr])
+
+        setattr(self, AtomicDataDict.CLUSTER_NODE_RANGE, n_range)
+        setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
+        setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
+        setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
+
+        if rank == 0:
+            print("############### The Hilbert partition result ##############")
+            for i in range(len(connectivity)):
+                print("rank ", i, ": connected to ", len(connectivity[i]), " neighbour.")
+
+        if split:
+            assert comm.Get_size() == npart, "The split can only be called  with npart=MPI size"
+            self.split(rank)
+
+        return True
+
     def partition_graph(self, npart, node_weights=None, comm=None, split=False):
         import pymetis
         from mpi4py import MPI

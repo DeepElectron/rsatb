@@ -53,7 +53,7 @@ inline void cheby_iter(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next){
 }
 
 inline void cheby_iter_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp){
-    MatMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_CURRENT, T_tmp);
+    MatMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
     KSPMatSolve(ksp, *T_tmp, *T_next);
     MatScale(*T_next, 2.0);
     MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
@@ -77,7 +77,7 @@ inline void cheby_iter_adjoint(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_nex
 
 inline void cheby_iter_adjoint_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp){
     KSPMatSolve(ksp, *T_curr, *T_tmp);
-    MatMatMult(H, *T_tmp, MAT_REUSE_MATRIX, PETSC_CURRENT, T_next);
+    MatMatMult(H, *T_tmp, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_next);
     MatScale(*T_next, 2.0);
     MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
 
@@ -174,20 +174,20 @@ inline void cheby_recur_mult(
     if ( adjoint ){
         // init T_prev(buff[0])
         KSPMatSolve(ksp, Psi_in, buff[3]);
-        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_CURRENT, buff);
+        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff);
 
         // init T_curr(buff[1])
         KSPMatSolve(ksp, buff[0], buff[3]);
-        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_CURRENT, buff+1);
+        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+1);
         MatScale(buff[1], 2.0);
         MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
     } else {
         // init T_prev(buff[0])
-        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
+        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         KSPMatSolve(ksp, buff[3], buff[0]);
 
         // init T_curr(buff[1])
-        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_CURRENT, buff+3);
+        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         KSPMatSolve(ksp, buff[3], buff[1]);
         MatScale(buff[1], 2.0);
         MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);

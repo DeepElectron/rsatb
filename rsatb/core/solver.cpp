@@ -134,7 +134,7 @@ void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool
         KSPSetFromOptions(ksp);
         KSPSetUp(ksp);
 
-        KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
+        KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
 
         // temp
         BV V;
@@ -217,7 +217,7 @@ void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool
     // PCGAMGSetCoarseEqLim(_pc_, 200);
     // PCGAMGSetReuseInterpolation(_pc_, PETSC_TRUE);
 
-    KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
+    KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
     // PCSetUp(_pc_);
     KSPSetFromOptions(_ksp_);
     KSPSetUp(_ksp_);

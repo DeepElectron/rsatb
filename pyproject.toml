@@ -1,3 +1,19 @@
+[project]
+name = "rsatb"
+version = "0.1.0"
+description = "A random state method for abinitio tight-binding calculations"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "ase",
+    "h5py>=3.7.0,<=3.11.0,!=3.10.0",
+    "lmdb==1.4.1",
+    "mpi4py",
+]
+
 [tool.poetry]
 name = "rsatb"
 version = "0.1.0"
@@ -14,6 +30,15 @@ packages = [
   { include = "rsatb" }
 ]
 
+[tool.scikit-build]
+wheel.packages = ["rsatb"]
+metadata.version.provider = "scikit_build_core.metadata.regex"
+metadata.version.input = "rsatb/__init__.py"
+
+[tool.scikit-build.cmake]
+version = ">=3.15"
+source-dir = "rsatb/core"
+
 [tool.poetry.dependencies]
 python = ">=3.9"
 pytest = ">=7.2.0"
@@ -27,8 +52,8 @@ lmdb = "1.4.1"
 mpi4py = "*"
 
 [build-system]
-requires = ["poetry-core", "poetry-dynamic-versioning"]
-build-backend = "poetry_dynamic_versioning.backend"
+requires = ["scikit-build-core", "pybind11", "mpi4py"]
+build-backend = "scikit_build_core.build"
 
 
 [tool.poetry-dynamic-versioning]

@@ -34,7 +34,7 @@ class RSATB(MPIMultiLevel):
 
         # partition the atomic graph if needed.
         if (not hasattr(atomicdata, _keys.CLUSTER_CONNECTIVITY)) and (self.subsize > 1):
-            atomicdata.partition_graph(self.subsize, comm=self.subcomm, split=True)
+            atomicdata.partition_graph_hilbert(self.subsize, comm=self.subcomm, split=True)
             atom_index = atomicdata[_keys.ATOM_INDEX_KEY].ravel()
         else:
             atom_index = np.arange(atomicdata.num_nodes)

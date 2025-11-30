@@ -101,7 +101,7 @@ public:
         KSPSetOperators(_ksp_,_S_,_S_);
         KSPGetPC(_ksp_,&_pc_);
         KSPSetReusePreconditioner(_ksp_, PETSC_TRUE);
-        KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_CURRENT, PETSC_CURRENT);
+        KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
 
         if(_n_sample_== 1){
             KSPSetType(_ksp_, KSPCG);

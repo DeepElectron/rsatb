@@ -171,3 +171,7 @@ dmypy.json
 _date.py
 _version.py
 /.idea/
+deps/
+_deps/
+.venv_test/
+build.log

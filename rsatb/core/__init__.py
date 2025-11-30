@@ -8,5 +8,5 @@ if _build_dir.is_dir():
 
 import os
 sys.setdlopenflags(os.RTLD_LAZY)
-_binding = import_module("binding")   # name of xxx.so without suffix
+_binding = import_module(".binding", package=__name__)   # name of xxx.so without suffix
 globals().update(_binding.__dict__)    # re‑export its symbols (optional)

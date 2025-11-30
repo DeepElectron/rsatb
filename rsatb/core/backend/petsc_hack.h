@@ -13,6 +13,10 @@
 #endif
 #include <errno.h>
 
+#ifndef MPIU_SF_NODE
+#define MPIU_SF_NODE MPI_2INT
+#endif
+
 
 inline PetscErrorCode HACKPetscSFCreateByMatchingIndices(PetscLayout layout, PetscInt numRootIndices, const PetscInt *rootIndices, const PetscInt *rootLocalIndices, PetscInt rootLocalOffset, PetscInt numLeafIndices, const PetscInt *leafIndices, const PetscInt *leafLocalIndices, PetscInt leafLocalOffset, PetscSF *sfA, PetscSF *sf)
 {
@@ -122,7 +126,7 @@ inline PetscErrorCode HACKPetscSFCreateByMatchingIndices(PetscLayout layout, Pet
 }
 
 
-inline PetscErrorCode HACKDMPlexBuildFromCellListParallel(DM dm, PetscInt numCells, PetscInt numVertices, PetscInt NVertices, PetscInt numCorners, const PetscInt cells[], PeOp PetscSF *vertexSF, PeOp PetscInt *verticesAdjSaved[])
+inline PetscErrorCode HACKDMPlexBuildFromCellListParallel(DM dm, PetscInt numCells, PetscInt numVertices, PetscInt NVertices, PetscInt numCorners, const PetscInt cells[], PetscSF *vertexSF, PetscInt *verticesAdjSaved[])
 {
     PetscSF     sfPoint;
     PetscLayout layout;

@@ -3,6 +3,7 @@
 
 #include <stdexcept>
 #include <petsc.h>
+#include <petscdmnetwork.h>
 #include <mpi.h>
 #include <string>
 #include <unordered_map>

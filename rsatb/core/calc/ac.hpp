@@ -80,30 +80,30 @@ void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, Vec Psi_in, Vec Psi
 
 void current_mult(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, Mat *Psi_in, Mat *Psix, Mat *Psiy, Mat *Psiz, Mat *buff1, Mat *buff2){ // apply iS^{-1}[H, R] on Psi_in
     // -i[\hat{H},\hat{R}] = -iSinv(HSinvR - RSinvH) -> -iSinv[R(-SinvHx) + HSinvRx]
-    MatMatMult(H, *Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1);
+    MatMatMult(H, *Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1);
     KSPMatSolve(ksp, *buff1, *buff2); // buff2 = SinvH|in>
 
     // x
-    MatMatMult(Rx, *Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // buff1 = Rx|in>
+    MatMatMult(Rx, *Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // buff1 = Rx|in>
     KSPMatSolve(ksp, *buff1, *Psix);                                // Psix = SinvRx|in>
-    MatMatMult(H, *Psix, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // buff1=HSinvRx|in>
-    MatMatMult(Rx, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, Psix); // Psix=Rx(SinvH|in>)
+    MatMatMult(H, *Psix, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // buff1=HSinvRx|in>
+    MatMatMult(Rx, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psix); // Psix=Rx(SinvH|in>)
     MatAXPY(*buff1, -1.0, *Psix, SAME_NONZERO_PATTERN); // buff1=buff1-psix
     KSPMatSolve(ksp, *buff1, *Psix);
 
     // y
-    MatMatMult(Ry, *Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); 
+    MatMatMult(Ry, *Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); 
     KSPMatSolve(ksp, *buff1, *Psiy);
-    MatMatMult(H, *Psiy, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // buff1=HSinvRy|in>
-    MatMatMult(Ry, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiy); // Psix=Ry(SinvH|in>)
+    MatMatMult(H, *Psiy, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // buff1=HSinvRy|in>
+    MatMatMult(Ry, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiy); // Psix=Ry(SinvH|in>)
     MatAXPY(*buff1, -1.0, *Psiy, SAME_NONZERO_PATTERN); // buff1=buff1-Psix
     KSPMatSolve(ksp, *buff1, *Psiy);
     
     // z
-    MatMatMult(Rz, *Psi_in, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); 
+    MatMatMult(Rz, *Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); 
     KSPMatSolve(ksp, *buff1, *Psiz);
-    MatMatMult(H, *Psiz, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // buff1=HSinvRz|in>
-    MatMatMult(Rz, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiz); // Psix=Rz(SinvH|in>)
+    MatMatMult(H, *Psiz, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // buff1=HSinvRz|in>
+    MatMatMult(Rz, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiz); // Psix=Rz(SinvH|in>)
     MatAXPY(*buff1, -1.0, *Psiz, SAME_NONZERO_PATTERN); // buff1=buff1-Psix
     KSPMatSolve(ksp, *buff1, *Psiz);
 
@@ -117,28 +117,28 @@ void current_mult(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, Mat *Psi_in, Mat *Psix
 void current_mult_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, Mat *Psi_in, Mat *Psix, Mat *Psiy, Mat *Psiz, Mat *buff1, Mat *buff2, Mat *buff3){
     KSPMatSolve(ksp, *Psi_in, *buff3);
     
-    MatMatMult(H, *buff3, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1);
+    MatMatMult(H, *buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1);
     KSPMatSolve(ksp, *buff1, *buff2);
 
     // x
-    MatMatMult(Rx, *buff3, MAT_REUSE_MATRIX, PETSC_CURRENT, Psix); 
+    MatMatMult(Rx, *buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psix); 
     KSPMatSolve(ksp, *Psix, *buff1);
-    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_CURRENT, Psix); // buff1=HSinvRx|in>
-    MatMatMult(Rx, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // Psix=Rx(SinvH|in>)
+    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psix); // buff1=HSinvRx|in>
+    MatMatMult(Rx, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // Psix=Rx(SinvH|in>)
     MatAXPY(*Psix, -1.0, *buff1, SAME_NONZERO_PATTERN); // buff1=buff1-psix
 
     // y
-    MatMatMult(Ry, *buff3, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiy); 
+    MatMatMult(Ry, *buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiy); 
     KSPMatSolve(ksp, *Psiy, *buff1);
-    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiy); // buff1=HSinvRy|in>
-    MatMatMult(Ry, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // Psix=Ry(SinvH|in>)
+    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiy); // buff1=HSinvRy|in>
+    MatMatMult(Ry, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // Psix=Ry(SinvH|in>)
     MatAXPY(*Psiy, -1.0, *buff1, SAME_NONZERO_PATTERN); // buff1=buff1-Psix
     
     // z
-    MatMatMult(Rz, *buff3, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiz); 
+    MatMatMult(Rz, *buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiz); 
     KSPMatSolve(ksp, *Psiz, *buff1);
-    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_CURRENT, Psiz); // buff1=HSinvRz|in>
-    MatMatMult(Rz, *buff2, MAT_REUSE_MATRIX, PETSC_CURRENT, buff1); // Psix=Rz(SinvH|in>)
+    MatMatMult(H, *buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, Psiz); // buff1=HSinvRz|in>
+    MatMatMult(Rz, *buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff1); // Psix=Rz(SinvH|in>)
     MatAXPY(*Psiz, -1.0, *buff1, SAME_NONZERO_PATTERN); // buff1=buff1-Psix
 
     const PetscComplex  nI(0.0, -1.0);

@@ -4,8 +4,22 @@ set(CONDA_PREFIX $ENV{CONDA_PREFIX})
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
 find_package(MPI REQUIRED)
-find_package(GTest REQUIRED)
+find_package(GTest)
+if(NOT GTest_FOUND)
+  message(STATUS "GTest not found, fetching from source...")
+  include(FetchContent)
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  )
+  # For Windows: Prevent overriding the parent project's compiler/linker settings
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+endif()
+
 find_package(Threads REQUIRED)
 find_package(PETSc REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
@@ -124,7 +138,14 @@ target_include_directories(
 
 target_link_libraries(binding PUBLIC solver)
 
-install(TARGETS binding DESTINATION .)
+install(TARGETS binding solver hr2hk DESTINATION rsatb/core)
+
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+# Manually add DBCSR path since it's in a non-standard location
+set(DBCSR_LIB_PATH "${CMAKE_SOURCE_DIR}/../../deps/install/lib64")
+set_target_properties(binding PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
+set_target_properties(solver PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
+set_target_properties(hr2hk PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}")
 
 add_executable(test ./test.cpp)
 target_link_libraries(test PRIVATE solver GTest::gtest)
