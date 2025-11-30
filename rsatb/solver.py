@@ -55,12 +55,15 @@ class RSATB(MPIMultiLevel):
         self.__kpoint_set__ = False
         self.__sample_set__ = False
 
-    def setup(self, n, rsmethod, kpoints: np.ndarray, HFile, SFile=None, orblist=None, orbroot=None, tol=1e-7, sptol=1e-6, maxit=20):
+    def setup(self, n, rsmethod, kpoints: np.ndarray, HFile, SFile=None, RxFile=None, RyFile=None, RzFile=None, orblist=None, orbroot=None, tol=1e-7, sptol=1e-6, maxit=20):
         self.setup_sample(n, rsmethod)
         self.setup_kpoints(kpoints)
 
         self.SFile = SFile
         self.HFile = HFile
+        self.RxFile = RxFile
+        self.RyFile = RyFile
+        self.RzFile = RzFile
         self.orblist = orblist
         self.orbroot = orbroot
 
@@ -92,88 +95,171 @@ class RSATB(MPIMultiLevel):
 
         return True
     
-    def setup_S_h5(self, SFile, tol=1e-7, sptol=1e-6, maxit=20):
-        self.solver.setup_K(*self.__sub_kpoints__[self.__kpoint_count__])
-        self.solver.setup_S_h5(SFile)
-        self.solver.Ssqrtm(tol, sptol, maxit, self.verbose)
+    def _setup_kpoint(self, kidx, need_R=False):
+        self.solver.setup_K(*self.__sub_kpoints__[kidx])
+        
+        # Setup S and R
+        # Optimization: If we need R and are using orbitals, setup_R_orb can setup both S and R at once.
+        if need_R and (self.orblist is not None and self.orbroot is not None):
+            self.solver.setup_R_orb(self.orblist, self.orbroot)
+            # S is now setup by setup_R_orb if it wasn't already
+        elif self.orblist is not None and self.orbroot is not None:
+            self.solver.setup_S_orb(self.orblist, self.orbroot)
+        elif self.SFile is not None:
+            self.solver.setup_S_h5(self.SFile)
+        else:
+            raise ValueError("The overlap information is not provided in the setup, currently, we only support non-orthogonal basis calculation!")
+        
+        # Setup S^-1/2
+        self.solver.Ssqrtm(self.tol, self.sptol, self.maxit, self.verbose)
 
-        return True
-    
-    def setup_S_2c(self, orblist, orbroot, tol=1e-7, sptol=1e-6, maxit=20):
-        self.solver.setup_K(*self.__sub_kpoints__[self.__kpoint_count__])
-        self.solver.setup_S_orb(orblist, orbroot)
-        self.solver.Ssqrtm(tol, sptol, maxit, self.verbose)
+        # Setup H
+        if self.HFile is not None:
+            self.solver.setup_H_h5(self.HFile, 0, 0, self.verbose)
+        else:
+            raise ValueError("We currently support reading Hamiltonian from H5 file, more will be added later!")
+        
+        # Setup R (if needed and not done yet)
+        if need_R:
+            # If we used orbitals, it's already done above.
+            # If we used H5, we need to setup R from files.
+            if self.orblist is None: # Assuming H5 path
+                 self.solver.setup_R_h5(self.RxFile if self.RxFile else "", 
+                                        self.RyFile if self.RyFile else "", 
+                                        self.RzFile if self.RzFile else "")
 
-        return True
-    
-    def setup_H_h5(self, HFile, emin=0.0, emax=0.0):
-        self.solver.setup_K(*self.__sub_kpoints__[self.__kpoint_count__])
-        self.solver.setup_H_h5(HFile, emin, emax, self.verbose)
-
-        return True
-    
     def setup_sample(self, n: int=1, method: str="gauss"):
         self.solver.setup_sample(n, method)
 
         return True
     
-    def compute_dos(self, dE:float=0.025852, proj:str="none", orbtype: np.ndarray=np.array([])):
-
-        dos = []
-        pdos = []
-        omegas = []
-
-        for _ in range(self.__sub_kpoints__.shape[0]):
-            if self.orblist is not None and self.orbroot is not None:
-                self.setup_S_2c(self.orblist, self.orbroot, self.tol, self.sptol, self.maxit)
-            elif self.SFile is not None:
-                self.setup_S_h5(self.SFile, self.tol, self.sptol, self.maxit)
-            else:
-                raise ValueError("The overlap information is not provided in the setup, currently, we only support non-orthogonal basis calculation!")
-            
-            if self.HFile is not None:
-                self.setup_H_h5(self.HFile, 0, 0)
-            else:
-                raise ValueError("We currently support reading Hamiltonian from H5 file, more will be added later!")
-            # compute dos
-            nt = self.solver.get_nt(dE)
-            out = self.solver.compute_dos(nt, proj, orbtype, self.verbose)
-            dos.append(out[0]), pdos.append(out[1]), omegas.append(out[2])
+    def compute(self, tasks: list):
+        """
+        Execute a list of tasks (DOS, AC) efficiently.
+        tasks: list of dicts, e.g. [{'task': 'dos', 'dE': ...}, {'task': 'ac', ...}]
+        """
+        results = [[] for _ in tasks]
         
-        dos = np.asarray(dos)
-        pdos = np.asarray(pdos)
-        omegas = np.asarray(omegas)
+        # Check if any task needs R
+        need_R = any(t['task'] == 'ac' for t in tasks)
 
-        # MPI summit all rank's dos to the main rank
-        # 1. handel the dimension mismatch, this can occur in the last dimension
+        for i in range(self.__sub_kpoints__.shape[0]):
+            self._setup_kpoint(i, need_R=need_R)
+            
+            for t_idx, task in enumerate(tasks):
+                if task['task'] == 'dos':
+                    dE = task.get('dE', 0.025852)
+                    proj = task.get('proj', "none")
+                    orbtype = task.get('orbtype', np.array([]))
+                    
+                    nt = self.solver.get_nt(dE)
+                    # Note: compute_dos in C++ handles its own logic, we just call it.
+                    # It uses the currently setup matrices.
+                    
+                    # We need to handle the output pointers.
+                    # The C++ binding returns a tuple (dos, pdos, omegas)
+                    out = self.solver.compute_dos(nt, proj, orbtype, self.verbose)
+                    results[t_idx].append(out)
+                    
+                elif task['task'] == 'ac':
+                    dE = task.get('dE', 0.025852)
+                    n_kpm = task.get('n_kpm', 200)
+                    temp = task.get('temp', 300)
+                    mu = task.get('mu', 0.0)
+                    
+                    nt = task.get('nt', None)
+                    if nt is None:
+                        nt = self.solver.get_nt(dE) # This returns void in C++, need to check binding
+                        # Actually get_nt in C++ returns void and takes int* pointer.
+                        # Easier to use get_scale() and calc in Python.
+                    
+                    out = self.solver.compute_ac(nt, n_kpm, temp, mu)
+                    results[t_idx].append(out)
+
+        # Gather results
+        final_results = []
+        
+        # Determine padding for MPI gather
         diff = 0
         if self.color == (self.n_group-1) and self.n_group > 1:
             if self.group_count[-1] < self.group_count[0]:
                 diff = self.group_count[0] - self.group_count[-1]
-                dos = np.append(dos, np.zeros([diff]+dos.shape[1:], dtype=dos.dtype), axis=0)
-                omegas = np.append(omegas, np.zeros([diff]+omegas.shape[1:], dtype=omegas.dtype), axis=0)
 
-                if proj != "none":
-                    pdos = np.append(pdos, np.zeros([diff]+dos.shape[1:], dtype=dos.dtype), axis=0)
-        
-        # 2. gather the variables, and remove paddings
-        dos = self.gather(dos, 0)
-        omegas = self.gather(omegas, 0)
-
-        if self.rank == 0:
-            if diff > 0:
-                dos = dos[:-diff]
-            if proj != "none":
-                pdos = self.gather(pdos, 0)
+        for t_idx, task in enumerate(tasks):
+            task_res = results[t_idx] # List of tuples from each kpoint
+            
+            if task['task'] == 'dos':
+                # Unpack list of tuples [(dos, pdos, omegas), ...]
+                # Structure: dos [2*nt], pdos [2*nt*nproj], omegas [2*nt]
+                # We want to stack them: [nk, 2*nt]
+                
+                dos_list = [r[0] for r in task_res]
+                pdos_list = [r[1] for r in task_res]
+                omegas_list = [r[2] for r in task_res]
+                
+                dos_arr = np.asarray(dos_list)
+                pdos_arr = np.asarray(pdos_list)
+                omegas_arr = np.asarray(omegas_list)
+                
+                # Padding
                 if diff > 0:
-                    pdos = pdos[:-diff]
+                    dos_arr = np.append(dos_arr, np.zeros([diff]+list(dos_arr.shape[1:]), dtype=dos_arr.dtype), axis=0)
+                    omegas_arr = np.append(omegas_arr, np.zeros([diff]+list(omegas_arr.shape[1:]), dtype=omegas_arr.dtype), axis=0)
+                    if task.get('proj', 'none') != 'none':
+                        pdos_arr = np.append(pdos_arr, np.zeros([diff]+list(pdos_arr.shape[1:]), dtype=pdos_arr.dtype), axis=0)
 
-            if proj != "none":
-                return omegas, dos, pdos
-            else:
-                return omegas, dos
-        else:
-            return True
+                # Gather
+                dos_arr = self.gather(dos_arr, 0)
+                omegas_arr = self.gather(omegas_arr, 0)
+                if task.get('proj', 'none') != 'none':
+                    pdos_arr = self.gather(pdos_arr, 0)
+
+                if self.rank == 0:
+                    if diff > 0:
+                        dos_arr = dos_arr[:-diff]
+                        omegas_arr = omegas_arr[:-diff]
+                        if task.get('proj', 'none') != 'none':
+                            pdos_arr = pdos_arr[:-diff]
+                    
+                    if task.get('proj', 'none') != 'none':
+                        final_results.append((omegas_arr, dos_arr, pdos_arr))
+                    else:
+                        final_results.append((omegas_arr, dos_arr))
+                else:
+                    final_results.append(True)
+
+            elif task['task'] == 'ac':
+                # Unpack [(ac, omegas), ...]
+                ac_list = [r[0] for r in task_res]
+                omegas_list = [r[1] for r in task_res]
+                
+                ac_arr = np.asarray(ac_list)
+                omegas_arr = np.asarray(omegas_list)
+                
+                if diff > 0:
+                    ac_arr = np.append(ac_arr, np.zeros([diff]+list(ac_arr.shape[1:]), dtype=ac_arr.dtype), axis=0)
+                    omegas_arr = np.append(omegas_arr, np.zeros([diff]+list(omegas_arr.shape[1:]), dtype=omegas_arr.dtype), axis=0)
+                
+                ac_arr = self.gather(ac_arr, 0)
+                omegas_arr = self.gather(omegas_arr, 0)
+                
+                if self.rank == 0:
+                    if diff > 0:
+                        ac_arr = ac_arr[:-diff]
+                        omegas_arr = omegas_arr[:-diff]
+                    final_results.append((omegas_arr, ac_arr))
+                else:
+                    final_results.append(True)
+                    
+        return final_results
+
+    def compute_dos(self, dE:float=0.025852, proj:str="none", orbtype: np.ndarray=np.array([])):
+        task = {'task': 'dos', 'dE': dE, 'proj': proj, 'orbtype': orbtype}
+        return self.compute([task])[0]
+
+    def compute_ac(self, dE:float=0.025852, nt:int=None, n_kpm:int=200, temp:float=300, mu:float=0.0):
+        task = {'task': 'ac', 'dE': dE, 'nt': nt, 'n_kpm': n_kpm, 'temp': temp, 'mu': mu}
+        return self.compute([task])[0]
     
     # def dos(self, nt=512):
     #     dt = self.get_dt_fft()

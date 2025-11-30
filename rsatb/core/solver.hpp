@@ -241,20 +241,31 @@ public:
     }
 
     void setup_R(const std::string* file_orb0, const std::string& orbital_dir){
-        Mat s_check;
-        DMCreateMatrix(_dm_atomic_->dm(), &s_check);
         DMCreateMatrix(_dm_atomic_->dm(), &_Rx_);
         DMCreateMatrix(_dm_atomic_->dm(), &_Ry_);
         DMCreateMatrix(_dm_atomic_->dm(), &_Rz_);
 
-        MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
         MatConvert(_Rx_, "aijmkl", MAT_INPLACE_MATRIX, &_Rx_);
         MatConvert(_Ry_, "aijmkl", MAT_INPLACE_MATRIX, &_Ry_);
         MatConvert(_Rz_, "aijmkl", MAT_INPLACE_MATRIX, &_Rz_);
 
-        setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
+        if (!_overlap_ready_) {
+            DMCreateMatrix(_dm_atomic_->dm(), &_S_);
+            MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
+            
+            setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
+            
+            MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
+            MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
+            _overlap_ready_ = true;
+        } else {
+            Mat s_check;
+            DMCreateMatrix(_dm_atomic_->dm(), &s_check);
+            MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
+            
+            setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
 
-        if (_overlap_ready_){ // check if the s_check equals or close to the overlap prepared.
+            // check if the s_check equals or close to the overlap prepared.
             MatAXPY(s_check, -1.0, _S_, SAME_NONZERO_PATTERN);
             PetscReal tol, nS, ns;
 
@@ -263,6 +274,8 @@ public:
 
             tol = 1e-4 + 1e-3 * nS;
             PetscBool close = (ns <= tol) ? PETSC_TRUE : PETSC_FALSE;
+            
+            MatDestroy(&s_check);
 
             if (!close) {throw std::runtime_error("The Overlap is not accurate comparing to the 2 center integral's"); }
         }
@@ -303,6 +316,8 @@ public:
     void get_nt(double dE, int *nt) {
         *nt = ceil(_scale_ / dE);
     };
+
+    double get_scale() { return _scale_; }
 
     /* Getters */
     int ntype() { return  _dm_atomic_->n_type(); }
