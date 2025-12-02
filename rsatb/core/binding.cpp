@@ -133,7 +133,7 @@ PYBIND11_MODULE(binding, m) {
 
         .def("test_Sinv", &rsatb::Solver::test_Sinv)
 
-        .def("Ssqrtm", &rsatb::Solver::Ssqrtm, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("verbose")=false)
+        .def("Ssqrtm", &rsatb::Solver::Ssqrtm, py::arg("tol")=1e-7, py::arg("sptol")=1e-6, py::arg("maxit")=20, py::arg("verbose")=false, py::arg("orthogonalize")=false)
 
         .def("setup_R_h5", [](
             rsatb::Solver &solver,
@@ -161,24 +161,21 @@ PYBIND11_MODULE(binding, m) {
 
         .def("setup_H_h5", [](
             rsatb::Solver &solver, // Since python call self as the first arg
-            const std::string &HFile,
-            float emin,
-            float emax,
-            bool verbose
+            const std::string &HFile
             ){
-
-                double demin=emin, demax=emax;
-                solver.setup_H_h5(HFile, demin, demax, verbose);
+                solver.setup_H_h5(HFile);
             },
-            py::arg("HFile"),
-            py::arg("emin") = 0.0f,
-            py::arg("emax") = 0.0f,
-            py::arg("verbose") = false
+            py::arg("HFile")
         )
+        .def("orthogonalize_H", &rsatb::Solver::orthogonalize_H)
         
         .def("setup_sample", &rsatb::Solver::setup_sample)
 
         .def("export_S", &rsatb::Solver::export_S)
+
+        .def("scale_shift_H", &rsatb::Solver::scale_shift_H)
+
+        .def("setup_KSP", &rsatb::Solver::setup_KSP)
 
         .def("get_nt", [](
             rsatb::Solver &solver,
@@ -233,15 +230,15 @@ PYBIND11_MODULE(binding, m) {
             int nt, int n_kpm,
             double temp, double mu
         ){
-            double ac[6*(nt+1)], omegas[nt+1];
+            double ac[9*(nt+1)], omegas[nt+1];
             solver.compute_ac(nt, n_kpm, temp, mu, ac, omegas);
 
-            py::array_t<double> o_ac(6*(nt+1));
+            py::array_t<double> o_ac(9*(nt+1));
             py::array_t<double> o_omegas(nt+1);
 
             if(solver.rank == 0){
             
-                std::memcpy(o_ac.mutable_data(), ac, 6*(nt+1) * sizeof(double));
+                std::memcpy(o_ac.mutable_data(), ac, 9*(nt+1) * sizeof(double));
                 std::memcpy(o_omegas.mutable_data(), omegas, (nt+1) * sizeof(double));
                 
             }

@@ -25,13 +25,14 @@ private:
     PetscReal _scale_=-1.0, _shift_=0.0, _Kx_, _Ky_, _Kz_;
     MPI_Comm _comm_;
     bool _kpoint_ready_=false, _overlap_ready_=false, _hamiltonian_ready_=false, _position_ready_=false, _samples_ready_=false, _sqrtm_ready_=false;
+    bool _explicit_orth_ = false, _explicit_form_ = false;
     int _n_sample_=-1;
     double _cdn_;
 
     void set_mat_from_h5(Mat *mat, const std::string &MatFile){
         HDF5Handler _hd_(MatFile);
         DMCreateMatrix(_dm_atomic_->dm(), mat);
-        MatConvert(*mat, "aijmkl", MAT_INPLACE_MATRIX, mat);
+        MatConvert(*mat, "aij", MAT_INPLACE_MATRIX, mat);
         setMatrixR2K(*mat, *_dm_atomic_, &_hd_, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
     }
@@ -79,7 +80,7 @@ public:
 
     void setup_S(const std::string* file_orb0, const std::string& orbital_dir){
         DMCreateMatrix(_dm_atomic_->dm(), &_S_);
-        MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
+        MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
         setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(), _dm_atomic_->n_type(), file_orb0, orbital_dir, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
         MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
@@ -116,7 +117,7 @@ public:
         // PCASMSetOverlap(_pc_, 0);
         // // PCASMSetTotalSubdomains(pc, 8, NULL, NULL);
         // PetscOptionsInsertString(NULL,"-sub_pc_type icc -pc_factor_shift_positive_definite -sub_ksp_type preonly -sub_pc_factor_shift_type positive_definite -sub_pc_factor_levels 1");
-        // PCASMSetSubMatType(_pc_, MATSEQAIJMKL);
+        // PCASMSetSubMatType(_pc_, MATSEQaij);
 
         // PCSetType(_pc_,PCGAMG);
         // PCGAMGSetType(_pc_, PCGAMGAGG);
@@ -156,7 +157,7 @@ public:
         KSPDestroy(&_ksp_);
     }
 
-    void Ssqrtm(double tol=1e-7, double sptol=1e-6, int maxit = 20, bool verbose=false){
+    void Ssqrtm(double tol=1e-7, double sptol=1e-6, int maxit = 20, bool verbose=false, bool orthogonalize=false){
         DMCreateMatrix(_dm_atomic_->dm(), &_Sr_);
         MatAssemblyBegin(_Sr_, MAT_FINAL_ASSEMBLY);
         MatAssemblyEnd(_Sr_, MAT_FINAL_ASSEMBLY);
@@ -186,8 +187,14 @@ public:
 
         double factor = 1.0 / std::sqrt(eigmax.real() + 0.1);
 
-        rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
-        MatConvert(_Sr_, "aijmkl", MAT_INPLACE_MATRIX, &_Sr_);
+        if (orthogonalize) {
+             if (!_hamiltonian_ready_) throw std::runtime_error("Hamiltonian must be ready before orthogonalization in Ssqrtm.");
+             rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose, &_H_, &_H_);
+             _explicit_orth_ = true;
+        } else {
+             rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
+        }
+        MatConvert(_Sr_, "aij", MAT_INPLACE_MATRIX, &_Sr_);
 
         // check whether _Sr_ works well
         // Mat tmp, tmp2;
@@ -232,9 +239,9 @@ public:
         if (RyFile.size() > 0) this->set_mat_from_h5(&_Ry_, RyFile);
         if (RzFile.size() > 0) this->set_mat_from_h5(&_Rz_, RzFile);
 
-        MatSetType(_Rx_, "aijmkl");
-        MatSetType(_Ry_, "aijmkl");
-        MatSetType(_Rz_, "aijmkl");
+        MatSetType(_Rx_, "aij");
+        MatSetType(_Ry_, "aij");
+        MatSetType(_Rz_, "aij");
 
         if ((RxFile.size() > 0) || (RyFile.size() > 0) || (RyFile.size() > 0))
             _position_ready_ = true;
@@ -245,13 +252,13 @@ public:
         DMCreateMatrix(_dm_atomic_->dm(), &_Ry_);
         DMCreateMatrix(_dm_atomic_->dm(), &_Rz_);
 
-        MatConvert(_Rx_, "aijmkl", MAT_INPLACE_MATRIX, &_Rx_);
-        MatConvert(_Ry_, "aijmkl", MAT_INPLACE_MATRIX, &_Ry_);
-        MatConvert(_Rz_, "aijmkl", MAT_INPLACE_MATRIX, &_Rz_);
+        MatConvert(_Rx_, "aij", MAT_INPLACE_MATRIX, &_Rx_);
+        MatConvert(_Ry_, "aij", MAT_INPLACE_MATRIX, &_Ry_);
+        MatConvert(_Rz_, "aij", MAT_INPLACE_MATRIX, &_Rz_);
 
         if (!_overlap_ready_) {
             DMCreateMatrix(_dm_atomic_->dm(), &_S_);
-            MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
+            MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
             
             setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
             
@@ -261,7 +268,7 @@ public:
         } else {
             Mat s_check;
             DMCreateMatrix(_dm_atomic_->dm(), &s_check);
-            MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
+            MatConvert(s_check, "aij", MAT_INPLACE_MATRIX, &s_check);
             
             setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
 
@@ -282,7 +289,7 @@ public:
         _position_ready_ = true;
     }
 
-    void setup_H_h5(const std::string &HFile, double emin=0.0, double emax=0.0, bool verbose=false);
+    void setup_H_h5(const std::string &HFile);
     /* 
         Steps:
             1. create HS from DM, assembled them according to the class initialization method (h5ijR or atomicdata or others);
@@ -293,9 +300,18 @@ public:
         This should be called after setup_HS;
     */
 
+    void orthogonalize_H(double tol, double sptol, int maxit, bool explicit_formation=true, bool verbose=false);
+
+    void scale_shift_H(double emin=0.0, double emax=0.0, bool verbose=false);
+
     void setup_sample(int n, std::string method);
     /*
         initialize the random samples according to the number of samples n and the method used.
+    */
+
+    void setup_KSP();
+    /*
+        Setup the KSP class from S.
     */
 
     void export_S(std::string root){

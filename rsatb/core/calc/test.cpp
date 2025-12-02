@@ -534,7 +534,12 @@ TEST(calcTest, TestCurrent){
     PetscScalar *out;
     PetscScalar out_label[2];
 
-    rsatb::calc::current(H, ksp, Rx, Ry, Rz, v_psi_in, psix, psiy, psiz, buff1, buff2);
+    Vec J_Psi[3];
+    J_Psi[0] = psix;
+    J_Psi[1] = psiy;
+    J_Psi[2] = psiz;
+
+    rsatb::calc::current<Vec>(H, ksp, Rx, Ry, Rz, v_psi_in, J_Psi);
 
     out_label[0] = PetscComplex(0.0, 7.20774155);
     out_label[1] = PetscComplex(0.0, 6.52346567);
@@ -563,7 +568,7 @@ TEST(calcTest, TestCurrent){
     ASSERT_NEAR(out_label[1].real(), out[1].real(), 1e-7);
     ASSERT_NEAR(out_label[1].imag(), out[1].imag(), 1e-7);
 
-    rsatb::calc::current_adjoint(H, ksp, Rx, Ry, Rz, v_psi_in, psix, psiy, psiz, buff1, buff2, buff3);
+    rsatb::calc::current_adjoint<Vec>(H, ksp, Rx, Ry, Rz, v_psi_in, J_Psi);
 
     out_label[0] = PetscComplex(0.0, 3.2857697);
     out_label[1] = PetscComplex(0.0, 7.50314678);
@@ -599,8 +604,13 @@ TEST(calcTest, TestCurrent){
     MatDuplicate(m_psi_in, MAT_SHARE_NONZERO_PATTERN, &m_buff2);
     MatDuplicate(m_psi_in, MAT_SHARE_NONZERO_PATTERN, &m_buff3);
 
+    Mat m_J_Psi[3];
+    m_J_Psi[0] = m_psix;
+    m_J_Psi[1] = m_psiy;
+    m_J_Psi[2] = m_psiz;
+
     // current mult
-    rsatb::calc::current_mult(H, ksp, Rx, Ry, Rz, &m_psi_in, &m_psix, &m_psiy, &m_psiz, &m_buff1, &m_buff2);
+    rsatb::calc::current<Mat>(H, ksp, Rx, Ry, Rz, m_psi_in, m_J_Psi);
 
     out_label[0] = PetscComplex(0.0, 7.20774155);
     out_label[1] = PetscComplex(0.0, 6.52346567);
@@ -633,7 +643,7 @@ TEST(calcTest, TestCurrent){
     ASSERT_NEAR(out_label[1].real(), out[1].real(), 1e-7);
     ASSERT_NEAR(out_label[1].imag(), out[1].imag(), 1e-7);
 
-    rsatb::calc::current_mult_adjoint(H, ksp, Rx, Ry, Rz, &m_psi_in, &m_psix, &m_psiy, &m_psiz, &m_buff1, &m_buff2, &m_buff3);
+    rsatb::calc::current_adjoint<Mat>(H, ksp, Rx, Ry, Rz, m_psi_in, m_J_Psi);
 
     out_label[0] = PetscComplex(0.0, 3.2857697);
     out_label[1] = PetscComplex(0.0, 7.50314678);

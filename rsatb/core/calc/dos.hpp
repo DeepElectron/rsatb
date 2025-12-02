@@ -5,7 +5,7 @@
 namespace rsatb::calc{
 
 template<typename T>
-void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *isSrc, IS *isDst, PetscComplex *cdos, PetscComplex *pcdos, bool verbose=false){
+void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *isSrc, IS *isDst, PetscComplex *cdos, PetscComplex *pcdos, bool verbose=false, bool orthogonal=false){
     /*
         1. Create Bessel grid and time grid;
         2. Do orbital selection according if computing pdos
@@ -84,7 +84,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 H, ksp, Psi_curr,
                 buff, // length 3 vec
                 coeff, n_bes, 
-                Psi_out
+                Psi_out, false, orthogonal
                 );
 
             if(proj){
@@ -138,7 +138,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 H, ksp, Psi_curr,
                 buff, // length 4 vec
                 coeff, n_bes,
-                Psi_out
+                Psi_out, false, orthogonal
                 );
 
             for(int in=0; in<nrhs; ++in){
@@ -185,6 +185,6 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
     delete coeff;
 };
 
-template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool);
-template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool);
+template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool, bool);
+template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool, bool);
 }

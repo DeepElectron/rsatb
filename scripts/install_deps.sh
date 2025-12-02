@@ -63,7 +63,7 @@ if [ ! -d "$INSTALL_DIR/lib/cmake/dbcsr/DBCSRConfig.cmake" ]; then
     pushd $DEPS_DIR/dbcsr
     mkdir -p build
     cd build
-    cmake .. -DCMAKE_INSTALL_PREFIX=$INSTALL_DIR -DUSE_SMM=blas -DUSE_ACCEL=off -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS
+    cmake .. -DCMAKE_INSTALL_PREFIX=$INSTALL_DIR -DUSE_SMM=blas -DUSE_ACCEL=off -DBUILD_SHARED_LIBS=ON -DBLA_VENDOR=OpenBLAS -DCMAKE_Fortran_COMPILER=gfortran
     make -j4
     make install
     popd

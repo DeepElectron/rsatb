@@ -11,6 +11,17 @@ using namespace rsatb::backend;
 using namespace rsatb::io;
 using namespace rsatb::calc;
 
+/*
+1. call setup_S
+2. call setup_H
+3. if explicit_orth, call orthogonalize_H
+        if explicit_form, call setup_sqrtm with H
+        if not, call setup_sqrtm without H, form H = S^{-1/2}HS^{-1/2} as MatShell
+   if not, call setup_sqrtm, call setup_ksp
+4. call scaleshift_H
+5. call setup_samples
+
+*/
 namespace rsatb{
 
 Solver::Solver(
@@ -40,7 +51,7 @@ Solver::Solver(
             comm
         );
 
-        DMSetMatType(_dm_atomic_->dm(), "aijmkl");
+        DMSetMatType(_dm_atomic_->dm(), "aij");
     };
 
 Solver::~Solver() { /* destructor */
@@ -61,7 +72,7 @@ Solver::~Solver() { /* destructor */
     PetscFinalize();
 }
 
-void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool verbose){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
+void Solver::setup_H_h5(const std::string &HFile){ /* Setup H and S, how to assembled H/S is determined by the initialization mode*/
     if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian.");
     if ( !_kpoint_ready_ )  throw std::runtime_error("Please setup kpoint before configuring the Hamiltonian.");
     if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before configuring the Hamiltonian.");
@@ -69,70 +80,81 @@ void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool
     
     // std::cout << "Here? Setup H!" << std::endl;
     this->set_mat_from_h5(&_H_, HFile);
-    // MatShift(_S_, 0.1);
 
-    // Hermitian check
+    _hamiltonian_ready_ = true;
+};
 
-    // Mat htemp;
-    // PetscReal nrm;
-    // MatHermitianTranspose(_H_, MAT_INITIAL_MATRIX, &htemp);
-    // Mat R;  MatDuplicate(htemp, MAT_COPY_VALUES, &R); 
-    // MatAXPY(R, -1.0, _H_, DIFFERENT_NONZERO_PATTERN);
-    // MatNorm(R, NORM_FROBENIUS, &nrm);
+void Solver::setup_KSP(){
+    if ( !_hamiltonian_ready_ ) { throw std::runtime_error("Please setup Hamiltonian before configuring the KSP."); }
+    if ( !_overlap_ready_ ) { throw std::runtime_error("Please setup overlap before configuring the KSP."); }
+    if ( !_sqrtm_ready_ ) { throw std::runtime_error("Please setup S^1/2 before configuring the KSP."); }
+    if ( !_kpoint_ready_ ) { throw std::runtime_error("Please setup kpoint before configuring the KSP."); }
+    
+    KSPCreate(_comm_,&_ksp_);
+    KSPSetDM(_ksp_, _dm_atomic_->dm());
+    KSPSetDMActive(_ksp_,PETSC_FALSE);
+    KSPSetOperators(_ksp_,_S_,_S_);
+    KSPGetPC(_ksp_,&_pc_);
+    KSPSetReusePreconditioner(_ksp_, PETSC_TRUE);
+    // KSPSetInitialGuessNonzero(_ksp_, PETSC_TRUE);
 
-    // std::cout << std::scientific<<std::setprecision(3) << "The largest element of Hermitian test of _H_: " << nrm << std::endl;
+    if(_n_sample_== 1){
+        KSPSetType(_ksp_, KSPCG);
+    }else{
+        KSPSetType(_ksp_, KSPHPDDM);
+        KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_BCG);
+    }
+    
+    // approximated invert square root
 
-    // MatHermitianTranspose(_S_, MAT_INITIAL_MATRIX, &htemp);
-    // MatDuplicate(htemp, MAT_COPY_VALUES, &R); 
-    // MatAXPY(R, -1.0, _S_, DIFFERENT_NONZERO_PATTERN);
-    // MatNorm(R, NORM_FROBENIUS, &nrm);
+    Mat Sinv;
 
-    // std::cout << std::scientific<<std::setprecision(3) << "The largest element of Hermitian test of _S_: " << nrm << std::endl;
+    MatCreateNormalHermitian(_Sr_, &Sinv);
+    PCSetType(_pc_, PCMAT);
+    PCSetOperators(_pc_, _S_, Sinv);
 
+    KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
+    // PCSetUp(_pc_);
+    KSPSetFromOptions(_ksp_);
+    KSPSetUp(_ksp_);
+}
+
+void Solver::scale_shift_H(double emin, double emax, bool verbose){
     PetscScalar _emax_, _emin_;
-
     if (emax <= emin) { // in this case we think the input emin, emax is not meaningful
         EPS eps;
         PetscInt nconv=1;
-
         EPSCreate(_comm_, &eps);
-        EPSSetOperators(eps, _H_, _S_);
-        EPSSetProblemType(eps, EPS_GHEP);
 
-         // config the KSP internel of SLEPC
-        ST st;  KSP ksp;  PC pc;
-        EPSGetST(eps,&st);                 // grab the ST
-        STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
-        KSPSetType(ksp,KSPCG);
-        KSPGetPC(ksp,&pc);
+        if (_explicit_orth_){
+            EPSSetOperators(eps, _H_, NULL);
+            EPSSetProblemType(eps, EPS_GHEP);
+        } else {
+            EPSSetOperators(eps, _H_, _S_);
+            EPSSetProblemType(eps, EPS_GHEP);
 
-        KSPSetReusePreconditioner(ksp, PETSC_TRUE);
+            ST st;  KSP ksp;  PC pc;
+            EPSGetST(eps,&st);                 // grab the ST
+            STGetKSP(st,&ksp);                 // grab its KSP        :contentReference[oaicite:3]{index=3}
+            KSPSetType(ksp,KSPCG);
+            KSPGetPC(ksp,&pc);
+
+            KSPSetReusePreconditioner(ksp, PETSC_TRUE);
+            EPSSetTolerances(eps,1e-2,50);
+            EPSSetDimensions(eps,1,100,100);
+            EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
+
+            Mat Sinv;
+            MatCreateNormalHermitian(_Sr_, &Sinv);
+            PCSetType(pc, PCMAT);
+            PCSetOperators(pc, _S_, Sinv);
+            STSetPreconditionerMat(st, Sinv);
+            KSPSetFromOptions(ksp);
+            KSPSetUp(ksp);
+        }
+
+        // config the KSP internel of SLEPC
         
-        // EPSSetType(eps,EPSLANCZOS);
-        // EPSLanczosSetReorthog(eps,EPS_LANCZOS_REORTHOG_LOCAL);
-        EPSSetTolerances(eps,1e-2,50);
-        // EPSSetDimensions(eps,1,PETSC_DEFAULT,PETSC_DEFAULT);
-        EPSSetDimensions(eps,1,100,100);
-        // EPSSetThreshold(eps,1e-4,PETSC_FALSE); // abs, rel
-        EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
-        // EPSSetType(eps,EPSKRYLOVSCHUR);
-
-
-        // Set for pc
-        // PCSetType(pc, PCMAT);
-        // PCASMSetSubMatType(pc, MATSEQAIJMKL);
-        // PCASMSetSubMatType(pc, MATSEQAIJ);
-        // PCASMSetOverlap(pc, 0);
-        // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
-
-        Mat Sinv;
-
-        MatCreateNormalHermitian(_Sr_, &Sinv);
-        PCSetType(pc, PCMAT);
-        PCSetOperators(pc, _S_, Sinv);
-        STSetPreconditionerMat(st, Sinv);
-        KSPSetFromOptions(ksp);
-        KSPSetUp(ksp);
 
         KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
 
@@ -169,61 +191,78 @@ void Solver::setup_H_h5(const std::string &HFile, double emin, double emax, bool
     _shift_ = (_emax_ + _emin_).real() / 2;
 
     // scale and shift the H/S
-    MatAXPY(_H_, -(PetscScalar)_shift_, _S_, SAME_NONZERO_PATTERN);
-    MatScale(_H_, (PetscScalar)(1/_scale_));
-    
-
-    /* Setup the KSP solver also, need test*/
-    KSPCreate(_comm_,&_ksp_);
-    KSPSetDM(_ksp_, _dm_atomic_->dm());
-    KSPSetDMActive(_ksp_,PETSC_FALSE);
-    KSPSetOperators(_ksp_,_S_,_S_);
-    KSPGetPC(_ksp_,&_pc_);
-    KSPSetReusePreconditioner(_ksp_, PETSC_TRUE);
-    // KSPSetInitialGuessNonzero(_ksp_, PETSC_TRUE);
-
-    if(_n_sample_== 1){
-        KSPSetType(_ksp_, KSPCG);
+    if (_explicit_orth_){
+        if (!_explicit_form_){
+            MContext *ctx;
+            MatShellGetContext(_H_, (void**)&ctx);
+            MatAXPY(ctx->H, -(PetscScalar)_shift_, _S_, SAME_NONZERO_PATTERN);
+            MatScale(ctx->H, (PetscScalar)(1/_scale_));
+        }else{
+            MatShift(_H_, -(PetscScalar)_shift_);
+            MatScale(_H_, (PetscScalar)(1/_scale_));
+        }
     }else{
-        KSPSetType(_ksp_, KSPHPDDM);
-        KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_BCG);
+        MatAXPY(_H_, -(PetscScalar)_shift_, _S_, SAME_NONZERO_PATTERN);
+        MatScale(_H_, (PetscScalar)(1/_scale_));
     }
-    
-    // approximated invert square root
+}
 
-    Mat Sinv;
+typedef struct {
+  Mat H, Sr;
+  Vec w1;  // work vectors of size m
+} MContext;
 
-    MatCreateNormalHermitian(_Sr_, &Sinv);
-    PCSetType(_pc_, PCMAT);
-    PCSetOperators(_pc_, _S_, Sinv);
+PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
+{
+  PetscErrorCode ierr;
+  MContext      *ctx;
 
-    // ICC(1), Fast in serial
-    // PCSetType(_pc_, PCICC);
-    // PCFactorSetLevels(_pc_, 1);
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
 
-    // ASM + ICC(1)
-    // PCSetType(_pc_, PCASM);
-    // PCASMSetSubMatType(_pc_, MATSEQAIJMKL);
-    // // PCASMSetSubMatType(_pc_, MATSEQAIJ);
-    // PCASMSetOverlap(_pc_, 0);
-    // PetscOptionsInsertString(NULL,"-sub_pc_type icc");
+  // w1 = A * x
+  ierr = MatMult(ctx->Sr, x, y);CHKERRQ(ierr);
 
-    // GAMG performance profile
-    // PCSetType(_pc_,PCGAMG);
-    // PCGAMGSetType(_pc_, PCGAMGAGG);
-    // PetscReal thres[1]={0.10};
-    // PCGAMGSetThreshold(_pc_, thres, 1);
-    // PCGAMGSetAggressiveLevels(_pc_,2);
-    // PCGAMGSetCoarseEqLim(_pc_, 200);
-    // PCGAMGSetReuseInterpolation(_pc_, PETSC_TRUE);
+  // w2 = B * w1
+  ierr = MatMult(ctx->H, y, ctx->w1);CHKERRQ(ierr);
 
-    KSPSetTolerances(_ksp_, 1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
-    // PCSetUp(_pc_);
-    KSPSetFromOptions(_ksp_);
-    KSPSetUp(_ksp_);
+  // y = A^H * w2 (Hermitian transpose; for real case you can use MatMultTranspose)
+  ierr = MatMultHermitianTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
 
-    _hamiltonian_ready_ = true;
-};
+  return 0;
+}
+
+void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_formation, bool verbose){
+    if (!_sqrtm_ready_) throw std::runtime_error("S^-1/2 must be ready before orthogonalization.");
+    if (!_hamiltonian_ready_) throw std::runtime_error("Hamiltonian must be ready before orthogonalization.");
+    if (_explicit_orth_) return; // Already orthogonalized
+
+    if (explicit_formation) {
+        Ssqrtm(tol, sptol, maxit, verbose, true);
+    } else {
+        // Setup Htmp as MatShell Htmp where the action is Htmp v = S^-1/2 H S^-1/2 v
+        Ssqrtm(tol, sptol, maxit, verbose, false);
+        Mat Htmp;
+
+        MContext *ctx;
+        PetscNew(&ctx);
+        ctx->H = _H_; ctx->Sr = _Sr_;
+        PetscObjectReference((PetscObject)ctx->H);
+        PetscObjectReference((PetscObject)ctx->Sr);
+
+        PetscInt local_rows, local_cols, global_rows, global_cols;
+        MatGetSize(_H_, &global_rows, &global_cols);
+        MatGetLocalSize(_H_, &local_rows, &local_cols);
+
+        MatCreateShell(_comm_,
+                       local_rows, local_cols, global_rows, global_cols,
+                       (void*)ctx, &Htmp);
+        MatShellSetOperation(Htmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatDestroy(&_H_);
+        _H_ = Htmp;
+    }
+    _explicit_orth_ = true;
+    _explicit_form_ = explicit_formation;
+}
 
 void Solver::setup_sample(int n, std::string method){
     if(n==1){
@@ -311,9 +350,9 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     PetscComplex cdos[2*nt+1], pcdos[(2*nt+1)*n_proj_type];
 
     if(_n_sample_==1){
-        rsatb::calc::corr_dos<Vec>(_H_, _ksp_, _Sample_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose);
+        rsatb::calc::corr_dos<Vec>(_H_, _ksp_, _Sample_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose, _explicit_orth_);
     } else {
-        rsatb::calc::corr_dos<Mat>(_H_, _ksp_, _Samples_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose);
+        rsatb::calc::corr_dos<Mat>(_H_, _ksp_, _Samples_, nt, proj, n_proj_type, &isSrc, &isDst, cdos, pcdos, verbose, _explicit_orth_);
     }
 
 
@@ -383,30 +422,30 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
         omegas[i] = i * _scale_ / (nt+1);
     }
 
-    PetscComplex cac[(nt+1)*6];
+    PetscComplex cac[(nt+1)*9];
     if(_n_sample_==1){
         rsatb::calc::corr_ac<Vec>(
             _H_, _Rx_, _Ry_, _Rz_, _ksp_,
             _Sample_, nt, temp, mu, _scale_, _shift_,
-            n_kpm, 1e-14, cac
+            n_kpm, 1e-14, cac, _explicit_orth_
         );
     } else {
         rsatb::calc::corr_ac<Mat>(
             _H_, _Rx_, _Ry_, _Rz_, _ksp_,
             _Samples_, nt, temp, mu, _scale_, _shift_,
-            n_kpm, 1e-14, cac
+            n_kpm, 1e-14, cac, _explicit_orth_
         );
     }
 
     int idx;
-    for( int iac=0; iac<6; ++iac ){
+    for( int iac=0; iac<9; ++iac ){
         for( int iw=0; iw<=nt; ++iw ){
-            idx = iw*6+iac;
+            idx = iw*9+iac;
             ac[idx] = 0.0;
             if (omegas[iw] != 0){
                 for( int it=0; it<=nt; ++it ){
-                    // idx = iw*6+iac
-                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
+                    // idx = iw*9+iac
+                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*9+iac].imag();
                 }
                 ac[idx] = ac_prefactor * t_step * ac[idx] * (exp(-beta * omegas[iw]) - 1) / omegas[iw];
             }

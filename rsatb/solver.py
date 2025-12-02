@@ -55,7 +55,7 @@ class RSATB(MPIMultiLevel):
         self.__kpoint_set__ = False
         self.__sample_set__ = False
 
-    def setup(self, n, rsmethod, kpoints: np.ndarray, HFile, SFile=None, RxFile=None, RyFile=None, RzFile=None, orblist=None, orbroot=None, tol=1e-7, sptol=1e-6, maxit=20):
+    def setup(self, n=1, rsmethod="gauss", kpoints=np.array([[0.,0.,0.]]), HFile=None, SFile=None, RxFile=None, RyFile=None, RzFile=None, orblist=None, orbroot=None, tol=1e-7, sptol=1e-6, maxit=20, orthogonalize=False, explicit_orth=True):
         self.setup_sample(n, rsmethod)
         self.setup_kpoints(kpoints)
 
@@ -66,6 +66,8 @@ class RSATB(MPIMultiLevel):
         self.RzFile = RzFile
         self.orblist = orblist
         self.orbroot = orbroot
+        self.orthogonalize = orthogonalize
+        self.explicit_orth = explicit_orth
 
         self.tol = tol
         self.sptol = sptol
@@ -110,14 +112,16 @@ class RSATB(MPIMultiLevel):
         else:
             raise ValueError("The overlap information is not provided in the setup, currently, we only support non-orthogonal basis calculation!")
         
-        # Setup S^-1/2
-        self.solver.Ssqrtm(self.tol, self.sptol, self.maxit, self.verbose)
-
-        # Setup H
         if self.HFile is not None:
-            self.solver.setup_H_h5(self.HFile, 0, 0, self.verbose)
+            self.solver.setup_H_h5(self.HFile)
         else:
             raise ValueError("We currently support reading Hamiltonian from H5 file, more will be added later!")
+
+        if self.orthogonalize:
+            self.solver.orthogonalize_H(self.tol, self.sptol, self.maxit, self.explicit_orth, self.verbose)
+        else:
+            self.solver.Ssqrtm(self.tol, self.sptol, self.maxit, self.verbose, False)
+            self.solver.setup_KSP()
         
         # Setup R (if needed and not done yet)
         if need_R:

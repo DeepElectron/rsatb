@@ -15,6 +15,7 @@ typedef struct {
   Mat  H;          /* the Hamiltonian   */
   KSP  kspS;       /* pre-factored S    */
   Vec  tmp;        /* workspace vector  */
+  bool orthogonal; /* orthogonal flag */
 } Ctx;
 
 PetscErrorCode MatMult_SinvH(Mat A, Vec x, Vec y)
@@ -25,14 +26,18 @@ PetscErrorCode MatMult_SinvH(Mat A, Vec x, Vec y)
   MatMult(ctx->H,x,ctx->tmp);
 
   /* y  = S^{-1} * tmp */
-  KSPSolve(ctx->kspS,ctx->tmp,y);
+  if(!ctx->orthogonal) {
+      KSPSolve(ctx->kspS,ctx->tmp,y);
+  } else {
+      VecCopy(ctx->tmp, y);
+  }
 
   return 0;
 }
 
 namespace rsatb::calc{
 
-inline void fermi_dirac_krylov(MPI_Comm comm, Mat H, KSP ksp, Vec Psi_in, Vec Psi_out, double T, double e_fermi, double tol){
+inline void fermi_dirac_krylov(MPI_Comm comm, Mat H, KSP ksp, Vec Psi_in, Vec Psi_out, double T, double e_fermi, double tol, bool orthogonal=false){
     // Use SLEPc's MFN krylov method to approximate f(H)|v>
     Ctx ctx;
     Vec tmp;
@@ -50,6 +55,7 @@ inline void fermi_dirac_krylov(MPI_Comm comm, Mat H, KSP ksp, Vec Psi_in, Vec Ps
     ctx.H = H;
     ctx.kspS = ksp;
     ctx.tmp = tmp;
+    ctx.orthogonal = orthogonal;
     
     MatCreateShell(comm, PETSC_DECIDE,PETSC_DECIDE, matdim, matdim, &ctx, &A);
     MatShellSetOperation(A,MATOP_MULT,(void (*)(void))MatMult_SinvH);
@@ -225,7 +231,7 @@ inline void shifted_fermi_dirac(double E, double beta, double mu, double shift, 
 
 template<typename T>
 inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, double mu, double scale, double shift, int n_kpm, 
-  double eps=1e-14, bool adjoint=false){
+  double eps=1e-14, bool adjoint=false, bool orthogonal=false){
     double dE = M_PI / n_kpm;
     double mu_re = (mu - shift) / scale;
     double beta_re = scale / (temp * 8.617333262e-5);
@@ -281,7 +287,7 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 3 vec
           tmp_coeff, n_kpm_, 
-          Psi_out, adjoint
+          Psi_out, adjoint, orthogonal
       );
 
       VecDestroy(buff); VecDestroy(buff+1); VecDestroy(buff+2);
@@ -298,7 +304,7 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 4 Mat
           tmp_coeff, n_kpm_,
-          Psi_out, adjoint
+          Psi_out, adjoint, orthogonal
       );
 
       MatDestroy(buff); MatDestroy(buff+1); MatDestroy(buff+2); MatDestroy(buff+3);
@@ -306,8 +312,8 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
 
 };
 
-template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double, bool);
-template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double, bool);
+template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double, bool, bool);
+template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double, bool, bool);
 
 }
 

@@ -7,7 +7,7 @@
 
 namespace rsatb::calc{
 
-void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31, Mat *mat_isqrt=nullptr, bool verbose=false){
+void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, int maxit = 20, double factor=0.31, Mat *mat_isqrt=nullptr, bool verbose=false, Mat *mat_H=nullptr, Mat *mat_H_orth=nullptr){
     if (*mat_isqrt==nullptr) {
         DMCreateMatrix(dm_atomic.dm(), mat_isqrt);
         MatAssemblyBegin(*mat_isqrt, MAT_FINAL_ASSEMBLY);
@@ -178,11 +178,47 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     // MatNorm(*mat_isqrt, NORM_INFINITY, &norm);
     
     DBCSR2Mat(dm_atomic, Z, mat_isqrt);
+
+    // If H is provided, perform orthogonalization: H_new = Z^H * H * Z
+    if (mat_H != nullptr && mat_H_orth != nullptr) {
+        if (rank == 0 && verbose) std::cout << "Performing orthogonalization in isqrtm..." << std::endl;
+        
+        dbcsr_matrix H_dbcsr, H_new_dbcsr, tmp_H;
+        
+        // Convert H to DBCSR using the same distribution as S/Z if possible, 
+        // but DMat2DBCSR creates a new distribution based on the input Mat.
+        // However, since we are inside isqrtm, we have 'dist' which is the distribution of S.
+        // We should try to use 'dist' for H_new and tmp matrices.
+        
+        DMat2DBCSR(*mat_H, dm_atomic, &H_dbcsr, 'H'); // H is Hermitian
+
+        // Create temp matrices with the same distribution 'dist'
+        c_dbcsr_create_new(&tmp_H, "tmp_H", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
+        c_dbcsr_finalize(tmp_H);
+        c_dbcsr_create_new(&H_new_dbcsr, "H_new", dist, 'H', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &dbcsr_type_complex_8, nullptr, nullptr, nullptr, nullptr);
+        c_dbcsr_finalize(H_new_dbcsr);
+
+        // tmp_H = H * Z
+        c_dbcsr_multiply_z('N', 'N', 1.0, H_dbcsr, Z, 0.0, tmp_H, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+        
+        // H_new = Z^H * tmp_H = Z^H * H * Z
+        // Note: Z is Hermitian (S^-1/2), so Z^H = Z.
+        c_dbcsr_multiply_z('C', 'N', 1.0, Z, tmp_H, 0.0, H_new_dbcsr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &sptol, &cflop);
+
+        // Convert back to PETSc
+        DBCSR2Mat(dm_atomic, H_new_dbcsr, mat_H_orth);
+
+        c_dbcsr_release(&H_dbcsr);
+        c_dbcsr_release(&tmp_H);
+        c_dbcsr_release(&H_new_dbcsr);
+    }
+
     c_dbcsr_release(&S);
     c_dbcsr_release(&tmp1);
     c_dbcsr_release(&tmp2);
     c_dbcsr_release(&tmp3);
     c_dbcsr_release(&I);
+    c_dbcsr_release(&Z); // Don't forget to release Z
     c_dbcsr_distribution_release(&dist);
 };
 
