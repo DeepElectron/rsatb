@@ -51,7 +51,8 @@ def test_orth_vs_dual():
         orblist=["C_gga_7au_100Ry_2s2p1d.orb"],
         tol=1e-4,
         sptol=1e-4,
-        orthogonalize=True
+        orthogonalize=True,
+        explicit_orth=True
     )
     out_orth = rsatb_orth.compute_dos(dE=0.5)
     dos_orth = out_orth[1]

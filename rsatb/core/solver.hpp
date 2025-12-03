@@ -19,7 +19,7 @@ private:
     std::unique_ptr<DMAtomic> _dm_atomic_;
     Mat _H_, _S_, _Sr_, _Rx_, _Ry_, _Rz_, _Samples_;
     Vec _Sample_;
-    KSP _ksp_;
+    KSP _ksp_=nullptr;
     PC _pc_;
     
     PetscReal _scale_=-1.0, _shift_=0.0, _Kx_, _Ky_, _Kz_;
@@ -194,6 +194,7 @@ public:
         } else {
              rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
         }
+        
         MatConvert(_Sr_, "aij", MAT_INPLACE_MATRIX, &_Sr_);
 
         // check whether _Sr_ works well

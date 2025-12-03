@@ -192,14 +192,17 @@ PYBIND11_MODULE(binding, m) {
             std::string proj_mode,
             py::array_t<int, py::array::c_style | py::array::forcecast> orbtype,
             bool verbose
-        ){
+        ){  
             
-
+            if (nt < 0) {
+                throw std::runtime_error("The timestep cannot be negative!");
+            }
+            
             double dos[2*nt];
             double omegas[2*nt];
             std::unique_ptr<double[]> pdos;
-            int n_proj;
-            
+            int n_proj=0;
+
             solver.compute_dos(nt, proj_mode, orbtype.data(), &n_proj, dos, pdos, omegas, verbose);
 
             py::array_t<double> o_dos(2*nt);
@@ -218,6 +221,8 @@ PYBIND11_MODULE(binding, m) {
             
             return std::make_tuple(o_dos, o_pdos, o_omegas);
         },
+        py::keep_alive<1,2>(),
+        py::keep_alive<1,3>(),
         py::keep_alive<1,4>(),
         py::arg("nt"),
         py::arg("proj_mode") = "none",

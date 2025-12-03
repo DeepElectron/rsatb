@@ -69,6 +69,9 @@ class RSATB(MPIMultiLevel):
         self.orthogonalize = orthogonalize
         self.explicit_orth = explicit_orth
 
+        if not self.orthogonalize and self.explicit_orth:
+            raise RuntimeWarning("explicit_orth have no effect when you set orthogonalize = False!")
+
         self.tol = tol
         self.sptol = sptol
         self.maxit = maxit
@@ -122,6 +125,8 @@ class RSATB(MPIMultiLevel):
         else:
             self.solver.Ssqrtm(self.tol, self.sptol, self.maxit, self.verbose, False)
             self.solver.setup_KSP()
+        
+        self.solver.scale_shift_H(0.0, 0.0, self.verbose)
         
         # Setup R (if needed and not done yet)
         if need_R:

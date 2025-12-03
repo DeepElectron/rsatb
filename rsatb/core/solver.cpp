@@ -22,6 +22,52 @@ using namespace rsatb::calc;
 5. call setup_samples
 
 */
+
+typedef struct {
+  Mat H, Sr;
+  Vec w1;  // work vectors of size m
+} MContext;
+
+PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
+{
+  PetscErrorCode ierr;
+  MContext      *ctx;
+
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+  // w1 = A * x
+  ierr = MatMult(ctx->Sr, x, y);CHKERRQ(ierr);
+
+  // w2 = B * w1
+  ierr = MatMult(ctx->H, y, ctx->w1);CHKERRQ(ierr);
+
+  // y = A^H * w2 (Hermitian transpose; for real case you can use MatMultTranspose)
+  ierr = MatMultHermitianTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
+
+  return 0;
+}
+
+PetscErrorCode SrHSrDestroy(Mat M)
+{
+    PetscErrorCode ierr;
+    MContext      *ctx;
+
+    ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+    // Destroy the work vector
+    if (ctx->w1) { ierr = VecDestroy(&ctx->w1);CHKERRQ(ierr); }
+
+    // Release references to the underlying matrices
+    if (ctx->H)  { ierr = MatDestroy(&ctx->H);CHKERRQ(ierr); }
+    if (ctx->Sr) { ierr = MatDestroy(&ctx->Sr);CHKERRQ(ierr); }
+
+    // Free the context structure
+    ierr = PetscFree(ctx);CHKERRQ(ierr);
+
+    return 0;
+}
+
+
 namespace rsatb{
 
 Solver::Solver(
@@ -76,7 +122,6 @@ void Solver::setup_H_h5(const std::string &HFile){ /* Setup H and S, how to asse
     if ( !_samples_ready_ ) throw std::runtime_error("Please setup random states (samples) before configuring the Hamiltonian.");
     if ( !_kpoint_ready_ )  throw std::runtime_error("Please setup kpoint before configuring the Hamiltonian.");
     if ( !_overlap_ready_ ) throw std::runtime_error("Please setup overlap before configuring the Hamiltonian.");
-    if ( !_sqrtm_ready_ ) throw std::runtime_error("Please setup S^1/2 before configuring the Hamiltonian.");
     
     // std::cout << "Here? Setup H!" << std::endl;
     this->set_mat_from_h5(&_H_, HFile);
@@ -128,7 +173,7 @@ void Solver::scale_shift_H(double emin, double emax, bool verbose){
 
         if (_explicit_orth_){
             EPSSetOperators(eps, _H_, NULL);
-            EPSSetProblemType(eps, EPS_GHEP);
+            EPSSetProblemType(eps, EPS_HEP);
         } else {
             EPSSetOperators(eps, _H_, _S_);
             EPSSetProblemType(eps, EPS_GHEP);
@@ -140,23 +185,23 @@ void Solver::scale_shift_H(double emin, double emax, bool verbose){
             KSPGetPC(ksp,&pc);
 
             KSPSetReusePreconditioner(ksp, PETSC_TRUE);
-            EPSSetTolerances(eps,1e-2,50);
-            EPSSetDimensions(eps,1,100,100);
-            EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
-
+            
             Mat Sinv;
             MatCreateNormalHermitian(_Sr_, &Sinv);
             PCSetType(pc, PCMAT);
             PCSetOperators(pc, _S_, Sinv);
             STSetPreconditionerMat(st, Sinv);
             KSPSetFromOptions(ksp);
+            KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
+
             KSPSetUp(ksp);
         }
 
         // config the KSP internel of SLEPC
-        
 
-        KSPSetTolerances(ksp,1e-8, 1e-9, PETSC_DEFAULT, PETSC_DEFAULT);
+        EPSSetTolerances(eps,1e-2,50);
+        EPSSetDimensions(eps,1,100,100);
+        EPSSetWhichEigenpairs(eps, EPS_LARGEST_REAL);
 
         // temp
         BV V;
@@ -168,6 +213,7 @@ void Solver::scale_shift_H(double emin, double emax, bool verbose){
         // EPSView(eps, PETSC_VIEWER_STDOUT_WORLD);
 
         EPSSolve(eps);
+
         EPSGetConverged(eps, &nconv);
         EPSGetEigenpair(eps,0,&_emax_, NULL, NULL, NULL);
 
@@ -207,32 +253,7 @@ void Solver::scale_shift_H(double emin, double emax, bool verbose){
     }
 }
 
-typedef struct {
-  Mat H, Sr;
-  Vec w1;  // work vectors of size m
-} MContext;
-
-PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
-{
-  PetscErrorCode ierr;
-  MContext      *ctx;
-
-  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
-
-  // w1 = A * x
-  ierr = MatMult(ctx->Sr, x, y);CHKERRQ(ierr);
-
-  // w2 = B * w1
-  ierr = MatMult(ctx->H, y, ctx->w1);CHKERRQ(ierr);
-
-  // y = A^H * w2 (Hermitian transpose; for real case you can use MatMultTranspose)
-  ierr = MatMultHermitianTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
-
-  return 0;
-}
-
 void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_formation, bool verbose){
-    if (!_sqrtm_ready_) throw std::runtime_error("S^-1/2 must be ready before orthogonalization.");
     if (!_hamiltonian_ready_) throw std::runtime_error("Hamiltonian must be ready before orthogonalization.");
     if (_explicit_orth_) return; // Already orthogonalized
 
@@ -246,6 +267,7 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
         MContext *ctx;
         PetscNew(&ctx);
         ctx->H = _H_; ctx->Sr = _Sr_;
+        MatCreateVecs(_H_, &ctx->w1, NULL);
         PetscObjectReference((PetscObject)ctx->H);
         PetscObjectReference((PetscObject)ctx->Sr);
 
@@ -257,6 +279,8 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
                        local_rows, local_cols, global_rows, global_cols,
                        (void*)ctx, &Htmp);
         MatShellSetOperation(Htmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatShellSetOperation(Htmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
+        MatSetUp(Htmp);
         MatDestroy(&_H_);
         _H_ = Htmp;
     }
@@ -334,6 +358,7 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
 
     IS isSrc, isDst;
     int n_atom_type = _dm_atomic_->n_type();
+
     if(proj_mode=="element"){
         rsatb::backend::setup_is_atomic(*_dm_atomic_, &isSrc, &isDst);
         n_proj_type = n_atom_type;
@@ -345,6 +370,7 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     }else{
         proj=false;
     }
+
     if(n_proj!=nullptr) *n_proj = n_proj_type;
 
     PetscComplex cdos[2*nt+1], pcdos[(2*nt+1)*n_proj_type];
