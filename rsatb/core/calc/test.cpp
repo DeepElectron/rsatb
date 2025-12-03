@@ -456,14 +456,14 @@ TEST(calcTest, TestFermiKPM){
     KSPSetType(ksp, KSPPREONLY);
     KSPSetUp(ksp);
 
-    rsatb::calc::fermi_dirac_kpm(
-        H, ksp, v_curr, v_next, 3000.0, 0.0, 1.0, 0.0, 500, 1e-14
+    rsatb::calc::fermi_dirac_kpm<Vec>(
+        H, ksp, v_curr, v_next, 3000.0, 0.0, 1.0, 0.0, 500, 1e-14, ChebyMode::NORMAL, false
     ); // 10K 1996 moment for 1e-14 acc
 
     VecView(v_next,PETSC_VIEWER_STDOUT_SELF);
 
-    rsatb::calc::fermi_dirac_kpm(
-        H, ksp, v_curr, v_next, 3000.0, 0.0, 1.0, 0.0, 500, 1e-14, true
+    rsatb::calc::fermi_dirac_kpm<Vec>(
+        H, ksp, v_curr, v_next, 3000.0, 0.0, 1.0, 0.0, 500, 1e-14, ChebyMode::NORMAL, false
     ); // 10K 1996 moment for 1e-14 acc
 
     VecView(v_next,PETSC_VIEWER_STDOUT_SELF);
@@ -731,58 +731,61 @@ TEST(calcTest, TestCORRAC){
     VecCreateSeqWithArray(PETSC_COMM_SELF,1,2,Psi_in,&v_psi_in);
 
     /* Set the ksp */
+    PC pc;
     KSPCreate(PETSC_COMM_SELF,&ksp);
     // KSPSetDM(ksp, dm);
     KSPSetOperators(ksp,S,S);
-    KSPSetType(ksp, KSPPREONLY);
+    KSPSetType(ksp, KSPCG);
+    KSPGetPC(ksp, &pc);
+    PCSetType(pc, PCNONE);
     KSPSetUp(ksp);
 
     rsatb::calc::corr_ac<Vec>(H, Rx, Ry, Rz, ksp, v_psi_in, 1, 300.0, 0.0, 1.0, 0.0, 1000, 1e-14, ac);
 
-    ASSERT_NEAR(5.7386113981, ac[0].real(), 1e-7);
-    ASSERT_NEAR(-4.97177277359, ac[1].real(), 1e-7);
-    ASSERT_NEAR(-0.07071667868, ac[2].real(), 1e-7);
-    ASSERT_NEAR(4.3074051887, ac[3].real(), 1e-7);
-    ASSERT_NEAR(0.0612669569, ac[4].real(), 1e-7);
-    ASSERT_NEAR(0.0008714388, ac[5].real(), 1e-7);
+    ASSERT_NEAR(12.624639154910046, ac[0].real(), 1e-7);
+    ASSERT_NEAR(-10.937635060502249, ac[1].real(), 1e-7);
+    ASSERT_NEAR(-0.15557292325485342, ac[2].real(), 1e-7);
+    ASSERT_NEAR(9.47606179066117, ac[3].real(), 1e-7);
+    ASSERT_NEAR(0.13478403928838747, ac[4].real(), 1e-7);
+    ASSERT_NEAR(0.0019171189095450365, ac[5].real(), 1e-7);
 
-    ASSERT_NEAR(5.73765599, ac[6].real(), 1e-7);
-    ASSERT_NEAR(0.10471105, ac[6].imag(), 1e-7);
-    ASSERT_NEAR(-4.97094504, ac[7].real(), 1e-7);
-    ASSERT_NEAR(-0.09071873, ac[7].imag(), 1e-7);
-    ASSERT_NEAR(-0.070704905, ac[8].real(), 1e-7);
-    ASSERT_NEAR(-0.001290350, ac[8].imag(), 1e-7);
-    ASSERT_NEAR(4.30668806, ac[9].real(), 1e-7);
-    ASSERT_NEAR(0.078596181, ac[9].imag(), 1e-7);
-    ASSERT_NEAR(0.0612567569, ac[10].real(), 1e-7);
-    ASSERT_NEAR(0.0011179233, ac[10].imag(), 1e-7);
-    ASSERT_NEAR(0.000871293, ac[11].real(), 1e-7);
-    ASSERT_NEAR(0.00001590093, ac[11].imag(), 1e-7);
+    ASSERT_NEAR(12.622537329825269, ac[6].real(), 1e-7);
+    ASSERT_NEAR(0.2303587394808695, ac[6].imag(), 1e-7);
+    ASSERT_NEAR(-10.935814097902352, ac[7].real(), 1e-7);
+    ASSERT_NEAR(-0.19957638349284085, ac[7].imag(), 1e-7);
+    ASSERT_NEAR(-0.15554702254841768, ac[8].real(), 1e-7);
+    ASSERT_NEAR(-0.0028387015310773404, ac[8].imag(), 1e-7);
+    ASSERT_NEAR(9.474484159480422, ac[9].real(), 1e-7);
+    ASSERT_NEAR(0.17290740927755982, ac[9].imag(), 1e-7);
+    ASSERT_NEAR(0.1347615996391169, ac[10].real(), 1e-7);
+    ASSERT_NEAR(0.0024593717896908996, ac[10].imag(), 1e-7);
+    ASSERT_NEAR(0.0019167997361757916, ac[11].real(), 1e-7);
+    ASSERT_NEAR(0.000034981205404668896, ac[11].imag(), 1e-7);
 
     // test multiple RHS
     rsatb::calc::corr_ac<Mat>(H, Rx, Ry, Rz, ksp, m_psi_in, 1, 300.0, 0.0, 1.0, 0.0, 1000, 1e-14, ac);
     // for( int i=0; i<12; ++i) {
     //     std::cout << ac[i] << std::endl;
     // }
-    ASSERT_NEAR(5.7386113981, ac[0].real(), 1e-7);
-    ASSERT_NEAR(-4.97177277359, ac[1].real(), 1e-7);
-    ASSERT_NEAR(-0.07071667868, ac[2].real(), 1e-7);
-    ASSERT_NEAR(4.3074051887, ac[3].real(), 1e-7);
-    ASSERT_NEAR(0.0612669569, ac[4].real(), 1e-7);
-    ASSERT_NEAR(0.0008714388, ac[5].real(), 1e-7);
+    ASSERT_NEAR(12.624639154910046, ac[0].real(), 1e-7);
+    ASSERT_NEAR(-10.937635060502249, ac[1].real(), 1e-7);
+    ASSERT_NEAR(-0.15557292325485342, ac[2].real(), 1e-7);
+    ASSERT_NEAR(9.47606179066117, ac[3].real(), 1e-7);
+    ASSERT_NEAR(0.13478403928838747, ac[4].real(), 1e-7);
+    ASSERT_NEAR(0.0019171189095450365, ac[5].real(), 1e-7);
 
-    ASSERT_NEAR(5.73765599, ac[6].real(), 1e-7);
-    ASSERT_NEAR(0.10471105, ac[6].imag(), 1e-7);
-    ASSERT_NEAR(-4.97094504, ac[7].real(), 1e-7);
-    ASSERT_NEAR(-0.09071873, ac[7].imag(), 1e-7);
-    ASSERT_NEAR(-0.070704905, ac[8].real(), 1e-7);
-    ASSERT_NEAR(-0.001290350, ac[8].imag(), 1e-7);
-    ASSERT_NEAR(4.30668806, ac[9].real(), 1e-7);
-    ASSERT_NEAR(0.078596181, ac[9].imag(), 1e-7);
-    ASSERT_NEAR(0.0612567569, ac[10].real(), 1e-7);
-    ASSERT_NEAR(0.0011179233, ac[10].imag(), 1e-7);
-    ASSERT_NEAR(0.000871293, ac[11].real(), 1e-7);
-    ASSERT_NEAR(0.00001590093, ac[11].imag(), 1e-7);
+    ASSERT_NEAR(12.622537329825269, ac[6].real(), 1e-7);
+    ASSERT_NEAR(0.2303587394808695, ac[6].imag(), 1e-7);
+    ASSERT_NEAR(-10.935814097902352, ac[7].real(), 1e-7);
+    ASSERT_NEAR(-0.19957638349284085, ac[7].imag(), 1e-7);
+    ASSERT_NEAR(-0.15554702254841768, ac[8].real(), 1e-7);
+    ASSERT_NEAR(-0.0028387015310773404, ac[8].imag(), 1e-7);
+    ASSERT_NEAR(9.474484159480422, ac[9].real(), 1e-7);
+    ASSERT_NEAR(0.17290740927755982, ac[9].imag(), 1e-7);
+    ASSERT_NEAR(0.1347615996391169, ac[10].real(), 1e-7);
+    ASSERT_NEAR(0.0024593717896908996, ac[10].imag(), 1e-7);
+    ASSERT_NEAR(0.0019167997361757916, ac[11].real(), 1e-7);
+    ASSERT_NEAR(0.000034981205404668896, ac[11].imag(), 1e-7);
 
     MatDestroy(&H); MatDestroy(&S); MatDestroy(&Rx); MatDestroy(&Ry); MatDestroy(&Rz); MatDestroy(&m_psi_in);
     VecDestroy(&v_psi_in);

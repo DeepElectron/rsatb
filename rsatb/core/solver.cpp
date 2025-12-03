@@ -28,6 +28,11 @@ typedef struct {
   Vec w1;  // work vectors of size m
 } MContext;
 
+typedef struct {
+  Mat Sr;
+  Vec w1;  // work vectors of size m
+} SinvContext;
+
 PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
 {
   PetscErrorCode ierr;
@@ -47,6 +52,60 @@ PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
   return 0;
 }
 
+PetscErrorCode SinvMult(Mat M, Vec x, Vec y)
+{
+  PetscErrorCode ierr;
+  SinvContext      *ctx;
+
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+  // w1 = Sr * x
+  ierr = MatMult(ctx->Sr, x, ctx->w1);CHKERRQ(ierr);
+  // y = SrH * w1
+  ierr = MatMultHermitianTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
+
+  return 0;
+}
+
+PetscErrorCode TSrHSrMult(Mat M, Vec x, Vec y)
+{
+  PetscErrorCode ierr;
+  MContext      *ctx;
+
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+  // w1 = A * x
+  ierr = MatConjugate(ctx->Sr);CHKERRQ(ierr);
+  ierr = MatMult(ctx->Sr, x, y);CHKERRQ(ierr);
+  ierr = MatConjugate(ctx->Sr);CHKERRQ(ierr);
+
+  // w2 = B * w1
+  ierr = MatMultTranspose(ctx->H, y, ctx->w1);CHKERRQ(ierr);
+
+  // y = A^H * w2 (Hermitian transpose; for real case you can use MatMultTranspose)
+  ierr = MatMultTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
+
+  return 0;
+}
+
+PetscErrorCode TSinvMult(Mat M, Vec x, Vec y)
+{
+  PetscErrorCode ierr;
+  SinvContext      *ctx;
+
+  ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+  // w1 = A * x
+  ierr = MatConjugate(ctx->Sr);CHKERRQ(ierr);
+  ierr = MatMult(ctx->Sr, x, ctx->w1);CHKERRQ(ierr);
+  ierr = MatConjugate(ctx->Sr);CHKERRQ(ierr);
+
+  // w2 = B * w1
+  ierr = MatMultTranspose(ctx->Sr, ctx->w1, y);CHKERRQ(ierr);
+
+  return 0;
+}
+
 PetscErrorCode SrHSrDestroy(Mat M)
 {
     PetscErrorCode ierr;
@@ -59,6 +118,25 @@ PetscErrorCode SrHSrDestroy(Mat M)
 
     // Release references to the underlying matrices
     if (ctx->H)  { ierr = MatDestroy(&ctx->H);CHKERRQ(ierr); }
+    if (ctx->Sr) { ierr = MatDestroy(&ctx->Sr);CHKERRQ(ierr); }
+
+    // Free the context structure
+    ierr = PetscFree(ctx);CHKERRQ(ierr);
+
+    return 0;
+}
+
+PetscErrorCode SinvDestroy(Mat M)
+{
+    PetscErrorCode ierr;
+    SinvContext      *ctx;
+
+    ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
+
+    // Destroy the work vector
+    if (ctx->w1) { ierr = VecDestroy(&ctx->w1);CHKERRQ(ierr); }
+
+    // Release references to the underlying matrices
     if (ctx->Sr) { ierr = MatDestroy(&ctx->Sr);CHKERRQ(ierr); }
 
     // Free the context structure
@@ -151,10 +229,27 @@ void Solver::setup_KSP(){
     }
     
     // approximated invert square root
+    SinvContext *ctx;
+    PetscNew(&ctx);
+    ctx->Sr = _Sr_;
+    MatCreateVecs(_H_, &ctx->w1, NULL);
+    PetscObjectReference((PetscObject)ctx->Sr);
 
     Mat Sinv;
 
-    MatCreateNormalHermitian(_Sr_, &Sinv);
+    PetscInt local_rows, local_cols, global_rows, global_cols;
+    MatGetSize(_S_, &global_rows, &global_cols);
+    MatGetLocalSize(_S_, &local_rows, &local_cols);
+
+    MatCreateShell(_comm_,
+                    local_rows, local_cols, global_rows, global_cols,
+                    (void*)ctx, &Sinv);
+
+    MatShellSetOperation(Sinv, MATOP_MULT, (void(*)(void))SinvMult);
+    MatShellSetOperation(Sinv, MATOP_MULT_TRANSPOSE, (void(*)(void))TSinvMult);
+    MatShellSetOperation(Sinv, MATOP_DESTROY, (void(*)(void))SinvDestroy);
+
+    // MatCreateNormalHermitian(_Sr_, &Sinv);
     PCSetType(_pc_, PCMAT);
     PCSetOperators(_pc_, _S_, Sinv);
 
@@ -279,6 +374,7 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
                        local_rows, local_cols, global_rows, global_cols,
                        (void*)ctx, &Htmp);
         MatShellSetOperation(Htmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatShellSetOperation(Htmp, MATOP_MULT_TRANSPOSE, (void(*)(void))TSrHSrMult);
         MatShellSetOperation(Htmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
         MatSetUp(Htmp);
         MatDestroy(&_H_);
@@ -448,7 +544,7 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
         omegas[i] = i * _scale_ / (nt+1);
     }
 
-    PetscComplex cac[(nt+1)*9];
+    PetscComplex cac[(nt+1)*6];
     if(_n_sample_==1){
         rsatb::calc::corr_ac<Vec>(
             _H_, _Rx_, _Ry_, _Rz_, _ksp_,
@@ -464,14 +560,14 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
     }
 
     int idx;
-    for( int iac=0; iac<9; ++iac ){
+    for( int iac=0; iac<6; ++iac ){
         for( int iw=0; iw<=nt; ++iw ){
-            idx = iw*9+iac;
+            idx = iw*6+iac;
             ac[idx] = 0.0;
             if (omegas[iw] != 0){
                 for( int it=0; it<=nt; ++it ){
                     // idx = iw*9+iac
-                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*9+iac].imag();
+                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
                 }
                 ac[idx] = ac_prefactor * t_step * ac[idx] * (exp(-beta * omegas[iw]) - 1) / omegas[iw];
             }

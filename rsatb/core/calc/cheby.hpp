@@ -116,7 +116,7 @@ inline void cheby_iter_conjugate(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_n
 }
 
 inline void cheby_iter_conjugate_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp, bool orthogonal=false){
-    MatMatMultTranspose(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
+    MatTransposeMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
     if(!orthogonal) {
         KSPMatSolveTranspose(ksp, *T_tmp, *T_next);
     } else {
@@ -129,7 +129,6 @@ inline void cheby_iter_conjugate_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, 
     *T_prev = *T_curr; *T_curr = tmp;
     *T_curr = *T_next; *T_next = tmp;
 }
-
 
 inline void cheby_recur(
     Mat H, KSP ksp, Vec Psi_in,
@@ -258,7 +257,7 @@ inline void cheby_recur_mult(
         MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
     } else if ( mode == ChebyMode::CONJUGATE ) {
         // init T_prev(buff[0])
-        MatMatMultTranspose(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
+        MatTransposeMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         if(!orthogonal) {
             KSPMatSolveTranspose(ksp, buff[3], buff[0]);
         } else {
@@ -266,7 +265,7 @@ inline void cheby_recur_mult(
         }
 
         // init T_curr(buff[1])
-        MatMatMultTranspose(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
+        MatTransposeMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         if(!orthogonal) {
             KSPMatSolveTranspose(ksp, buff[3], buff[1]);
         } else {

@@ -63,31 +63,43 @@ void current(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double 
 
         MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         if(!orthogonal) KSPMatSolve(ksp, buff1, buff2);
+        else MatCopy(buff1, buff2, SAME_NONZERO_PATTERN);
 
         // x
         MatMatMult(Rx, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[0]);
+        else MatCopy(buff1, J_Psi[0], SAME_NONZERO_PATTERN);
+
         MatMatMult(H, J_Psi[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         MatMatMult(Rx, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
         MatAXPY(buff1, -1.0, J_Psi[0], SAME_NONZERO_PATTERN);
+
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[0]);
+        else MatCopy(buff1, J_Psi[0], SAME_NONZERO_PATTERN);
 
 
         // y
         MatMatMult(Ry, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[1]);
+        else MatCopy(buff1, J_Psi[1], SAME_NONZERO_PATTERN);
+
         MatMatMult(H, J_Psi[1], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         MatMatMult(Ry, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
         MatAXPY(buff1, -1.0, J_Psi[1], SAME_NONZERO_PATTERN);
+
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[1]);
+        else MatCopy(buff1, J_Psi[1], SAME_NONZERO_PATTERN);
+
 
         // z
         MatMatMult(Rz, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[2]);
+        else MatCopy(buff1, J_Psi[2], SAME_NONZERO_PATTERN);
         MatMatMult(H, J_Psi[2], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         MatMatMult(Rz, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
         MatAXPY(buff1, -1.0, J_Psi[2], SAME_NONZERO_PATTERN);
         if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[2]);
+        else MatCopy(buff1, J_Psi[2], SAME_NONZERO_PATTERN);
 
         const PetscComplex  nI(0.0, -scale);
         MatScale(J_Psi[0], nI);
@@ -217,7 +229,7 @@ void corr_ac(
     int n_bes=0;
     timeprop_coeff(dt, 1e-14, true, &coeff, &n_bes);
 
-    std::fill(cac, cac+(nt+1)*9, 0.0);
+    std::fill(cac, cac+(nt+1)*6, 0.0);
 
     T J_Psi[3], Psi0, J_Psi0[3], Psi_out, buff[4];
     
@@ -249,7 +261,19 @@ void corr_ac(
     }
 
     // Psi0: apply fermi-dirac (adjoint=true)
+    if constexpr (std::is_same_v<T, Vec>){
+        VecConjugate(Psi_in);
+    }
+    else{
+        MatConjugate(Psi_in);
+    }
     fermi_dirac_kpm<T>(H, ksp, Psi_in, Psi0, temp, mu, scale, shift, n_kpm, eps, ChebyMode::CONJUGATE, orthogonal);
+    if constexpr (std::is_same_v<T, Vec>){
+        VecConjugate(Psi_in);
+    }
+    else{
+        MatConjugate(Psi_in);
+    }
 
     // J_Psi = current(Psi_in)
     current<T>(H, ksp, Rx, Ry, Rz, Psi_in, J_Psi, scale, orthogonal);
@@ -275,10 +299,10 @@ void corr_ac(
     // Initial correlation
     PetscScalar tmp;
     for(int i=0; i<3; ++i){ // J_Psi index (right)
-        for(int j=0; j<3; ++j){ // J_Psi0 index (left)
+        for(int j=i; j<3; ++j){ // J_Psi0 index (left)
             if constexpr (std::is_same_v<T, Vec>){
                 VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                cac[j*3+i] += tmp; // Store in cac[0..8]
+                cac[int((-i*i+5*i)/2+j)] += tmp; // Store in cac[0..8]
             } else {
                 Vec v_left, v_right;
                 PetscScalar sum_val = 0.0;
@@ -290,7 +314,7 @@ void corr_ac(
                     MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
                     MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
                 }
-                cac[j*3+i] += sum_val / nrhs;
+                cac[int((-i*i+5*i)/2+j)] += sum_val / nrhs;
             }
         }
     }
@@ -324,10 +348,10 @@ void corr_ac(
 
         // Correlation
         for(int i=0; i<3; ++i){ // J_Psi index (right)
-            for(int j=0; j<3; ++j){ // J_Psi0 index (left)
+            for(int j=i; j<3; ++j){ // J_Psi0 index (left)
                 if constexpr (std::is_same_v<T, Vec>){
                     VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                    cac[(it+1)*9 + j*3+i] += tmp;
+                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] += tmp;
                 } else {
                     Vec v_left, v_right;
                     PetscScalar sum_val = 0.0;
@@ -339,7 +363,7 @@ void corr_ac(
                         MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
                         MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
                     }
-                    cac[(it+1)*9 + j*3+i] += sum_val / nrhs;
+                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] += sum_val / nrhs;
                 }
             }
         }

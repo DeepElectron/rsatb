@@ -45,3 +45,6 @@ else()
 endif()
 add_executable(test_calc ./test.cpp)
 target_link_libraries(test_calc PRIVATE calc GTest::gtest)
+
+add_executable(test_cheby_conjugate ./test_cheby_conjugate.cpp)
+target_link_libraries(test_cheby_conjugate PRIVATE calc GTest::gtest)

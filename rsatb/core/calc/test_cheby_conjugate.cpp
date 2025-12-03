@@ -1,6 +1,6 @@
 #include <petsc.h>
 #include <gtest/gtest.h>
-#include "calc/cheby.hpp"
+#include "cheby.hpp"
 
 // Mock or minimal setup for testing ChebyMode::CONJUGATE
 

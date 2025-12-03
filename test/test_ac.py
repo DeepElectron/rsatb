@@ -18,8 +18,13 @@ HFile = os.path.join(root, "H_diamond_sc111.h5")
 orbroot = root
 orblist = ["C_gga_7au_100Ry_2s2p1d.orb"]
 
-solver.setup(n=1, rsmethod="gauss", kpoints=kpoints, HFile=HFile, orblist=orblist, orbroot=orbroot)
+solver.setup(n=1, rsmethod="gauss", kpoints=kpoints, HFile=HFile, orblist=orblist, orbroot=orbroot, orthogonalize=False, explicit_orth=False)
 
+# [     0.         -90726.91596265  -6553.48201022   8668.95130836
+#   -9589.27476966]
+
+# [    0.         -2498.17290524  -228.82390318   307.41722536
+#   -435.60498312]
 # Compute AC using the optimized compute method
 print("Computing AC Conductivity...")
 # We can pass RxFile, RyFile, RzFile during setup or rely on setup_R_orb if using orbitals.
@@ -27,7 +32,7 @@ print("Computing AC Conductivity...")
 
 # Define tasks
 tasks = [
-    {'task': 'ac', 'dE': 0.1, 'n_kpm': 50, 'temp': 300, 'mu': 0.0}
+    {'task': 'ac', 'nt': 1, 'n_kpm': 300, 'temp': 10000, 'mu': 0.0}
 ]
 
 results = solver.compute(tasks)

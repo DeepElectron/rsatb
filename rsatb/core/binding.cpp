@@ -235,15 +235,15 @@ PYBIND11_MODULE(binding, m) {
             int nt, int n_kpm,
             double temp, double mu
         ){
-            double ac[9*(nt+1)], omegas[nt+1];
+            double ac[6*(nt+1)], omegas[nt+1];
             solver.compute_ac(nt, n_kpm, temp, mu, ac, omegas);
 
-            py::array_t<double> o_ac(9*(nt+1));
+            py::array_t<double> o_ac(6*(nt+1));
             py::array_t<double> o_omegas(nt+1);
 
             if(solver.rank == 0){
             
-                std::memcpy(o_ac.mutable_data(), ac, 9*(nt+1) * sizeof(double));
+                std::memcpy(o_ac.mutable_data(), ac, 6*(nt+1) * sizeof(double));
                 std::memcpy(o_omegas.mutable_data(), omegas, (nt+1) * sizeof(double));
                 
             }
