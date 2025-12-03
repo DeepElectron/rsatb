@@ -84,7 +84,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 H, ksp, Psi_curr,
                 buff, // length 3 vec
                 coeff, n_bes, 
-                Psi_out, false, orthogonal
+                Psi_out, ChebyMode::NORMAL, orthogonal
                 );
 
             if(proj){
@@ -138,7 +138,7 @@ void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *
                 H, ksp, Psi_curr,
                 buff, // length 4 vec
                 coeff, n_bes,
-                Psi_out, false, orthogonal
+                Psi_out, ChebyMode::NORMAL, orthogonal
                 );
 
             for(int in=0; in<nrhs; ++in){

@@ -231,7 +231,7 @@ inline void shifted_fermi_dirac(double E, double beta, double mu, double shift, 
 
 template<typename T>
 inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, double mu, double scale, double shift, int n_kpm, 
-  double eps=1e-14, bool adjoint=false, bool orthogonal=false){
+  double eps=1e-14, ChebyMode mode=ChebyMode::NORMAL, bool orthogonal=false){
     double dE = M_PI / n_kpm;
     double mu_re = (mu - shift) / scale;
     double beta_re = scale / (temp * 8.617333262e-5);
@@ -287,7 +287,7 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 3 vec
           tmp_coeff, n_kpm_, 
-          Psi_out, adjoint, orthogonal
+          Psi_out, mode, orthogonal
       );
 
       VecDestroy(buff); VecDestroy(buff+1); VecDestroy(buff+2);
@@ -304,7 +304,7 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
           H, ksp, Psi_in,
           buff, // length 4 Mat
           tmp_coeff, n_kpm_,
-          Psi_out, adjoint, orthogonal
+          Psi_out, mode, orthogonal
       );
 
       MatDestroy(buff); MatDestroy(buff+1); MatDestroy(buff+2); MatDestroy(buff+3);
@@ -312,8 +312,8 @@ inline void fermi_dirac_kpm(Mat H, KSP ksp, T Psi_in, T Psi_out, double temp, do
 
 };
 
-template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double, bool, bool);
-template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double, bool, bool);
+template void fermi_dirac_kpm<Vec>(Mat, KSP, Vec, Vec, double, double, double, double, int, double, ChebyMode, bool);
+template void fermi_dirac_kpm<Mat>(Mat, KSP, Mat, Mat, double, double, double, double, int, double, ChebyMode, bool);
 
 }
 
