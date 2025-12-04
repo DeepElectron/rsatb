@@ -32,7 +32,7 @@ private:
     void set_mat_from_h5(Mat *mat, const std::string &MatFile){
         HDF5Handler _hd_(MatFile);
         DMCreateMatrix(_dm_atomic_->dm(), mat);
-        MatConvert(*mat, "aij", MAT_INPLACE_MATRIX, mat);
+        MatConvert(*mat, "aijmkl", MAT_INPLACE_MATRIX, mat);
         setMatrixR2K(*mat, *_dm_atomic_, &_hd_, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
     }
@@ -80,7 +80,7 @@ public:
 
     void setup_S(const std::string* file_orb0, const std::string& orbital_dir){
         DMCreateMatrix(_dm_atomic_->dm(), &_S_);
-        MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
+        MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
         setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(), _dm_atomic_->n_type(), file_orb0, orbital_dir, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
         MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
@@ -195,7 +195,7 @@ public:
              rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
         }
         
-        MatConvert(_Sr_, "aij", MAT_INPLACE_MATRIX, &_Sr_);
+        MatConvert(_Sr_, "aijmkl", MAT_INPLACE_MATRIX, &_Sr_);
 
         // check whether _Sr_ works well
         // Mat tmp, tmp2;
@@ -240,9 +240,9 @@ public:
         if (RyFile.size() > 0) this->set_mat_from_h5(&_Ry_, RyFile);
         if (RzFile.size() > 0) this->set_mat_from_h5(&_Rz_, RzFile);
 
-        MatSetType(_Rx_, "aij");
-        MatSetType(_Ry_, "aij");
-        MatSetType(_Rz_, "aij");
+        MatSetType(_Rx_, "aijmkl");
+        MatSetType(_Ry_, "aijmkl");
+        MatSetType(_Rz_, "aijmkl");
 
         if ((RxFile.size() > 0) || (RyFile.size() > 0) || (RyFile.size() > 0))
             _position_ready_ = true;
@@ -253,13 +253,13 @@ public:
         DMCreateMatrix(_dm_atomic_->dm(), &_Ry_);
         DMCreateMatrix(_dm_atomic_->dm(), &_Rz_);
 
-        MatConvert(_Rx_, "aij", MAT_INPLACE_MATRIX, &_Rx_);
-        MatConvert(_Ry_, "aij", MAT_INPLACE_MATRIX, &_Ry_);
-        MatConvert(_Rz_, "aij", MAT_INPLACE_MATRIX, &_Rz_);
+        MatConvert(_Rx_, "aijmkl", MAT_INPLACE_MATRIX, &_Rx_);
+        MatConvert(_Ry_, "aijmkl", MAT_INPLACE_MATRIX, &_Ry_);
+        MatConvert(_Rz_, "aijmkl", MAT_INPLACE_MATRIX, &_Rz_);
 
         if (!_overlap_ready_) {
             DMCreateMatrix(_dm_atomic_->dm(), &_S_);
-            MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
+            MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
             
             setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
             
@@ -269,7 +269,7 @@ public:
         } else {
             Mat s_check;
             DMCreateMatrix(_dm_atomic_->dm(), &s_check);
-            MatConvert(s_check, "aij", MAT_INPLACE_MATRIX, &s_check);
+            MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
             
             setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
 

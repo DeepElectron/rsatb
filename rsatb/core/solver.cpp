@@ -26,11 +26,13 @@ using namespace rsatb::calc;
 typedef struct {
   Mat H, Sr;
   Vec w1;  // work vectors of size m
+  Mat W1;
 } MContext;
 
 typedef struct {
   Mat Sr;
   Vec w1;  // work vectors of size m
+  Mat W1, W2;
 } SinvContext;
 
 PetscErrorCode SrHSrMult(Mat M, Vec x, Vec y)
@@ -136,6 +138,8 @@ PetscErrorCode SinvDestroy(Mat M)
     // Destroy the work vector
     if (ctx->w1) { ierr = VecDestroy(&ctx->w1);CHKERRQ(ierr); }
 
+    if (ctx->W1) { ierr = MatDestroy(&ctx->W1);CHKERRQ(ierr); }
+
     // Release references to the underlying matrices
     if (ctx->Sr) { ierr = MatDestroy(&ctx->Sr);CHKERRQ(ierr); }
 
@@ -145,6 +149,78 @@ PetscErrorCode SinvDestroy(Mat M)
     return 0;
 }
 
+PetscErrorCode SinvMatMatMultSymbolic(Mat A, Mat B, Mat C, void **ctx)
+{
+    // Standard setup for C (Rows of N, Cols of B)
+    // ... (Same as previous answer) ...
+
+    PetscErrorCode ierr;
+    PetscInt m, n, M, N;
+    
+    // Result C has Rows of A, Columns of B
+    ierr = MatGetLocalSize(A, &m, NULL);CHKERRQ(ierr);
+    ierr = MatGetSize(A, &M, NULL);CHKERRQ(ierr);
+    
+    ierr = MatGetLocalSize(B, NULL, &n);CHKERRQ(ierr);
+    ierr = MatGetSize(B, NULL, &N);CHKERRQ(ierr);
+
+    // Define C as a Dense Matrix
+    ierr = MatSetSizes(C, m, n, M, N);CHKERRQ(ierr);
+    ierr = MatSetType(C, MATDENSE);CHKERRQ(ierr); // Or MATMPIDENSE if parallel
+    ierr = MatSetUp(C);CHKERRQ(ierr);
+    
+    // IMPORTANT:
+    // Because we use MAT_REUSE_MATRIX in the numeric phase, 
+    // we must ensure C is fully allocated here.
+    MatAssemblyBegin(C, MAT_FINAL_ASSEMBLY);
+    MatAssemblyEnd(C, MAT_FINAL_ASSEMBLY);
+    return 0;
+}
+
+PetscErrorCode SinvMatMatMultNumeric(Mat A, Mat B, Mat C, void *ctx)
+{
+    PetscErrorCode ierr;
+    SinvContext    *sctx; // Your context containing Sr
+    ierr = MatShellGetContext(A, (void**)&sctx);CHKERRQ(ierr);
+
+    // -------------------------------------------------------------
+    // STEP 1: Compute W = Sr * B
+    // -------------------------------------------------------------
+    // We can use PETSc's internal MatMatMult for the sub-matrix Sr.
+    // MAT_INITIAL_MATRIX asks PETSc to allocate storage for W.
+    ierr = MatMatMult(sctx->Sr, B, MAT_REUSE_MATRIX, PETSC_DEFAULT, &sctx->W1);CHKERRQ(ierr);
+
+    // -------------------------------------------------------------
+    // STEP 2: Prepare for Hermitian Transpose
+    // -------------------------------------------------------------
+    // Since PETSc lacks "MatHermitianTransposeMatMult", we use "MatTransposeMatMult"
+    // combined with conjugation of the DENSE matrices.
+    // C = Sr^H * W  ===>  C = conj( Sr^T * conj(W) )
+
+    // A. Conjugate W (Dense matrix conjugation is very fast, O(N))
+    ierr = MatConjugate(sctx->W1);CHKERRQ(ierr);
+    // std::cout << "Called!" << std::endl;
+
+    // B. Compute C_temp = Sr^T * W_conjugated
+    // Note: We utilize 'C' (the output matrix provided by PETSc) to store the result.
+    // MAT_REUSE_MATRIX tells PETSc to put the result directly into C.
+    ierr = MatTransposeMatMult(sctx->Sr, sctx->W1, MAT_REUSE_MATRIX, PETSC_DEFAULT, &sctx->W2);CHKERRQ(ierr);
+
+    // C. Conjugate C to finish the Hermitian operation
+    ierr = MatConjugate(sctx->W2);CHKERRQ(ierr);
+
+    ierr = MatCopy(sctx->W2, C, SAME_NONZERO_PATTERN);CHKERRQ(ierr);
+
+    // PetscReal norm1, norm2, norm3;
+    // MatNorm(sctx->W1, NORM_FROBENIUS, &norm1);
+    // MatNorm(sctx->W2, NORM_FROBENIUS, &norm2);
+    // MatNorm(B, NORM_FROBENIUS, &norm3);
+    // std::cout << "Norm: " << norm1 << " " << norm2 << " " << norm3 << std::endl;
+    
+    
+
+    return 0;
+}
 
 namespace rsatb{
 
@@ -175,7 +251,7 @@ Solver::Solver(
             comm
         );
 
-        DMSetMatType(_dm_atomic_->dm(), "aij");
+        DMSetMatType(_dm_atomic_->dm(), "aijmkl");
     };
 
 Solver::~Solver() { /* destructor */
@@ -212,6 +288,7 @@ void Solver::setup_KSP(){
     if ( !_overlap_ready_ ) { throw std::runtime_error("Please setup overlap before configuring the KSP."); }
     if ( !_sqrtm_ready_ ) { throw std::runtime_error("Please setup S^1/2 before configuring the KSP."); }
     if ( !_kpoint_ready_ ) { throw std::runtime_error("Please setup kpoint before configuring the KSP."); }
+    if ( !_samples_ready_ ) { throw std::runtime_error("Please setup samples before configuring the KSP."); }
     
     KSPCreate(_comm_,&_ksp_);
     KSPSetDM(_ksp_, _dm_atomic_->dm());
@@ -224,8 +301,9 @@ void Solver::setup_KSP(){
     if(_n_sample_== 1){
         KSPSetType(_ksp_, KSPCG);
     }else{
+        // KSPSetType(_ksp_, KSPCG);
         KSPSetType(_ksp_, KSPHPDDM);
-        KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_BCG);
+        KSPHPDDMSetType(_ksp_, KSP_HPDDM_TYPE_CG);
     }
     
     // approximated invert square root
@@ -233,6 +311,10 @@ void Solver::setup_KSP(){
     PetscNew(&ctx);
     ctx->Sr = _Sr_;
     MatCreateVecs(_H_, &ctx->w1, NULL);
+    if (_n_sample_ > 1){
+        MatDuplicate(_Samples_, MAT_DO_NOT_COPY_VALUES, &(ctx->W1));
+        MatDuplicate(_Samples_, MAT_DO_NOT_COPY_VALUES, &(ctx->W2));
+    }
     PetscObjectReference((PetscObject)ctx->Sr);
 
     Mat Sinv;
@@ -248,6 +330,7 @@ void Solver::setup_KSP(){
     MatShellSetOperation(Sinv, MATOP_MULT, (void(*)(void))SinvMult);
     MatShellSetOperation(Sinv, MATOP_MULT_TRANSPOSE, (void(*)(void))TSinvMult);
     MatShellSetOperation(Sinv, MATOP_DESTROY, (void(*)(void))SinvDestroy);
+    MatShellSetMatProductOperation(Sinv, MATPRODUCT_AB, SinvMatMatMultSymbolic, SinvMatMatMultNumeric, NULL, MATDENSE, MATDENSE);
 
     // MatCreateNormalHermitian(_Sr_, &Sinv);
     PCSetType(_pc_, PCMAT);
@@ -257,6 +340,11 @@ void Solver::setup_KSP(){
     // PCSetUp(_pc_);
     KSPSetFromOptions(_ksp_);
     KSPSetUp(_ksp_);
+
+    // Mat Test;
+    // MatDuplicate(_Samples_, MAT_DO_NOT_COPY_VALUES, &Test);
+    // KSPMatSolve(_ksp_, _Samples_, Test);
+    // MatView(Test, PETSC_VIEWER_STDOUT_WORLD);
 }
 
 void Solver::scale_shift_H(double emin, double emax, bool verbose){
@@ -357,6 +445,7 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
     } else {
         // Setup Htmp as MatShell Htmp where the action is Htmp v = S^-1/2 H S^-1/2 v
         Ssqrtm(tol, sptol, maxit, verbose, false);
+
         Mat Htmp;
 
         MContext *ctx;
@@ -380,6 +469,51 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
         MatDestroy(&_H_);
         _H_ = Htmp;
     }
+
+    if (_position_ready_) {
+        Mat Xtmp, Ytmp, Ztmp;
+        MContext *ctxX, *ctxY, *ctxZ;
+        PetscNew(&ctxX); PetscNew(&ctxY); PetscNew(&ctxZ);
+        ctxX->H = _Rx_; ctxX->Sr = _Sr_;
+        ctxY->H = _Ry_; ctxY->Sr = _Sr_;
+        ctxZ->H = _Rz_; ctxZ->Sr = _Sr_;
+
+        MatCreateVecs(_H_, &ctxX->w1, NULL);
+        MatCreateVecs(_H_, &ctxY->w1, NULL);
+        MatCreateVecs(_H_, &ctxZ->w1, NULL);
+
+        PetscObjectReference((PetscObject)ctxX->H);
+        PetscObjectReference((PetscObject)ctxY->H);
+        PetscObjectReference((PetscObject)ctxZ->H);
+        PetscObjectReference((PetscObject)ctxX->Sr);
+        PetscObjectReference((PetscObject)ctxY->Sr);
+        PetscObjectReference((PetscObject)ctxZ->Sr);
+
+        PetscInt local_rows, local_cols, global_rows, global_cols;
+        MatGetSize(_H_, &global_rows, &global_cols);
+        MatGetLocalSize(_H_, &local_rows, &local_cols);
+
+        MatCreateShell(_comm_, local_rows, local_cols, global_rows, global_cols, (void*)ctxX, &Xtmp);
+        MatCreateShell(_comm_, local_rows, local_cols, global_rows, global_cols, (void*)ctxY, &Ytmp);
+        MatCreateShell(_comm_, local_rows, local_cols, global_rows, global_cols, (void*)ctxZ, &Ztmp);
+
+        MatShellSetOperation(Xtmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatShellSetOperation(Xtmp, MATOP_MULT_TRANSPOSE, (void(*)(void))TSrHSrMult);
+        MatShellSetOperation(Xtmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
+
+        MatShellSetOperation(Ytmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatShellSetOperation(Ytmp, MATOP_MULT_TRANSPOSE, (void(*)(void))TSrHSrMult);
+        MatShellSetOperation(Ytmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
+
+        MatShellSetOperation(Ztmp, MATOP_MULT, (void(*)(void))SrHSrMult);
+        MatShellSetOperation(Ztmp, MATOP_MULT_TRANSPOSE, (void(*)(void))TSrHSrMult);
+        MatShellSetOperation(Ztmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
+
+        MatSetUp(Xtmp); MatSetUp(Ytmp); MatSetUp(Ztmp);
+        MatDestroy(&_Rx_); MatDestroy(&_Ry_); MatDestroy(&_Rz_);
+        _Rx_ = Xtmp; _Ry_ = Ytmp; _Rz_ = Ztmp;
+    }
+
     _explicit_orth_ = true;
     _explicit_form_ = explicit_formation;
 }

@@ -107,8 +107,10 @@ inline void cheby_iter_adjoint_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Ma
 
 inline void cheby_iter_conjugate(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next, bool orthogonal=false){
     // T_next = - T_prev + 2 x (S^-1)^T x H^T x T_curr
-    MatMultTranspose(H, T_curr, T_next);
-    if(!orthogonal) KSPSolveTranspose(ksp, T_next, T_next);
+    VecConjugate(T_curr);
+    MatMult(H, T_curr, T_next);
+    if(!orthogonal) KSPSolve(ksp, T_next, T_next);
+    VecConjugate(T_curr); VecConjugate(T_next);
     VecAXPBY(T_next, -1.0,  2.0, T_prev);
 
     VecSwap(T_prev, T_curr);
@@ -116,12 +118,14 @@ inline void cheby_iter_conjugate(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_n
 }
 
 inline void cheby_iter_conjugate_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp, bool orthogonal=false){
-    MatTransposeMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
+    MatConjugate(*T_curr);
+    MatMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
     if(!orthogonal) {
-        KSPMatSolveTranspose(ksp, *T_tmp, *T_next);
+        KSPMatSolve(ksp, *T_tmp, *T_next);
     } else {
         MatCopy(*T_tmp, *T_next, SAME_NONZERO_PATTERN);
     }
+    MatConjugate(*T_next); MatConjugate(*T_curr);
     MatScale(*T_next, 2.0);
     MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
 
@@ -170,14 +174,16 @@ inline void cheby_recur(
     } else if ( mode == ChebyMode::CONJUGATE ) {
         /* init T_prev(buff[0])
         (S^-1)^T H^T |Psi>    */
-        MatMultTranspose(H, Psi_in, buff[0]);
-        if(!orthogonal) KSPSolveTranspose(ksp, buff[0], buff[0]);
+        VecConjugate(Psi_in);
+        MatMult(H, Psi_in, buff[0]);
+        if(!orthogonal) KSPSolve(ksp, buff[0], buff[0]);
 
         /* init T_curr(buff[1])
             2(S^-1)^T H^T |buff[0]> - |Psi>
         */
-        MatMultTranspose(H, buff[0], buff[1]);
-        if(!orthogonal) KSPSolveTranspose(ksp, buff[1], buff[1]);
+        MatMult(H, buff[0], buff[1]);
+        if(!orthogonal) KSPSolve(ksp, buff[1], buff[1]);
+        VecConjugate(Psi_in); VecConjugate(buff[0]); VecConjugate(buff[1]);
         VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
     } else {
         /* init T_prev(buff[0])
@@ -257,20 +263,22 @@ inline void cheby_recur_mult(
         MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
     } else if ( mode == ChebyMode::CONJUGATE ) {
         // init T_prev(buff[0])
-        MatTransposeMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
+        MatConjugate(Psi_in);
+        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         if(!orthogonal) {
-            KSPMatSolveTranspose(ksp, buff[3], buff[0]);
+            KSPMatSolve(ksp, buff[3], buff[0]);
         } else {
             MatCopy(buff[3], buff[0], SAME_NONZERO_PATTERN);
         }
 
         // init T_curr(buff[1])
-        MatTransposeMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
+        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
         if(!orthogonal) {
-            KSPMatSolveTranspose(ksp, buff[3], buff[1]);
+            KSPMatSolve(ksp, buff[3], buff[1]);
         } else {
             MatCopy(buff[3], buff[1], SAME_NONZERO_PATTERN);
         }
+        MatConjugate(Psi_in); MatConjugate(buff[0]); MatConjugate(buff[1]);
         MatScale(buff[1], 2.0);
         MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
     } else {

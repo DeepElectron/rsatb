@@ -18,7 +18,7 @@ void current(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double 
         VecDuplicate(Psi_in, &buff1);
         VecDuplicate(Psi_in, &buff2);
 
-        // buff2 = -S^{-1} H S^{-1} Psi_in
+        // buff2 = -S^{-1} H Psi_in
         MatMult(H, Psi_in, buff2);
         if(!orthogonal) KSPSolve(ksp, buff2, buff2);
 
@@ -26,9 +26,9 @@ void current(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double 
 
         // x
         MatMult(Rx, Psi_in, buff1);
-        if(!orthogonal) KSPSolve(ksp, buff1, buff1);
-        MatMult(H, buff1, J_Psi[0]);
-        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]);
+        if(!orthogonal) KSPSolve(ksp, buff1, buff1); // buff1 = S^{-1} Rx Rsi_in
+        MatMult(H, buff1, J_Psi[0]); // J_Psi = H S^{-1} Rx Psi_in
+        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]); // - Rx S^{-1} H Psi_in + H S^{-1} Rx Psi_in
 
         // y
         MatMult(Ry, Psi_in, buff1);
@@ -115,6 +115,8 @@ template<typename T>
 void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double scale=1.0, bool orthogonal=false){ 
     // apply [R, H]S^{-1} on Psi_in
     // (-i[\hat{H},\hat{R}])* = i(RSinvH - HSinvR)Sinv -> -i[R(-SinvHSinvx) + HSinvRSinvx]
+
+    // -i[H, R]^\dagger = i (HR-RH)^\dagger = i[R,H] = -i[H,R]
     
     T buff1, buff2, buff3;
     if constexpr (std::is_same_v<T, Vec>){
@@ -122,20 +124,20 @@ void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi,
         VecDuplicate(Psi_in, &buff2);
         VecDuplicate(Psi_in, &buff3);
 
-        if(!orthogonal) KSPSolve(ksp, Psi_in, buff3);
-        else VecCopy(Psi_in, buff3);
+        if(!orthogonal) KSPSolve(ksp, Psi_in, buff3); // S^{-1} Psi_in
+        else VecCopy(Psi_in, buff3); // buff3 = S^{-1} Psi_in
 
-        MatMult(H, buff3, buff1);
+        MatMult(H, buff3, buff1); // HS^{-1} Psi_in
         if(!orthogonal) KSPSolve(ksp, buff1, buff2); // buff2 = SinvHSinvx
         else VecCopy(buff1, buff2);
-        VecScale(buff2, -1.0);
+        VecScale(buff2, -1.0); // buff2 = - SinvHSinv Psi_in
 
         // x
-        MatMult(Rx, buff3, J_Psi[0]);
-        if(!orthogonal) KSPSolve(ksp, J_Psi[0], buff1);
+        MatMult(Rx, buff3, J_Psi[0]); // J_Psi = R S^{-1} Psi_in
+        if(!orthogonal) KSPSolve(ksp, J_Psi[0], buff1); // buff1 = S^{-1} R S^{-1} Psi_in
         else VecCopy(J_Psi[0], buff1);
-        MatMult(H, buff1, J_Psi[0]);
-        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]);
+        MatMult(H, buff1, J_Psi[0]); // J_Psi = H S^{-1} R S^{-1} Psi_in
+        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]); // J_Psi = - R Sinv H Sinv Psi_in + H S^{-1} R S^{-1} Psi_in
 
         // y
         MatMult(Ry, buff3, J_Psi[1]);
@@ -365,6 +367,7 @@ void corr_ac(
                     }
                     cac[(it+1)*6 + int((-i*i+5*i)/2+j)] += sum_val / nrhs;
                 }
+                std::cout << cac[(it+1)*6 + int((-i*i+5*i)/2+j)] << std::endl;
             }
         }
     }
