@@ -22,7 +22,9 @@ class SphericalBesselTransformer::Impl
 public:
 
     Impl(const bool cache_enabled = false);
-    ~Impl() { _rfft_clear(); };
+    ~Impl() { 
+        _rfft_clear(); 
+    };
 
     Impl(Impl const&) = delete;
     Impl(Impl&&) = delete;
@@ -129,7 +131,8 @@ SphericalBesselTransformer::Impl::Impl(const bool cache_enabled):
     //fftw_plan_flag_(cache_enabled ? FFTW_MEASURE : FFTW_ESTIMATE),
     fftw_plan_flag_(FFTW_ESTIMATE),
     cache_enabled_(cache_enabled)
-{}
+{
+}
 
 
 void SphericalBesselTransformer::Impl::radrfft(

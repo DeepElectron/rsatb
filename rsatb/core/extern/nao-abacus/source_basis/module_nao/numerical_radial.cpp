@@ -1,9 +1,9 @@
 #include "numerical_radial.h"
 
-#include <algorithm>
+#include <cmath>
 #include <cstring>
-#include <limits>
-#include <memory>
+#include <algorithm>
+#include <cassert>
 #include <numeric>
 
 #include "source_base/constants.h"
@@ -47,7 +47,7 @@ NumericalRadial::NumericalRadial(const NumericalRadial& other) :
 
 NumericalRadial& NumericalRadial::operator=(const NumericalRadial& rhs)
 {
-    if (this == &rhs)
+    if (&rhs == this)
     {
         return *this;
     }
@@ -95,6 +95,7 @@ NumericalRadial& NumericalRadial::operator=(const NumericalRadial& rhs)
 
 NumericalRadial::~NumericalRadial()
 {
+    // std::cout << "NumericalRadial::~NumericalRadial" << std::endl;
     delete[] rgrid_;
     delete[] kgrid_;
     delete[] rvalue_;

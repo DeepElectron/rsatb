@@ -167,19 +167,19 @@ void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi,
         MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff3);
 
         if(!orthogonal) KSPMatSolve(ksp, Psi_in, buff3);
-        else MatCopy(Psi_in, buff3, SAME_NONZERO_PATTERN);
+        else MatCopy(Psi_in, buff3, SAME_NONZERO_PATTERN); // buff3 = Sinv x
 
-        MatMatMult(H, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, buff2);
+        MatMatMult(H, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1); // buff1 = H Sinv x
+        if(!orthogonal) KSPMatSolve(ksp, buff1, buff2); // buff2 = Sinv H Sinv x
         else MatCopy(buff1, buff2, SAME_NONZERO_PATTERN);
 
         // x
-        MatMatMult(Rx, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
-        if(!orthogonal) KSPMatSolve(ksp, J_Psi[0], buff1);
-        else MatCopy(J_Psi[0], buff1, SAME_NONZERO_PATTERN);
-        MatMatMult(H, buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
-        MatMatMult(Rx, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatAXPY(J_Psi[0], -1.0, buff1, SAME_NONZERO_PATTERN);
+        MatMatMult(Rx, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);  // J_Psi = R Sinv x
+        if(!orthogonal) KSPMatSolve(ksp, J_Psi[0], buff1); // buff1 = Sinv R Sinv x 
+        else MatCopy(J_Psi[0], buff1, SAME_NONZERO_PATTERN); 
+        MatMatMult(H, buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi); // J_Psi = H Sinv R Sinv x
+        MatMatMult(Rx, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1); // buff1 = R Sinv H Sinv x
+        MatAXPY(J_Psi[0], -1.0, buff1, SAME_NONZERO_PATTERN); // J_Psi = H Sinv R Sinv x - R Sinv H Sinv x = [HSinv, RSinv] x
 
         // y
         MatMatMult(Ry, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
@@ -269,7 +269,7 @@ void corr_ac(
     else{
         MatConjugate(Psi_in);
     }
-    fermi_dirac_kpm<T>(H, ksp, Psi_in, Psi0, temp, mu, scale, shift, n_kpm, eps, ChebyMode::CONJUGATE, orthogonal);
+    fermi_dirac_kpm<T>(H, ksp, Psi_in, Psi0, temp, mu, scale, shift, n_kpm, eps, ChebyMode::ADJOINT, orthogonal);
     if constexpr (std::is_same_v<T, Vec>){
         VecConjugate(Psi_in);
     }
@@ -304,7 +304,7 @@ void corr_ac(
         for(int j=i; j<3; ++j){ // J_Psi0 index (left)
             if constexpr (std::is_same_v<T, Vec>){
                 VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                cac[int((-i*i+5*i)/2+j)] += tmp; // Store in cac[0..8]
+                cac[int((-i*i+5*i)/2+j)] = tmp; // Store in cac[0..8]
             } else {
                 Vec v_left, v_right;
                 PetscScalar sum_val = 0.0;
@@ -316,7 +316,7 @@ void corr_ac(
                     MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
                     MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
                 }
-                cac[int((-i*i+5*i)/2+j)] += sum_val / nrhs;
+                cac[int((-i*i+5*i)/2+j)] = sum_val / nrhs;
             }
         }
     }
@@ -353,7 +353,7 @@ void corr_ac(
             for(int j=i; j<3; ++j){ // J_Psi0 index (left)
                 if constexpr (std::is_same_v<T, Vec>){
                     VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] += tmp;
+                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] = tmp;
                 } else {
                     Vec v_left, v_right;
                     PetscScalar sum_val = 0.0;
@@ -361,13 +361,13 @@ void corr_ac(
                         MatDenseGetColumnVecRead(J_Psi0[j], in, &v_left);
                         MatDenseGetColumnVecRead(J_Psi[i], in, &v_right);
                         VecDot(v_right, v_left, &tmp);
-                        sum_val += tmp;
+                        sum_val = tmp;
                         MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
                         MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
                     }
-                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] += sum_val / nrhs;
+                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] = sum_val / nrhs;
                 }
-                std::cout << cac[(it+1)*6 + int((-i*i+5*i)/2+j)] << std::endl;
+                // std::cout << (it+1)*6 + int((-i*i+5*i)/2+j) << cac[(it+1)*6 + int((-i*i+5*i)/2+j)] << std::endl;
             }
         }
     }

@@ -323,6 +323,38 @@ public:
         PetscViewerDestroy(&viewer);
     }
 
+    void export_Rx(std::string root){
+        PetscViewer viewer;
+        PetscViewerASCIIOpen(PETSC_COMM_WORLD, (root + "/Rx.mtx").c_str(), &viewer);
+        PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATRIXMARKET);
+        MatView(_Rx_, viewer);
+        PetscViewerDestroy(&viewer);
+    }
+
+    void export_Ry(std::string root){
+        PetscViewer viewer;
+        PetscViewerASCIIOpen(PETSC_COMM_WORLD, (root + "/Ry.mtx").c_str(), &viewer);
+        PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATRIXMARKET);
+        MatView(_Ry_, viewer);
+        PetscViewerDestroy(&viewer);
+    }
+
+    void export_Rz(std::string root){
+        PetscViewer viewer;
+        PetscViewerASCIIOpen(PETSC_COMM_WORLD, (root + "/Rz.mtx").c_str(), &viewer);
+        PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATRIXMARKET);
+        MatView(_Rz_, viewer);
+        PetscViewerDestroy(&viewer);
+    }
+
+    void export_H(std::string root){
+        PetscViewer viewer;
+        PetscViewerASCIIOpen(PETSC_COMM_WORLD, (root + "/H.mtx").c_str(), &viewer);
+        PetscViewerPushFormat(viewer, PETSC_VIEWER_ASCII_MATRIXMARKET);
+        MatView(_H_, viewer);
+        PetscViewerDestroy(&viewer);
+    }
+
     void compute_dos(int nt, std::string proj_mode, const int *orbtype, int *n_proj, double *dos, std::unique_ptr<double[]>& pdos, double *omegas, bool verbose=false);
     /* dE defines the energe resolution, which should be scale/nt*/
 

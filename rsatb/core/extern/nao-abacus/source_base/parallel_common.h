@@ -1,7 +1,12 @@
 #ifndef W_ABACUS_DEVELOP_ABACUS_DEVELOP_SOURCE_MODULE_BASE_PARALLEL_COMMON_H
 #define W_ABACUS_DEVELOP_ABACUS_DEVELOP_SOURCE_MODULE_BASE_PARALLEL_COMMON_H
 
+#ifdef __MPI
 #include <mpi.h>
+#else
+typedef int MPI_Comm;
+#define MPI_COMM_WORLD 0
+#endif
 #include <complex>
 #include <string>
 

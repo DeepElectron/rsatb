@@ -1,5 +1,7 @@
 #include <gtest/gtest.h>
+#ifdef __MPI
 #include <mpi.h>
+#endif
 #include "source_basis/module_nao/two_center_bundle.h"
 #include <iostream>
 
@@ -18,13 +20,13 @@ void TwoCenterBundleTest::SetUp()
 #ifdef __MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
-    std::string dir = "../../../../test/int2c/PP_ORB/";
+    std::string dir = "/home/zhanghao/softwares/nao-abacus/test/pporb/";
 
     int nfile_orb = 3;
     std::string* file_orb = new std::string[nfile_orb];
-    file_orb[0] = "C_gga_8au_100Ry_2s2p1d.orb";
-    file_orb[1] = "Fe_gga_9au_100Ry_4s2p2d1f.orb";
-    file_orb[2] = "O_gga_10au_100Ry_2s2p1d.orb";
+    file_orb[0] = "C_gga_7au_100Ry_2s2p1d.orb";
+    file_orb[1] = "Fe_gga_7au_100Ry_4s2p2d1f.orb";
+    file_orb[2] = "O_gga_7au_100Ry_2s2p1d.orb";
 
     int nfile_desc = 0;
 

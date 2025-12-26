@@ -7,6 +7,7 @@
 #include "source_basis/module_nao/atomic_radials.h"
 
 #include "source_base/parallel_common.h"
+#include "source_basis/module_nao/beta_radials.h"
 
 RadialCollection::RadialCollection(const RadialCollection& other) :
     ntype_(other.ntype_),
@@ -119,7 +120,7 @@ void RadialCollection::iter_build()
 
     int i = 0;
     std::fill(nl_, nl_ + lmax_ + 1, 0);
-    for (int l = 0; l <= lmax_; ++l)
+    for (int l = lmin_; l <= lmax_; ++l)
     {
         for (int itype = 0; itype != ntype_; ++itype)
         {
@@ -148,11 +149,96 @@ void RadialCollection::build(const RadialCollection* nls, const double radius)
 
     for (int itype = 0; itype < ntype_; ++itype)
     {
-        radset_[itype] = new AtomicRadials;
-        static_cast<AtomicRadials*>(radset_[itype])->build(nls->radset_[itype], itype, this->rcut_max_);
+        radset_[itype] = nls->radset_[itype]->create_empty();
+        radset_[itype]->build(nls->radset_[itype], itype, this->rcut_max_);
     }
 
     iter_build();
+}
+
+void RadialCollection::build(const RadialCollection* nls, const int p, const int pm, const double radius)
+{
+    cleanup();
+    this->ntype_ = nls->ntype();
+    this->rcut_max_ = radius>0.0?radius:nls->rcut_max();
+    this->radset_ = new RadialSet*[ntype_];
+    this->lmax_ = nls->lmax() + pm; // Approximate, will be updated
+    this->lmin_ = std::max(0, nls->lmin() + pm);
+    this->nchi_ = 0; // Will be updated
+    this->nzeta_max_ = nls->nzeta_max(); // Approximate
+    this->nphi_max_ = nls->nphi_max(); // Approximate
+    this->p_ = p;
+
+    for (int itype = 0; itype < ntype_; ++itype)
+    {
+        radset_[itype] = nls->radset_[itype]->create_empty();
+        radset_[itype]->build(nls->radset_[itype], itype, p, pm, this->rcut_max_);
+    }
+    
+    // Recalculate members
+    lmax_ = -1;
+    lmin_ = 99999;
+    nchi_ = 0;
+    nzeta_max_ = 0;
+    nphi_max_ = 0;
+    
+    for (int itype = 0; itype < ntype_; ++itype)
+    {
+        lmax_ = std::max(lmax_, radset_[itype]->lmax());
+        lmin_ = std::min(lmin_, radset_[itype]->lmin());
+        nchi_ += radset_[itype]->nchi();
+        nzeta_max_ = std::max(nzeta_max_, radset_[itype]->nzeta_max());
+        nphi_max_ = std::max(nphi_max_, radset_[itype]->nphi());
+    }
+
+    this->nchi_ = nchi_;
+    this->nzeta_max_ = nzeta_max_;
+    this->nphi_max_ = nphi_max_;
+    this->lmax_ = lmax_;
+    this->lmin_ = lmin_;
+
+    iter_build();
+    set_rcut_max();
+}
+
+// void RadialCollection::build(const int ntype, Numerical_Nonlocal* const nls)
+// {
+//     cleanup();
+//     ntype_ = ntype;
+//     radset_ = new RadialSet*[ntype_];
+
+//     for (int itype = 0; itype < ntype_; ++itype)
+//     {
+//         radset_[itype] = new BetaRadials;
+//         radset_[itype]->build(nls[itype], itype);
+
+//         lmax_ = std::max(lmax_, radset_[itype]->lmax());
+//         nchi_ += radset_[itype]->nchi();
+//         nzeta_max_ = std::max(nzeta_max_, radset_[itype]->nzeta_max());
+//     }
+
+//     iter_build();
+//     set_rcut_max();
+// }
+
+void RadialCollection::build(const int ntype, BetaRadials* const nls)
+{
+    cleanup();
+    ntype_ = ntype;
+    radset_ = new RadialSet*[ntype_];
+
+    for (int itype = 0; itype < ntype_; ++itype)
+    {
+        radset_[itype] = nls[itype].clone();
+
+        lmax_ = std::max(lmax_, radset_[itype]->lmax());
+        nchi_ += radset_[itype]->nchi();
+        nzeta_max_ = std::max(nzeta_max_, radset_[itype]->nzeta_max());
+        nphi_max_ = std::max(nphi_max_, radset_[itype]->nphi());
+    }
+
+    iter_build();
+    set_rcut_max();
 }
 
 void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, const int p, const int pm, MPI_Comm comm)
@@ -251,8 +337,10 @@ char RadialCollection::check_file_type(const std::string& file, MPI_Comm comm) c
     // file contains a <Coefficients ...> block, it is a coefficient file;
     // otherwise it is an orbital file.
 
-    int my_rank;
+    int my_rank = 0;
+#ifdef __MPI
     MPI_Comm_rank(comm, &my_rank);
+#endif
     char file_type = 'o';
     if (my_rank == 0)
     {

@@ -698,15 +698,13 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
         for( int iw=0; iw<=nt; ++iw ){
             idx = iw*6+iac;
             ac[idx] = 0.0;
-            if (omegas[iw] != 0){
+            if (omegas[iw] != 0.0){
                 for( int it=0; it<=nt; ++it ){
                     // idx = iw*9+iac
-                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
+                    ac[idx] += 2.0 * std::sin(omegas[iw]*it*t_step) * exp(-2.0*std::pow((double)(it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
                 }
                 ac[idx] = ac_prefactor * t_step * ac[idx] * (exp(-beta * omegas[iw]) - 1) / omegas[iw];
             }
-            
-
         }
     }
 }

@@ -14,6 +14,8 @@
  * of numerical atomic orbitals, or all Kleinman-Bylander beta functions
  * from all elements involved in calculation.
  */
+#include "source_basis/module_nao/beta_radials.h"
+
 class RadialCollection
 {
   public:
@@ -26,8 +28,16 @@ class RadialCollection
     /// Builds the collection from (orbital) files.
     void build(const int nfile, const std::string* const file, const char ftype = '\0', const int p = 0, const int pm = 0, MPI_Comm comm = MPI_COMM_WORLD);
 
+    /// Builds the collection from Numerical_Nonlocal objects.
+    // void build(const int ntype, Numerical_Nonlocal* const nls);
+
+    /// Builds the collection from BetaRadials objects.
+    void build(const int ntype, BetaRadials* const nls);
     /// Builds the collection from RadialCollection objects and another radius cutoff.
     void build(const RadialCollection* nls, double radius = 0.0);
+
+    /// Builds the collection from RadialCollection objects with p and pm modifications.
+    void build(const RadialCollection* nls, const int p, const int pm, const double radius = 0.0);
 
     /**
      * @name Getters

@@ -4,39 +4,69 @@ from rsatb.data import AtomicData, _keys
 import ase.io
 import os
 
-# Load test data
-root = "./test/data/diamond/"
-pos = ase.io.read(os.path.join(root, "diamond_sc111.vasp"), format="vasp")
+root = "./test/data/silicon/"
+pos = ase.io.read(os.path.join(root, "POSCAR"), format="vasp")
 ad = AtomicData.from_ase(pos, r_max=7.5)
 
 # Initialize Solver
-solver = RSATB(basis={"C": "2s2p1d"}, atomicdata=ad, verbose=True, enable_mpi=True)
+solver = RSATB(basis={"Si": "2s2p1d"}, atomicdata=ad, verbose=True, enable_mpi=True)
 
 # Setup
 kpoints = np.array([[0.0, 0.0, 0.0]])
-HFile = os.path.join(root, "H_diamond_sc111.h5")
+HFile = os.path.join(root, "Si2.0/hamiltonians.h5")
 orbroot = root
-orblist = ["C_gga_7au_100Ry_2s2p1d.orb"]
+orblist = ["Si_gga_7au_100Ry_2s2p1d.orb"]
 
-solver.setup(n=500, rsmethod="gauss", kpoints=kpoints, HFile=HFile, orblist=orblist, orbroot=orbroot, orthogonalize=False, explicit_orth=False)
-# [     0.         -12897.22412389  -6527.89130329  -4096.92309184
-#    -358.59765598]
-# Compute AC using the optimized compute method
+solver.setup(n=1000, rsmethod="gauss", kpoints=kpoints, HFile=HFile, orblist=orblist, orbroot=orbroot, orthogonalize=True, explicit_orth=False)
+
 print("Computing AC Conductivity...")
 # We can pass RxFile, RyFile, RzFile during setup or rely on setup_R_orb if using orbitals.
 # Since we used orblist in setup, setup_R_orb will be called internally by compute -> _setup_kpoint.
 
 # Define tasks
 tasks = [
-    {'task': 'ac', 'nt': 5, 'n_kpm': 10000, 'temp': 10000, 'mu': 0.0}
+    {'task': 'ac', 'nt': 100, 'n_kpm': 10000, 'temp': 10000, 'mu': 6.381541581}
 ]
 
 results = solver.compute(tasks)
 
 if solver.rank == 0:
+    import matplotlib.pyplot as plt
     omegas, ac = results[0]
+    print(omegas)
     print("AC Calculation Complete.")
     print(f"Omegas shape: {omegas.shape}")
     print(f"AC shape: {ac.shape}")
     ac_reshaped = ac[0].reshape(-1, 6)
     print("First 5 AC values (xx component):", ac_reshaped[:5, 0])
+
+    plt.plot(omegas[0], ac_reshaped[:,0].real)
+    plt.plot(omegas[0], ac_reshaped[:,0].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_0.png", dpi=100)
+    plt.close()
+    plt.plot(omegas[0], ac_reshaped[:,1].real)
+    plt.plot(omegas[0], ac_reshaped[:,1].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_1.png", dpi=100)
+    plt.close()
+    plt.plot(omegas[0], ac_reshaped[:,2].real)
+    plt.plot(omegas[0], ac_reshaped[:,2].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_2.png", dpi=100)
+    plt.close()
+    plt.plot(omegas[0], ac_reshaped[:,3].real)
+    plt.plot(omegas[0], ac_reshaped[:,3].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_3.png", dpi=100)
+    plt.close()
+    plt.plot(omegas[0], ac_reshaped[:,4].real)
+    plt.plot(omegas[0], ac_reshaped[:,4].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_4.png", dpi=100)
+    plt.close()
+    plt.plot(omegas[0], ac_reshaped[:,5].real)
+    plt.plot(omegas[0], ac_reshaped[:,5].imag)
+    # plt.xlim(0,10)
+    plt.savefig("./ac_5.png", dpi=100)
+    plt.close()

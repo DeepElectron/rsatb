@@ -82,63 +82,63 @@ double2petscreal(int n, const double *in,
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-struct AtomData{
-        PetscReal x, y, z;
-        PetscInt index, type, nR, NR;
-        PetscInt *R;
-    };
+// struct AtomData{
+//         PetscReal x, y, z;
+//         PetscInt index, type, nR, NR;
+//         PetscInt *R;
+//     };
 
-struct BondData{
-        PetscInt Rx, Ry, Rz; // TODO: optimizable, can stored all repetitive edge into one to avoid traffic in hr2hk.
-    };
+// struct BondData{
+//         PetscInt Rx, Ry, Rz; // TODO: optimizable, can stored all repetitive edge into one to avoid traffic in hr2hk.
+//     };
 
-PetscErrorCode get_dm_atomic(
-            const int n_node,
-            const int n_edge,
-            const int *edge_index,
-            const int *atom_type, 
-            const int *type_weight,
-            const int *edge_shift_vec,
-            const double *pos,
-            DM *dm,
-            MPI_Comm comm
-            );
+// PetscErrorCode get_dm_atomic(
+//             const int n_node,
+//             const int n_edge,
+//             const int *edge_index,
+//             const int *atom_type, 
+//             const int *type_weight,
+//             const int *edge_shift_vec,
+//             const double *pos,
+//             DM *dm,
+//             MPI_Comm comm
+//             );
 
-PetscErrorCode form_local_edge_list(
-            DM dm,
-            int *src,
-            int *tgt,
-            MPI_Comm comm
-);
+// PetscErrorCode form_local_edge_list(
+//             DM dm,
+//             int *src,
+//             int *tgt,
+//             MPI_Comm comm
+// );
 
-template<typename T>
-void get_attr_from_dm(
-            const DM dm,
-            const std::string tp,
-            const int idx,
-            // output
-            T *attr,
-            int *nvar
-);
+// template<typename T>
+// void get_attr_from_dm(
+//             const DM dm,
+//             const std::string tp,
+//             const int idx,
+//             // output
+//             T *attr,
+//             int *nvar
+// );
 
-PetscErrorCode ViewDMNetworkPartition(DM dm, bool detail);
+// PetscErrorCode ViewDMNetworkPartition(DM dm, bool detail);
 
-void get_edge_index_from_dm(
-    const DM dm,
-    const int idx,
-    // output
-    int *i,
-    int *j
-);
+// void get_edge_index_from_dm(
+//     const DM dm,
+//     const int idx,
+//     // output
+//     int *i,
+//     int *j
+// );
 
-void setup_KSP(
-    DM dm, 
-    Mat S,
-    int nrhs,
-    MPI_Comm comm,
-    //output
-    KSP *ksp
-);
+// void setup_KSP(
+//     DM dm, 
+//     Mat S,
+//     int nrhs,
+//     MPI_Comm comm,
+//     //output
+//     KSP *ksp
+// );
 /* The following part will be a DMPLEX version of atomic structure DM*/
 
 class DMAtomic
@@ -156,6 +156,7 @@ private:
     size_t _atom_offset_, _n_edge_, _N_edge_, _n_atom_, _N_atom_;
     PetscInt pStart, pEnd, vStart, vEnd, eStart, eEnd;
     std::unordered_map<int, int> vl2vg, vg2vl;
+    std::unordered_map<int, std::vector<int>> iconn;
 
 public:
     DMAtomic()
@@ -392,9 +393,36 @@ public:
       DMSetLocalSection(_dm_, _ps_);
 
       DMGetGlobalSection(_dm_, &_psg_);
+
+      // construct iconn neighbour list
+      int i, j;
+      std::unordered_map<int, int> conn_count, conn_count_tmp;
+      for(int ie=eStart; ie<eEnd; ++ie) {
+        get_connected_atoms(ie, &i, &j);
+        if (conn_count.find(i) == conn_count.end()){
+          conn_count[i] = 1;
+        } else {
+          conn_count[i]++;
+        }
+      }
+      for(int ie=eStart; ie<eEnd; ++ie) {
+        get_connected_atoms(ie, &i, &j);
+        if (iconn.find(i) == iconn.end()){
+          conn_count_tmp[i] = 1;
+          iconn[i].resize(conn_count[i]);
+          iconn[i][0] = j;
+        } else {
+          iconn[i][conn_count_tmp[i]] = j;
+          conn_count_tmp[i]++;
+        }
+      }
     };
 
     ~DMAtomic() {
+      DMDestroy(&_dm_);
+      PetscSectionDestroy(&_ps_);
+      PetscSectionDestroy(&_psg_);
+      ISDestroy(&pNum);
       delete[] _x_;
       delete[] _y_;
       delete[] _z_;
@@ -431,6 +459,7 @@ public:
       *start = eStart; *end = eEnd;
     };
 
+    // the i and j here are local vertices index.
     void get_connected_atoms(int idx, int *i, int *j) const {
       PetscInt coneSize;
       const PetscInt *cone = NULL;
@@ -441,6 +470,7 @@ public:
       }
       *i = cone[0]; *j = cone[1];
     }
+
     // xxx2xxx function will always output the correct - 0 & positive index
     // the ghost will hand over to the atom_is_ghost function
     int LVI2GVI(int idx) {
@@ -451,7 +481,7 @@ public:
     }
 
     int GVI2LVI(int idx) {
-      if (vl2vg[idx] < 0){
+      if (vg2vl[idx] < 0){
         return -vg2vl[idx] - 1;
       }
       return vg2vl[idx];
@@ -517,6 +547,11 @@ public:
       PetscSectionGetOffset(_ps_, idx, reinterpret_cast<PetscInt*>(offset));
     };
 
+    void get_offset_global(int idx, int *offset) {
+      PetscSectionGetOffset(_psg_, idx, reinterpret_cast<PetscInt*>(offset));
+      if (*offset < 0) *off = -*off - 1;
+    };
+
     void get_atom_type(int idx, int *tp) {
       *tp = _atom_type_[idx-_n_edge_];
     }
@@ -540,6 +575,20 @@ public:
       *Rx = _edge_shift_vec_[3*idx];
       *Ry = _edge_shift_vec_[3*idx+1];
       *Rz = _edge_shift_vec_[3*idx+2];
+    }
+
+    void get_edge_vec(int idx, double *rx, double *ry, double *rz) {
+      int Rx, Ry, Rz, i, j;
+      double x, y, z;
+      this->get_connected_atoms(idx, &i, &j);
+      this->get_edge_shift_vec(idx, &Rx, &Ry, &Rz);
+      *rx=Rx*_cell_[0] + Ry*_cell_[3] + Rz*_cell_[6]; // cell shift in distance unit
+      *ry=Rx*_cell_[1] + Ry*_cell_[4] + Rz*_cell_[7];
+      *rz=Rx*_cell_[2] + Ry*_cell_[5] + Rz*_cell_[8];
+      this->get_pos(j, &x, &y, &z);
+      *rx += x; *ry += y; *rz += z;
+      this->get_pos(i, &x, &y, &z);
+      *rx -= x; *ry -= y; *rz -= z;
     }
 
     DM dm() { return _dm_; }
@@ -580,11 +629,11 @@ public:
 
 };
 
-void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst);
+// void setup_is_atomic(const DM dm, IS *isSrc, IS *isDst);
 
 void setup_is_atomic(DMAtomic &dm, IS *isSrc, IS *isDst);
 
-void setup_is_orbital(const DM dm, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst);
+// void setup_is_orbital(const DM dm, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst);
 
 void setup_is_orbital(DMAtomic &dm, const int *orbtype, const int &n_atom_type, const int *type_weight, IS *isSrc, IS *isDst);
 

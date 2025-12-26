@@ -20,15 +20,17 @@ AtomicRadials& AtomicRadials::operator=(const AtomicRadials& rhs)
     return *this;
 }
 
-void AtomicRadials::build(const std::string& file, const int itype, const int p, const int pm, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::build(const std::string& file, const int itype, const int p, const int pm, const ModuleBase::Logger* ptr_logger, MPI_Comm comm)
 {
     // deallocates all arrays and reset variables (excluding sbt_)
     cleanup();
 
     std::ifstream ifs;
     bool is_open = false;
-    int rank;
+    int rank = 0;
+#ifdef __MPI
     MPI_Comm_rank(comm, &rank);
+#endif
 
     if (rank == 0)
     {
@@ -45,22 +47,22 @@ void AtomicRadials::build(const std::string& file, const int itype, const int p,
         std::cout << "AtomicRadials::build, Couldn't open orbital file: " + file << std::endl;
     }
 
-    if (ptr_log)
+    if (ptr_logger)
     {
-        (*ptr_log) << "\n\n\n\n";
-        (*ptr_log) << " >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>" << std::endl;
-        (*ptr_log) << " |                                                                   |" << std::endl;
-        (*ptr_log) << " |               SETUP NUMERICAL ATOMIC ORBITALS                     |" << std::endl;
-        (*ptr_log) << " |                                                                   |" << std::endl;
-        (*ptr_log) << " | Orbital information includes the cutoff radius, angular momentum, |" << std::endl;
-        (*ptr_log) << " | zeta number and numerical values on a radial grid.                |" << std::endl;
-        (*ptr_log) << " |                                                                   |" << std::endl;
-        (*ptr_log) << " <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
-        (*ptr_log) << "\n\n\n\n";
+        ptr_logger->info() << "\n\n\n\n";
+        ptr_logger->info() << " >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>" << std::endl;
+        ptr_logger->info() << " |                                                                   |" << std::endl;
+        ptr_logger->info() << " |               SETUP NUMERICAL ATOMIC ORBITALS                     |" << std::endl;
+        ptr_logger->info() << " |                                                                   |" << std::endl;
+        ptr_logger->info() << " | Orbital information includes the cutoff radius, angular momentum, |" << std::endl;
+        ptr_logger->info() << " | zeta number and numerical values on a radial grid.                |" << std::endl;
+        ptr_logger->info() << " |                                                                   |" << std::endl;
+        ptr_logger->info() << " <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<" << std::endl;
+        ptr_logger->info() << "\n\n\n\n";
     }
 
     itype_ = itype;
-    read_abacus_orb(ifs, p, pm, ptr_log, comm);
+    read_abacus_orb(ifs, p, pm, ptr_logger, comm);
     set_rcut_max();
 
     if (rank == 0)
@@ -69,48 +71,57 @@ void AtomicRadials::build(const std::string& file, const int itype, const int p,
     }
 }
 
-void AtomicRadials::build(RadialSet* const other, const int itype, const double rcut)
+void AtomicRadials::build(const RadialSet* const other, const int itype, const int p, const int pm, const double rcut)
 {
     this->symbol_ = other->symbol();
-    this->lmax_ = other->lmax();
-    this->lmin_ = other->lmin();
+    this->lmax_ = other->lmax() + pm; // Adjust lmax
+    this->lmin_ = std::max(0, other->lmin() + pm); // Adjust lmin
     this->nchi_ = other->nchi();
-    this->nphi_ = other->nphi();
+    this->nphi_ = other->nphi(); // This might need adjustment if norb changes due to l shift
     this->nzeta_max_ = other->nzeta_max();
     this->itype_ = itype;
     this->symbol_ = other->symbol();
     this->nzeta_ = new int[this->lmax_ + 1];
-    for (int l = 0; l <= this->lmax_; ++l)
+    std::fill(this->nzeta_, this->nzeta_ + this->lmax_ + 1, 0);
+    
+    // Recalculate nzeta and norb based on shifted l
+    // Note: We assume the input 'other' has orbitals that can be mapped to l+pm
+    // If l+pm < 0, we should probably discard or handle error.
+    // For now, assume valid shifts.
+    for (int l = 0; l <= other->lmax(); ++l)
     {
-        this->nzeta_[l] = other->nzeta(l);
+        int l_new = l + pm;
+        if (l_new >= 0) {
+            this->nzeta_[l_new] = other->nzeta(l);
+        }
     }
+    
     this->indexing();
     this->chi_ = new NumericalRadial[nchi_];
-    for (int ichi = 0; ichi < this->nchi_; ichi++)
+    
+    // We need to iterate over 'other' and map to 'this'
+    int ichi_this = 0;
+    for (int ichi = 0; ichi < other->nchi(); ichi++)
     {
-        const int l = other->cbegin()[ichi].l();
-        const int p = other->cbegin()[ichi].pr();
-        int ngrid = other->cbegin()[ichi].nr();
-        const double* rgrid = other->cbegin()[ichi].rgrid();
-        const double* rvalue = other->cbegin()[ichi].rvalue();
-        const int izeta = other->cbegin()[ichi].izeta();
+        const NumericalRadial& chi_other = other->cbegin()[ichi];
+        int l_old = chi_other.l();
+        int l_new = l_old + pm;
+        
+        if (l_new < 0) continue; // Skip if l becomes negative
+        
+        int ngrid = chi_other.nr();
+        const double* rgrid = chi_other.rgrid();
+        const double* rvalue = chi_other.rvalue();
+        const int izeta = chi_other.izeta();
+        
+        // Use the provided p, or keep original? 
+        // The requirement implies we want to SET p.
+        int p_new = p; 
+
         // if the cutoff radius is larger than the original one, just copy the orbitals
-        if (rcut >= other->cbegin()[ichi].rcut())
+        if (rcut < 0.0 || rcut >= chi_other.rcut())
         {
-            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue, p, izeta, symbol_, itype, false);
-            /*
-                void build(const int l,
-                        const bool for_r_space,
-                        const int ngrid,
-                        const double* const grid,
-                        const double* const value,
-                        const int p = 0,
-                        const int izeta = 0,
-                        const std::string symbol = "",
-                        const int itype = 0,
-                        const bool init_sbt = true
-                );
-            */
+            this->chi_[ichi_this].build(l_new, true, ngrid, rgrid, rvalue, p_new, izeta, symbol_, itype, false);
         }
         else
         {
@@ -120,12 +131,23 @@ void AtomicRadials::build(RadialSet* const other, const int itype, const double 
             ngrid = rvalue_new.size();
             // projgen(l, ngrid, rgrid, rvalue, rcut, 20, rvalue_new);
             // build the new on-site orbitals
-            this->chi_[ichi].build(l, true, ngrid, rgrid, rvalue_new.data(), p, izeta, symbol_, itype, false);
+            this->chi_[ichi_this].build(l_new, true, ngrid, rgrid, rvalue_new.data(), p_new, izeta, symbol_, itype, false);
         }
+        ichi_this++;
+    }
+    // Update nchi_ to actual number of orbitals (in case some were skipped)
+    this->nchi_ = ichi_this;
+    
+    // Recalculate nphi
+    this->nphi_ = 0;
+    this->norb_ = new int[this->lmax_ + 1];
+    for(int l=0; l<=this->lmax_; ++l) {
+        this->norb_[l] = this->nzeta_[l] * (2*l+1);
+        this->nphi_ += this->norb_[l];
     }
 }
 
-void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, const int pm, std::ofstream* ptr_log, MPI_Comm comm)
+void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, const int pm, const ModuleBase::Logger* ptr_logger, MPI_Comm comm)
 {
     /*
      * Read the orbital file.
@@ -137,8 +159,10 @@ void AtomicRadials::read_abacus_orb(std::ifstream& ifs, const int p, const int p
     int ngrid = 0; // number of grid points
     double dr = 0; // grid spacing
     std::string tmp;
-    int rank;
+    int rank = 0;
+#ifdef __MPI
     MPI_Comm_rank(comm, &rank);
+#endif
 
     if (rank == 0)
     {

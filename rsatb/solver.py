@@ -3,6 +3,7 @@ import numpy as np
 from .utils.parrallel import MPIMultiLevel
 import ase.io as io
 import os, sys
+import scipy as sp
 sys.setdlopenflags(os.RTLD_LAZY)
 from rsatb.core import Solver
 
@@ -151,6 +152,8 @@ class RSATB(MPIMultiLevel):
         
         # Check if any task needs R
         need_R = any(t['task'] == 'ac' for t in tasks)
+        if need_R and np.abs(self.__sub_kpoints__).sum() > 0:
+            raise ValueError("AC computation only support Gamma Point!")
 
         for i in range(self.__sub_kpoints__.shape[0]):
             self._setup_kpoint(i, need_R=need_R)
@@ -249,6 +252,20 @@ class RSATB(MPIMultiLevel):
                     ac_arr = np.append(ac_arr, np.zeros([diff]+list(ac_arr.shape[1:]), dtype=ac_arr.dtype), axis=0)
                     omegas_arr = np.append(omegas_arr, np.zeros([diff]+list(omegas_arr.shape[1:]), dtype=omegas_arr.dtype), axis=0)
                 
+                if self.is_submaster:
+                    # transform ac
+                    nsubk = ac_arr.shape[0]
+                    ac_arr = ac_arr.reshape(nsubk, -1, 6)
+                    ntp1 = ac_arr.shape[1] # [n_subk, (nt+1)*6]
+                    
+                    
+                    sigma = np.zeros((nsubk, 2*ntp1, 6))
+                    sigma[:, ntp1:, :] = ac_arr
+                    sigma[:, 1:ntp1+1, :] = ac_arr[:, ::-1, :]
+                    ac_arr = ac_arr + 1j * np.imag(sp.signal.hilbert(sigma, axis=1))[:,ntp1:2*ntp1,:]
+
+                    ac_arr = ac_arr.reshape(nsubk, -1)
+
                 ac_arr = self.gather(ac_arr, 0)
                 omegas_arr = self.gather(omegas_arr, 0)
                 
@@ -269,6 +286,26 @@ class RSATB(MPIMultiLevel):
     def compute_ac(self, dE:float=0.025852, nt:int=None, n_kpm:int=200, temp:float=300, mu:float=0.0):
         task = {'task': 'ac', 'dE': dE, 'nt': nt, 'n_kpm': n_kpm, 'temp': temp, 'mu': mu}
         return self.compute([task])[0]
+    
+    def export_H(self, root):
+        self.solver.export_H(root)
+        return True
+    
+    def export_S(self, root):
+        self.solver.export_S(root)
+        return True
+    
+    def export_Rx(self, root):
+        self.solver.export_Rx(root)
+        return True
+    
+    def export_Ry(self, root):
+        self.solver.export_Ry(root)
+        return True
+    
+    def export_Rz(self, root):
+        self.solver.export_Rz(root)
+        return True
     
     # def dos(self, nt=512):
     #     dt = self.get_dt_fft()

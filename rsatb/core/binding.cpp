@@ -172,6 +172,10 @@ PYBIND11_MODULE(binding, m) {
         .def("setup_sample", &rsatb::Solver::setup_sample)
 
         .def("export_S", &rsatb::Solver::export_S)
+        .def("export_H", &rsatb::Solver::export_H)
+        .def("export_Rx", &rsatb::Solver::export_Rx)
+        .def("export_Ry", &rsatb::Solver::export_Ry)
+        .def("export_Rz", &rsatb::Solver::export_Rz)
 
         .def("scale_shift_H", &rsatb::Solver::scale_shift_H)
 

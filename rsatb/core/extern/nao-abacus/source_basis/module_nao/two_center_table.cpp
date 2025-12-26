@@ -35,7 +35,6 @@ void TwoCenterTable::build(const RadialCollection& bra,
     rgrid_ = new double[nr_];
     double dr = rmax_ / (nr_ - 1);
     std::for_each(rgrid_, rgrid_ + nr_, [this, dr](double& r) { r = (&r - rgrid_) * dr; });
-
     // index the table by generating a map from (itype1, l1, izeta1, itype2, l2, izeta2, l) to a row index
     index_map_.resize({bra.ntype(),
                        bra.lmax() + 1,
@@ -235,4 +234,9 @@ void TwoCenterTable::_tabulate(const NumericalRadial* it1, const NumericalRadial
                        {CubicSpline::BoundaryType::first_deriv, 0.0},
                        {CubicSpline::BoundaryType::first_deriv, 0.0},
                        dtable_.inner_most_ptr<double>(itab));
+}
+
+TwoCenterTable::~TwoCenterTable()
+{
+    delete[] rgrid_;
 }

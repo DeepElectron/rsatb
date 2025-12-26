@@ -5,10 +5,18 @@
 #include <memory>
 #include <string>
 #include <utility>
+#ifdef __MPI
 #include <mpi.h>
+#else
+typedef int MPI_Comm;
+#define MPI_COMM_WORLD 0
+#endif
 
 #include "source_base/spherical_bessel_transformer.h"
 #include "source_basis/module_nao/numerical_radial.h"
+#include "source_base/log.h"
+// #include "source_basis/module_ao/ORB_nonlocal.h"
+// #include "source_basis/module_ao/ORB_atomic.h"
 
 /**
  * @brief An abstract class representing the set of all numerical radial
@@ -29,6 +37,7 @@ class RadialSet
     RadialSet(const RadialSet&);            ///< deep copy
     RadialSet& operator=(const RadialSet&); ///< deep copy
     virtual RadialSet* clone() const = 0;   ///< for polymorphic copy
+    virtual RadialSet* create_empty() const = 0; ///< create an empty object of the same type
 
     virtual ~RadialSet();
 
@@ -57,9 +66,32 @@ class RadialSet
                        const int = 0,                  ///< the element index in calculation
                        const int = 0,                  /// ZYZH: The p value, see for NumericalRadial class
                        const int = 0,                  /// ZYZH: The pm value, see for AtomicRadials class
-                       std::ofstream* const = nullptr, ///< output file stream for logging
-                       MPI_Comm comm = MPI_COMM_WORLD         ///< MPI rank
+                       const ModuleBase::Logger* const = nullptr, ///< output file stream for logging
+                       MPI_Comm comm = MPI_COMM_WORLD   //!< MPI comm
                        ) {}
+
+    /**
+     * @brief Builds from a Numerical_Nonlocal object.
+     *
+     * Currently nonlocal projectors are read in source_cell and passed
+     * to Numerical_Nonlocal objects.
+     */
+    // virtual void build(const Numerical_Nonlocal&,     ///< Numerical_Nonlocal object
+    //                    const int = 0,                 ///< the element index in calculation
+    //                    const ModuleBase::Logger* const = nullptr ///< output file stream for logging
+    //                    ) {}
+
+    /**
+     * @brief Builds from another RadialSet object with modifications.
+     *
+     * This function creates a new RadialSet from an existing one, allowing for
+     * modification of the implicit exponent (p) and angular momentum shift (pm).
+     */
+    virtual void build(const RadialSet* const other,
+                       const int itype,
+                       const int p = 0,
+                       const int pm = 0,
+                       const double rcut = -1.0) = 0;
     /**
      * @brief write any RadialSet object to a file in ABACUS numerical atomic orbital format.
      * 

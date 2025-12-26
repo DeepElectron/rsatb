@@ -13,6 +13,10 @@ TwoCenterIntegrator::TwoCenterIntegrator():
 {
 }
 
+TwoCenterIntegrator::~TwoCenterIntegrator()
+{
+}
+
 void TwoCenterIntegrator::tabulate(const RadialCollection& bra,
                                    const RadialCollection& ket,
                                    const char op,
@@ -36,6 +40,22 @@ void TwoCenterIntegrator::tabulate(const RadialCollection& bra,
     tablem_.build(bra, ketm, op_, nr, cutoff);
     table_.build(bra, bra, op_, nr, cutoff);
     RealGauntTable::instance().build(std::max(bra.lmax(), ketp.lmax())); // ketp's lmax should always larger than ketm's.
+    is_tabulated_pos_ = true;
+    is_tabulated_ = true;
+}
+
+void TwoCenterIntegrator::tabulate(const RadialCollection& bra,
+                                   const RadialCollection& ket,
+                                   const RadialCollection& ketp,
+                                   const RadialCollection& ketm,
+                                   const int nr,
+                                   const double cutoff)
+{
+    op_ = 'S';
+    tablep_.build(bra, ketp, op_, nr, cutoff);
+    tablem_.build(bra, ketm, op_, nr, cutoff);
+    table_.build(bra, ket, op_, nr, cutoff);
+    RealGauntTable::instance().build(std::max(bra.lmax(), ketp.lmax())); 
     is_tabulated_pos_ = true;
     is_tabulated_ = true;
 }
@@ -78,7 +98,9 @@ void TwoCenterIntegrator::calculate(const int itype1,
 
     // R^l * Y is necessary anyway
     ModuleBase::Ylm::rl_sph_harm(l1 + l2, vR[0], vR[1], vR[2], Rl_Y);
-    if (grad_out) ModuleBase::Ylm::grad_rl_sph_harm(l1 + l2, vR[0], vR[1], vR[2], Rl_Y.data(), grad_Rl_Y.get_ptr_2D());
+    if (grad_out) {
+        ModuleBase::Ylm::grad_rl_sph_harm(l1 + l2, vR[0], vR[1], vR[2], Rl_Y.data(), grad_Rl_Y.get_ptr_2D());
+    }
 
     double tmp[2] = {0.0, 0.0};
     double* S_by_Rl = tmp;

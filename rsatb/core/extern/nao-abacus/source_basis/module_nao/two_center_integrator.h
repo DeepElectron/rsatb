@@ -2,6 +2,9 @@
 #define TWO_CENTER_INTEGRATOR_H_
 
 #include "source_basis/module_nao/two_center_table.h"
+#include <string>
+#include <vector>
+#include <memory>
 #include "source_basis/module_nao/real_gaunt_table.h"
 #include "source_basis/module_nao/radial_collection.h"
 #include "source_base/vector3.h"
@@ -38,8 +41,6 @@ class TwoCenterIntegrator
     TwoCenterIntegrator(const TwoCenterIntegrator&) = delete;
     TwoCenterIntegrator& operator=(const TwoCenterIntegrator&) = delete;
 
-    ~TwoCenterIntegrator() {}
-
     /*!
      * @brief Tabulates the radial part of a two-center integral.
      *
@@ -56,7 +57,17 @@ class TwoCenterIntegrator
                   const double cutoff
     );
 
+    ~TwoCenterIntegrator();
+
     void tabulate(const RadialCollection& bra,
+                  const RadialCollection& ketp,
+                  const RadialCollection& ketm,
+                  const int nr,
+                  const double cutoff
+    );
+
+    void tabulate(const RadialCollection& bra,
+                  const RadialCollection& ket,
                   const RadialCollection& ketp,
                   const RadialCollection& ketm,
                   const int nr,

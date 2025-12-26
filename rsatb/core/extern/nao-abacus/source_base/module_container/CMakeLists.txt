@@ -26,6 +26,12 @@ add_library(container STATIC ${ATen_CPU_SRCS} ${ATen_CUDA_SRCS})
 target_link_libraries(container PUBLIC 
   ${ATen_CPU_DEPENDENCY_LIBS} ${ATen_CUDA_DEPENDENCY_LIBS} ${ATen_ROCM_DEPENDENCY_LIBS})
 
+target_include_directories(container PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
+    $<INSTALL_INTERFACE:include/int2c>
+)
+
 if(ENABLE_COVERAGE)
   add_coverage(container)
 endif()
