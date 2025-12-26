@@ -1,4 +1,13 @@
 test*.ipynb
+*.json
+*.npy
+test/data/diamond/C2.0
+test/data/silicon/exported/*
+test/data/silicon/OUT.ABACUS/*
+test/data/silicon/INPUT
+test/data/silicon/KPT
+test/data/silicon/Si2.0
+test/data/silicon/STRU
 **/processed*/*
 rsatb/test/**/*.yaml
 rsatb/test/**/pre_*.pt
