@@ -244,7 +244,7 @@ void DBCSR2Mat(
     if(*mat!=nullptr) MatDestroy(mat);
 
     MatCreate(comm, mat);
-    MatSetType(*mat, "aij");
+    MatSetType(*mat, "aijmkl");
     MatSetSizes(*mat, mloc, mloc, n, n);
     PetscInt rstart;
     MatGetOwnershipRange(*mat, &rstart, nullptr);

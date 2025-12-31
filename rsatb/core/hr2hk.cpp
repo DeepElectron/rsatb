@@ -1054,7 +1054,7 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic,
                         rkj = (Ri[jn] - Rk).norm();
                         dR /= 1.8897259886;
                         dm_atomic.invert_cell(&dR.x, &dR.y, &dR.z);
-                        std::cout << "dR: " << dR.x << " " << dR.y << " " << dR.z << std::endl;
+                        // std::cout << "dR: " << dR.x << " " << dR.y << " " << dR.z << std::endl;
                         cutoff = oc.get_orb_rcut_max(itype) + oc.get_orb_rcut_max(jtype);
                         cutoff_ki = oc.get_beta_rcut_max(ktype) + oc.get_orb_rcut_max(itype);
                         cutoff_kj = oc.get_beta_rcut_max(ktype) + oc.get_orb_rcut_max(jtype);

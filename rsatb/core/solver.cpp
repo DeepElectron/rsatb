@@ -233,7 +233,7 @@ Solver::Solver(
     ): 
         _comm_(comm),
         _H_(nullptr), _S_(nullptr), _Rx_(nullptr), _Ry_(nullptr), _Rz_(nullptr), _Sr_(nullptr),
-        _Samples_(nullptr), _Sample_(nullptr),
+        _Samples_(nullptr), _Sample_(nullptr), _Vx_(nullptr), _Vy_(nullptr), _Vz_(nullptr),
         _ksp_(nullptr), _pc_(nullptr)
     {
         // PetscOptionsSetValue(NULL, "-info", "stacking.log:ksp,pc");
@@ -251,7 +251,7 @@ Solver::Solver(
             comm
         );
 
-        DMSetMatType(_dm_atomic_->dm(), "aij");
+        DMSetMatType(_dm_atomic_->dm(), "aijmkl");
     };
 
 Solver::~Solver() { /* destructor */
@@ -677,6 +677,10 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
     for( int i=0; i<nt+1; ++i ){
         omegas[i] = i * _scale_ / (nt+1);
     }
+
+    // PetscReal norm;
+    // MatNorm(_Vx_, NORM_FROBENIUS, &norm);
+    // std::cout << norm << std::endl;
 
     PetscComplex cac[(nt+1)*6];
     if(_n_sample_==1){

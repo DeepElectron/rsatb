@@ -31,7 +31,7 @@ void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const s
     orbp_->build(ntype, file_orb.data(), '\0', -1, 1, comm);
     orbm_->build(ntype, file_orb.data(), '\0', -1, -1, comm);
 
-    std::cout << "rank: " << rank << " 2CBuddle build_orb done" << std::endl;
+    // std::cout << "rank: " << rank << " 2CBuddle build_orb done" << std::endl;
 }
 
 void TwoCenterBundle::tabulate()

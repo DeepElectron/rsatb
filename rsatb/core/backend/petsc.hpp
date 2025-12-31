@@ -410,7 +410,7 @@ public:
 
       // construct iconn neighbour list
       int i, j;
-      std::cout << "DMAtomic constructor: eStart=" << eStart << " eEnd=" << eEnd << std::endl;
+      // std::cout << "DMAtomic constructor: eStart=" << eStart << " eEnd=" << eEnd << std::endl;
       for(int ie=eStart; ie<eEnd; ++ie) {
         get_connected_atoms(ie, &i, &j);
         iconn[i].push_back(ie);
@@ -791,7 +791,7 @@ public:
         MatDestroy(mat);
       }
       MatCreate(_comm_, mat);
-      MatSetType(*mat, "aij");
+      MatSetType(*mat, "aijmkl");
 
       // std::cout << "mat create aij" << std::endl;
 

@@ -3,6 +3,8 @@ import numpy as np
 from .utils.parrallel import MPIMultiLevel
 import ase.io as io
 import os, sys
+import ase
+from typing import Union
 import scipy as sp
 sys.setdlopenflags(os.RTLD_LAZY)
 from rsatb.core import Solver

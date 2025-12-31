@@ -49,7 +49,9 @@ Op2c::Op2c(size_t ntype, int nspin, bool lspinorb,
     // it should be larger than the largest rcut of pseudos
     psds.resize(ntype);
     
+    // std::cout << "start reading psd " << std::endl;
     read_pseudo(psd_dir, psd_name, "auto", 10.0, false, 0.0, logger, psds, comm);
+    // std::cout << "end reading psd " << std::endl;
 
     std::vector<BetaRadials> beta_radials(ntype);
     for(int itype=0; itype<ntype; ++itype){
@@ -78,7 +80,7 @@ Op2c::Op2c(size_t ntype, int nspin, bool lspinorb,
         }
     }
 
-    std::cout << "beta_map" << std::endl;
+    // std::cout << "beta_map" << std::endl;
     // build the beta mapping table: [itype][ibeta] -> (l, zeta, m)
     beta_map.resize({(int)ntype, tcbd.beta_->nphi_max(), 3});
     for(int itype=0; itype<ntype; ++itype){
@@ -94,6 +96,7 @@ Op2c::Op2c(size_t ntype, int nspin, bool lspinorb,
             }
         }
     }
+
 };
 
 void Op2c::overlap(size_t itype, size_t jtype, ModuleBase::Vector3<double> Rij, bool is_transpose, std::vector<double>& v, std::vector<double>* dvx, std::vector<double>* dvy, std::vector<double>* dvz)

@@ -255,7 +255,7 @@ TEST(Hr2hkTest, TestSetMatrixR2K) {
     // 1. Test Overlap Matrix Construction
     Mat S;
     DMCreateMatrix(dm.dm(), &S);
-    MatConvert(S, "aij", MAT_INPLACE_MATRIX, &S);
+    MatConvert(S, "aijmkl", MAT_INPLACE_MATRIX, &S);
     
     setMatrixR2K(S, dm, file_orb0, root, Kx, Ky, Kz);
     
@@ -288,9 +288,9 @@ TEST(Hr2hkTest, TestSetMatrixR2K) {
     // DMCreateMatrix(dm.dm(), &Vx);
     // DMCreateMatrix(dm.dm(), &Vy);
     // DMCreateMatrix(dm.dm(), &Vz);
-    // MatConvert(Vx, "aij", MAT_INPLACE_MATRIX, &Vx);
-    // MatConvert(Vy, "aij", MAT_INPLACE_MATRIX, &Vy);
-    // MatConvert(Vz, "aij", MAT_INPLACE_MATRIX, &Vz);
+    // MatConvert(Vx, "aijmkl", MAT_INPLACE_MATRIX, &Vx);
+    // MatConvert(Vy, "aijmkl", MAT_INPLACE_MATRIX, &Vy);
+    // MatConvert(Vz, "aijmkl", MAT_INPLACE_MATRIX, &Vz);
     
     // We need to pass empty vectors for orb_names and psd_names as per the signature
     // void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell, int ntype, 

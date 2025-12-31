@@ -208,7 +208,7 @@ void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi,
         MatMult(H, buff1, J_Psi[2]);
         MatMultAdd(Rz, buff2, J_Psi[2], J_Psi[2]);
 
-        const PetscComplex  nI(0.0, -scale);
+        const PetscComplex  nI(-scale, 0.0);
         VecScale(J_Psi[0], nI);
         VecScale(J_Psi[1], nI);
         VecScale(J_Psi[2], nI);
@@ -252,7 +252,7 @@ void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi,
         MatMatMult(Rz, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
         MatAXPY(J_Psi[2], -1.0, buff1, SAME_NONZERO_PATTERN);
 
-        const PetscComplex  nI(0.0, -scale);
+        const PetscComplex  nI(-scale, 0.0);
         MatScale(J_Psi[0], nI);
         MatScale(J_Psi[1], nI);
         MatScale(J_Psi[2], nI);
@@ -274,6 +274,8 @@ void current_adjoint(Mat Vx, Mat Vy, Mat Vz, KSP ksp, T Psi_in, T *J_Psi, double
         VecDuplicate(Psi_in, &buff);
         if(!orthogonal){
             KSPSolve(ksp, Psi_in, buff);
+        } else {
+            VecCopy(Psi_in, buff);
         }
         MatMult(Vx, buff, J_Psi[0]);
         MatMult(Vy, buff, J_Psi[1]);
@@ -284,14 +286,16 @@ void current_adjoint(Mat Vx, Mat Vy, Mat Vz, KSP ksp, T Psi_in, T *J_Psi, double
         VecScale(J_Psi[1], nI);
         VecScale(J_Psi[2], nI);
 
+        VecDestroy(&buff);
+
     } else {
         Mat buff;
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff);
-        
+        MatDuplicate(Psi_in, MAT_COPY_VALUES, &buff);
         
         if(!orthogonal){
             KSPMatSolve(ksp, Psi_in, buff);
         }
+
         MatMatMult(Vx, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
         MatMatMult(Vy, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
         MatMatMult(Vz, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
@@ -367,6 +371,7 @@ void corr_ac(
         MatConjugate(Psi_in);
     }
     fermi_dirac_kpm<T>(H, ksp, Psi_in, Psi0, temp, mu, scale, shift, n_kpm, eps, ChebyMode::ADJOINT, orthogonal);
+
     if constexpr (std::is_same_v<T, Vec>){
         VecConjugate(Psi_in);
     }
@@ -392,8 +397,30 @@ void corr_ac(
         }
     }
 
+    // if constexpr (std::is_same_v<T, Vec>){
+    //     PetscReal norm;
+    //     std::cout << VecNorm(Psi0, NORM_FROBENIUS, &norm);
+    //     std::cout << " norm: " << norm << std::endl;
+    // }
+
     // J_Psi0 = current_adjoint(Psi0)
     current_adjoint<T>(Vx, Vy, Vz, ksp, Psi0, J_Psi0, 1.0, orthogonal);
+
+    // if constexpr (std::is_same_v<T, Vec>){
+    //     PetscReal norm;
+    //     std::cout << VecNorm(J_Psi0[0], NORM_FROBENIUS, &norm);
+    //     std::cout << " norm: " << norm << std::endl;
+    // }
+    // if constexpr (std::is_same_v<T, Vec>){
+    //     PetscReal norm;
+    //     std::cout << VecNorm(J_Psi0[1], NORM_FROBENIUS, &norm);
+    //     std::cout << " norm: " << norm << std::endl;
+    // }
+    // if constexpr (std::is_same_v<T, Vec>){
+    //     PetscReal norm;
+    //     std::cout << VecNorm(J_Psi0[2], NORM_FROBENIUS, &norm);
+    //     std::cout << " norm: " << norm << std::endl;
+    // }
 
     // Initial correlation
     PetscScalar tmp;
@@ -444,7 +471,7 @@ void corr_ac(
 
         // Update J_Psi0 from propagated Psi0
         // current_adjoint<T>(H, ksp, Rx, Ry, Rz, Psi0, J_Psi0, scale, orthogonal);
-        current_adjoint<T>(Vx, Vy, Vz, ksp, Psi0, J_Psi0, scale, orthogonal);
+        current_adjoint<T>(Vx, Vy, Vz, ksp, Psi0, J_Psi0, 1.0, orthogonal);
 
         // Correlation
         for(int i=0; i<3; ++i){ // J_Psi index (right)
@@ -464,6 +491,8 @@ void corr_ac(
                         MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
                     }
                     cac[(it+1)*6 + int((-i*i+5*i)/2+j)] = sum_val / nrhs;
+
+                    // std::cout << sum_val << std::endl;
                 }
                 // std::cout << (it+1)*6 + int((-i*i+5*i)/2+j) << cac[(it+1)*6 + int((-i*i+5*i)/2+j)] << std::endl;
             }
