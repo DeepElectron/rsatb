@@ -22,13 +22,16 @@ void TwoCenterBundle::build_orb(int ntype, const std::string* file_orb0, const s
 #ifdef __MPI
     Parallel_Common::bcast_string(file_orb.data(), ntype, comm);
 #endif
-
+    
     orb_ = std::unique_ptr<RadialCollection>(new RadialCollection);
     orbp_ = std::unique_ptr<RadialCollection>(new RadialCollection);
     orbm_ = std::unique_ptr<RadialCollection>(new RadialCollection);
-    orb_->build(ntype, file_orb.data(), '\0', 0); // automatically detect file type
+
+    orb_->build(ntype, file_orb.data(), '\0', 0, 0, comm); // automatically detect file type
     orbp_->build(ntype, file_orb.data(), '\0', -1, 1, comm);
     orbm_->build(ntype, file_orb.data(), '\0', -1, -1, comm);
+
+    std::cout << "rank: " << rank << " 2CBuddle build_orb done" << std::endl;
 }
 
 void TwoCenterBundle::tabulate()

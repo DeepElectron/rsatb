@@ -17,7 +17,7 @@ class Solver
 private:
     /* data */
     std::unique_ptr<DMAtomic> _dm_atomic_;
-    Mat _H_, _S_, _Sr_, _Rx_, _Ry_, _Rz_, _Samples_;
+    Mat _H_, _S_, _Sr_, _Rx_, _Ry_, _Rz_, _Vx_, _Vy_, _Vz_, _Samples_;
     Vec _Sample_;
     KSP _ksp_=nullptr;
     PC _pc_;
@@ -25,6 +25,7 @@ private:
     PetscReal _scale_=-1.0, _shift_=0.0, _Kx_, _Ky_, _Kz_;
     MPI_Comm _comm_;
     bool _kpoint_ready_=false, _overlap_ready_=false, _hamiltonian_ready_=false, _position_ready_=false, _samples_ready_=false, _sqrtm_ready_=false;
+    bool _velocity_ready_ = false;
     bool _explicit_orth_ = false, _explicit_form_ = false;
     int _n_sample_=-1;
     double _cdn_;
@@ -32,7 +33,7 @@ private:
     void set_mat_from_h5(Mat *mat, const std::string &MatFile){
         HDF5Handler _hd_(MatFile);
         DMCreateMatrix(_dm_atomic_->dm(), mat);
-        MatConvert(*mat, "aijmkl", MAT_INPLACE_MATRIX, mat);
+        MatConvert(*mat, "aij", MAT_INPLACE_MATRIX, mat);
         setMatrixR2K(*mat, *_dm_atomic_, &_hd_, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
     }
@@ -81,7 +82,7 @@ public:
     void setup_S(const std::string* file_orb0, const std::string& orbital_dir){
         DMCreateMatrix(_dm_atomic_->dm(), &_S_);
         MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
-        setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(), _dm_atomic_->n_type(), file_orb0, orbital_dir, 
+        setMatrixR2K(_S_, *_dm_atomic_, file_orb0, orbital_dir, 
             static_cast<double>(_Kx_), static_cast<double>(_Ky_), static_cast<double>(_Kz_));
         MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
         MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
@@ -195,7 +196,7 @@ public:
              rsatb::calc::isqrtm(_S_, *_dm_atomic_, tol, sptol, maxit, factor, &_Sr_, verbose);
         }
         
-        MatConvert(_Sr_, "aijmkl", MAT_INPLACE_MATRIX, &_Sr_);
+        MatConvert(_Sr_, "aij", MAT_INPLACE_MATRIX, &_Sr_);
 
         // check whether _Sr_ works well
         // Mat tmp, tmp2;
@@ -240,9 +241,9 @@ public:
         if (RyFile.size() > 0) this->set_mat_from_h5(&_Ry_, RyFile);
         if (RzFile.size() > 0) this->set_mat_from_h5(&_Rz_, RzFile);
 
-        MatSetType(_Rx_, "aijmkl");
-        MatSetType(_Ry_, "aijmkl");
-        MatSetType(_Rz_, "aijmkl");
+        MatSetType(_Rx_, "aij");
+        MatSetType(_Ry_, "aij");
+        MatSetType(_Rz_, "aij");
 
         if ((RxFile.size() > 0) || (RyFile.size() > 0) || (RyFile.size() > 0))
             _position_ready_ = true;
@@ -253,15 +254,15 @@ public:
         DMCreateMatrix(_dm_atomic_->dm(), &_Ry_);
         DMCreateMatrix(_dm_atomic_->dm(), &_Rz_);
 
-        MatConvert(_Rx_, "aijmkl", MAT_INPLACE_MATRIX, &_Rx_);
-        MatConvert(_Ry_, "aijmkl", MAT_INPLACE_MATRIX, &_Ry_);
-        MatConvert(_Rz_, "aijmkl", MAT_INPLACE_MATRIX, &_Rz_);
+        MatConvert(_Rx_, "aij", MAT_INPLACE_MATRIX, &_Rx_);
+        MatConvert(_Ry_, "aij", MAT_INPLACE_MATRIX, &_Ry_);
+        MatConvert(_Rz_, "aij", MAT_INPLACE_MATRIX, &_Rz_);
 
         if (!_overlap_ready_) {
             DMCreateMatrix(_dm_atomic_->dm(), &_S_);
-            MatConvert(_S_, "aijmkl", MAT_INPLACE_MATRIX, &_S_);
+            MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
             
-            setMatrixR2K(_S_, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
+            setMatrixR2K(_S_, *_dm_atomic_, file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
             
             MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
             MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
@@ -269,9 +270,9 @@ public:
         } else {
             Mat s_check;
             DMCreateMatrix(_dm_atomic_->dm(), &s_check);
-            MatConvert(s_check, "aijmkl", MAT_INPLACE_MATRIX, &s_check);
+            MatConvert(s_check, "aij", MAT_INPLACE_MATRIX, &s_check);
             
-            setMatrixR2K(s_check, *_dm_atomic_, _dm_atomic_->cell(),  _dm_atomic_->n_type(), file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
+            setMatrixR2K(s_check, *_dm_atomic_, file_orb0, orbital_dir, _Kx_, _Ky_, _Kz_, _Rx_, _Ry_, _Rz_);
 
             // check if the s_check equals or close to the overlap prepared.
             MatAXPY(s_check, -1.0, _S_, SAME_NONZERO_PATTERN);
@@ -288,6 +289,57 @@ public:
             if (!close) {throw std::runtime_error("The Overlap is not accurate comparing to the 2 center integral's"); }
         }
         _position_ready_ = true;
+    }
+
+    void setup_V(const std::vector<std::string> orb_names, const std::string& orbital_dir, const std::vector<std::string> psd_names, const std::string& psd_dir){
+        
+        Op2c oc(
+            _dm_atomic_->n_type(), 1, 0, 
+            orbital_dir, orb_names, psd_dir, psd_names,
+            PETSC_COMM_WORLD, ""
+        );
+
+        std::vector<double> r_max_left(_dm_atomic_->n_type(), 0), r_max_right(_dm_atomic_->n_type(), 0);
+        for(int i=0; i<_dm_atomic_->n_type(); i++){
+            r_max_left[i] = oc.get_orb_rcut_max(i);
+            r_max_right[i] = oc.get_beta_rcut_max(i);
+        }
+
+        _dm_atomic_->allocate_three_body_hopping_matrix(&_Vx_, r_max_left, r_max_right);
+        _dm_atomic_->allocate_three_body_hopping_matrix(&_Vy_, r_max_left, r_max_right);
+        _dm_atomic_->allocate_three_body_hopping_matrix(&_Vz_, r_max_left, r_max_right);
+
+        if (!_overlap_ready_) {
+            DMCreateMatrix(_dm_atomic_->dm(), &_S_);
+            MatConvert(_S_, "aij", MAT_INPLACE_MATRIX, &_S_);
+            
+            setMatrixR2K(_S_, *_dm_atomic_, oc, _Kx_, _Ky_, _Kz_, _Vx_, _Vy_, _Vz_);
+            
+            MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
+            MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
+            _overlap_ready_ = true;
+        } else {
+            Mat s_check;
+            DMCreateMatrix(_dm_atomic_->dm(), &s_check);
+            MatConvert(s_check, "aij", MAT_INPLACE_MATRIX, &s_check);
+            
+            setMatrixR2K(s_check, *_dm_atomic_, oc, _Kx_, _Ky_, _Kz_, _Vx_, _Vy_, _Vz_);
+
+            // check if the s_check equals or close to the overlap prepared.
+            MatAXPY(s_check, -1.0, _S_, SAME_NONZERO_PATTERN);
+            PetscReal tol, nS, ns;
+
+            MatNorm(_S_, NORM_FROBENIUS, &nS);
+            MatNorm(s_check, NORM_FROBENIUS, &ns);
+
+            tol = 1e-4 + 1e-3 * nS;
+            PetscBool close = (ns <= tol) ? PETSC_TRUE : PETSC_FALSE;
+            
+            MatDestroy(&s_check);
+
+            if (!close) {throw std::runtime_error("The Overlap is not accurate comparing to the 2 center integral's"); }
+        }
+        _velocity_ready_ = true;
     }
 
     void setup_H_h5(const std::string &HFile);

@@ -72,7 +72,8 @@ For computing the kinetic operator matrix elements, the only difference is the f
 
 
 ## Velocity Op
-The velocity operator is represented as $$
+The velocity operator is represented as 
+$$
 \begin{align*}
 \hat{v}&=i\left[\hat{H},\hat{r}\right]\\
 &=i\left[\frac{\hat{p}^2}{2m},\hat{r}\right]+i\left[\hat{V}_{\text{eff}},\hat{r}\right]\\

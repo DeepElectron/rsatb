@@ -12,8 +12,9 @@ namespace rsatb{
 
 // PetscErrorCode SetBlockR2K(Mat mat, DM dm, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v);
 
-PetscErrorCode SetLBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor=1);
-PetscErrorCode SetGBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor=1);
+PetscErrorCode SetLBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor=1);
+PetscErrorCode SetGBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor=1);
+PetscErrorCode SetGBlockR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, std::complex<double> *v, std::complex<double> factor=1);
 
 // void setMatrixR2K(Mat mat, DM dm, rsatb::io::HDF5Handler *handler, double Kx, double Ky, double Kz);
 
@@ -22,14 +23,17 @@ void setMatrixR2K(Mat mat, rsatb::backend::DMAtomic &dm_atomic, rsatb::io::HDF5H
 // used only for computing overlap and position operator currently.
 // void setMatrixR2K(Mat S, DM dm, const double* cell, int ntype, const std::string* file_orb0, const std::string& orbital_dir, double Kx, double Ky, double Kz, Mat Rx=nullptr, Mat Ry=nullptr, Mat Rz=nullptr);
 
-void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell, int ntype, const std::string* file_orb0, const std::string& orbital_dir, double Kx, double Ky, double Kz, Mat Rx=nullptr, Mat Ry=nullptr, Mat Rz=nullptr);
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const std::string* file_orb0, const std::string& orbital_dir, double Kx, double Ky, double Kz, Mat Rx=nullptr, Mat Ry=nullptr, Mat Rz=nullptr);
 
 // used for computing overlap and velocity operator.
-void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell, int ntype, 
-                const std::string* orb_names, const std::string& orb_dir, const std::string* psd_names, const std::string& psd_dir, 
-                double Kx, double Ky, double Kz, Mat Vx=nullptr, Mat Vy=nullptr, Mat Vz=nullptr);
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic,  
+                const std::vector<std::string> orb_names, const std::string& orb_dir, const std::vector<std::string> psd_names, const std::string& psd_dir, 
+                double Kx, double Ky, double Kz, Mat Vx=nullptr, Mat Vy=nullptr, Mat Vz=nullptr, const std::string& log_file="");
 
-void cal_phase(int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, std::complex<double> *phase);
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, Op2c &oc,
+                double Kx, double Ky, double Kz, Mat Vx=nullptr, Mat Vy=nullptr, Mat Vz=nullptr, const std::string& log_file="");
+
+void cal_phase(double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, std::complex<double> *phase);
 
 }
 

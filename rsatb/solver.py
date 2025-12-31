@@ -15,7 +15,8 @@ class RSATB(MPIMultiLevel):
     def __init__(
             self, 
             basis,
-            atomicdata: AtomicData,
+            atoms: str | ase.Atoms | AtomicData,
+            r_max: Union[float, int, dict],
             n_group:int=1, # maximum number of k in parrallel
             enable_mpi=False,
             verbose=False
@@ -24,9 +25,23 @@ class RSATB(MPIMultiLevel):
         super(RSATB, self).__init__(enable_mpi=enable_mpi, verbose=verbose)
         
         self.idp = OrbitalMapper(basis=basis)
+        if isinstance(atoms, AtomicData):
+            assert r_max is None, "r_max should be None when atoms is an AtomicData object"
+        elif isinstance(atoms, str):
+            atoms = io.read(atoms)
+            assert r_max is not None, "r_max should not be None when atoms is a string"
+        else:
+            assert isinstance(atoms, ase.Atoms), "atoms should be a string, AtomicData or ase.Atoms object"
+            assert r_max is not None, "r_max should not be None when atoms is a string or ase.Atoms object"
+
+        if isinstance(atoms, ase.Atoms) or isinstance(atoms, str):
+            atomicdata = AtomicData.from_ase(atoms, r_max=r_max)
+        else:
+            atomicdata = atoms
+        
         atomicdata = self.idp(atomicdata) # map the datatype
         self.basis = self.idp.basis
-        
+
         # handling mpi group partition
         self.n_group = n_group
         assert self.n_group > 0, "The number of groups should be a positive number, default by 1."
@@ -56,17 +71,19 @@ class RSATB(MPIMultiLevel):
         self.__kpoint_set__ = False
         self.__sample_set__ = False
 
-    def setup(self, n=1, rsmethod="gauss", kpoints=np.array([[0.,0.,0.]]), HFile=None, SFile=None, RxFile=None, RyFile=None, RzFile=None, orblist=None, orbroot=None, tol=1e-7, sptol=1e-6, maxit=20, orthogonalize=False, explicit_orth=True):
+    def setup(self, n=1, rsmethod="gauss", kpoints=np.array([[0.,0.,0.]]), 
+            HFile=None, SFile=None,
+            orblist=None, orbroot=None, psdlist=None, psdroot=None, 
+            tol=1e-7, sptol=1e-6, maxit=20, orthogonalize=False, explicit_orth=True):
         self.setup_sample(n, rsmethod)
         self.setup_kpoints(kpoints)
 
         self.SFile = SFile
         self.HFile = HFile
-        self.RxFile = RxFile
-        self.RyFile = RyFile
-        self.RzFile = RzFile
         self.orblist = orblist
         self.orbroot = orbroot
+        self.psdlist = psdlist
+        self.psdroot = psdroot
         self.orthogonalize = orthogonalize
         self.explicit_orth = explicit_orth
 
@@ -101,13 +118,13 @@ class RSATB(MPIMultiLevel):
 
         return True
     
-    def _setup_kpoint(self, kidx, need_R=False):
+    def _setup_kpoint(self, kidx, need_V=False):
         self.solver.setup_K(*self.__sub_kpoints__[kidx])
         
         # Setup S and R
         # Optimization: If we need R and are using orbitals, setup_R_orb can setup both S and R at once.
-        if need_R and (self.orblist is not None and self.orbroot is not None):
-            self.solver.setup_R_orb(self.orblist, self.orbroot)
+        if need_V and (self.orblist is not None and self.orbroot is not None and self.psdlist is not None and self.psdroot is not None):
+            self.solver.setup_V_orb(self.orblist, self.orbroot, self.psdlist, self.psdroot)
             # S is now setup by setup_R_orb if it wasn't already
         elif self.orblist is not None and self.orbroot is not None:
             self.solver.setup_S_orb(self.orblist, self.orbroot)
@@ -130,13 +147,14 @@ class RSATB(MPIMultiLevel):
         self.solver.scale_shift_H(0.0, 0.0, self.verbose)
         
         # Setup R (if needed and not done yet)
-        if need_R:
+        if need_V:
             # If we used orbitals, it's already done above.
             # If we used H5, we need to setup R from files.
-            if self.orblist is None: # Assuming H5 path
-                 self.solver.setup_R_h5(self.RxFile if self.RxFile else "", 
-                                        self.RyFile if self.RyFile else "", 
-                                        self.RzFile if self.RzFile else "")
+            if self.orblist is None or self.orbroot is None or self.psdlist is None or self.psdroot is None: # Assuming H5 path
+                raise ValueError("The V information is not provided in the setup")
+                #  self.solver.setup_R_h5(self.RxFile if self.RxFile else "", 
+                #                         self.RyFile if self.RyFile else "", 
+                #                         self.RzFile if self.RzFile else "")
 
     def setup_sample(self, n: int=1, method: str="gauss"):
         self.solver.setup_sample(n, method)
@@ -151,12 +169,12 @@ class RSATB(MPIMultiLevel):
         results = [[] for _ in tasks]
         
         # Check if any task needs R
-        need_R = any(t['task'] == 'ac' for t in tasks)
-        if need_R and np.abs(self.__sub_kpoints__).sum() > 0:
+        need_V = any(t['task'] == 'ac' for t in tasks)
+        if need_V and np.abs(self.__sub_kpoints__).sum() > 0:
             raise ValueError("AC computation only support Gamma Point!")
 
         for i in range(self.__sub_kpoints__.shape[0]):
-            self._setup_kpoint(i, need_R=need_R)
+            self._setup_kpoint(i, need_V=need_V)
             
             for t_idx, task in enumerate(tasks):
                 if task['task'] == 'dos':

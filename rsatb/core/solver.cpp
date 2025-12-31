@@ -251,7 +251,7 @@ Solver::Solver(
             comm
         );
 
-        DMSetMatType(_dm_atomic_->dm(), "aijmkl");
+        DMSetMatType(_dm_atomic_->dm(), "aij");
     };
 
 Solver::~Solver() { /* destructor */
@@ -470,13 +470,13 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
         _H_ = Htmp;
     }
 
-    if (_position_ready_) {
+    if (_velocity_ready_) {
         Mat Xtmp, Ytmp, Ztmp;
         MContext *ctxX, *ctxY, *ctxZ;
         PetscNew(&ctxX); PetscNew(&ctxY); PetscNew(&ctxZ);
-        ctxX->H = _Rx_; ctxX->Sr = _Sr_;
-        ctxY->H = _Ry_; ctxY->Sr = _Sr_;
-        ctxZ->H = _Rz_; ctxZ->Sr = _Sr_;
+        ctxX->H = _Vx_; ctxX->Sr = _Sr_;
+        ctxY->H = _Vy_; ctxY->Sr = _Sr_;
+        ctxZ->H = _Vz_; ctxZ->Sr = _Sr_;
 
         MatCreateVecs(_H_, &ctxX->w1, NULL);
         MatCreateVecs(_H_, &ctxY->w1, NULL);
@@ -510,8 +510,8 @@ void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_
         MatShellSetOperation(Ztmp, MATOP_DESTROY, (void(*)(void))SrHSrDestroy);
 
         MatSetUp(Xtmp); MatSetUp(Ytmp); MatSetUp(Ztmp);
-        MatDestroy(&_Rx_); MatDestroy(&_Ry_); MatDestroy(&_Rz_);
-        _Rx_ = Xtmp; _Ry_ = Ytmp; _Rz_ = Ztmp;
+        MatDestroy(&_Vx_); MatDestroy(&_Vy_); MatDestroy(&_Vz_);
+        _Vx_ = Xtmp; _Vy_ = Ytmp; _Vz_ = Ztmp;
     }
 
     _explicit_orth_ = true;
@@ -664,9 +664,9 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
 };
 
 void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, double *omegas){
-    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _position_ready_ && _sqrtm_ready_) ) 
+    if ( !(_kpoint_ready_ && _overlap_ready_ && _hamiltonian_ready_ && _samples_ready_ && _velocity_ready_ && _sqrtm_ready_) ) 
     { 
-        throw std::runtime_error("Not ready for computing ac, setup: 1. samples, 2. kpoint 3. Overlap 4. S^-1/2 5. Hamiltonian 6. position first!"); 
+        throw std::runtime_error("Not ready for computing ac, setup: 1. samples, 2. kpoint 3. Overlap 4. S^-1/2 5. Hamiltonian 6. velocity first!"); 
     }
 
     double beta = 1.0 / (temp * 8.617333262e-5);
@@ -681,13 +681,13 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
     PetscComplex cac[(nt+1)*6];
     if(_n_sample_==1){
         rsatb::calc::corr_ac<Vec>(
-            _H_, _Rx_, _Ry_, _Rz_, _ksp_,
+            _H_, _Vx_, _Vy_, _Vz_, _ksp_,
             _Sample_, nt, temp, mu, _scale_, _shift_,
             n_kpm, 1e-14, cac, _explicit_orth_
         );
     } else {
         rsatb::calc::corr_ac<Mat>(
-            _H_, _Rx_, _Ry_, _Rz_, _ksp_,
+            _H_, _Vx_, _Vy_, _Vz_, _ksp_,
             _Samples_, nt, temp, mu, _scale_, _shift_,
             n_kpm, 1e-14, cac, _explicit_orth_
         );

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include <iostream>
 #include <vector>
+#include <complex>
 #include <string>
 #include <fstream>
 
@@ -73,9 +74,10 @@ TEST(Op2cTest, BasicFunctionality)
     EXPECT_GT(ob[0].nr * ob[0].nc, 0);
 
     // 5. Test ncomm_IKJ
-    std::vector<double> ncomm_vy(v.size()), ncomm_vz(v.size()), ncomm_v(v.size());
+    // 5. Test ncomm_IKJ
+    std::vector<std::complex<double>> ncomm_vx(v.size()), ncomm_vy(v.size()), ncomm_vz(v.size());
     
-    op2c.ncomm_IKJ(itype, 0, ktype, jtype, 0, ob, oxb, oyb, ozb, is_transpose, ncomm_vx, ncomm_vy, ncomm_vz);
+    op2c.ncomm_IKJ(itype, 0, ktype, jtype, 0, ob, oxb, oyb, ozb, 1, is_transpose, ncomm_vx, ncomm_vy, ncomm_vz);
 }
 
 int main(int argc, char** argv)

@@ -41,21 +41,27 @@ Op2c::Op2c(size_t ntype, int nspin, bool lspinorb,
     }
     ModuleBase::Logger logger(log_file.empty() ? std::cout : ofs);
 
+    // std::cout << "rank: " << rank <<" build_orb " << orb_name[0] << " " << orb_dir << std::endl;
     tcbd.build_orb(ntype, orb_name.data(), orb_dir, comm);
+    // std::cout << "rank: " << rank <<" build_orb done" << std::endl;
 
     //TODO: problem, how does this routine setup the tightest rcut of pseudos?
     // it should be larger than the largest rcut of pseudos
     psds.resize(ntype);
+    
     read_pseudo(psd_dir, psd_name, "auto", 10.0, false, 0.0, logger, psds, comm);
 
     std::vector<BetaRadials> beta_radials(ntype);
     for(int itype=0; itype<ntype; ++itype){
         beta_radials[itype] = psds[itype].beta_radials;
     }
+    // std::cout << "build_beta" << std::endl;
     tcbd.build_beta(ntype, beta_radials.data());
 
+    // std::cout << "tabulate" << std::endl;
     tcbd.tabulate();
 
+    // std::cout << "orb_map" << std::endl;
     // build the orbital mapping table: [itype][iorb] -> (l, zeta, m)
     orb_map.resize({(int)ntype, tcbd.orb_->nphi_max(),3});
     for(int itype=0; itype<ntype; ++itype){
@@ -72,6 +78,7 @@ Op2c::Op2c(size_t ntype, int nspin, bool lspinorb,
         }
     }
 
+    std::cout << "beta_map" << std::endl;
     // build the beta mapping table: [itype][ibeta] -> (l, zeta, m)
     beta_map.resize({(int)ntype, tcbd.beta_->nphi_max(), 3});
     for(int itype=0; itype<ntype; ++itype){
@@ -96,8 +103,12 @@ void Op2c::overlap(size_t itype, size_t jtype, ModuleBase::Vector3<double> Rij, 
     jnorb = tcbd.orb_->nphi(jtype);
     int il, izeta, im;
     int jl, jzeta, jm;
-    int shift;
-    double grad_out[3];
+    int shift, m_phase;
+    double* grad_out;
+
+    if (dvx || dvy || dvz){
+        grad_out = new double[3];
+    }
 
     if (v.size() < inorb * jnorb){
         std::cout << "Warning: v.size() < inorb * jnorb" << std::endl;
@@ -146,12 +157,19 @@ void Op2c::overlap(size_t itype, size_t jtype, ModuleBase::Vector3<double> Rij, 
             jzeta = orb_map.get_value<int>(jtype, j, 1);
             jm = orb_map.get_value<int>(jtype, j, 2);
             tcbd.overlap_orb->calculate(itype, il, izeta, im, jtype, jl, jzeta, jm, Rij, v.data()+shift, grad_out);
+            
+            m_phase = (im+jm) % 2 == 0 ? 1 : -1;
+            v.data()[shift] *= m_phase;
+            grad_out[0] *= m_phase;
+            grad_out[1] *= m_phase;
+            grad_out[2] *= m_phase;
 
             if (dvx) dvx->data()[shift] = grad_out[0];
             if (dvy) dvy->data()[shift] = grad_out[1];
             if (dvz) dvz->data()[shift] = grad_out[2];
         }
     }
+    if (grad_out) delete[] grad_out;
 }
 
 void Op2c::overlap_position(
@@ -166,6 +184,7 @@ void Op2c::overlap_position(
     jnorb = tcbd.orb_->nphi(jtype);
     int il, izeta, im;
     int jl, jzeta, jm;
+    int m_phase;
     double *ptr, *ptrx, *ptry, *ptrz;
 
     if (v.size() < inorb * jnorb){
@@ -203,6 +222,12 @@ void Op2c::overlap_position(
             jzeta = orb_map.get_value<int>(jtype, j, 1);
             jm = orb_map.get_value<int>(jtype, j, 2);
             tcbd.overlap_orb->calculate(itype, il, izeta, im, jtype, jl, jzeta, jm, Rj-Ri, Rj, ptr, ptrx, ptry, ptrz);
+
+            m_phase = (im+jm) % 2 == 0 ? 1 : -1;
+            *ptr *= m_phase;
+            *ptrx *= m_phase;
+            *ptry *= m_phase;
+            *ptrz *= m_phase;
         }
     }
 }
@@ -219,6 +244,7 @@ void Op2c::orb_r_beta(
     int il, izeta, im;
     int kl, kzeta, km;
     int shift;
+    int m_phase;
     double cutoff;
     knorb = tcbd.beta_->nphi(ktype);
 
@@ -226,7 +252,7 @@ void Op2c::orb_r_beta(
     for (size_t i=0; i<itype.size(); ++i){
 
         // compute cutoff, and check for the distance of edge ik
-        cutoff = tcbd.orb_->rcut_max(itype[i]) + tcbd.beta_->rcut_max(ktype);
+        cutoff = this->get_orb_rcut_max(itype[i]) + this->get_beta_rcut_max(ktype);
         if (cutoff < (Rk-Ri[i]).norm()){
             continue;
         }
@@ -253,8 +279,15 @@ void Op2c::orb_r_beta(
                 } else {
                     shift = io * knorb + ko;
                 }
+
+                m_phase = (im+km) % 2 == 0 ? 1 : -1;
                 
                 tcbd.overlap_orb_beta->calculate(itype[i], il, izeta, im, ktype, kl, kzeta, km, Rk-Ri[i], Rk, ob[i].c+shift, oxb[i].c+shift, oyb[i].c+shift, ozb[i].c+shift);
+
+                ob[i].c[shift] *= m_phase;
+                oxb[i].c[shift] *= m_phase;
+                oyb[i].c[shift] *= m_phase;
+                ozb[i].c[shift] *= m_phase;
             }
         }
     }
@@ -268,21 +301,21 @@ void Op2c::ncomm_IKJ(
     // output
     std::vector<std::complex<double>>& vx, std::vector<std::complex<double>>& vy, std::vector<std::complex<double>>& vz
 ){
+    /*
+         <I|K,R><K,R|r|J,R'>-<I|r|K,R><K,R|J,R'> = <I,-R|K>(<K|r-R|J,R'-R>)-(<I,-R|r-R|K>)<K|J,R'-R>
+        =<I,-R|K><K|r|J,R'-R>-R<I,-R|K><K|J,R'-R>-<I,-R|r|K><K|J,R'-R>+R<I,-R|K><K|J,R'-R>
+        =<I,-R|K><K|r|J,R'-R>-<I,-R|r|K><K|J,R'-R>
+        */
     int inorb, jnorb, knorb, shift, s1, s2;
     inorb = tcbd.orb_->nphi(itype);
     jnorb = tcbd.orb_->nphi(jtype);
     knorb = tcbd.beta_->nphi(ktype);
 
+
     std::complex<double> imag_unit = std::complex<double>{0, 1};
 
     // npol is the number of polarizations
 
-    if (v.size() < inorb * jnorb * npol * npol){
-        std::cout << "Warning: v.size() < inorb * jnorb * npol * npol" << std::endl;
-        v.resize(inorb * jnorb * npol * npol);
-    } else if (v.size() > inorb * jnorb * npol * npol){
-        std::cout << "Warning: vx.size() > inorb * jnorb * npol * npol" << std::endl;
-    }
     if (vx.size() < inorb * jnorb * npol * npol){
         std::cout << "Warning: vx.size() < inorb * jnorb * npol * npol" << std::endl;
         vx.resize(inorb * jnorb * npol * npol);
@@ -326,8 +359,17 @@ void Op2c::ncomm_IKJ(
                     
                     //<psi|rexp(-iAr)|beta><beta|exp(iAr)|psi>-<psi|exp(-iAr)|beta><beta|rexp(iAr)|psi>
                     // multiply d in the end
-                    tmp = (ob[idx].c[i*knorb + p1] * oxb[jdx].c[j*knorb + p2]
-                                    - ob[jdx].c[j*knorb + p2] * oxb[idx].c[i*knorb + p1]);
+                    int idx_i_p1, idx_j_p2;
+                    if (is_transpose) {
+                        idx_i_p1 = p1 * inorb + i;
+                        idx_j_p2 = p2 * jnorb + j;
+                    } else {
+                        idx_i_p1 = i * knorb + p1;
+                        idx_j_p2 = j * knorb + p2;
+                    }
+
+                    tmp = (ob[idx].c[idx_i_p1] * oxb[jdx].c[idx_j_p2]
+                                    - ob[jdx].c[idx_j_p2] * oxb[idx].c[idx_i_p1]);
                     
                     if (npol == 2 && tmp_d_c) {
                         vx_tmp += tmp * (*tmp_d_c);
@@ -335,21 +377,25 @@ void Op2c::ncomm_IKJ(
                         vx_tmp += tmp * (*tmp_d_r);
                     }
 
-                    tmp = (ob[idx].c[i*knorb + p1] * oyb[jdx].c[j*knorb + p2]
-                                    - ob[jdx].c[j*knorb + p2] * oyb[idx].c[i*knorb + p1]);
+                    tmp = (ob[idx].c[idx_i_p1] * oyb[jdx].c[idx_j_p2]
+                                    - ob[jdx].c[idx_j_p2] * oyb[idx].c[idx_i_p1]);
                     if (npol == 2 && tmp_d_c) {
                         vy_tmp += tmp * (*tmp_d_c);
                     } else if (tmp_d_r) {
                         vy_tmp += tmp * (*tmp_d_r);
                     }
 
-                    tmp = (ob[idx].c[i*knorb + p1] * ozb[jdx].c[j*knorb + p2]
-                                    - ob[jdx].c[j*knorb + p2] * ozb[idx].c[i*knorb + p1]);
+                    tmp = (ob[idx].c[idx_i_p1] * ozb[jdx].c[idx_j_p2]
+                                    - ob[jdx].c[idx_j_p2] * ozb[idx].c[idx_i_p1]);
                     if (npol == 2 && tmp_d_c) {
                         vz_tmp += tmp * (*tmp_d_c);
                     } else if (tmp_d_r) {
                         vz_tmp += tmp * (*tmp_d_r);
+
+                        // std::cout << "p1: " << p1 << " p2: " << p2 << "Dnl: " << *tmp_d_r << std::endl;
                     }
+
+                    
                 }
                 if (is_transpose){
                     shift = (j * npol + s2) * inorb * npol + i * npol + s1;
@@ -357,10 +403,18 @@ void Op2c::ncomm_IKJ(
                     shift = (i * npol + s1) * jnorb * npol + j * npol + s2;
                 }
                 vx[shift] = (imag_unit * vx_tmp / 2.0); // Taking real part as requested by user warning
-                vy[shift] = (imag_unit * vy_tmp / 2.0);
+                vy[shift] = (imag_unit * vy_tmp / 2.0); // Ry to hartree
                 vz[shift] = (imag_unit * vz_tmp / 2.0);
             }
         }
     }
     
+}
+
+double Op2c::get_orb_rcut_max(int itype) const {
+    return tcbd.orb_->rcut_max(itype);
+}
+
+double Op2c::get_beta_rcut_max(int itype) const {
+    return tcbd.beta_->rcut_max(itype);
 }

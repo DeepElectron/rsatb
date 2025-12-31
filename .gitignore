@@ -21,8 +21,9 @@ rsatb/test/**/*h5
 test/py2c/PP_ORB/
 examples/_*
 *.dat
-*log*
+*log
 *.mtx
+build*
 rsatb/test/data/**/out*/config_*.json
 bandstructure.npy
 run_config.json

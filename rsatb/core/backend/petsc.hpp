@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <algorithm>
 #include <iostream>
+#include <vector>
 #include "petsc_hack.h"
 
 namespace rsatb::backend{
@@ -82,11 +83,11 @@ double2petscreal(int n, const double *in,
   PetscFunctionReturn(PETSC_SUCCESS);
 }
 
-// struct AtomData{
-//         PetscReal x, y, z;
-//         PetscInt index, type, nR, NR;
-//         PetscInt *R;
-//     };
+struct AtomData{
+        PetscReal x, y, z;
+        PetscInt index, type, nR, NR;
+        PetscInt *R;
+    };
 
 // struct BondData{
 //         PetscInt Rx, Ry, Rz; // TODO: optimizable, can stored all repetitive edge into one to avoid traffic in hr2hk.
@@ -148,7 +149,7 @@ private:
     PetscSection _ps_, _psg_;
     PetscSF _sf_;
     IS pNum;
-    int _rank_, _size_, _n_type_;
+    int _rank_, _size_, _n_type_, _norb_, _norb_local_;
     int *_atom_index_, *_atom_type_;
     const int *_edge_index_, *_edge_shift_vec_, *_type_norb_;
     double *_pos_, *_x_, *_y_, *_z_;
@@ -157,6 +158,7 @@ private:
     PetscInt pStart, pEnd, vStart, vEnd, eStart, eEnd;
     std::unordered_map<int, int> vl2vg, vg2vl;
     std::unordered_map<int, std::vector<int>> iconn;
+    MPI_Comm _comm_;
 
 public:
     DMAtomic()
@@ -183,6 +185,7 @@ public:
       */
       _type_norb_(type_norb), _edge_index_(edge_index), _edge_shift_vec_(edge_shift_vec),
       _n_type_((*std::max_element(atom_type, atom_type+n_atom))+1), _cell_(cell),
+      _comm_(comm),
       _atom_offset_(atom_offset), _n_edge_(n_edge), _N_edge_(N_edge), _n_atom_(n_atom), _N_atom_(N_atom)
     {
       // build DM
@@ -204,6 +207,7 @@ public:
       if (N != N_edge) {
         throw std::runtime_error("The input number of edge might be overlapped or absent!");
       }
+      
         // the input edge index
       
       for(int i=0; i<2*n_edge; i+=2){
@@ -214,6 +218,16 @@ public:
 
         // type info
       MPI_Allreduce(MPI_IN_PLACE, &_n_type_, 1, MPI_INT, MPIU_MAX, comm);
+
+      // compute orbital number
+      _norb_local_ = 0;
+      _norb_ = 0;
+      for (int i=0; i<_n_atom_; ++i) {
+        _norb_local_ += _type_norb_[atom_type[i]];
+      }
+      _norb_ = _norb_local_;
+
+      MPI_Allreduce(MPI_IN_PLACE, &_norb_, 1, MPI_INT, MPIU_SUM, comm);
 
        // offset
       int atom_offset_check = 0;
@@ -396,26 +410,13 @@ public:
 
       // construct iconn neighbour list
       int i, j;
-      std::unordered_map<int, int> conn_count, conn_count_tmp;
+      std::cout << "DMAtomic constructor: eStart=" << eStart << " eEnd=" << eEnd << std::endl;
       for(int ie=eStart; ie<eEnd; ++ie) {
         get_connected_atoms(ie, &i, &j);
-        if (conn_count.find(i) == conn_count.end()){
-          conn_count[i] = 1;
-        } else {
-          conn_count[i]++;
-        }
+        iconn[i].push_back(ie);
       }
-      for(int ie=eStart; ie<eEnd; ++ie) {
-        get_connected_atoms(ie, &i, &j);
-        if (iconn.find(i) == iconn.end()){
-          conn_count_tmp[i] = 1;
-          iconn[i].resize(conn_count[i]);
-          iconn[i][0] = j;
-        } else {
-          iconn[i][conn_count_tmp[i]] = j;
-          conn_count_tmp[i]++;
-        }
-      }
+
+      // std::cout << "DMAtomic constructor: iconn size " << iconn.size() << std::endl;
     };
 
     ~DMAtomic() {
@@ -464,10 +465,11 @@ public:
       PetscInt coneSize;
       const PetscInt *cone = NULL;
       DMPlexGetConeSize(_dm_, idx, &coneSize);
-      DMPlexGetCone(_dm_, idx, &cone);
       if (coneSize != 2) {
+        std::cout << "Error at idx: " << idx << " coneSize: " << coneSize << std::endl;
         throw std::runtime_error("The cone size for edge is not correct!");
       }
+      DMPlexGetCone(_dm_, idx, &cone);
       *i = cone[0]; *j = cone[1];
     }
 
@@ -549,7 +551,7 @@ public:
 
     void get_offset_global(int idx, int *offset) {
       PetscSectionGetOffset(_psg_, idx, reinterpret_cast<PetscInt*>(offset));
-      if (*offset < 0) *off = -*off - 1;
+      if (*offset < 0) *offset = -*offset - 1;
     };
 
     void get_atom_type(int idx, int *tp) {
@@ -580,17 +582,298 @@ public:
     void get_edge_vec(int idx, double *rx, double *ry, double *rz) {
       int Rx, Ry, Rz, i, j;
       double x, y, z;
-      this->get_connected_atoms(idx, &i, &j);
-      this->get_edge_shift_vec(idx, &Rx, &Ry, &Rz);
+      get_connected_atoms(idx, &i, &j);
+      get_edge_shift_vec(idx, &Rx, &Ry, &Rz);
       *rx=Rx*_cell_[0] + Ry*_cell_[3] + Rz*_cell_[6]; // cell shift in distance unit
       *ry=Rx*_cell_[1] + Ry*_cell_[4] + Rz*_cell_[7];
       *rz=Rx*_cell_[2] + Ry*_cell_[5] + Rz*_cell_[8];
-      this->get_pos(j, &x, &y, &z);
+      get_pos(j, &x, &y, &z);
       *rx += x; *ry += y; *rz += z;
-      this->get_pos(i, &x, &y, &z);
+      get_pos(i, &x, &y, &z);
       *rx -= x; *ry -= y; *rz -= z;
     }
 
+    void invert_cell(double *x, double *y, double *z) {
+      // 0. SAVE THE INPUT VECTOR (Essential for in-place transformation)
+      double rx = *x;
+      double ry = *y;
+      double rz = *z;
+
+      // Compute Cross Products: b x c, c x a, a x b
+      double cp_bc_x = _cell_[4] * _cell_[8] - _cell_[5] * _cell_[7];
+      double cp_bc_y = _cell_[5] * _cell_[6] - _cell_[3] * _cell_[8];
+      double cp_bc_z = _cell_[3] * _cell_[7] - _cell_[4] * _cell_[6];
+
+      double cp_ca_x = _cell_[7] * _cell_[2] - _cell_[8] * _cell_[1];
+      double cp_ca_y = _cell_[8] * _cell_[0] - _cell_[6] * _cell_[2];
+      double cp_ca_z = _cell_[6] * _cell_[1] - _cell_[7] * _cell_[0];
+
+      double cp_ab_x = _cell_[1] * _cell_[5] - _cell_[2] * _cell_[4];
+      double cp_ab_y = _cell_[2] * _cell_[3] - _cell_[0] * _cell_[5];
+      double cp_ab_z = _cell_[0] * _cell_[4] - _cell_[1] * _cell_[3];
+
+      // Compute Determinant (Volume)
+      double det = _cell_[0] * cp_bc_x + _cell_[1] * cp_bc_y + _cell_[2] * cp_bc_z;
+
+      if (std::abs(det) < 1e-12) {
+          throw std::runtime_error("Lattice volume is zero! Singular matrix.");
+      }
+      double inv_det = 1.0 / det;
+
+      // FORMULA: s_a = Vector . (b x c) / Volume
+      // Perform the Dot Product of the input vector with the cross product vectors
+      
+      // 1. Calculate new x (Projection onto 'a' reciprocal)
+      *x = (rx * cp_bc_x + ry * cp_bc_y + rz * cp_bc_z) * inv_det;
+
+      // 2. Calculate new y (Projection onto 'b' reciprocal)
+      *y = (rx * cp_ca_x + ry * cp_ca_y + rz * cp_ca_z) * inv_det;
+
+      // 3. Calculate new z (Projection onto 'c' reciprocal)
+      *z = (rx * cp_ab_x + ry * cp_ab_y + rz * cp_ab_z) * inv_det;
+    }
+
+    void get_edge_length(int idx, double *length) {
+      double rx, ry, rz;
+      get_edge_vec(idx, &rx, &ry, &rz);
+      *length = std::sqrt(rx*rx + ry*ry + rz*rz);
+    }
+    
+    // three body related
+
+    void get_iconn_reduced(std::unordered_map<int, std::vector<int>>& riconn, std::vector<double> r_max_left, std::vector<double> r_max_right){
+      // iconn is a map of the local vertex index to the local edge index that it connects, which might be redundant when defining the allocation of the matrix.
+      // riconn will be a map of the local vertex index to the local edge index that it connects, which will be used to define the allocation of the matrix.
+      int i, j, itype, jtype;
+      double r;
+
+      if (r_max_left.size() != _n_type_ || r_max_right.size() != _n_type_){
+        throw std::runtime_error("The size of r_max_left and r_max_right is not correct!");
+      }
+      for (auto it = iconn.begin(); it != iconn.end(); it++) { // first is the key, second is the value
+        std::vector<int> tmp(it->second.size(), vEnd+1); // fill with the vEnd+1 to mark the unoccupied position
+        for (int s=0; s<it->second.size(); s++) {
+          get_connected_atoms(it->second[s], &i, &j);
+          get_atom_type(i, &itype); get_atom_type(j, &jtype);
+          get_edge_length(it->second[s], &r);
+          if (r <= (r_max_left[itype] + r_max_right[jtype]) * 0.5) {
+            tmp[s] = j;
+          }
+        }
+        std::sort(tmp.begin(), tmp.end());
+        auto last = std::unique(tmp.begin(), tmp.end());
+        // std::cout << "last " << *last << std::endl;
+        if (*(last-1) == vEnd+1){
+          last--;
+        }
+        // for (int i=0; i<tmp.size(); i++) {
+        //   std::cout << "tmp " << tmp[i] << std::endl;
+        // }
+        // std::cout << "last " << *last << std::endl;
+        tmp.erase(last, tmp.end());
+        riconn[it->first].insert(riconn[it->first].end(), tmp.begin(), tmp.end());
+      }
+    }
+
+    void allocate_three_body_hopping_matrix(Mat *mat, std::vector<double> r_max_left, std::vector<double> r_max_right) {
+
+      // std::cout << "allocate_three_body_hopping_matrix\n" << std::endl;
+      // std::cout << "step1" << std::endl;
+      // 1. compute three body hopping maps, (local vertex, global vertex) pack
+      std::unordered_map<int, std::vector<int>> riconn, tbiconn; // three-body iconn
+      get_iconn_reduced(riconn, r_max_left, r_max_right);
+      // for (auto it = riconn.begin(); it != riconn.end(); it++) {
+      //   std::cout << "rank " << _rank_ << ", local index " << it->first << ", global size " << it->second.size() << std::endl;
+      //   for (int s=0; s<it->second.size(); s++) {
+      //     std::cout << "rank " << _rank_ << ", local index " << it->first << ", global index " << it->second[s] << std::endl;
+      //   }
+      // }
+
+      for (auto it = riconn.begin(); it != riconn.end(); it++) {
+        for (int s=0; s<it->second.size(); s++) {
+          std::vector<int> tmp(it->second.size(),0);
+          for (int i=0; i<it->second.size(); i++) {
+            tmp[i] = LVI2GVI(it->second[i]); // build the (local vertex, global vertex) pack
+          }
+          for (int i=0; i<it->second.size(); ++i){
+            tbiconn[it->second[i]].insert(tbiconn[it->second[i]].end(), tmp.begin(), tmp.end());
+          }
+        }
+
+        // reduce the current tbiconn
+        for (auto it2 = tbiconn.begin(); it2 != tbiconn.end(); it2++) {
+          std::sort(it2->second.begin(), it2->second.end());
+          auto last = std::unique(it2->second.begin(), it2->second.end());
+          it2->second.erase(last, it2->second.end());
+        }
+      }
+
+      // for (auto it = tbiconn.begin(); it != tbiconn.end(); it++) {
+      //   std::cout << "rank " << _rank_ << ", local index " << it->first << ", global size " << it->second.size() << std::endl;
+      //   for (int s=0; s<it->second.size(); s++) {
+      //     std::cout << "rank " << _rank_ << ", local index " << it->first << ", global index " << it->second[s] << std::endl;
+      //   }
+      // }
+
+      /*
+        2. broadcast the tbiconn, the ghost atoms's entries to their owner process
+        - 2.1 prepare the send buffer
+        - 2.2 send the send buffer count and prepare the recv buffer
+        - 2.3 broadcast the send buffer to recv buffer
+      */
+
+      // std::cout << "step2" << std::endl;
+      const PetscSFNode *remote = NULL;
+      const PetscInt *local = NULL;
+      PetscInt Nl, Nr; // Nl: Number of leaves (ghosts + owned-as-leaves), Nr: Number of local (ghost + owned)
+      // Get the graph: 'local' are indices on this process, 'remote' are {rank, index} of the owner
+      PetscSFGetGraph(_sf_, &Nr, &Nl, &local, &remote);
+
+      std::vector<int> sendcount(_size_, 0), recvcount(_size_, 0), rdispls(_size_, 0), sdispls(_size_, 0);
+      std::unordered_map<int, std::vector<int>> sendmap;
+      std::vector<int> senddata, recvdata;
+
+      int local_index;
+      int jnorb, inorb;
+
+      // std::cout << "Nl " << Nl << std::endl;
+      for (PetscInt i = 0; i < Nl; ++i) {
+        local_index = local == NULL ? i : local[i];
+        // std::cout << "rank " << _rank_ << ", local index " << local_index << " connected tri size " << tbiconn[local_index].size() << std::endl;
+        for (int j=0; j<tbiconn[local_index].size(); ++j) {
+          // std::cout << "rank " << _rank_ << ", local index " << local_index << ", global index " << tbiconn[local_index][j] << std::endl;
+          sendmap[remote[i].rank].push_back(remote[i].index);
+          sendmap[remote[i].rank].push_back(tbiconn[local_index][j]);
+          get_atom_norb(GVI2LVI(tbiconn[local_index][j]), &jnorb);
+          sendmap[remote[i].rank].push_back(jnorb);
+        }
+        sendcount[remote[i].rank] += tbiconn[local_index].size() * 3;
+      }
+
+      MPI_Alltoall(sendcount.data(), 1, MPI_INT, recvcount.data(), 1, MPI_INT, _comm_);
+
+      // for (int i=0; i<_size_; ++i) {
+      //   std::cout << "rank " << i << " sendcount " << sendcount[i] << " recvcount " << recvcount[i] << std::endl;
+      // }
+
+      int total_recv = 0;
+      int total_send = 0;
+      for (int r = 0; r < _size_; ++r) {
+        sdispls[r] = total_send;
+        total_send += sendcount[r];
+        rdispls[r] = total_recv;
+        total_recv += recvcount[r];
+
+        senddata.insert(senddata.end(), sendmap[r].begin(), sendmap[r].end());
+      }
+      recvdata.resize(total_recv);
+
+      MPI_Alltoallv(senddata.data(), sendcount.data(), sdispls.data(), MPI_INT, recvdata.data(), recvcount.data(), rdispls.data(), MPI_INT, _comm_);
+
+
+      // 3. reorder the recvdata, and make it unique for each vertice
+      // std::cout << "step3" << std::endl;
+      std::unordered_map<int, std::vector<int>> recvconn;
+      for (int i=0; i<recvdata.size(); i+=3) {
+        recvconn[recvdata[i]].push_back(recvdata[i+1]);
+        recvconn[recvdata[i]].push_back(recvdata[i+2]);
+      }
+
+      // for (int i=0; i<recvconn.size(); ++i) {
+      //   std::sort(recvconn[i].begin(), recvconn[i].end());
+      //   auto last = std::unique(recvconn[i].begin(), recvconn[i].end());
+      //   recvconn[i].erase(last, recvconn[i].end());
+      // }
+
+      // 4. allocate the matrix
+      // std::cout << "step4" << std::endl;
+      if (*mat != NULL && *mat != nullptr) {
+        MatDestroy(mat);
+      }
+      MatCreate(_comm_, mat);
+      MatSetType(*mat, "aij");
+
+      // std::cout << "mat create aij" << std::endl;
+
+      MatSetSizes(*mat, _norb_local_, _norb_local_, _norb_, _norb_);
+
+      // std::cout << "mat setsize" << std::endl;
+      std::vector<PetscInt> d_nnz(_norb_local_, 0), o_nnz(_norb_local_, 0);
+
+      // std::cout << "recvconn size: " << recvconn.size() << std::endl;
+      // for (auto it = recvconn.begin(); it != recvconn.end(); it++) {
+      //   std::cout << it->first << " " << it->second.size() << std::endl;
+      // }
+
+      bool ighost, jowned;
+      int offset_local;
+      int jgidx;
+      int rstart;
+      MatGetOwnershipRange(*mat, &rstart, NULL);
+      for (int idx=vStart; idx<vEnd; ++idx) {
+        std::unordered_map<int, bool> added;
+        ighost = atom_is_ghost(idx);
+        if (!ighost) {
+          get_atom_norb(idx, &inorb);
+          get_offset_global(idx, &offset_local);
+          offset_local -= rstart;
+          // first loop over tbiconn
+          for (int j=0; j<tbiconn[idx].size(); ++j) {
+            jgidx = tbiconn[idx][j]; // here jdidx is ghost or owned for sure
+            get_atom_norb(GVI2LVI(jgidx), &jnorb);
+            if (added.find(jgidx) == added.end()) {
+              added[jgidx] = true;
+              if (GAI_is_owned(GVI2GAI(jgidx))) {
+                for (int io=offset_local; io<offset_local+inorb; ++io) {
+                  // std::cout << "rank: " << _rank_ << " io: " << io << " jnorb: " << _norb_local_ << std::endl;
+                  d_nnz[io] += jnorb;
+                }
+              } else {
+                for (int io=offset_local; io<offset_local+inorb; ++io) {
+                  // std::cout << "rank: " << _rank_ << " io: " << io << " jnorb: " << _norb_local_ << std::endl;
+                  o_nnz[io] += jnorb;
+                }
+              }
+            } else {
+              continue;
+            }
+          }
+
+          for (int j=0; j<recvconn[idx].size(); j+=2) {
+            jgidx = recvconn[idx][j];
+            jnorb = recvconn[idx][j+1];
+            jowned = GAI_is_owned(GVI2GAI(jgidx));
+            if (added.find(jgidx) == added.end()) {
+              added[jgidx] = true;
+              if (jowned) {
+                for (int io=offset_local; io<offset_local+inorb; ++io) {
+                  // std::cout << "io: " << io << " jnorb: " << jnorb << std::endl;
+                  d_nnz[io] += jnorb;
+                }
+              } else {
+                for (int io=offset_local; io<offset_local+inorb; ++io) {
+                  // std::cout << "io: " << io << " jnorb: " << jnorb << std::endl;
+                  o_nnz[io] += jnorb;
+                }
+              }
+            } else {
+              continue;
+            }
+          }
+        }
+      }
+
+      // for (int i=0; i<_norb_local_; ++i) {
+      //   std::cout << "rank " << _rank_ << ", local index " << i << ", d_nnz " << d_nnz[i] << " o_nnz " << o_nnz[i] << std::endl;
+      // }
+
+      // std::cout << "mat set preallocation" << std::endl;
+      MatMPIAIJSetPreallocation(*mat, 0, d_nnz.data(), 0, o_nnz.data());
+
+      // std::cout << "mat set preallocation" << std::endl;
+    }
+
+    // get properties
     DM dm() { return _dm_; }
 
     size_t N_edge() { return _N_edge_; }
@@ -599,6 +882,8 @@ public:
     size_t n_edge() { return _n_edge_; }
     size_t n_type() { return _n_type_; }
     int rank() { return _rank_; }
+    int norb() { return _norb_; }
+    int norb_local() { return _norb_local_; }
     const int* type_norb() { return _type_norb_; }
     const double* cell() { return _cell_; }
     double* pos() { return _pos_; }
@@ -626,6 +911,15 @@ public:
     // void get_shift_vec(int idx, int *Rx, int *Ry, int *Rz) {};
 
     // void get_connected_atoms(int idx, int src, int dst) {}; // [i(src), j(dst)]
+    
+    const std::vector<int>& get_neighbors(int idx) const {
+        auto it = iconn.find(idx);
+        if (it != iconn.end()) {
+            return it->second;
+        }
+        static const std::vector<int> empty;
+        return empty;
+    }
 
 };
 

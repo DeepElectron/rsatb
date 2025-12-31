@@ -818,89 +818,9 @@ class AtomicData(Data):
         # Broadcast if needed (though here we computed it on all ranks if self.pos is on all ranks)
         # If self.pos is only on rank 0, we need to broadcast.
         # Assuming self.pos is available.
-        
-        # 6. Apply sorting to data
-        # sort the attrs
-        for fields in _NODE_FIELDS:
-            if hasattr(self, fields):
-                setattr(self, fields, getattr(self, fields)[sort_index])
-        setattr(self, AtomicDataDict.ATOM_INDEX_KEY, sort_index)
-        setattr(self, AtomicDataDict.PARTITION, partition[sort_index]) # partition array was in sorted order, need to match sorted atoms
+        partition = partition[sort_index]
 
-        # Fix partition array: 
-        # partition array constructed above: partition[k] is partition ID of k-th atom in SORTED order.
-        # After reordering atoms by sort_index, the new k-th atom IS the k-th atom in sorted order.
-        # So the partition array corresponding to the NEW atom order is just the 'partition' array we built.
-        setattr(self, AtomicDataDict.PARTITION, partition)
-
-        if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
-            # Remap edge indices
-            # Old index i -> New index map[i]
-            # map[sort_index[k]] = k
-            atom_index_map = np.zeros(len(sort_index), dtype=np.int32)
-            atom_index_map[sort_index] = np.arange(len(sort_index))
-            
-            self.edge_index = atom_index_map[self.edge_index]
-            
-            # Sort edges by source node (row-majorish) for better access
-            edge_sort_index = np.argsort(self.edge_index[0])
-            self.edge_index = self.edge_index[:,edge_sort_index]
-
-            for fields in _EDGE_FIELDS:
-                if hasattr(self, fields):
-                    setattr(self, fields, getattr(self, fields)[edge_sort_index])
-
-        # 7. Compute Cluster Ranges and Connectivity
-        # This part is similar to original partition_graph, can be refactored or copied.
-        # For now, copy essential logic.
-        
-        n_range = np.zeros((npart, 2), dtype=np.int32)
-        e_range = np.zeros((npart, 2), dtype=np.int32)
-        connectivity = [[]]*npart
-        ghost_list = [[]]*npart
-        
-        # Partition array is already aligned with current (sorted) atoms
-        edge_part = partition[self.edge_index[0]]
-        
-        nstart = 0
-        estart = 0
-        
-        for i in range(npart):
-            natom = np.sum(partition == i)
-            n_range[i][0] = nstart
-            n_range[i][1] = nstart + natom
-            nstart += natom
-
-            # Edges belonging to partition i
-            # Since we sorted edges by source node, and source nodes are sorted by partition,
-            # edges for partition i should be contiguous.
-            # But let's be safe and count.
-            mask = (edge_part == i)
-            count = np.sum(mask)
-            
-            e_range[i][0] = estart
-            e_range[i][1] = estart + count
-            estart += count
-            
-            # Connectivity
-            cst_nbr = self.edge_index[1][mask]
-            cst_nbr = np.unique(cst_nbr)
-            ghost_list[i] = cst_nbr
-            connectivity[i] = np.unique(partition[cst_nbr])
-
-        setattr(self, AtomicDataDict.CLUSTER_NODE_RANGE, n_range)
-        setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
-        setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
-        setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
-
-        if rank == 0:
-            print("############### The Hilbert partition result ##############")
-            for i in range(len(connectivity)):
-                print("rank ", i, ": connected to ", len(connectivity[i]), " neighbour.")
-
-        if split:
-            assert comm.Get_size() == npart, "The split can only be called  with npart=MPI size"
-            self.split(rank)
+        self._finalize_partition(sort_index, partition)
 
         return True
 
@@ -966,6 +886,11 @@ class AtomicData(Data):
         comm.Bcast(sort_index, root=0)
         comm.Bcast(partition, root=0)
 
+        self._finalize_partition(sort_index, partition)
+
+        return True
+
+    def _finalize_partition(self, sort_index, partition):
         # sort the attrs
         for fields in _NODE_FIELDS:
             if hasattr(self, fields):
@@ -976,6 +901,7 @@ class AtomicData(Data):
         if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
             atom_index_map = np.zeros(len(sort_index), dtype=np.int32)
             atom_index_map[sort_index] = np.arange(len(sort_index))
+
             self.edge_index = atom_index_map[self.edge_index]
             edge_sort_index = np.argsort(self.edge_index[0])
             self.edge_index = self.edge_index[:,edge_sort_index]
@@ -1001,18 +927,20 @@ class AtomicData(Data):
             n_range[i][1] = nstart + natom
             nstart += natom
 
-            cst_nbr = self.edge_index[1][edge_part == i]
-            e_range[i][0] = estart
-            e_range[i][1] = estart + len(cst_nbr)
-            estart += len(cst_nbr)
-            cst_nbr = np.unique(cst_nbr)
-            ghost_list[i] = cst_nbr
-            connectivity[i] = np.unique(partition[cst_nbr])
+            if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
+                cst_nbr = self.edge_index[1][edge_part == i]
+                e_range[i][0] = estart
+                e_range[i][1] = estart + len(cst_nbr)
+                estart += len(cst_nbr)
+                cst_nbr = np.unique(cst_nbr)
+                ghost_list[i] = cst_nbr
+                connectivity[i] = np.unique(partition[cst_nbr])
 
         setattr(self, AtomicDataDict.CLUSTER_NODE_RANGE, n_range)
-        setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
-        setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
-        setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
+        if hasattr(self, AtomicDataDict.EDGE_INDEX_KEY):
+            setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
+            setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
+            setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
 
         if rank == 0:
             print("############### The partition result ##############")
@@ -1023,7 +951,6 @@ class AtomicData(Data):
             assert comm.Get_size() == npart, "The split can only be called  with npart=MPI size"
             self.split(rank)
 
-        return True
     
     def split(self, i):
         """
@@ -1159,7 +1086,7 @@ class AtomicData(Data):
         return type(self)(**new_dict)
 
 
-_ERROR_ON_NO_EDGES: bool = os.environ.get("NEQUIP_ERROR_ON_NO_EDGES", "true").lower()
+_ERROR_ON_NO_EDGES: bool = os.environ.get("RSATB_ERROR_ON_NO_EDGES", "true").lower()
 assert _ERROR_ON_NO_EDGES in ("true", "false")
 _ERROR_ON_NO_EDGES = _ERROR_ON_NO_EDGES == "true"
 

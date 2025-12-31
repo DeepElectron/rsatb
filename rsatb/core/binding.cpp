@@ -159,6 +159,21 @@ PYBIND11_MODULE(binding, m) {
             py::arg("orbital_dir") = "./"
         )
 
+        .def("setup_V_orb", [](
+            rsatb::Solver &solver, 
+            const std::vector<std::string> &orb_names, 
+            const std::string& orb_dir,
+            const std::vector<std::string> &psd_names,
+            const std::string& psd_dir
+            ){
+                solver.setup_V(orb_names, orb_dir, psd_names, psd_dir);
+            },
+            py::arg("orb_names"),
+            py::arg("orb_dir") = "./",
+            py::arg("psd_names"),
+            py::arg("psd_dir") = "./"
+        )
+
         .def("setup_H_h5", [](
             rsatb::Solver &solver, // Since python call self as the first arg
             const std::string &HFile

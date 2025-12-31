@@ -52,7 +52,7 @@ namespace rsatb{
 //     PetscFunctionReturn(PETSC_SUCCESS);
 // };
 
-PetscErrorCode SetLBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor){ // get the local idx-th edge and transform it, and add it on mat. 
+PetscErrorCode SetLBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor){ // get the local idx-th edge and transform it, and add it on mat. 
     rsatb::backend::AtomData atom_i, atom_j;
     std::complex<double> phase;
     PetscInt offset_i, offset_j;
@@ -96,7 +96,7 @@ PetscErrorCode SetLBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inor
     PetscFunctionReturn(PETSC_SUCCESS);
 };
 
-PetscErrorCode SetGBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor){ // get the local idx-th edge and transform it, and add it on mat. 
+PetscErrorCode SetGBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, double *v, std::complex<double> factor){ // get the local idx-th edge and transform it, and add it on mat. 
     rsatb::backend::AtomData atom_i, atom_j;
     std::complex<double> phase;
     PetscInt offset_i, offset_j;
@@ -125,6 +125,42 @@ PetscErrorCode SetGBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inor
 
     // for (PetscInt k=0; k<(PetscInt)inorb*jnorb; ++k) std::cout<<v_petsc[k];
     // std::cout<<phase_p<<"\n";
+
+    // add the vcalue v to the mat.
+    for (int im=0;im<inorb;im++) idxm[im] = im+offset_i;
+    for (int in=0;in<jnorb;in++) idxn[in] = in+offset_j;
+
+    MatSetValues(mat, inorb, idxm, jnorb, idxn, v_petsc, ADD_VALUES);
+
+    if (v_free) {PetscCall(PetscFree(v_petsc));}
+
+    PetscFunctionReturn(PETSC_SUCCESS);
+};
+
+PetscErrorCode SetGBlockR2K(Mat mat, DMAtomic &dm_atomic, int i, int j, int inorb, int jnorb, double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, std::complex<double> *v, std::complex<double> factor){ 
+    rsatb::backend::AtomData atom_i, atom_j;
+    std::complex<double> phase;
+    PetscInt offset_i, offset_j;
+    PetscScalar *v_petsc = nullptr;
+    PetscBool v_free;
+    PetscInt idxm[inorb], idxn[jnorb];
+
+    cal_phase(Rx, Ry, Rz, Kx, Ky, Kz, &phase);
+    phase *= factor;
+    // get offset
+    dm_atomic.get_offset_global(i, &offset_i);
+    dm_atomic.get_offset_global(j, &offset_j);
+    
+    rsatb::backend::cdouble2petscscalar(inorb*jnorb, v, &v_petsc, &v_free);
+    // complex phase to PETscScalar
+    PetscScalar phase_p;
+    #if defined(PETSC_USE_COMPLEX)
+    phase_p = PetscCMPLX(phase.real(),phase.imag());
+    #else
+    phase_p = static_cast<PetscScalar>(phase.real());
+    if (phase.imag() != 0) throw std::runtime_error("The PETSc should be compiled with complex type when the system have periodicity.");
+    #endif
+    for (PetscInt k=0; k<(PetscInt)inorb*jnorb; ++k) v_petsc[k] = v_petsc[k]*phase_p;
 
     // add the vcalue v to the mat.
     for (int im=0;im<inorb;im++) idxm[im] = im+offset_i;
@@ -257,6 +293,7 @@ void setMatrixR2K(Mat mat, DMAtomic &dm_atomic, rsatb::io::HDF5Handler *handler,
 
     int i, j, eorb;
     dm_atomic.get_edge_range_local(&estart, &eend);
+    // std::cout << "setMatrixR2K (HDF5) edge loop start. estart: " << estart << " eend: " << eend << std::endl;
     for (int ie=estart; ie<eend; ie++)
     {
         /* We do not check for ghost since dm can only have ghost edge when overlap>0, which is not our case, by now. */
@@ -569,7 +606,7 @@ void setMatrixR2K(Mat mat, DMAtomic &dm_atomic, rsatb::io::HDF5Handler *handler,
 // };
 
 void setMatrixR2K(
-    Mat S, DMAtomic &dm_atomic, const double* cell, int ntype, 
+    Mat S, DMAtomic &dm_atomic, 
     const std::string* file_orb0, const std::string& orbital_dir, 
     double Kx, double Ky, double Kz, Mat Rx, Mat Ry, Mat Rz
 ) {
@@ -585,6 +622,8 @@ void setMatrixR2K(
    // Loop over node
     PetscInt nstart, nend, estart, eend;
     bool ghost;
+    const double* cell = dm_atomic.cell();
+    int ntype = dm_atomic.n_type();
 
     TwoCenterBundle tcbd;
     container::Tensor orb_map{container::DataType::DT_INT, container::TensorShape({0})};
@@ -694,6 +733,7 @@ void setMatrixR2K(
 
     int i, j, eorb;
     dm_atomic.get_edge_range_local(&estart, &eend);
+    // std::cout << "setMatrixR2K (Orbital) edge loop start. estart: " << estart << " eend: " << eend << std::endl;
     for (int ie=estart; ie<eend; ie++)
     {
         /* We do not check for ghost since dm can only have ghost edge when overlap>0, which is not our case, by now. */
@@ -787,14 +827,38 @@ void setMatrixR2K(
     orb_map.resize({0});
 };
 
-void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell, int ntype, 
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic,
                 const std::vector<std::string> orb_names, const std::string& orb_dir, const std::vector<std::string> psd_names, const std::string& psd_dir, 
-                double Kx, double Ky, double Kz, Mat Vx=nullptr, Mat Vy=nullptr, Mat Vz=nullptr, const std::string& log_file)
+                double Kx, double Ky, double Kz, Mat Vx, Mat Vy, Mat Vz, const std::string& log_file)
 {
         /* Iterate over edge, node, and them:
         1. Form the S and grad_S block, grad_S can be directly added onto the V(x/y/z).
         2. form the velocity
-            i. loop over k
+            i. loop over ks
+            ii. compute the orb beta integrals
+            iii. compute v_comm, add to V(x/y/z)
+    */
+
+    MPI_Comm comm;
+    PetscObjectGetComm((PetscObject)(dm_atomic.dm()), &comm);
+
+    Op2c oc(
+        dm_atomic.n_type(), 1, 0, 
+        orb_dir, orb_names, psd_dir, psd_names,
+        comm, log_file
+    );
+    
+    setMatrixR2K(S, dm_atomic, oc, Kx, Ky, Kz, Vx, Vy, Vz, log_file);
+};
+
+void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic,
+                Op2c &oc, 
+                double Kx, double Ky, double Kz, Mat Vx, Mat Vy, Mat Vz, const std::string& log_file)
+{
+        /* Iterate over edge, node, and them:
+        1. Form the S and grad_S block, grad_S can be directly added onto the V(x/y/z).
+        2. form the velocity
+            i. loop over ks
             ii. compute the orb beta integrals
             iii. compute v_comm, add to V(x/y/z)
     */
@@ -804,31 +868,34 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
    // Loop over node
     PetscInt nstart, nend, estart, eend;
     bool ghost;
+    const double* cell = dm_atomic.cell();
+    int ntype = dm_atomic.n_type();
 
-    Op2c oc(
-        ntype, 1, 0, 
-        orb_dir, orb_names, psd_dir, psd_names,
-        comm, logfile
-    );
+    // std::cout << "rank: " << dm_atomic.rank() << ", " << "OC init" << std::endl;
+    // std::cout << "OC init done" << std::endl;
+    std::complex<double> IMAG_UNIT(0, 1);
 
-    tcbd.build_orb(ntype, file_orb0, orbital_dir, comm);
-    tcbd.tabulate();
+    // tcbd.build_orb(ntype, file_orb0, orbital_dir, comm);
+    // tcbd.tabulate();
 
     int i, j, eorb, idx, jdx, edx, ie; // idx, jdx: local index, edx: local edge index
     int inorb, jnorb, m, n, flag, Rx_, Ry_, Rz_;
     int itype, jtype, m_phase;
     double rx, ry, rz, x, y, z;
-    std::vector<double>* vXp=nullptr, vYp=nullptr, vZp=nullptr;
+    std::vector<double> *vXp=nullptr, *vYp=nullptr, *vZp=nullptr;
 
     ModuleBase::Vector3<double> vR(0.0, 0.0, 0.0);
     ModuleBase::Vector3<double> R2(0.0, 0.0, 0.0);
+    std::complex<double> erfactor = 27.211386245981 / 1.8897259886;
+
+    // std::cout << "Before loop over vertex" << std::endl;
 
     dm_atomic.get_vertex_range_local(&nstart, &nend);
     for(idx=nstart;idx<nend;++idx){
         ghost = dm_atomic.atom_is_ghost(idx);
         if(!ghost){ /* only assign the non-ghost vertices with onsite-block (since it is the one truly owned by the rank)*/
             dm_atomic.get_atom_norb(idx, &inorb);
-            std::vecctor<double> vS(inorb*inorb), vX, vY, vZ;
+            std::vector<double> vS(inorb*inorb), vX, vY, vZ;
             if (Vx) {
                 vX.resize(inorb*inorb);
                 vXp = &vX;
@@ -841,6 +908,8 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
                 vZ.resize(inorb*inorb);
                 vZp = &vZ;
             }
+
+            // std::cout << "rank: " << dm_atomic.rank() << "Before Calculation onsite blocks ~~ idx: " << idx << " inorb: " << inorb << std::endl;
             
             // R vec is zero
             // get block from org index atom_data.index
@@ -857,9 +926,11 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
 
             SetLBlockR2K(S, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vS.data());
 
-            if (Vx) { SetLBlockR2K(Vx, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT); }
-            if (Vy) { SetLBlockR2K(Vy, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT); }
-            if (Vz) { SetLBlockR2K(Vz, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT); }
+            if (Vx) { SetLBlockR2K(Vx, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor); }
+            if (Vy) { SetLBlockR2K(Vy, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor); }
+            if (Vz) { SetLBlockR2K(Vz, dm_atomic, idx, idx, inorb, inorb, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor); }
+
+            // std::cout << "rank: " << dm_atomic.rank() << "After Calculation onsite blocks ~~ idx: " << idx << " inorb: " << inorb << std::endl;
         }
     }
 
@@ -876,7 +947,7 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
             dm_atomic.get_atom_type(idx, &itype);
             dm_atomic.get_atom_type(jdx, &jtype);
 
-            std::vecctor<double> vS(inorb*jnorb), vX, vY, vZ;
+            std::vector<double> vS(inorb*jnorb), vX, vY, vZ;
             if (Vx) {
                 vX.resize(inorb*jnorb);
                 vXp = &vX;
@@ -889,7 +960,8 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
                 vZ.resize(inorb*jnorb);
                 vZp = &vZ;
             }
-
+            
+            // std::cout << "rank: " << dm_atomic.rank() << "Before Calculation edge blocks ~~ idx: " << idx << " jdx: " << jdx << " inorb: " << inorb << " jnorb: " << jnorb << std::endl;
             dm_atomic.get_edge_shift_vec(edx, &Rx_, &Ry_, &Rz_);
             rx=Rx_*cell[0] + Ry_*cell[3] + Rz_*cell[6]; // cell shift in distance unit
             ry=Rx_*cell[1] + Ry_*cell[4] + Rz_*cell[7];
@@ -898,15 +970,19 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
             R2.set(rx+x, ry+y, rz+z); // Rj
             dm_atomic.get_pos(idx, &x, &y, &z);
             vR.set(R2.x-x, R2.y-y, R2.z-z); // Rj - Ri
+            rx = vR.x; ry = vR.y; rz = vR.z;
+            dm_atomic.invert_cell(&rx, &ry, &rz);
+            // std::cout << rx << " " << ry << " " << rz << std::endl;
             vR *= 1.8897259886; // to bohr
             R2 *= 1.8897259886;
 
             oc.overlap(itype, jtype, vR, false, vS, vXp, vYp, vZp);
 
-            SetLBlockR2K(S, dm_atomic, idx, jdx, inorb, jnorb, Rx_, Ry_, Rz_, Kx, Ky, Kz, vS);
-            if (Vx) { SetLBlockR2K(Vx, dm_atomic, idx, jdx, inorb, jnorb, Rx_, Ry_, Rz_, Kx, Ky, Kz, vX.data(), IMAG_UNIT); }
-            if (Vy) { SetLBlockR2K(Vy, dm_atomic, idx, jdx, inorb, jnorb, Rx_, Ry_, Rz_, Kx, Ky, Kz, vY.data(), IMAG_UNIT); }
-            if (Vz) { SetLBlockR2K(Vz, dm_atomic, idx, jdx, inorb, jnorb, Rx_, Ry_, Rz_, Kx, Ky, Kz, vZ.data(), IMAG_UNIT); }
+            SetLBlockR2K(S, dm_atomic, idx, jdx, inorb, jnorb, Rx_, Ry_, Rz_, Kx, Ky, Kz, vS.data());
+            if (Vx) { SetLBlockR2K(Vx, dm_atomic, idx, jdx, inorb, jnorb, rx, ry, rz, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor); }
+            if (Vy) { SetLBlockR2K(Vy, dm_atomic, idx, jdx, inorb, jnorb, rx, ry, rz, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor); }
+            if (Vz) { SetLBlockR2K(Vz, dm_atomic, idx, jdx, inorb, jnorb, rx, ry, rz, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor); }
+            // std::cout << "rank: " << dm_atomic.rank() << "After Calculation edge blocks ~~ idx: " << idx << " jdx: " << jdx << " inorb: " << inorb << " jnorb: " << jnorb << std::endl;
         }
     }
 
@@ -914,72 +990,108 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
     MatAssemblyEnd(S, MAT_FINAL_ASSEMBLY);
 
     // step 2, form vcomm
-
+    ModuleBase::Vector3<double> dR;
     if (Vx || Vy || Vz) {
         std::vector<size_t> conn_type;
         std::vector<int> conn_idx;
-        std::vector<ModuleBase::Vector3> Ri, Rshift;
-        ModuleBase::Vector3 Rk;
+        std::vector<ModuleBase::Vector3<double>> Ri;
+        // std::vector<ModuleBase::Vector3<int>> Rshift;
+        ModuleBase::Vector3<double> Rk;
         std::vector<ModuleBase::matrix> ob, oxb, oyb, ozb;
         int tp, nei, ie, Rkix, Rkiy, Rkiz, Rkjx, Rkjy, Rkjz;
         int ktype, tmp;
-        double r, cutoff, err;
+        double r, cutoff, err, rki, rkj, cutoff_ki, cutoff_kj;
 
         for(int kdx=nstart;kdx<nend;++kdx){
-            dm_atomic.get_pos(kdx, &rx, &ry, &rz;)
-            Rk.set(rx, ry, rz);
-            nei = dm_atomic.icomm[kdx].size();
-            conn_type.resize(nei); Ri.resize(nei); ob.resize(nei); oyb.resize(nei); ozb.resize(nei), Rshift.resize(nei), conn_idx.resize(nei);
-            for(int in=0; in<nei; ++in){
-                ie = dm_atomic.iconn[k][in];
-                dm_atomic.get_connected_atoms(ie, &tmp, &idx);
-                dm_atomic.get_edge_vec(ie, &rx, &ry, &rz;) // Ri - Rk
-                dm_atomic.get_edge_shift_vec(idx, &Rx_, &Ry_, &Rz_); // int Rx, Ry, Rz
+            ghost = dm_atomic.atom_is_ghost(kdx);
+            if(!ghost){
+                // std::cout << "kdx: " << kdx << " nstart: " << nstart << " nend: " << nend << std::endl;
+                dm_atomic.get_pos(kdx, &rx, &ry, &rz);
+                Rk.set(rx, ry, rz);
+                const std::vector<int>& neighbors = dm_atomic.get_neighbors(kdx);
+                nei = neighbors.size();
+                conn_type.resize(nei+1); Ri.resize(nei+1); ob.resize(nei+1); oxb.resize(nei+1); oyb.resize(nei+1); ozb.resize(nei+1); conn_idx.resize(nei+1);
+                for(int in=0; in<nei; ++in){
+                    ie = neighbors[in];
+                    dm_atomic.get_connected_atoms(ie, &tmp, &idx);
+                    dm_atomic.get_edge_vec(ie, &rx, &ry, &rz); // Ri - Rk
+                    dm_atomic.get_edge_shift_vec(idx, &Rx_, &Ry_, &Rz_); // int Rx, Ry, Rz
 
-                conn[in] = dm_atomic.get_atom_type(idx, &tp);
-                conn_idx[in] = idx;
-                Ri[in].set(rx+Rk.x, ry+Rk.y, rz+Rk.z);
-                Rshift[in].set(Rx_, Ry_, Rz_);
-                Ri[in] *= 1.8897259886;
-                Rshift[in] *= 1.8897259886;
-            }
-
-            dm_atomic.get_atom_type(k, &ktype);
-
-            oc.orb_r_beta(conn, ktype, Ri, Rk, false,
-                ob, oxb, oyb, ozb
-            );
-            
-            for(int in=0; in<conn.size(); ++in) {
-                itype = conn[in];
-                inorb = dm_atomic.type_norb()[itype];
-                idx = conn_idx[in];
-                for(int jn=0; jn<conn.size(); ++jn){
-                    r = (Ri[jn] - Ri[in]).norm(); // can compare with the cutoff to decide whether this edge is needed.
-                    cutoff = oc.tcdb.orb_.rcut_max(itype) + oc.tcdb.orb_.rcut_max(jtype)
-                    if( r > cutoff) {
-                        err = (ob[in].absmax() + obx[in].absmax() + oby[in].absmax() + obz[in].absmax()) / 3.0
-                        if ( err > 1e-7 ) {
-                            std::cout << "There are large values throwed away with magnitute when computing velocity operator: " << err << " ." std::endl;
-                        }
-                        continue;
-                    }
-                    jtype = conn[jn];
-                    jnorb = dm_atomic.type_norb()[jtype];
-                    std::vecctor<std::complex<double>> vX(inorb*jnorb, 0), vY(inorb*jnorb, 0), vZ(inorb*jnorb, 0);
-                    
-                    oc.ncomm_IKJ(
-                        itype, in, ktype, jtype, in,
-                        ob, oxb, oyb, ozb,
-                        vX, vY, vZ
-                    );
-
-                    if (Vx) { SetGBlockR2K(Vx, dm_atomic, idx, jdx, inorb, jnorb, Rshift[jdx].x-Rshift[idx].x, Rshift[jdx].y-Rshift[idx].y, Rshift[jdx].z-Rshift[idx].z, Kx, Ky, Kz, vX.data(), 27.211386245981); }
-                    if (Vy) { SetGBlockR2K(Vy, dm_atomic, idx, jdx, inorb, jnorb, Rshift[jdx].x-Rshift[idx].x, Rshift[jdx].y-Rshift[idx].y, Rshift[jdx].z-Rshift[idx].z, Kx, Ky, Kz, vY.data(), 27.211386245981); }
-                    if (Vz) { SetGBlockR2K(Vz, dm_atomic, idx, jdx, inorb, jnorb, Rshift[jdx].x-Rshift[idx].x, Rshift[jdx].y-Rshift[idx].y, Rshift[jdx].z-Rshift[idx].z, Kx, Ky, Kz, vZ.data(), 27.211386245981); }
+                    dm_atomic.get_atom_type(idx, &tp);
+                    conn_type[in] = tp;
+                    conn_idx[in] = idx;
+                    Ri[in].set(rx+Rk.x, ry+Rk.y, rz+Rk.z);
+                    // Rshift[in].set(Rx_, Ry_, Rz_);
+                    Ri[in] *= 1.8897259886;
+                    // Rshift[in] *= 1.8897259886;
                 }
-            } // i-k-j loop
-        } // k loop
+                Rk *= 1.8897259886;
+
+                // add on-site
+
+                dm_atomic.get_atom_type(kdx, &ktype);
+                conn_type[nei] = ktype;
+                conn_idx[nei] = kdx;
+                Ri[nei] = Rk;
+                // Rshift.push_back(Rk-Rk);
+                
+                
+                oc.orb_r_beta(conn_type, ktype, Ri, Rk, false,
+                    ob, oxb, oyb, ozb
+                );
+
+                for(int in=0; in<conn_type.size(); ++in) {
+                    itype = conn_type[in];
+                    dm_atomic.get_atom_norb(conn_idx[in], &inorb);
+                    idx = conn_idx[in];
+                    for(int jn=0; jn<conn_type.size(); ++jn){
+
+                        
+                        jtype = conn_type[jn];
+                        dR = Ri[jn] - Ri[in];
+                        r = dR.norm(); // can compare with the cutoff to decide whether this edge is needed.
+                        rki = (Ri[in] - Rk).norm();
+                        rkj = (Ri[jn] - Rk).norm();
+                        dR /= 1.8897259886;
+                        dm_atomic.invert_cell(&dR.x, &dR.y, &dR.z);
+                        std::cout << "dR: " << dR.x << " " << dR.y << " " << dR.z << std::endl;
+                        cutoff = oc.get_orb_rcut_max(itype) + oc.get_orb_rcut_max(jtype);
+                        cutoff_ki = oc.get_beta_rcut_max(ktype) + oc.get_orb_rcut_max(itype);
+                        cutoff_kj = oc.get_beta_rcut_max(ktype) + oc.get_orb_rcut_max(jtype);
+                        if(rki > cutoff_ki || rkj > cutoff_kj) { // the orb_beta is zero in this case, ignore.
+                            continue;
+                        }
+                        // std::cout << "cutoff computed: " << cutoff << " cutoff_ki: " << cutoff_ki << " cutoff_kj: " << cutoff_kj << std::endl;
+                        // std::cout << "rki: " << rki << " rkj: " << rkj << " r: " << r << std::endl;
+                        // if( r > cutoff) {
+                        //     err = (ob[in].absmax() + oxb[in].absmax() + oyb[in].absmax() + ozb[in].absmax()) / 3.0;
+                        //     if ( err > 1e-7 ) {
+                        //         std::cout << "There are large values throwed away with magnitute when computing velocity operator: " << err << " ." << std::endl;
+                        //     }
+                        //     continue;
+                        // }
+                        jtype = conn_type[jn];
+                        dm_atomic.get_atom_norb(conn_idx[jn], &jnorb);
+                        jdx = conn_idx[jn];
+                        std::vector<std::complex<double>> vX(inorb*jnorb, 0), vY(inorb*jnorb, 0), vZ(inorb*jnorb, 0);
+                        
+                        // std::cout << "before ncomm_IKJ" << " itype: " << itype << " in: " << in << " ktype: " << ktype << " jtype: " << jtype << " jn: " << jn << std::endl;
+                        oc.ncomm_IKJ(
+                            itype, in, ktype, jtype, jn,
+                            ob, oxb, oyb, ozb,
+                            1, false,
+                            vX, vY, vZ
+                        );
+
+                        // std::cout << "after ncomm_IKJ" << std::endl;
+
+                        if (Vx) { SetGBlockR2K(Vx, dm_atomic, idx, jdx, inorb, jnorb, dR.x, dR.y, dR.z, Kx, Ky, Kz, vX.data(), erfactor); }
+                        if (Vy) { SetGBlockR2K(Vy, dm_atomic, idx, jdx, inorb, jnorb, dR.x, dR.y, dR.z, Kx, Ky, Kz, vY.data(), erfactor); }
+                        if (Vz) { SetGBlockR2K(Vz, dm_atomic, idx, jdx, inorb, jnorb, dR.x, dR.y, dR.z, Kx, Ky, Kz, vZ.data(), erfactor); }
+                    }
+                } // i-k-j loop
+            } 
+        }// k loop
     }
 
     if (Vx){
@@ -996,7 +1108,7 @@ void setMatrixR2K(Mat S, rsatb::backend::DMAtomic &dm_atomic, const double* cell
     }
 };
 
-void cal_phase(int Rx, int Ry, int Rz, double Kx, double Ky, double Kz, std::complex<double> *phase){
+void cal_phase(double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, std::complex<double> *phase){
     *phase = std::complex<double>(0.0, -2.0 * M_PI * ((Rx * Kx) + (Ry * Ky) + (Rz * Kz)));
     *phase = std::exp(*phase);
 };

@@ -68,4 +68,7 @@ public:
         int npol, bool is_transpose,
         std::vector<std::complex<double>>& vx, std::vector<std::complex<double>>& vy, std::vector<std::complex<double>>& vz
     );
+
+    double get_orb_rcut_max(int itype) const;
+    double get_beta_rcut_max(int itype) const;
 };

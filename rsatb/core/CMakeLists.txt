@@ -115,7 +115,7 @@ target_include_directories(
     ./extern/nao-abacus/source_base/module_device 
     )
 
-target_link_libraries(hr2hk PUBLIC backend io base numerical_atomic_orbitals)
+target_link_libraries(hr2hk PUBLIC backend io base numerical_atomic_orbitals estate)
 
 # add solver lib
 add_library(solver SHARED solver.cpp solver.hpp)
@@ -157,3 +157,6 @@ set_target_properties(hr2hk PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:
 
 add_executable(test ./test.cpp)
 target_link_libraries(test PRIVATE solver GTest::gtest)
+
+add_executable(test_hr2hk ./test_hr2hk.cpp)
+target_link_libraries(test_hr2hk PRIVATE solver GTest::gtest)

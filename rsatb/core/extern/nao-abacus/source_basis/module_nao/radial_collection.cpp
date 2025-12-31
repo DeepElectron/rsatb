@@ -243,7 +243,8 @@ void RadialCollection::build(const int ntype, BetaRadials* const nls)
 
 void RadialCollection::build(const int nfile, const std::string* const file, const char ftype, const int p, const int pm, MPI_Comm comm)
 {
-
+    int my_rank = 0;
+    MPI_Comm_rank(comm, &my_rank);
     cleanup();
 
     ntype_ = nfile;
@@ -293,6 +294,8 @@ void RadialCollection::build(const int nfile, const std::string* const file, con
     iter_build();
     set_rcut_max();
     this->p_ = p;
+
+    // std::cout << "rank: " << my_rank << ", " << "RadialCollection::build, ntype: " << ntype_ << std::endl;
 }
 
 void RadialCollection::set_transformer(ModuleBase::SphericalBesselTransformer sbt, const int update)
