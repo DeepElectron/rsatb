@@ -279,7 +279,8 @@ void Solver::setup_H_h5(const std::string &HFile){ /* Setup H and S, how to asse
     
     // std::cout << "Here? Setup H!" << std::endl;
     this->set_mat_from_h5(&_H_, HFile);
-
+    
+    _is_scaled_ = false;
     _hamiltonian_ready_ = true;
 };
 
@@ -348,7 +349,11 @@ void Solver::setup_KSP(){
 }
 
 void Solver::scale_shift_H(double emin, double emax, bool verbose){
-    PetscScalar _emax_, _emin_;
+    if (_is_scaled_) {
+        if (verbose) std::cout << "The system have been scaled and shift already, ignoring this step" << std::endl;
+        return;
+    }
+
     if (emax <= emin) { // in this case we think the input emin, emax is not meaningful
         EPS eps;
         PetscInt nconv=1;
@@ -434,6 +439,7 @@ void Solver::scale_shift_H(double emin, double emax, bool verbose){
         MatAXPY(_H_, -(PetscScalar)_shift_, _S_, SAME_NONZERO_PATTERN);
         MatScale(_H_, (PetscScalar)(1/_scale_));
     }
+    _is_scaled_ = true;
 }
 
 void Solver::orthogonalize_H(double tol, double sptol, int maxit, bool explicit_formation, bool verbose){

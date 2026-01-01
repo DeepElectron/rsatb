@@ -125,6 +125,10 @@ class Data(object):
         r"""Gets the data of the attribute :obj:`key`."""
         return getattr(self, key, None)
 
+    def get(self, key, default=None):
+        r"""Gets the data of the attribute :obj:`key`."""
+        return getattr(self, key, default)
+
     def __setitem__(self, key, value):
         """Sets the attribute :obj:`key` to :obj:`value`."""
         setattr(self, key, value)

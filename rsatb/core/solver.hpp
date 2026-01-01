@@ -26,9 +26,10 @@ private:
     MPI_Comm _comm_;
     bool _kpoint_ready_=false, _overlap_ready_=false, _hamiltonian_ready_=false, _position_ready_=false, _samples_ready_=false, _sqrtm_ready_=false;
     bool _velocity_ready_ = false;
-    bool _explicit_orth_ = false, _explicit_form_ = false;
+    bool _explicit_orth_ = false, _explicit_form_ = false, _is_scaled_ = false;
     int _n_sample_=-1;
     double _cdn_;
+    PetscScalar _emin_=0.0, _emax_=0.0;
 
     void set_mat_from_h5(Mat *mat, const std::string &MatFile){
         HDF5Handler _hd_(MatFile);
@@ -448,6 +449,9 @@ public:
     Mat Rx() { return _Rx_; }
     Mat Ry() { return _Ry_; }
     Mat Rz() { return _Rz_; }
+
+    double emin() { return _emin_.real(); }
+    double emax() { return _emax_.real(); }
 
 };
 }

@@ -1,10 +1,10 @@
 import numpy as np
-from src.utils.constants import anglrMId, norb_dict
+from ..utils.constants import anglrMId, norb_dict
 from typing import Tuple, Union, Dict
-from src.data.transforms import OrbitalMapper
-from src.data import AtomicDataDict
-from src.data.AtomicDataDict import with_edge_vectors
-from src.utils.tools import float2comlex
+from ..data.transforms import OrbitalMapper
+from ..data import AtomicDataDict
+from ..data.AtomicDataDict import with_edge_vectors
+from ..utils.tools import float2comlex
 
 
 class R2K:

@@ -52,7 +52,7 @@ class RSATB(MPIMultiLevel):
 
         # partition the atomic graph if needed.
         if (not hasattr(atomicdata, _keys.CLUSTER_CONNECTIVITY)) and (self.subsize > 1):
-            atomicdata.partition_graph_hilbert(self.subsize, comm=self.subcomm, split=True)
+            atomicdata.partition_graph(self.subsize, comm=self.subcomm, split=True)
             atom_index = atomicdata[_keys.ATOM_INDEX_KEY].ravel()
         else:
             atom_index = np.arange(atomicdata.num_nodes)
@@ -146,8 +146,6 @@ class RSATB(MPIMultiLevel):
             self.solver.Ssqrtm(self.tol, self.sptol, self.maxit, self.verbose, False)
             self.solver.setup_KSP()
         
-        self.solver.scale_shift_H(0.0, 0.0, self.verbose)
-        
         # Setup R (if needed and not done yet)
         if need_V:
             # If we used orbitals, it's already done above.
@@ -177,9 +175,23 @@ class RSATB(MPIMultiLevel):
 
         for i in range(self.__sub_kpoints__.shape[0]):
             self._setup_kpoint(i, need_V=need_V)
+
+            # scale and shift the Hamiltonian
+            # if task contains "band", the scale_shift_H will be called with non-zero emin and emax;
+            # it can be computed from a trial computation.
+            emin = 0.0
+            emax = 0.0
+            for t_idx, task in enumerate(tasks):
+                if task['task'] == 'band':
+                    emin = task.get('emin', 0.0)
+                    emax = task.get('emax', 0.0)
+                    assert emin < emax, "emin should be less than emax!"
+                    break
+
+            emin, emax = self.solver.scale_shift_H(emin, emax, self.verbose)
             
             for t_idx, task in enumerate(tasks):
-                if task['task'] == 'dos':
+                if task['task'] == 'dos' or task['task'] == 'band':
                     dE = task.get('dE', 0.025852)
                     proj = task.get('proj', "none")
                     orbtype = task.get('orbtype', np.array([]))
@@ -192,7 +204,10 @@ class RSATB(MPIMultiLevel):
                     # The C++ binding returns a tuple (dos, pdos, omegas)
                     out = self.solver.compute_dos(nt, proj, orbtype, self.verbose)
                     results[t_idx].append(out)
-                    
+
+                elif task['task'] == 'erange':
+                    results[t_idx].append((emin, emax))
+
                 elif task['task'] == 'ac':
                     dE = task.get('dE', 0.025852)
                     n_kpm = task.get('n_kpm', 200)
@@ -220,7 +235,7 @@ class RSATB(MPIMultiLevel):
         for t_idx, task in enumerate(tasks):
             task_res = results[t_idx] # List of tuples from each kpoint
             
-            if task['task'] == 'dos':
+            if task['task'] == 'dos' or task['task'] == 'band':
                 # Unpack list of tuples [(dos, pdos, omegas), ...]
                 # Structure: dos [2*nt], pdos [2*nt*nproj], omegas [2*nt]
                 # We want to stack them: [nk, 2*nt]
@@ -257,6 +272,29 @@ class RSATB(MPIMultiLevel):
                         final_results.append((omegas_arr, dos_arr, pdos_arr))
                     else:
                         final_results.append((omegas_arr, dos_arr))
+                else:
+                    final_results.append(True)
+
+            elif task['task'] == 'erange':
+                # Unpack [(emin, emax), ...]
+                emin_list = [r[0] for r in task_res]
+                emax_list = [r[1] for r in task_res]
+                
+                emin_arr = np.asarray(emin_list)
+                emax_arr = np.asarray(emax_list)
+                
+                if diff > 0:
+                    emin_arr = np.append(emin_arr, np.zeros([diff], dtype=emin_arr.dtype), axis=0)
+                    emax_arr = np.append(emax_arr, np.zeros([diff], dtype=emax_arr.dtype), axis=0)
+                
+                emin_arr = self.gather(emin_arr, 0)
+                emax_arr = self.gather(emax_arr, 0)
+                
+                if self.rank == 0:
+                    if diff > 0:
+                        emin_arr = emin_arr[:-diff]
+                        emax_arr = emax_arr[:-diff]
+                    final_results.append(np.stack([emin_arr, emax_arr], axis=1))
                 else:
                     final_results.append(True)
 
@@ -302,6 +340,14 @@ class RSATB(MPIMultiLevel):
     def compute_dos(self, dE:float=0.025852, proj:str="none", orbtype: np.ndarray=np.array([])):
         task = {'task': 'dos', 'dE': dE, 'proj': proj, 'orbtype': orbtype}
         return self.compute([task])[0]
+
+    def compute_band(self, dE:float=0.025852, emin:float=0.0, emax:float=0.0):
+        assert emin < emax, "emin should be less than emax!"
+        task = {'task': 'band', 'dE': dE, 'emin': emin, 'emax': emax}
+        return self.compute([task])[0]
+    
+    def compute_energy_range(self):
+        return self.compute([{'task': 'erange'}])[0]
 
     def compute_ac(self, dE:float=0.025852, nt:int=None, n_kpm:int=200, temp:float=300, mu:float=0.0):
         task = {'task': 'ac', 'dE': dE, 'nt': nt, 'n_kpm': n_kpm, 'temp': temp, 'mu': mu}

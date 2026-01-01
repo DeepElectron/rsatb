@@ -192,7 +192,15 @@ PYBIND11_MODULE(binding, m) {
         .def("export_Ry", &rsatb::Solver::export_Ry)
         .def("export_Rz", &rsatb::Solver::export_Rz)
 
-        .def("scale_shift_H", &rsatb::Solver::scale_shift_H)
+        .def("scale_shift_H", [](
+            rsatb::Solver &solver,
+            double emin,
+            double emax,
+            bool verbose
+        ){
+            solver.scale_shift_H(emin, emax, verbose);
+            return std::make_tuple(solver.emin(), solver.emax());
+        })
 
         .def("setup_KSP", &rsatb::Solver::setup_KSP)
 

@@ -11,7 +11,7 @@ except ImportError:
     MPI = None
 
 
-__all__ = ["MPIEnv"]
+__all__ = ["MPIMultiLevel"]
 
 
 class MPIMultiLevel:
@@ -51,31 +51,28 @@ class MPIMultiLevel:
         :return: None
         """
         # Initialize MPI variables
+        self.__color = 0
+        self.__n_group = 1
+
+        # initilize the first level comm
         if enable_mpi:
             if MPI is not None:
                 self.__comm = MPI.COMM_WORLD
                 self.__rank = self.__comm.Get_rank()
                 self.__size = self.__comm.Get_size()
-                self.__subcomm = self.__comm
-                self.__subrank = self.__rank
-                self.__subsize = self.__size
-                self.__n_group = 1
-                self.__color = 0
-                self.__master_comm = None
-                self.__master_rank = None
             else:
                 raise ImportError("MPI4PY cannot be imported")
         else:
             self.__comm = None
             self.__rank = 0
             self.__size = 1
-            self.__color = 0
-            self.__n_group = 1
-            self.__subcomm = self.__comm
-            self.__subrank = self.rank
-            self.__subsize = self.__size
-            self.__master_comm = None
-            self.__master_rank = None
+
+        # initilize the second level comm
+        self.__subcomm = self.__comm
+        self.__subrank = self.__rank
+        self.__subsize = self.__size
+        self.__master_comm = None # master comm is the comm of the subgroup's master, used to retrieve the result in each subgroup
+        self.__master_rank = None
         
         self.__color_all = [0] * self.__size
         self.verbose = verbose
@@ -127,20 +124,23 @@ class MPIMultiLevel:
         
         color_all = []
         group_count = []
-        q, r = divmod(self.__size, n_group)
+        # givide the process into n_group, the residual will be distributed to the first r groups evenly
+        q, r = divmod(self.__size, n_group) 
         group_count = [q + 1 if i < r else q for i in range(n_group)]
 
+        # set group color, each color marks a subgroup
         for g, cnt in enumerate(group_count):
             color_all.extend([g] * cnt)
 
-        if float(self.__size % n_group) / float(self.__size // n_group) < 0.8:
-            raise RuntimeWarning("Group partition is ", group_count, " , bad allocation!")
+        if self.__size % n_group != 0:
+            if float(self.__size % n_group) / float(self.__size // n_group) < 0.8:
+                raise RuntimeWarning("Group partition is ", group_count, " , bad allocation!")
 
         self.__color_all = color_all
         color = self.__color_all[self.__rank]
 
         # create sub comm:
-        self.__subcomm = self.__comm.split(color=color, key=self.__rank)
+        self.__subcomm = self.__comm.Split(color=color, key=self.__rank)
         self.__color = color
         # Optional: check if the current process is in the new_comm
         if self.__subcomm != MPI.COMM_NULL:
@@ -150,7 +150,7 @@ class MPIMultiLevel:
             self.__subrank = new_rank
             self.__subsize = new_size
         else:
-            print(f"Global rank {self.__rank} is not in the new_comm")
+            raise RuntimeError("Global rank {} is not in the new_comm".format(self.__rank))
 
         if self.__subrank == 0:
             master_color = 0
@@ -158,7 +158,7 @@ class MPIMultiLevel:
             master_color = MPI.UNDEFINED
 
         # create the master comm for subgroup masters
-        self.__master_comm = self.__comm.split(color=master_color, key=self.__rank)
+        self.__master_comm = self.__comm.Split(color=master_color, key=self.__rank)
         if self.__master_comm != MPI.COMM_NULL:
             self.__master_rank = self.__master_comm.Get_rank()
         else:
@@ -203,7 +203,7 @@ class MPIMultiLevel:
         """
         if level == 0:
             if self.__master_comm is None:
-                return 
+                return range(n_max) 
             if self.is_submaster:
                 return split_range(n_max, num_group=self.__n_group)[self.__master_rank]
             else:
@@ -224,12 +224,12 @@ class MPIMultiLevel:
         :return: lower and upper bounds of subrange assigned to this process
         """
         i_index = self.dist_range(n_max, level=level)
-        if self.is_submaster:
-            i_min, i_max = min(i_index), max(i_index)
-        else:
-            i_min, i_max = None, None
 
-        return i_min, i_max
+        # dist_range have already decide whether this process need to return bounds
+        if i_index is None:
+            return None, None
+        else:
+            return min(i_index), max(i_index)
 
     def reduce(self, data_local: np.ndarray, level=2) -> np.ndarray:
         """
@@ -245,6 +245,7 @@ class MPIMultiLevel:
                                     order=self.__get_array_order(data_local))
                 else:
                     data = None
+                
                 self.__comm.Reduce(data_local, data, op=MPI.SUM, root=0)
             elif level == 1:
                 if self.is_submaster:
@@ -254,16 +255,19 @@ class MPIMultiLevel:
                     data = None
                 self.__subcomm.Reduce(data_local, data, op=MPI.SUM, root=0)
             elif level == 0:
-                if self.is_submaster:
-                    if self.is_master:
-                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                        order=self.__get_array_order(data_local))
+                if self.__master_comm is not None:
+                    if self.is_submaster:
+                        if self.is_master:
+                            data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                            order=self.__get_array_order(data_local))
+                        else:
+                            data = None
+                        
+                        self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
                     else:
                         data = None
-                    
-                    self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
-            else:
-                raise RuntimeError("The level only support 0 / 1 / 2 !")
+                else:
+                    data = data_local
 
         else:
             data = data_local
@@ -287,10 +291,15 @@ class MPIMultiLevel:
                                 order=self.__get_array_order(data_local))
                 self.__subcomm.Allreduce(data_local, data, op=MPI.SUM)
             elif level == 0:
-                if self.is_submaster:
-                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                    order=self.__get_array_order(data_local))
-                    self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
+                if self.__master_comm is not None:
+                    if self.is_submaster:
+                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                        order=self.__get_array_order(data_local))
+                        self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
+                    else:
+                        data = None
+                else:
+                    data = data_local
             else:
                 raise RuntimeError("The level only support 0 / 1 / 2 !")
         else:
@@ -324,15 +333,20 @@ class MPIMultiLevel:
                 if self.is_submaster:
                     data /= self.__subsize
             elif level == 0:
-                if self.is_submaster:
-                    if self.is_master:
-                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                        order=self.__get_array_order(data_local))
+                if self.__master_comm is not None:
+                    if self.is_submaster:
+                        if self.is_master:
+                            data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                            order=self.__get_array_order(data_local))
+                        else:
+                            data = None
+                        self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
+                        if self.is_master:
+                            data /= self.__n_group
                     else:
                         data = None
-                    self.__master_comm.Reduce(data_local, data, op=MPI.SUM, root=0)
-                    if self.is_master:
-                        data /= self.__n_group
+                else:
+                    data = data_local
             else:
                 raise RuntimeError("The level only support 0 / 1 / 2 !")
 
@@ -359,11 +373,16 @@ class MPIMultiLevel:
                 self.__subcomm.Allreduce(data_local, data, op=MPI.SUM)
                 data /= self.__subsize
             elif level == 0:
-                if self.is_submaster:
-                    data = np.zeros(data_local.shape, dtype=data_local.dtype,
-                                order=self.__get_array_order(data_local))
-                    self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
-                    data /= self.__n_group
+                if self.__master_comm is not None:
+                    if self.is_submaster:
+                        data = np.zeros(data_local.shape, dtype=data_local.dtype,
+                                    order=self.__get_array_order(data_local))
+                        self.__master_comm.Allreduce(data_local, data, op=MPI.SUM)
+                        data /= self.__n_group
+                    else:
+                        data = None
+                else:
+                    data = data_local
             else:
                 raise RuntimeError("The level only support 0 / 1 / 2 !")
         else:
@@ -383,8 +402,9 @@ class MPIMultiLevel:
             elif level == 1:
                 self.__subcomm.Bcast(data_local, root=0)
             elif level == 0:
-                if self.is_submaster:
-                    self.__master_comm.Bcast(data_local, root=0)
+                if self.__master_comm is not None:
+                    if self.is_submaster:
+                        self.__master_comm.Bcast(data_local, root=0)
             else:
                 raise RuntimeError("The level only support 0 / 1 / 2 !")
         
@@ -397,7 +417,8 @@ class MPIMultiLevel:
             elif level == 1:
                 self.__subcomm.Barrier()
             elif level == 0:
-                self.__master_comm.Barrier()
+                if self.__master_comm is not None:
+                    self.__master_comm.Barrier()
             else:
                 raise RuntimeError("The level only support 0 / 1 / 2 !")
 
@@ -430,6 +451,8 @@ class MPIMultiLevel:
                     else:
                         data = None
                     self.__master_comm.Gather(data_local, data, root=0)
+                else:
+                    data = None
         else:
             data = data_local
 

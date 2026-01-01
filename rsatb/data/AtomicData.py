@@ -820,8 +820,102 @@ class AtomicData(Data):
         # Assuming self.pos is available.
         partition = partition[sort_index]
 
-        self._finalize_partition(sort_index, partition)
+        self._finalize_partition(sort_index, partition, npart, comm, split)
 
+        return True
+
+    def partition_graph_rib(self, npart, comm=None, split=False):
+        """
+        Partition the graph using Recursive Inertial Bisection (RIB).
+        This method uses the principal axis of the inertial tensor (or covariance matrix)
+        to recursively split the atoms.
+        """
+        import numpy as np
+        
+        if comm is None:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+            
+        pos = self.pos.numpy() if hasattr(self.pos, 'numpy') else self.pos
+        num_atoms = len(pos)
+        partition = np.zeros(num_atoms, dtype=np.int32)
+        indices = np.arange(num_atoms, dtype=np.int32)
+        
+    def recursive_bisection(current_indices, n_parts_target, partition_offset):
+        from mpi4py import MPI
+
+        if n_parts_target == 1:
+            partition[current_indices] = partition_offset
+            return
+
+        if comm is None:
+            comm = MPI.COMM_WORLD
+
+        rank = comm.Get_rank()
+
+        if rank == 0:
+            # Compute Center of Mass
+            current_pos = pos[current_indices]
+            com = np.mean(current_pos, axis=0)
+            
+            # Compute Covariance Matrix (proportional to Inertial Tensor)
+            # Cov = sum( (r - com) * (r - com)^T )
+            centered_pos = current_pos - com
+            cov = centered_pos.T @ centered_pos
+            
+            # Solve Eigenproblem
+            # We want the direction of maximum variance (largest eigenvalue)
+            # np.linalg.eigh returns eigenvalues in ascending order
+            evals, evecs = np.linalg.eigh(cov)
+            principal_axis = evecs[:, -1]
+            
+            # Project atoms onto the principal axis
+            projections = centered_pos @ principal_axis
+            
+            # Sort indices based on projections
+            # We need to sort current_indices based on the sort order of projections
+            sort_order = np.argsort(projections)
+            sorted_indices = current_indices[sort_order]
+            
+            # Determine split point
+            # We split n_parts_target into k and (n_parts_target - k)
+            # Ideally k = n_parts_target // 2
+            k = n_parts_target // 2
+            
+            # The number of atoms to go to the first k partitions
+            # should be proportional to k / n_parts_target
+            n_atoms = len(sorted_indices)
+            split_idx = int(round(n_atoms * k / n_parts_target))
+            
+            # Ensure we don't have empty partitions if we have enough atoms
+            if split_idx == 0 and k > 0:
+                split_idx = 1
+            if split_idx == n_atoms and (n_parts_target - k) > 0:
+                split_idx = n_atoms - 1
+                
+            # Recurse
+            # Left group gets k partitions, starting at partition_offset
+            recursive_bisection(sorted_indices[:split_idx], k, partition_offset)
+            
+            # Right group gets (n_parts_target - k) partitions, starting at partition_offset + k
+            recursive_bisection(sorted_indices[split_idx:], n_parts_target - k, partition_offset + k)
+
+            # Start recursion
+            recursive_bisection(indices, npart, 0)
+            
+            # Sort atoms by partition ID to ensure memory locality
+            # This is important for performance in many applications
+            sort_index = np.argsort(partition).astype(np.int32)
+            partition = partition[sort_index]
+        else:
+            sort_index = np.zeros(self.num_nodes, dtype=np.int32)
+            partition = np.zeros(self.num_nodes, dtype=np.int32)
+        
+        comm.Bcast(partition, root=0)
+        comm.Bcast(sort_index, root=0)
+            
+        self._finalize_partition(sort_index, partition, npart, comm, split)
+        
         return True
 
     def partition_graph(self, npart, node_weights=None, comm=None, split=False):
@@ -871,7 +965,7 @@ class AtomicData(Data):
             opt.ncuts   = 40
             opt.niter   = 50
             opt.minconn = 1
-            opt.ufactor = 30
+            opt.ufactor = 100
             # opt.contig  = 1
             
             _, partition = pymetis.part_graph(npart, xadj=indptr, adjncy=indices, vweights=node_weights, eweights=eweights, options=opt)
@@ -886,11 +980,16 @@ class AtomicData(Data):
         comm.Bcast(sort_index, root=0)
         comm.Bcast(partition, root=0)
 
-        self._finalize_partition(sort_index, partition)
+        self._finalize_partition(sort_index, partition, npart, comm, split)
 
         return True
 
-    def _finalize_partition(self, sort_index, partition):
+    def _finalize_partition(self, sort_index, partition, npart, comm=None, split=False):
+        if comm is None:
+            from mpi4py import MPI
+            comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+
         # sort the attrs
         for fields in _NODE_FIELDS:
             if hasattr(self, fields):
@@ -941,11 +1040,6 @@ class AtomicData(Data):
             setattr(self, AtomicDataDict.CLUSTER_EDGE_RANGE, e_range)
             setattr(self, AtomicDataDict.CLUSTER_CONNECTIVITY, connectivity)
             setattr(self, AtomicDataDict.CLUSTER_GHOST_LIST, ghost_list)
-
-        if rank == 0:
-            print("############### The partition result ##############")
-            for i in range(len(connectivity)):
-                print("rank ", i, ": connected to ", len(connectivity[i]), " neighbour.")
 
         if split:
             assert comm.Get_size() == npart, "The split can only be called  with npart=MPI size"
