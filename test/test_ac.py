@@ -26,7 +26,7 @@ print("Computing AC Conductivity...")
 
 # Define tasks
 tasks = [
-    {'task': 'ac', 'nt': 100, 'n_kpm': 10000, 'temp': 10000, 'mu': 16.225300864}
+    {'task': 'ac', 'nt': 500, 'n_kpm': 10000, 'temp': 10000, 'mu': 16.225300864}
 ]
 
 results = solver.compute(tasks)
