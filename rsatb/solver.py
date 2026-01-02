@@ -112,9 +112,16 @@ class RSATB(MPIMultiLevel):
         if nk < self.n_group:
             raise RuntimeError("Number of Kpoints is less than the Parrallel groups numbers, Bad Allocation !")
 
-        self.__sub_nk__ = int(np.ceil(float(nk) / self.n_group))
-        self.__sub_kpoints__ = kpoints[self.color*self.__sub_nk__:(self.color+1)*self.__sub_nk__] # remark, the number of kpoint in sub_kpoints can be smaller than sub_nk
-
+        q, r = divmod(nk, self.n_group) 
+        self.__sub_nk_offset__ = [q + 1 if i < r else q for i in range(self.n_group)]
+        self.__sub_nk_max__ = np.max(self.__sub_nk_offset__)
+        self.__sub_nk__ = self.__sub_nk_offset__[self.color]
+        self.__sub_nk_offset__ = np.cumsum([0]+self.__sub_nk_offset__)
+        self.__sub_nk_valid_index__ = []
+        for i in range(self.n_group):
+            self.__sub_nk_valid_index__ += list(range(self.__sub_nk_max__*i, self.__sub_nk_max__*i+self.__sub_nk__))
+        self.__sub_kpoints__ = kpoints[self.__sub_nk_offset__[self.color]:self.__sub_nk_offset__[self.color+1]] # remark, the number of kpoint in sub_kpoints can be smaller than sub_nk
+        
         self.__kpoint_set__ = True
         self.__kpoint_count__ = 0
 
@@ -228,9 +235,9 @@ class RSATB(MPIMultiLevel):
         
         # Determine padding for MPI gather
         diff = 0
-        if self.color == (self.n_group-1) and self.n_group > 1:
-            if self.group_count[-1] < self.group_count[0]:
-                diff = self.group_count[0] - self.group_count[-1]
+        if self.n_group > 1:
+            if self.__sub_nk_max__ > self.__sub_nk__:
+                diff = self.__sub_nk_max__ - self.__sub_nk__
 
         for t_idx, task in enumerate(tasks):
             task_res = results[t_idx] # List of tuples from each kpoint
@@ -240,7 +247,7 @@ class RSATB(MPIMultiLevel):
                 # Structure: dos [2*nt], pdos [2*nt*nproj], omegas [2*nt]
                 # We want to stack them: [nk, 2*nt]
                 
-                dos_list = [r[0] for r in task_res]
+                dos_list = [r[0] for r in task_res] # loop over sub k
                 pdos_list = [r[1] for r in task_res]
                 omegas_list = [r[2] for r in task_res]
                 
@@ -262,11 +269,10 @@ class RSATB(MPIMultiLevel):
                     pdos_arr = self.gather(pdos_arr, 0)
 
                 if self.rank == 0:
-                    if diff > 0:
-                        dos_arr = dos_arr[:-diff]
-                        omegas_arr = omegas_arr[:-diff]
-                        if task.get('proj', 'none') != 'none':
-                            pdos_arr = pdos_arr[:-diff]
+                    dos_arr = dos_arr[self.__sub_nk_valid_index__]
+                    omegas_arr = omegas_arr[self.__sub_nk_valid_index__]
+                    if task.get('proj', 'none') != 'none':
+                        pdos_arr = pdos_arr[self.__sub_nk_valid_index__]
                     
                     if task.get('proj', 'none') != 'none':
                         final_results.append((omegas_arr, dos_arr, pdos_arr))
@@ -286,14 +292,13 @@ class RSATB(MPIMultiLevel):
                 if diff > 0:
                     emin_arr = np.append(emin_arr, np.zeros([diff], dtype=emin_arr.dtype), axis=0)
                     emax_arr = np.append(emax_arr, np.zeros([diff], dtype=emax_arr.dtype), axis=0)
-                
+
                 emin_arr = self.gather(emin_arr, 0)
                 emax_arr = self.gather(emax_arr, 0)
                 
                 if self.rank == 0:
-                    if diff > 0:
-                        emin_arr = emin_arr[:-diff]
-                        emax_arr = emax_arr[:-diff]
+                    emin_arr = emin_arr[self.__sub_nk_valid_index__]
+                    emax_arr = emax_arr[self.__sub_nk_valid_index__]
                     final_results.append(np.stack([emin_arr, emax_arr], axis=1))
                 else:
                     final_results.append(True)
@@ -306,31 +311,28 @@ class RSATB(MPIMultiLevel):
                 ac_arr = np.asarray(ac_list)
                 omegas_arr = np.asarray(omegas_list)
                 
-                if diff > 0:
-                    ac_arr = np.append(ac_arr, np.zeros([diff]+list(ac_arr.shape[1:]), dtype=ac_arr.dtype), axis=0)
-                    omegas_arr = np.append(omegas_arr, np.zeros([diff]+list(omegas_arr.shape[1:]), dtype=omegas_arr.dtype), axis=0)
-                
                 if self.is_submaster:
                     # transform ac
-                    nsubk = ac_arr.shape[0]
-                    ac_arr = ac_arr.reshape(nsubk, -1, 6)
+                    ac_arr = ac_arr.reshape(self.__sub_nk__, -1, 6)
                     ntp1 = ac_arr.shape[1] # [n_subk, (nt+1)*6]
                     
-                    
-                    sigma = np.zeros((nsubk, 2*ntp1, 6))
+                    sigma = np.zeros((self.__sub_nk__, 2*ntp1, 6))
                     sigma[:, ntp1:, :] = ac_arr
                     sigma[:, 1:ntp1+1, :] = ac_arr[:, ::-1, :]
                     ac_arr = ac_arr + 1j * np.imag(sp.signal.hilbert(sigma, axis=1))[:,ntp1:2*ntp1,:]
 
-                    ac_arr = ac_arr.reshape(nsubk, -1)
+                    ac_arr = ac_arr.reshape(self.__sub_nk__, -1)
+
+                if diff > 0:
+                    ac_arr = np.append(ac_arr, np.zeros([diff]+list(ac_arr.shape[1:]), dtype=ac_arr.dtype), axis=0)
+                    omegas_arr = np.append(omegas_arr, np.zeros([diff]+list(omegas_arr.shape[1:]), dtype=omegas_arr.dtype), axis=0)
 
                 ac_arr = self.gather(ac_arr, 0)
                 omegas_arr = self.gather(omegas_arr, 0)
                 
                 if self.rank == 0:
-                    if diff > 0:
-                        ac_arr = ac_arr[:-diff]
-                        omegas_arr = omegas_arr[:-diff]
+                    ac_arr = ac_arr[self.__sub_nk_valid_index__]
+                    omegas_arr = omegas_arr[self.__sub_nk_valid_index__]
                     final_results.append((omegas_arr, ac_arr))
                 else:
                     final_results.append(True)
@@ -342,7 +344,7 @@ class RSATB(MPIMultiLevel):
         return self.compute([task])[0]
 
     def compute_band(self, dE:float=0.025852, emin:float=0.0, emax:float=0.0):
-        assert emin < emax, "emin should be less than emax!"
+        assert emin < emax, "emin should be less than emax!, but current value is : {}, {}".format(emin, emax)
         task = {'task': 'band', 'dE': dE, 'emin': emin, 'emax': emax}
         return self.compute([task])[0]
     

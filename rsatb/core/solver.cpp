@@ -131,7 +131,7 @@ PetscErrorCode SrHSrDestroy(Mat M)
 PetscErrorCode SinvDestroy(Mat M)
 {
     PetscErrorCode ierr;
-    SinvContext      *ctx;
+    SinvContext    *ctx;
 
     ierr = MatShellGetContext(M, (void**)&ctx);CHKERRQ(ierr);
 
@@ -281,6 +281,7 @@ void Solver::setup_H_h5(const std::string &HFile){ /* Setup H and S, how to asse
     this->set_mat_from_h5(&_H_, HFile);
     
     _is_scaled_ = false;
+    _explicit_orth_ = false;
     _hamiltonian_ready_ = true;
 };
 
@@ -622,16 +623,10 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
     if(rank==0){
         /* Computing the smearing window */
         PetscComplex factor, poscorr, negcorr;
-        // cdos[nt] *= std::exp(-imI*_shift_*M_PI*nt/_scale_);
-        // if(proj){
-        //     for(int ip=0; ip < n_proj_type; ++ip){ // pcdos have shape [nt, n_proj_type]
-        //         pcdos[nt+n_proj_type*ip] *= std::exp(-imI*_shift_*M_PI*nt/_scale_);
-        //     }
-        // }
 
         for(int i=1;i<nt+1;++i){
-            poscorr = std::exp(imI*_shift_*M_PI*i/_scale_);
-            negcorr = std::exp(-imI*_shift_*M_PI*i/_scale_);
+            poscorr = std::exp(imI*_shift_*M_PI*i);
+            negcorr = std::exp(-imI*_shift_*M_PI*i);
             factor = 0.5 * (1 + std::cos(M_PI * (i-1) / nt));
             cdos[nt+i] *= factor * negcorr;
             cdos[nt-i] *= factor * poscorr;
@@ -644,9 +639,6 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
             }
         }
 
-        // for(int i=0;i<(2*nt)*n_proj_type;++i) std::cout << pcdos[i+n_proj_type] << " ";
-        // std::cout << "\n";
-
         std::complex<double> temp_dos[2*nt], temp_pdos[(2*nt)*n_proj_type];
         ifft_1d(2*nt, reinterpret_cast<cd*>(cdos+1), temp_dos);
         if(proj) {
@@ -655,14 +647,18 @@ void Solver::compute_dos(int nt, std::string proj_mode, const int *orbtype, int 
         }
 
         for(int i=0;i<nt;++i){
-            dos[i] = std::abs(temp_dos[nt+i]);
-            dos[nt+i] = std::abs(temp_dos[i]);
+            // dos[i] = std::abs(temp_dos[nt+i]);
+            // dos[nt+i] = std::abs(temp_dos[i]);
+            dos[i] = std::abs(temp_dos[i]);
+            dos[nt+i] = std::abs(temp_dos[nt+i]);
             omegas[i] = (i-nt) * _scale_ / nt + _shift_;
             omegas[nt+i] = i * _scale_ / nt + _shift_;
             if(proj){
                 for(int ip=0; ip<n_proj_type; ++ip) {
-                    pdos[i*n_proj_type+ip] = std::abs(temp_pdos[(i+nt)*n_proj_type+ip]);
-                    pdos[(i+nt)*n_proj_type+ip] = std::abs(temp_pdos[i*n_proj_type+ip]);
+                    pdos[i*n_proj_type+ip] = std::abs(temp_pdos[i*n_proj_type+ip]);
+                    pdos[(i+nt)*n_proj_type+ip] = std::abs(temp_pdos[(i+nt)*n_proj_type+ip]);
+                    // pdos[i*n_proj_type+ip] = std::abs(temp_pdos[(i+nt)*n_proj_type+ip]);
+                    // pdos[(i+nt)*n_proj_type+ip] = std::abs(temp_pdos[i*n_proj_type+ip]);
                 }
             }
         }
@@ -683,10 +679,6 @@ void Solver::compute_ac(int nt, int n_kpm, double temp, double mu, double *ac, d
     for( int i=0; i<nt+1; ++i ){
         omegas[i] = i * _scale_ / (nt+1);
     }
-
-    // PetscReal norm;
-    // MatNorm(_Vx_, NORM_FROBENIUS, &norm);
-    // std::cout << norm << std::endl;
 
     PetscComplex cac[(nt+1)*6];
     if(_n_sample_==1){

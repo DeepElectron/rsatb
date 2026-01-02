@@ -78,6 +78,8 @@ public:
         MatSetOption(_S_, MAT_HERMITIAN, PETSC_TRUE);
         MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
         _overlap_ready_ = true;
+        _explicit_orth_ = false;
+        _sqrtm_ready_=false;
     }
 
     void setup_S(const std::string* file_orb0, const std::string& orbital_dir){
@@ -89,6 +91,8 @@ public:
         MatSetOption(_S_, MAT_SPD, PETSC_TRUE);
 
         _overlap_ready_ = true;
+        _explicit_orth_ = false;
+        _sqrtm_ready_=false;
     }
 
     void test_Sinv(){
@@ -248,6 +252,7 @@ public:
 
         if ((RxFile.size() > 0) || (RyFile.size() > 0) || (RyFile.size() > 0))
             _position_ready_ = true;
+            _explicit_orth_ = false;
     }
 
     void setup_R(const std::string* file_orb0, const std::string& orbital_dir){
@@ -290,7 +295,12 @@ public:
             if (!close) {throw std::runtime_error("The Overlap is not accurate comparing to the 2 center integral's"); }
         }
         _position_ready_ = true;
+        _explicit_orth_ = false;
     }
+
+    // void setup_V_peierls(const std::vector<std::string> orb_names, const std::string& orbital_dir){
+        
+    // }
 
     void setup_V(const std::vector<std::string> orb_names, const std::string& orbital_dir, const std::vector<std::string> psd_names, const std::string& psd_dir){
         
@@ -345,6 +355,7 @@ public:
             if (!close) {throw std::runtime_error("The Overlap is not accurate comparing to the 2 center integral's"); }
         }
         _velocity_ready_ = true;
+        _explicit_orth_ = false;
     }
 
     void setup_H_h5(const std::string &HFile);
