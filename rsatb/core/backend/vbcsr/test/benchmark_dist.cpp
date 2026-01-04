@@ -1,4 +1,4 @@
-#include "block_csr.hpp"
+#include "../block_csr.hpp"
 #include <iostream>
 #include <vector>
 #include <mpi.h>

@@ -21,7 +21,7 @@ if(NOT GTest_FOUND)
 endif()
 
 find_package(Threads REQUIRED)
-find_package(PETSc REQUIRED)
+# find_package(PETSc REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
 find_package(DBCSR 2.0.0 CONFIG REQUIRED)
 # find_package(FFTW REQUIRED)
@@ -65,12 +65,12 @@ endif()
 
 
 # Wrap into a modern imported target so the rest of your code can stay target-based
-if(NOT TARGET PETSc::PETSc)
-    add_library(PETSc::PETSc INTERFACE IMPORTED)
-    set_target_properties(PETSc::PETSc PROPERTIES
-      INTERFACE_INCLUDE_DIRECTORIES "${PETSC_INCLUDE_DIR};${PETSCCONF_INCLUDE_DIR}"
-      INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
-endif()
+# if(NOT TARGET PETSc::PETSc)
+#     add_library(PETSc::PETSc INTERFACE IMPORTED)
+#     set_target_properties(PETSc::PETSc PROPERTIES
+#       INTERFACE_INCLUDE_DIRECTORIES "${PETSC_INCLUDE_DIR};${PETSCCONF_INCLUDE_DIR}"
+#       INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
+# endif()
 
 # if(NOT TARGET FFTW::FFTW)
 #     add_library(FFTW::FFTW INTERFACE IMPORTED)
@@ -84,10 +84,10 @@ add_subdirectory(io)
 add_subdirectory(extern/nao-abacus)
 add_subdirectory(calc)
 
-find_library(SLEPC_LIB
-    NAMES slepc
-    HINTS ${PETSC_INCLUDE_DIR}/../lib
-)
+# find_library(SLEPC_LIB
+#     NAMES slepc
+#     HINTS ${PETSC_INCLUDE_DIR}/../lib
+# )
 
 message(STATUS "SLEPC library: ${SLEPC_LIB}")
 
@@ -161,6 +161,6 @@ target_link_libraries(test PRIVATE solver GTest::gtest)
 add_executable(test_hr2hk ./test_hr2hk.cpp)
 target_link_libraries(test_hr2hk PRIVATE solver GTest::gtest)
 
-add_executable(test_operator_construction backend/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
+add_executable(test_operator_construction backend/test/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
 target_include_directories(test_operator_construction PRIVATE backend extern/nao-abacus extern/nao-abacus/source_base/module_container)
 target_link_libraries(test_operator_construction PRIVATE io base numerical_atomic_orbitals estate GTest::gtest)

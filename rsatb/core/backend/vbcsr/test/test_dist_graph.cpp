@@ -1,4 +1,4 @@
-#include "dist_graph.hpp"
+#include "../dist_graph.hpp"
 #include <cassert>
 #include <iostream>
 

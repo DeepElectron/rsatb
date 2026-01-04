@@ -1,5 +1,5 @@
-#include "dist_vector.hpp"
-#include "dist_multivector.hpp"
+#include "../dist_vector.hpp"
+#include "../dist_multivector.hpp"
 #include <iostream>
 #include <complex>
 #include <cassert>

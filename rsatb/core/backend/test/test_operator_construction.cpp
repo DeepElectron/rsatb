@@ -1,5 +1,5 @@
-#include "operator_construction.hpp"
-#include "atomic_data.hpp"
+#include "../operator_construction.hpp"
+#include "../atomic_data.hpp"
 #include <gtest/gtest.h>
 #include <complex>
 #include <vector>
@@ -259,7 +259,7 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     if(rank==0) std::cout << "Allocating 3-body graph..." << std::endl;
     std::vector<double> r_max_left={7.5, 7.5};
     std::vector<double> r_max_right={1.45, 1.45};
-    DistGraph* g3 = ad->allocate_three_body_hopping_matrix(r_max_left, r_max_right);
+    DistGraph* g3 = ad->get_graph3b(r_max_left, r_max_right);
     if(rank==0) std::cout << "Allocating 3-body graph DONE." << std::endl;
     
     BlockSpMat<std::complex<double>> S(ad->dm());

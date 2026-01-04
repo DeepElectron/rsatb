@@ -2,7 +2,7 @@
 #define RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
 
 #include "atomic_data.hpp"
-#include "block_csr.hpp"
+#include "vbcsr/block_csr.hpp"
 #include "../io/hdf5.hpp"
 #include "../extern/nao-abacus/source_estate/op2c.hpp"
 #include <memory>

@@ -1,5 +1,5 @@
-#include "block_csr.hpp"
-#include "dbcsr_conversions.hpp"
+#include "../vbcsr/block_csr.hpp"
+#include "../dbcsr_conversions.hpp"
 #include <iostream>
 #include <vector>
 #include <mpi.h>

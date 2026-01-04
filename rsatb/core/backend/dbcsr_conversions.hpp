@@ -1,7 +1,7 @@
 #ifndef RSATB_BACKEND_DBCSR_CONVERSIONS_HPP
 #define RSATB_BACKEND_DBCSR_CONVERSIONS_HPP
 
-#include "block_csr.hpp"
+#include "vbcsr/block_csr.hpp"
 #include "dbcsr_capi.h"
 #include <dbcsr.h>
 #include <vector>
