@@ -9,7 +9,9 @@
 #include <mpi.h>
 #else
 typedef int MPI_Comm;
+#ifndef MPI_COMM_WORLD
 #define MPI_COMM_WORLD 0
+#endif
 #endif
 
 #include "source_base/spherical_bessel_transformer.h"

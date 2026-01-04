@@ -13,7 +13,9 @@
 #include <mpi.h>
 #else
 typedef int MPI_Comm;
+#ifndef MPI_COMM_WORLD
 #define MPI_COMM_WORLD 0
+#endif
 #endif
 
 // so the pseudo reading logic is, elecstate's function initialize a reader calss Pseudopot_upf, which calls the read function to give the value of 

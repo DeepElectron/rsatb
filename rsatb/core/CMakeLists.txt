@@ -160,3 +160,7 @@ target_link_libraries(test PRIVATE solver GTest::gtest)
 
 add_executable(test_hr2hk ./test_hr2hk.cpp)
 target_link_libraries(test_hr2hk PRIVATE solver GTest::gtest)
+
+add_executable(test_operator_construction backend/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
+target_include_directories(test_operator_construction PRIVATE backend extern/nao-abacus extern/nao-abacus/source_base/module_container)
+target_link_libraries(test_operator_construction PRIVATE io base numerical_atomic_orbitals estate GTest::gtest)

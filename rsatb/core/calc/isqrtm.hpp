@@ -116,6 +116,7 @@ void isqrtm(Mat mat, DMAtomic &dm_atomic, double tol=1e-7, double sptol=1e-6, in
     norm = c_dbcsr_maxabs(tmp2);
     c_dbcsr_add_z(tmp2, I, 1.0, 1.0);
     // std::cout << "Here?" << std::endl;
+    
 
     // std::cout << "Here?" << std::endl;
 

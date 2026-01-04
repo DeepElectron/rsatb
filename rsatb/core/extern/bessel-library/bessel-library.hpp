@@ -63,6 +63,7 @@
 #define _USE_MATH_DEFINES // For M_PI, and other constant macros.
 #include <math.h>   // For functions such as sin(), cos(), abs(), ... .
 #include <float.h>  // For macro constants such as DBL_MIN, DBL_MAX_EXP, ... .
+#include <climits>
 // C LIBRARIES
 //-^------------------------------------------------------------------------
 
