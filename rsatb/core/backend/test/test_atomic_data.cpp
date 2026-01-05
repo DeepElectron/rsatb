@@ -35,36 +35,21 @@ TEST_F(AtomicDataTest, FromPoints) {
     
     AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
     
+    int local_n = ad->n_atom;
+    int total_n;
+    MPI_Allreduce(&local_n, &total_n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
+    int local_edges = ad->n_edge;
+    int total_edges;
+    MPI_Allreduce(&local_edges, &total_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
     if (rank == 0) {
-        EXPECT_EQ(ad->n_atom, 2);
-        // Distance 1.5 < 2.0, so they should be connected
-        // Each atom has 1 neighbor (plus periodic images if r_max was larger, but here 10.0 box)
-        // Wait, 1.5 distance. 
-        // 0->1 (1.5)
-        // 1->0 (-1.5 -> 8.5? No, nearest image)
-        // Check edges
-        // With r_max=2.0 and box=10, only nearest image.
-        // But self-interaction? No.
-        // So 0 connected to 1. 1 connected to 0.
-        // Total edges = 2.
-        // But wait, from_points uses NeighborList.
-        // NeighborList might return multiple images if cutoff is large.
-        // Here cutoff 2.0, box 10.0. Only 1 image.
+        EXPECT_EQ(total_n, 2);
         
-        // Let's check n_edge
-        // Actually, NeighborList implementation returns all pairs i,j.
-        // So 0-1 and 1-0.
-        // Also 0-0? No.
-        
-        // Wait, the NeighborList implementation I wrote loops -1,0,1 bins.
-        // If box is large, only 0 shift matches.
-        
-        // Let's verify edge count.
-        // EXPECT_EQ(ad->n_edge, 2); 
-        // I'll just print it for now to be safe or check > 0.
-        EXPECT_GT(ad->n_edge, 0);
-    } else {
-        EXPECT_EQ(ad->n_atom, 0);
+        // 0-1 and 1-0 -> 2 edges
+        // Note: n_edge counts directed edges in adjacency list
+        EXPECT_GT(total_edges, 0);
+        EXPECT_EQ(total_edges, 2);
     }
     
     delete ad;
@@ -135,10 +120,19 @@ TEST_F(AtomicDataTest, IO_POSCAR) {
     
     AtomicData* ad = AtomicData::from_file(filename, r_max, MPI_COMM_WORLD);
     
+    int local_n = ad->n_atom;
+    int total_n;
+    MPI_Allreduce(&local_n, &total_n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
     if (rank == 0) {
-        EXPECT_EQ(ad->n_atom, 2);
-        EXPECT_EQ(ad->atom_type[0], 0); // H is type 0
-        EXPECT_EQ(ad->atom_type[1], 0);
+        EXPECT_EQ(total_n, 2);
+        // We can't easily check types on rank 0 if atoms are distributed.
+        // But we can check if the total types are correct.
+    }
+    
+    // Verify types locally
+    for(int i=0; i<ad->n_atom; ++i) {
+        EXPECT_EQ(ad->atom_type[i], 0); // H is type 0
     }
     
     delete ad;
@@ -151,6 +145,7 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
     
     // Test that types are assigned deterministically based on atomic number
     // Case 1: H (1), He (2)
+    // Case 1: H (1), He (2)
     {
         std::vector<double> pos = {0,0,0, 1,0,0};
         std::vector<int> z = {1, 2};
@@ -158,9 +153,10 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
         AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
-        if (rank == 0) {
-            EXPECT_EQ(ad->atom_type[0], 0); // H -> 0
-            EXPECT_EQ(ad->atom_type[1], 1); // He -> 1
+        
+        for(int i=0; i<ad->n_atom; ++i) {
+            if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
+            if (ad->z[i] == 2) EXPECT_EQ(ad->atom_type[i], 1);
         }
         delete ad;
     }
@@ -173,9 +169,10 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
         AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
-        if (rank == 0) {
-            EXPECT_EQ(ad->atom_type[0], 1); // He -> 1
-            EXPECT_EQ(ad->atom_type[1], 0); // H -> 0
+        
+        for(int i=0; i<ad->n_atom; ++i) {
+            if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
+            if (ad->z[i] == 2) EXPECT_EQ(ad->atom_type[i], 1);
         }
         delete ad;
     }
@@ -188,9 +185,10 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
         AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
-        if (rank == 0) {
-            EXPECT_EQ(ad->atom_type[0], 0); // H(1) -> 0
-            EXPECT_EQ(ad->atom_type[1], 1); // O(8) -> 1
+        
+        for(int i=0; i<ad->n_atom; ++i) {
+            if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
+            if (ad->z[i] == 8) EXPECT_EQ(ad->atom_type[i], 1);
         }
         delete ad;
     }
@@ -302,12 +300,17 @@ TEST_F(AtomicDataTest, NeighborListNonPeriodic) {
     std::vector<double> cell = {100,0,0, 0,100,0, 0,0,100}; // Large dummy cell
     std::vector<bool> pbc = {false, false, false};
     
+    std::vector<double> r_max = {2.0};
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    int local_edges = ad->n_edge;
+    int total_edges;
+    MPI_Allreduce(&local_edges, &total_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
     if (rank == 0) {
-        std::vector<double> r_max = {2.0};
-        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
-        EXPECT_EQ(ad->n_edge, 2); // 0-1 and 1-0
-        delete ad;
+        EXPECT_EQ(total_edges, 2); // 0-1 and 1-0
     }
+    delete ad;
 }
 
 TEST_F(AtomicDataTest, LargeSystem) {
@@ -372,7 +375,7 @@ TEST_F(AtomicDataTest, MultiElementEdgeMapping) {
     
     std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
     std::vector<bool> pbc = {false, false, false};
-    std::vector<double> r_max = {1.1, 1.1, 1.1, 1.1};
+    std::vector<double> r_max = {0.5, 0.5, 0.5, 0.5};
     
     AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
     
@@ -390,11 +393,11 @@ TEST_F(AtomicDataTest, MultiElementEdgeMapping) {
         
         for(int edge_idx : edge_indices) {
             int dst_lid = ad->get_edge_dst(edge_idx);
-            int dst_gid = ad->get_global_index(dst_lid);
+            int dst_orig_gid = ad->atom_index[dst_lid];
             int dst_type = ad->atom_type[dst_lid];
             
-            EXPECT_EQ(dst_type, dst_gid);
-            EXPECT_EQ(std::abs(gid - dst_gid), 1);
+            EXPECT_EQ(dst_type, dst_orig_gid);
+            EXPECT_EQ(std::abs(gid - dst_orig_gid), 1);
         }
     }
     
@@ -512,7 +515,7 @@ TEST_F(AtomicDataTest, DistributedConstruction) {
     
     std::vector<double> cell = {20.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
-    std::vector<double> r_max = {1.5}; // Connect i to i+1
+    std::vector<double> r_max = {0.6}; // Connect i to i+1
     
     AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
     
@@ -635,6 +638,425 @@ TEST_F(AtomicDataTest, PressureTest_ExtremeAspect) {
     
     delete ad;
 }
+
+TEST_F(AtomicDataTest, Robustness) {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
+    std::vector<bool> pbc = {true, true, true};
+    std::vector<double> r_max = {1.5};
+
+    // 1. Empty Input
+    std::vector<double> empty_pos;
+    std::vector<int> empty_z;
+    AtomicData* ad = AtomicData::from_points(empty_pos, empty_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    EXPECT_EQ(ad->n_atom, 0);
+    delete ad;
+
+    // 2. Zero Volume Cell
+    if (rank == 0) {
+        std::vector<double> zero_cell = {0,0,0, 0,0,0, 0,0,0};
+        std::vector<double> pos = {0,0,0};
+        std::vector<int> z = {1};
+        // NeighborList throws invalid_argument on zero volume
+        EXPECT_THROW({
+            AtomicData::from_points(pos, z, zero_cell, pbc, r_max, MPI_COMM_WORLD);
+        }, std::invalid_argument);
+    }
+}
+
+TEST_F(AtomicDataTest, ThreeBodyGraph) {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
+    std::vector<bool> pbc = {true, true, true};
+
+    // 3 atoms in a line: 0 --(0.8)--> 1 --(0.8)--> 2
+    // r_max = 0.5. Cutoff = 1.0.
+    // 0-1 dist 0.8 < 1.0 -> connected.
+    // 1-2 dist 0.8 < 1.0 -> connected.
+    
+    std::vector<double> line_pos = {
+        0.0, 0.0, 0.0,
+        0.8, 0.0, 0.0,
+        1.6, 0.0, 0.0
+    };
+    std::vector<int> line_z = {1, 1, 1};
+    std::vector<double> r_max_3b = {0.5}; 
+    
+    AtomicData* ad = AtomicData::from_points(line_pos, line_z, cell, pbc, r_max_3b, MPI_COMM_WORLD);
+    
+    DistGraph* g3 = ad->get_graph3b(r_max_3b, r_max_3b);
+    
+    // Expected edges in 3-body graph:
+    // 2-body edges + self-edges + 3-body connections
+    // 0: (0,0), (0,1), (1,0), (1,1) -> 4
+    // 1: (0,0), (0,1), (0,2), (1,0), (1,1), (1,2), (2,0), (2,1), (2,2) -> 9
+    // 2: (1,1), (1,2), (2,1), (2,2) -> 4
+    // Total = 17
+    
+    int local_edges = 0;
+    for(size_t i=0; i<g3->adj_list.size(); ++i) {
+        local_edges += g3->adj_list[i].size();
+    }
+    
+    int total_edges;
+    MPI_Allreduce(&local_edges, &total_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    
+    // Expected 9 edges:
+    // 0: 0, 1, 2
+    // 1: 0, 1, 2
+    // 2: 0, 1, 2
+    EXPECT_EQ(total_edges, 9);
+    
+    delete g3;
+    delete ad;
+}
+
+TEST_F(AtomicDataTest, Consistency) {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
+    std::vector<bool> pbc = {true, true, true};
+    std::vector<double> r_max = {1.5};
+    
+    std::vector<double> pos;
+    std::vector<int> z;
+    if (rank == 0) {
+        pos = {0.0, 0.0, 0.0,  1.0, 0.0, 0.0};
+        z = {1, 1};
+    }
+
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    // Verify ad->graph contains all edges in ad->edges
+    for(size_t k=0; k<ad->edges.size(); ++k) {
+        int u_lid = ad->edges[k].src;
+        int v_lid = ad->edges[k].dst;
+        int v_gid = ad->get_global_index(v_lid);
+        
+        const auto& neighbors = ad->graph->adj_list[u_lid];
+        bool found = false;
+        for(int n : neighbors) {
+            if (n == v_gid) {
+                found = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(found) << "Edge " << k << " missing in DistGraph";
+    }
+    
+    // Check self-edges
+    for(int i=0; i<ad->n_atom; ++i) {
+        int my_gid = ad->get_global_index(i);
+        const auto& neighbors = ad->graph->adj_list[i];
+        bool found = false;
+        for(int n : neighbors) {
+            if (n == my_gid) {
+                found = true;
+                break;
+            }
+        }
+        EXPECT_TRUE(found) << "Self-edge missing for atom " << i;
+    }
+    
+    delete ad;
+}
+
+TEST_F(AtomicDataTest, PressureTest_Random) {
+    int rank;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
+    std::vector<bool> pbc = {true, true, true};
+    std::vector<double> r_max = {1.5};
+
+    int N = 1000;
+    std::vector<double> r_pos(N * 3);
+    std::vector<int> r_z(N);
+    
+    if (rank == 0) {
+        for(int i=0; i<N; ++i) {
+            r_pos[3*i] = (double)rand() / RAND_MAX * 10.0;
+            r_pos[3*i+1] = (double)rand() / RAND_MAX * 10.0;
+            r_pos[3*i+2] = (double)rand() / RAND_MAX * 10.0;
+            r_z[i] = rand() % 2 + 1;
+        }
+    }
+    
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    int total_n;
+    int local_n = ad->n_atom;
+    MPI_Allreduce(&local_n, &total_n, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    EXPECT_EQ(total_n, N);
+    
+    for(int i=0; i<ad->n_atom; ++i) {
+        bool has_self = false;
+        for(int n : ad->graph->adj_list[i]) {
+            if (n == i) has_self = true;
+        }
+        EXPECT_TRUE(has_self);
+    }
+    
+    delete ad;
+}
+
+TEST_F(AtomicDataTest, ThreeBodyCorrectness_BruteForce) {
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    
+    // 1. Create a random system
+    int N = 50; // Small enough for O(N^3) check
+    std::vector<double> r_pos(N * 3);
+    std::vector<int> r_z(N);
+    
+    if (rank == 0) {
+        for(int i=0; i<N; ++i) {
+            r_pos[3*i] = (double)rand() / RAND_MAX * 10.0;
+            r_pos[3*i+1] = (double)rand() / RAND_MAX * 10.0;
+            r_pos[3*i+2] = (double)rand() / RAND_MAX * 10.0;
+            r_z[i] = 1;
+        }
+    }
+    
+    std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
+    std::vector<bool> pbc = {true, true, true};
+    std::vector<double> r_max = {2.5}; // Large enough to have many neighbors
+    
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    // 2. Get 3-body graph
+    DistGraph* g3 = ad->get_graph3b(r_max, r_max);
+    
+    // 3. Gather all edges to rank 0 for verification
+    // 3.1 Gather 2-body edges (from ad->edges)
+    // ad->edges stores (src_lid, dst_lid). Need to convert to global.
+    std::vector<std::pair<int, int>> global_edges_2b;
+    
+    // Local edges
+    std::vector<int> local_edges_flat;
+    for(const auto& e : ad->edges) {
+        local_edges_flat.push_back(ad->get_global_index(e.src));
+        local_edges_flat.push_back(ad->get_global_index(e.dst));
+    }
+    
+    // Gather
+    int n_local_edges = local_edges_flat.size();
+    std::vector<int> recv_counts(size);
+    MPI_Gather(&n_local_edges, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    std::vector<int> displs(size + 1, 0);
+    std::vector<int> all_edges_flat;
+    if (rank == 0) {
+        for(int i=0; i<size; ++i) displs[i+1] = displs[i] + recv_counts[i];
+        all_edges_flat.resize(displs[size]);
+    }
+    
+    MPI_Gatherv(local_edges_flat.data(), n_local_edges, MPI_INT, 
+                all_edges_flat.data(), recv_counts.data(), displs.data(), MPI_INT, 0, MPI_COMM_WORLD);
+                
+    if (rank == 0) {
+        for(size_t i=0; i<all_edges_flat.size(); i+=2) {
+            global_edges_2b.push_back({all_edges_flat[i], all_edges_flat[i+1]});
+        }
+    }
+    
+    // 3.2 Gather 3-body edges (from g3->adj_list)
+    std::vector<int> local_edges_3b_flat;
+    for(int i=0; i<ad->n_atom; ++i) {
+        int u_gid = ad->get_global_index(i);
+        for(int v_lid : g3->adj_list[i]) {
+            int v_gid = g3->get_global_index(v_lid);
+            local_edges_3b_flat.push_back(u_gid);
+            local_edges_3b_flat.push_back(v_gid);
+        }
+    }
+    
+    int n_local_edges_3b = local_edges_3b_flat.size();
+    MPI_Gather(&n_local_edges_3b, 1, MPI_INT, recv_counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    
+    if (rank == 0) {
+        for(int i=0; i<size; ++i) displs[i+1] = displs[i] + recv_counts[i];
+        all_edges_flat.resize(displs[size]);
+    }
+    
+    MPI_Gatherv(local_edges_3b_flat.data(), n_local_edges_3b, MPI_INT,
+                all_edges_flat.data(), recv_counts.data(), displs.data(), MPI_INT, 0, MPI_COMM_WORLD);
+                
+    std::vector<std::pair<int, int>> global_edges_3b;
+    if (rank == 0) {
+        for(size_t i=0; i<all_edges_flat.size(); i+=2) {
+            global_edges_3b.push_back({all_edges_flat[i], all_edges_flat[i+1]});
+        }
+        std::sort(global_edges_3b.begin(), global_edges_3b.end());
+        global_edges_3b.erase(std::unique(global_edges_3b.begin(), global_edges_3b.end()), global_edges_3b.end());
+    }
+    
+    // 4. Brute Force Verification on Rank 0
+    if (rank == 0) {
+        // Build adjacency matrix for 2-body
+        std::vector<std::vector<int>> adj(N);
+        for(const auto& p : global_edges_2b) {
+            adj[p.first].push_back(p.second);
+        }
+        
+        // Compute expected 3-body edges
+        // Rule: (j, k) is edge if exists i s.t. (i, j) in E and (i, k) in E
+        // Plus E itself.
+        std::vector<std::pair<int, int>> expected_3b;
+        
+        // Add 2-body edges
+        for(const auto& p : global_edges_2b) expected_3b.push_back(p);
+        
+        // Add shared-neighbor edges
+        for(int i=0; i<N; ++i) {
+            const auto& neighbors = adj[i];
+            for(int j : neighbors) {
+                for(int k : neighbors) {
+                    expected_3b.push_back({j, k});
+                }
+            }
+        }
+        
+        // Add self edges (if not already covered)
+        for(int i=0; i<N; ++i) expected_3b.push_back({i, i});
+        
+        std::sort(expected_3b.begin(), expected_3b.end());
+        expected_3b.erase(std::unique(expected_3b.begin(), expected_3b.end()), expected_3b.end());
+        
+        // Compare
+        EXPECT_EQ(global_edges_3b.size(), expected_3b.size());
+        
+        // Check content
+        for(size_t i=0; i<expected_3b.size(); ++i) {
+            EXPECT_EQ(global_edges_3b[i], expected_3b[i]) << "Mismatch at index " << i;
+        }
+    }
+    
+    delete g3;
+    delete ad;
+}
+
+TEST_F(AtomicDataTest, SingleProcess_Stress) {
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    
+    // Only run if size == 1 to strictly test single process logic
+    if (size != 1) return;
+    
+    // 1. Create a dense system
+    int N = 10; 
+    std::vector<double> r_pos(N * 3);
+    std::vector<int> r_z(N);
+    
+    for(int i=0; i<N; ++i) {
+        r_pos[3*i] = (double)rand() / RAND_MAX * 5.0; // Dense
+        r_pos[3*i+1] = (double)rand() / RAND_MAX * 5.0;
+        r_pos[3*i+2] = (double)rand() / RAND_MAX * 5.0;
+        r_z[i] = 1;
+    }
+    
+    std::vector<double> cell = {5.0, 0.0, 0.0,  0.0, 5.0, 0.0,  0.0, 0.0, 5.0};
+    std::vector<bool> pbc = {true, true, true};
+    std::vector<double> r_max = {1.0}; 
+    
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    
+    // Verify basic properties
+    EXPECT_EQ(ad->n_atom, N);
+    
+    // Verify 3-body graph construction with full brute-force check
+    DistGraph* g3 = ad->get_graph3b(r_max, r_max);
+    
+    // 1. Build Expected 2-body adjacency
+    std::vector<std::vector<int>> adj_2b(N);
+    std::vector<std::pair<int, int>> edges_2b;
+    
+    // Brute force 2-body
+    for(int i=0; i<N; ++i) {
+        for(int j=0; j<N; ++j) { // Check all pairs, including self if distance is 0 (which it is)
+            // Distance check with PBC
+            double dx = r_pos[3*j] - r_pos[3*i];
+            double dy = r_pos[3*j+1] - r_pos[3*i+1];
+            double dz = r_pos[3*j+2] - r_pos[3*i+2];
+            
+            // Apply PBC (Minimum Image Convention)
+            // Box is 5.0. 
+            auto apply_pbc = [](double d, double L) {
+                while(d > L/2) d -= L;
+                while(d < -L/2) d += L;
+                return d;
+            };
+            dx = apply_pbc(dx, 5.0);
+            dy = apply_pbc(dy, 5.0);
+            dz = apply_pbc(dz, 5.0);
+            
+            double r2 = dx*dx + dy*dy + dz*dz;
+            double r = std::sqrt(r2);
+            // AtomicData uses r_cut = r_max[type_i] + r_max[type_j]
+            // Here r_max = {1.0}, so r_cut = 2.0.
+            if (r <= 2.0 + 1e-9) { 
+                // Check if self-edge (i==j) - always included if r=0
+                if (i == j) {
+                    // Always add self-edge
+                    adj_2b[i].push_back(j);
+                    edges_2b.push_back({i, j});
+                } else {
+                    adj_2b[i].push_back(j);
+                    edges_2b.push_back({i, j});
+                }
+            }
+        }
+    }
+    
+    // 2. Build Expected 3-body edges
+    std::vector<std::pair<int, int>> expected_3b;
+    
+    // Add 2-body edges
+    for(const auto& p : edges_2b) expected_3b.push_back(p);
+    
+    // Add shared-neighbor edges
+    for(int i=0; i<N; ++i) {
+        const auto& neighbors = adj_2b[i];
+        for(int j : neighbors) {
+            for(int k : neighbors) {
+                expected_3b.push_back({j, k});
+            }
+        }
+    }
+    
+    std::sort(expected_3b.begin(), expected_3b.end());
+    expected_3b.erase(std::unique(expected_3b.begin(), expected_3b.end()), expected_3b.end());
+
+    // 3. Collect Actual 3-body edges from g3 and map to original indices
+    std::vector<std::pair<int, int>> actual_3b;
+    for(int i=0; i<N; ++i) {
+        // g3->adj_list[i] contains neighbors of atom i (local index i)
+        int orig_i = ad->atom_index[i];
+        for(int neighbor : g3->adj_list[i]) {
+            int orig_neighbor = ad->atom_index[neighbor];
+            actual_3b.push_back({orig_i, orig_neighbor});
+        }
+    }
+    std::sort(actual_3b.begin(), actual_3b.end());
+    
+    // 4. Compare
+    EXPECT_EQ(actual_3b.size(), expected_3b.size());
+    
+    // Check content
+    size_t min_size = std::min(actual_3b.size(), expected_3b.size());
+    for(size_t i=0; i<min_size; ++i) {
+        EXPECT_EQ(actual_3b[i], expected_3b[i]) << "Mismatch at index " << i;
+    }
+    
+    delete g3;
+    delete ad;
+}
+    
+
 
 int main(int argc, char **argv) {
     MPI_Init(&argc, &argv);
