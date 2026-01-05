@@ -1,334 +1,384 @@
-#ifndef cheby
-#define cheby
+#ifndef RSATB_CALC_CHEBY_HPP
+#define RSATB_CALC_CHEBY_HPP
 
-#include <petsc.h>
-#include <mpi.h>
+#include "../backend/block_csr.hpp"
+#include "../backend/dist_vector.hpp"
+#include "../backend/dist_multivector.hpp"
+#include "preconditioner.hpp"
+#include "solver.hpp"
 #include "bessel.hpp"
+#include <vector>
+#include <cmath>
+#include <complex>
+#include <memory>
 
+namespace rsatb {
+namespace calc {
 
-namespace rsatb::calc{
+using namespace rsatb::backend;
 
-enum class ChebyMode {
-    NORMAL,
-    ADJOINT,
-    CONJUGATE
-};
+enum class ChebyMode { NORMAL, ADJOINT, CONJUGATE };
 
-void timeprop_coeff(const double& time_step, const double& precision, bool forward,
-            /*output*/
-            PetscComplex **coeff, int *n_bes){
-    /* It is strictly the coeff of bessel function. 
-    [J_0(z), 2(-i)^m J_m(z), ...]*/
-    /* Always delete the coeff after using this function */
-    
+// Helper to generate time propagation coefficients
+inline void timeprop_coeff(double time_step, double precision, bool forward,
+                         std::vector<std::complex<double>>& coeffs) {
     double *bes_vec;
-    const PetscComplex  I(0.0, 1.0);
+    int n_bes;
+    build_bessel_vector(time_step, precision, &bes_vec, &n_bes);
 
-    build_bessel_vector(time_step, precision, &bes_vec, n_bes);
-
-    *coeff =  new PetscComplex[*n_bes];
-    if(forward){
-        for (int n = 0; n < *n_bes; ++n) {
-            (*coeff)[n] = 2.0 * std::pow(-I, n) * bes_vec[n];
+    coeffs.resize(n_bes);
+    const std::complex<double> I(0.0, 1.0);
+    
+    if (forward) {
+        for (int n = 0; n < n_bes; ++n) {
+            coeffs[n] = 2.0 * std::pow(-I, n) * bes_vec[n];
         }
-    }else{
-        for (int n = 0; n < *n_bes; ++n) {
-            (*coeff)[n] = 2.0 * std::pow(I, n) * bes_vec[n];
+    } else {
+        for (int n = 0; n < n_bes; ++n) {
+            coeffs[n] = 2.0 * std::pow(I, n) * bes_vec[n];
         }
     }
     
-    // First coefficient has a factor of 1 while others have 2.
-    (*coeff)[0] *= 0.5;
-
-    delete bes_vec;
+    coeffs[0] *= 0.5;
+    delete[] bes_vec;
 }
 
+// Chebyshev Recurrence
+// Computes T_n(H_scaled) * v
+// H_scaled = (H - center) / half_width
+template <typename T, typename Kernel = DefaultKernel<T>>
+class Chebyshev {
+public:
+    BlockSpMat<T, Kernel>& H;
+    BlockSpMat<T, Kernel>* S = nullptr;
+    Preconditioner<T, Kernel>* M = nullptr;
+    rsatb::calc::PreconditionerType ptype = rsatb::calc::PreconditionerType::Left;
+    LinearSolver<T, Kernel> solver;
+    double center;
+    double half_width;
 
-/* The chebyshev recurance function
-
-*/
-inline void cheby_iter(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next, bool orthogonal=false){
-    // T_next = - T_prev + 2 x M^(-1) x H x T_curr
-    MatMult(H, T_curr, T_next);
-    if(!orthogonal) KSPSolve(ksp, T_next, T_next);
-    VecAXPBY(T_next, -1.0,  2.0, T_prev);
-
-    VecSwap(T_prev, T_curr);
-    VecSwap(T_curr, T_next);
-}
-
-inline void cheby_iter_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp, bool orthogonal=false){
-    MatMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
-    if(!orthogonal) {
-        KSPMatSolve(ksp, *T_tmp, *T_next);
-    } else {
-        MatCopy(*T_tmp, *T_next, SAME_NONZERO_PATTERN);
-    }
-    MatScale(*T_next, 2.0);
-    MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
-
-    Mat tmp=*T_prev;
-    *T_prev = *T_curr; *T_curr = tmp;
-    *T_curr = *T_next; *T_next = tmp;
-    // MatSwap(*T_prev, *T_curr);
-    // MatSwap(*T_curr, *T_next);
-}
-
-inline void cheby_iter_adjoint(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next, bool orthogonal=false){
-    // T_next = - T_prev + 2 x H x M^(-1) x T_curr
-    if(!orthogonal) {
-        KSPSolve(ksp, T_curr, T_next);
-    } else {
-        VecCopy(T_curr, T_next);
-    }
-    VecScale(T_next, 2.0);
-    VecScale(T_prev, -1.0);
-    MatMultAdd(H, T_next, T_prev, T_prev);
-
-    VecSwap(T_prev, T_curr);
-}
-
-inline void cheby_iter_adjoint_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp, bool orthogonal=false){
-    if(!orthogonal) {
-        KSPMatSolve(ksp, *T_curr, *T_tmp);
-    } else {
-        MatCopy(*T_curr, *T_tmp, SAME_NONZERO_PATTERN);
-    }
-    MatMatMult(H, *T_tmp, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_next);
-    MatScale(*T_next, 2.0);
-    MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
-
-    Mat tmp=*T_prev;
-    *T_prev = *T_curr; *T_curr = tmp;
-    *T_curr = *T_next; *T_next = tmp;
-    // MatSwap(*T_prev, *T_curr);
-    // MatSwap(*T_curr, *T_next);
-}
-
-inline void cheby_iter_conjugate(Mat H, KSP ksp, Vec T_prev, Vec T_curr, Vec T_next, bool orthogonal=false){
-    // T_next = - T_prev + 2 x (S^-1)^T x H^T x T_curr
-    VecConjugate(T_curr);
-    MatMult(H, T_curr, T_next);
-    if(!orthogonal) KSPSolve(ksp, T_next, T_next);
-    VecConjugate(T_curr); VecConjugate(T_next);
-    VecAXPBY(T_next, -1.0,  2.0, T_prev);
-
-    VecSwap(T_prev, T_curr);
-    VecSwap(T_curr, T_next);
-}
-
-inline void cheby_iter_conjugate_mult(Mat H, KSP ksp, Mat *T_prev, Mat *T_curr, Mat *T_next, Mat *T_tmp, bool orthogonal=false){
-    MatConjugate(*T_curr);
-    MatMatMult(H, *T_curr, MAT_REUSE_MATRIX, PETSC_DEFAULT, T_tmp);
-    if(!orthogonal) {
-        KSPMatSolve(ksp, *T_tmp, *T_next);
-    } else {
-        MatCopy(*T_tmp, *T_next, SAME_NONZERO_PATTERN);
-    }
-    MatConjugate(*T_next); MatConjugate(*T_curr);
-    MatScale(*T_next, 2.0);
-    MatAXPY(*T_next, -1.0, *T_prev, SAME_NONZERO_PATTERN);
-
-    Mat tmp=*T_prev;
-    *T_prev = *T_curr; *T_curr = tmp;
-    *T_curr = *T_next; *T_next = tmp;
-}
-
-inline void cheby_recur(
-    Mat H, KSP ksp, Vec Psi_in,
-    Vec *buff, // length 3 vec
-    PetscComplex *coeff, PetscInt n_coeff, 
-    Vec Psi_out, ChebyMode mode=ChebyMode::NORMAL, bool orthogonal=false
-    ){
-    if(n_coeff < 3)
-        throw std::invalid_argument("chebyshev_propagate: need at least three Bessel coefficients");
-
-    // const PetscComplex  I(0.0, 1.0);
-    // — scratch buffers if none —
-    if(buff==nullptr){
-        VecDuplicateVecs(Psi_in, 3, &buff);
+    Chebyshev(BlockSpMat<T, Kernel>& ham, double emin, double emax) 
+        : H(ham), S(nullptr), M(nullptr), solver(1e-8, 1000, false) {
+        center = (emax + emin) / 2.0;
+        half_width = (emax - emin) / 2.0;
     }
 
-    
-    if( mode == ChebyMode::ADJOINT ){
-        /* init T_prev(buff[0])
-        HS^(-1)|Psi>    */
-        if(!orthogonal) {
-            KSPSolve(ksp, Psi_in, buff[1]);
+    Chebyshev(BlockSpMat<T, Kernel>& ham, Preconditioner<T, Kernel>& pre, rsatb::calc::PreconditionerType type, double emin, double emax)
+        : H(ham), S(nullptr), M(&pre), ptype(type), solver(1e-8, 1000, false) {
+        center = (emax + emin) / 2.0;
+        half_width = (emax - emin) / 2.0;
+    }
+
+    Chebyshev(BlockSpMat<T, Kernel>& ham, BlockSpMat<T, Kernel>& ovp, double emin, double emax) 
+        : H(ham), S(&ovp), M(nullptr), solver(1e-8, 1000, false) {
+        center = (emax + emin) / 2.0;
+        half_width = (emax - emin) / 2.0;
+    }
+
+    Chebyshev(BlockSpMat<T, Kernel>& ham, BlockSpMat<T, Kernel>& ovp, Preconditioner<T, Kernel>& pre, rsatb::calc::PreconditionerType type, double emin, double emax) 
+        : H(ham), S(&ovp), M(&pre), ptype(type), solver(1e-8, 1000, false) {
+        center = (emax + emin) / 2.0;
+        half_width = (emax - emin) / 2.0;
+    }
+
+    // Apply scaled operator Op * x -> y
+    // Op = (S^-1 H - center) / half_width  (NORMAL)
+    // Op = (H^*S^-1* - center) / half_width  (CONJUGATE)
+    // Op = (H S^-1 - center) / half_width  (ADJOINT)
+    void apply_op(const DistVector<T>& x, DistVector<T>& y, ChebyMode mode = ChebyMode::NORMAL) {
+        if (!v_tmp) v_tmp = std::make_unique<DistVector<T>>(x.graph);
+        if (mode == ChebyMode::CONJUGATE) {
+            if (!v_x_conj) v_x_conj = std::make_unique<DistVector<T>>(x.graph);
+            v_x_conj->copy_from(x);
+            v_x_conj->conjugate();
+            apply_op_internal(*v_x_conj, y, mode);
+            y.conjugate();
         } else {
-            VecCopy(Psi_in, buff[1]);
+            apply_op_internal(x, y, mode);
         }
-        MatMult(H, buff[1], buff[0]);
+    }
 
-         /* init T_curr(buff[1])
-            2HS^(-1)|buff[0]> - |Psi>
-        */
+    // we assume H and S is hermitian here.
+    void apply_op_internal(const DistVector<T>& x, DistVector<T>& y, ChebyMode mode) {
+        if (S == nullptr && M == nullptr) {
+            // Orthogonal case: y = (H - center*I) x / half_width
+            H.mult(const_cast<DistVector<T>&>(x), y);
+            y.axpy(-center, x);
+            y.scale(1.0 / half_width);
+        } else if (S == nullptr && M != nullptr) {
+            // Direct Preconditioned case: y = (MHM - center*I) x / half_width (Symmetric)
+            if (ptype == rsatb::calc::PreconditionerType::Symmetric) {
+                M->apply(x, y);
+                H.mult(y, *v_tmp);
+                M->apply_adjoint(*v_tmp, y);
+                y.axpy(-center, x);
+            } else if (ptype == rsatb::calc::PreconditionerType::Left) {
+                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                    H.mult(const_cast<DistVector<T>&>(x), *v_tmp);
+                    M->apply(*v_tmp, y);
+                    y.axpy(-center, x);
+                } else {
+                    M->apply(x, *v_tmp);
+                    H.mult(*v_tmp, y);
+                    y.axpy(-center, x);
+                }
+            } else { // Right
+                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                    M->apply(x, *v_tmp);
+                    H.mult(*v_tmp, y);
+                    y.axpy(-center, x);
+                } else {
+                    H.mult(const_cast<DistVector<T>&>(x), *v_tmp);
+                    M->apply(*v_tmp, y);
+                    y.axpy(-center, x);
+                }
+            }
+            y.scale(1.0 / half_width);
+        } else {
+            // Non-orthogonal case with solver
+            if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                // y = S^-1 (H - center*S) x / half_width
+                H.mult(const_cast<DistVector<T>&>(x), *v_tmp);
+                if (M) solver.solve(*S, *v_tmp, y, *M, ptype);
+                else solver.solve(*S, *v_tmp, y);
+                
+                y.axpy(-center, x);
+            } else {
+                // y = (H - center*S) S^-1 x / half_width
+                if (M) solver.solve(*S, x, *v_tmp, *M, ptype);
+                else solver.solve(*S, x, *v_tmp);
+                
+                H.mult_adjoint(*v_tmp, y);
+                y.axpy(-center, x);
+            }
+            y.scale(1.0 / half_width);
+        }
+    }
+
+    void apply_op(const DistMultiVector<T>& X, DistMultiVector<T>& Y, ChebyMode mode = ChebyMode::NORMAL) {
+        if (!mv_tmp || mv_tmp->num_vectors != X.num_vectors) {
+            mv_tmp = std::make_unique<DistMultiVector<T>>(X.graph, X.num_vectors);
+        }
+        if (mode == ChebyMode::CONJUGATE) {
+            if (!mv_x_conj || mv_x_conj->num_vectors != X.num_vectors) {
+                mv_x_conj = std::make_unique<DistMultiVector<T>>(X.graph, X.num_vectors);
+            }
+            mv_x_conj->copy_from(X);
+            mv_x_conj->conjugate();
+            apply_op_dense_internal(*mv_x_conj, Y, mode);
+            Y.conjugate();
+        } else {
+            apply_op_dense_internal(X, Y, mode);
+        }
+    }
+
+    void apply_op_dense_internal(const DistMultiVector<T>& X, DistMultiVector<T>& Y, ChebyMode mode) {
+        if (S == nullptr && M == nullptr) {
+            // Orthogonal case
+            H.mult_dense(const_cast<DistMultiVector<T>&>(X), Y);
+            Y.axpy(-center, X);
+            Y.scale(1.0 / half_width);
+        } else if (S == nullptr && M != nullptr) {
+            // Direct Preconditioned case
+            if (ptype == rsatb::calc::PreconditionerType::Symmetric) {
+                M->apply(X, Y);
+                H.mult_dense(Y, *mv_tmp);
+                M->apply_adjoint(*mv_tmp, Y);
+                Y.axpy(-center, X);
+            } else if (ptype == rsatb::calc::PreconditionerType::Left) {
+                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                    H.mult_dense(const_cast<DistMultiVector<T>&>(X), *mv_tmp);
+                    M->apply(*mv_tmp, Y);
+                    Y.axpy(-center, X);
+                } else {
+                    M->apply(X, *mv_tmp);
+                    H.mult_dense(*mv_tmp, Y);
+                    Y.axpy(-center, X);
+                }
+            } else { // Right
+                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                    M->apply(X, *mv_tmp);
+                    H.mult_dense(*mv_tmp, Y);
+                    Y.axpy(-center, X);
+                } else {
+                    H.mult_dense(const_cast<DistMultiVector<T>&>(X), *mv_tmp);
+                    M->apply(*mv_tmp, Y);
+                    Y.axpy(-center, X);
+                }
+            }
+            Y.scale(1.0 / half_width);
+        } else {
+            // Non-orthogonal case
+            if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
+                H.mult_dense(const_cast<DistMultiVector<T>&>(X), *mv_tmp);
+                if (M) solver.solve(*S, *mv_tmp, Y, *M, ptype);
+                else solver.solve(*S, *mv_tmp, Y);
+                Y.axpy(-center, X);
+            } else {
+                if (M) solver.solve(*S, X, *mv_tmp, *M, ptype);
+                else solver.solve(*S, X, *mv_tmp);
+                H.mult_dense_adjoint(*mv_tmp, Y);
+                Y.axpy(-center, X);
+            }
+            Y.scale(1.0 / half_width);
+        }
+    }
+
+    // Propagate vector: v_out = sum c_n T_n(Op) v_in
+    void propagate(const DistVector<T>& v_in, DistVector<T>& v_out, const std::vector<std::complex<double>>& coeffs, ChebyMode mode = ChebyMode::NORMAL) {
+        int N = coeffs.size();
+        if (N == 0) return;
+
+        if (!v_t0) v_t0 = std::make_unique<DistVector<T>>(v_in.graph);
+        if (!v_t1) v_t1 = std::make_unique<DistVector<T>>(v_in.graph);
+        if (!v_t2) v_t2 = std::make_unique<DistVector<T>>(v_in.graph);
+
+        v_t0->copy_from(v_in); // T0
         
-        if(!orthogonal) {
-            KSPSolve(ksp, buff[0], buff[2]);
-        } else {
-            VecCopy(buff[0], buff[2]);
+        // v_out = c0 * T0
+        v_out.copy_from(*v_t0);
+        v_out.scale(static_cast<T>(coeffs[0]));
+
+        if (N > 1) {
+            apply_op(*v_t0, *v_t1, mode); // t1 = T1
+            v_out.axpy(static_cast<T>(coeffs[1]), *v_t1);
         }
-        MatMult(H, buff[2], buff[1]);
-        VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
-    } else if ( mode == ChebyMode::CONJUGATE ) {
-        /* init T_prev(buff[0])
-        (S^-1)^T H^T |Psi>    */
-        VecConjugate(Psi_in);
-        MatMult(H, Psi_in, buff[0]);
-        if(!orthogonal) KSPSolve(ksp, buff[0], buff[0]);
 
-        /* init T_curr(buff[1])
-            2(S^-1)^T H^T |buff[0]> - |Psi>
-        */
-        MatMult(H, buff[0], buff[1]);
-        if(!orthogonal) KSPSolve(ksp, buff[1], buff[1]);
-        VecConjugate(Psi_in); VecConjugate(buff[0]); VecConjugate(buff[1]);
-        VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
-    } else {
-        /* init T_prev(buff[0])
-        S^(-1)H|Psi>    */
-        MatMult(H, Psi_in, buff[0]);
-        // std::cout<<"Here?!\n";
-        if(!orthogonal) KSPSolve(ksp, buff[0], buff[0]);
-        // VecScale(buff[0], alpha1);
-
-        /* init T_curr(buff[1])
-            2S^(-1)H|buff[0]> - |Psi>
-        */
-        MatMult(H, buff[0], buff[1]);
-        if(!orthogonal) KSPSolve(ksp, buff[1], buff[1]);
-        VecAXPBY(buff[1], -1.0, 2.0, Psi_in);
-    }
-
-    // compute current scalar output
-    VecCopy(Psi_in,Psi_out);
-    VecAXPBYPCZ(Psi_out, coeff[1], coeff[2], coeff[0], buff[0], buff[1]);
-
-    // Higher-order Chebyshev recurrence
-    if ( mode == ChebyMode::ADJOINT ){
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter_adjoint(H, ksp, buff[0], buff[1], buff[2], orthogonal);
-            VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
-        }
-    } else if ( mode == ChebyMode::CONJUGATE ) {
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter_conjugate(H, ksp, buff[0], buff[1], buff[2], orthogonal);
-            VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
-        }
-    } else {
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter(H, ksp, buff[0], buff[1], buff[2], orthogonal);
-            VecAXPBY(Psi_out, coeff[m], 1.0, buff[1]);
+        for (int n = 2; n < N; ++n) {
+            apply_op(*v_t1, *v_t2, mode);
+            v_t2->axpby(-1.0, *v_t0, 2.0); // t2 = 2*Op*t1 - t0 = Tn
+            
+            v_out.axpy(static_cast<T>(coeffs[n]), *v_t2);
+            
+            v_t0->swap(*v_t1);
+            v_t1->swap(*v_t2);
         }
     }
 
-}
+    // Propagate multivector: V_out = sum c_n T_n(Op) V_in
+    void propagate(const DistMultiVector<T>& V_in, DistMultiVector<T>& V_out, const std::vector<std::complex<double>>& coeffs, ChebyMode mode = ChebyMode::NORMAL) {
+        int N = coeffs.size();
+        if (N == 0) return;
 
-inline void cheby_recur_mult(
-    Mat H, KSP ksp, Mat Psi_in,
-    Mat *buff, // length 4 Mat buff
-    PetscComplex *coeff, PetscInt n_coeff, 
-    Mat Psi_out, ChebyMode mode=ChebyMode::NORMAL, bool orthogonal=false
-    ){
-    if(n_coeff < 3)
-        throw std::invalid_argument("chebyshev_propagate: need at least three Bessel coefficients");
+        if (!mv_t0 || mv_t0->num_vectors != V_in.num_vectors) {
+            mv_t0 = std::make_unique<DistMultiVector<T>>(V_in.graph, V_in.num_vectors);
+        }
+        if (!mv_t1 || mv_t1->num_vectors != V_in.num_vectors) {
+            mv_t1 = std::make_unique<DistMultiVector<T>>(V_in.graph, V_in.num_vectors);
+        }
+        if (!mv_t2 || mv_t2->num_vectors != V_in.num_vectors) {
+            mv_t2 = std::make_unique<DistMultiVector<T>>(V_in.graph, V_in.num_vectors);
+        }
 
-    // const PetscComplex  I(0.0, 1.0);
-    // — scratch buffers —
-    if(buff==nullptr){
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+1);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+2);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+3);
+        mv_t0->copy_from(V_in); // T0
+        
+        // V_out = c0 * T0
+        V_out.copy_from(*mv_t0);
+        V_out.scale(static_cast<T>(coeffs[0]));
+
+        if (N > 1) {
+            apply_op(*mv_t0, *mv_t1, mode); // T1 = T1
+            V_out.axpy(static_cast<T>(coeffs[1]), *mv_t1);
+        }
+
+        for (int n = 2; n < N; ++n) {
+            apply_op(*mv_t1, *mv_t2, mode);
+            mv_t2->axpby(-1.0, *mv_t0, 2.0); // T2 = 2*Op*T1 - T0 = Tn
+            
+            V_out.axpy(static_cast<T>(coeffs[n]), *mv_t2);
+            
+            mv_t0->swap(*mv_t1);
+            mv_t1->swap(*mv_t2);
+        }
+    }
+
+    // Apply H_scaled * x -> y (Legacy, for backward compatibility)
+    void apply_scaled_H(const DistVector<T>& x, DistVector<T>& y) {
+        apply_op(x, y, ChebyMode::NORMAL);
+    }
+
+    // Apply H_scaled * X -> Y (Legacy)
+    void apply_scaled_H(const DistMultiVector<T>& X, DistMultiVector<T>& Y) {
+        apply_op(X, Y, ChebyMode::NORMAL);
+    }
+
+    // Compute moments <v| T_n(H) |v> for n=0..N
+    // Uses KPM recurrence
+    std::vector<T> compute_moments(const DistVector<T>& v, int N) {
+        std::vector<T> moments(N);
+        
+        if (!v_t0) v_t0 = std::make_unique<DistVector<T>>(v.graph);
+        if (!v_t1) v_t1 = std::make_unique<DistVector<T>>(v.graph);
+        if (!v_t2) v_t2 = std::make_unique<DistVector<T>>(v.graph);
+
+        v_t0->copy_from(v); // T_0 |v> = |v>
+        
+        // mu_0 = <v|v>
+        moments[0] = v_t0->dot(*v_t0);
+        
+        if (N > 1) {
+            // T_1 |v> = H_scaled |v>
+            apply_op(*v_t0, *v_t1, ChebyMode::NORMAL);
+            moments[1] = v.dot(*v_t1); // <v| T_1 |v>
+        }
+        
+        for (int n = 2; n < N; ++n) {
+            apply_op(*v_t1, *v_t2, ChebyMode::NORMAL);
+            v_t2->axpby(-1.0, *v_t0, 2.0);
+            
+            moments[n] = v.dot(*v_t2);
+            
+            v_t0->swap(*v_t1);
+            v_t1->swap(*v_t2);
+        }
+        
+        return moments;
     }
     
-    if ( mode == ChebyMode::ADJOINT ){
-        // init T_prev(buff[0])
-        if(!orthogonal) {
-            KSPMatSolve(ksp, Psi_in, buff[3]);
-        } else {
-            MatCopy(Psi_in, buff[3], SAME_NONZERO_PATTERN);
+    // Compute moments for multivector (Batched)
+    std::vector<std::vector<T>> compute_moments(const DistMultiVector<T>& V, int N) {
+        int num_vecs = V.num_vectors;
+        std::vector<std::vector<T>> moments(N, std::vector<T>(num_vecs));
+        
+        if (!mv_t0 || mv_t0->num_vectors != V.num_vectors) {
+            mv_t0 = std::make_unique<DistMultiVector<T>>(V.graph, V.num_vectors);
         }
-        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff);
-
-        // init T_curr(buff[1])
-        if(!orthogonal) {
-            KSPMatSolve(ksp, buff[0], buff[3]);
-        } else {
-            MatCopy(buff[0], buff[3], SAME_NONZERO_PATTERN);
+        if (!mv_t1 || mv_t1->num_vectors != V.num_vectors) {
+            mv_t1 = std::make_unique<DistMultiVector<T>>(V.graph, V.num_vectors);
         }
-        MatMatMult(H, buff[3], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+1);
-        MatScale(buff[1], 2.0);
-        MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
-    } else if ( mode == ChebyMode::CONJUGATE ) {
-        // init T_prev(buff[0])
-        MatConjugate(Psi_in);
-        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
-        if(!orthogonal) {
-            KSPMatSolve(ksp, buff[3], buff[0]);
-        } else {
-            MatCopy(buff[3], buff[0], SAME_NONZERO_PATTERN);
+        if (!mv_t2 || mv_t2->num_vectors != V.num_vectors) {
+            mv_t2 = std::make_unique<DistMultiVector<T>>(V.graph, V.num_vectors);
         }
 
-        // init T_curr(buff[1])
-        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
-        if(!orthogonal) {
-            KSPMatSolve(ksp, buff[3], buff[1]);
-        } else {
-            MatCopy(buff[3], buff[1], SAME_NONZERO_PATTERN);
+        mv_t0->copy_from(V);
+        
+        // mu_0
+        mv_t0->dot(*mv_t0, moments[0]);
+        
+        if (N > 1) {
+            apply_op(*mv_t0, *mv_t1, ChebyMode::NORMAL);
+            V.dot(*mv_t1, moments[1]);
         }
-        MatConjugate(Psi_in); MatConjugate(buff[0]); MatConjugate(buff[1]);
-        MatScale(buff[1], 2.0);
-        MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
-    } else {
-        // init T_prev(buff[0])
-        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
-        if(!orthogonal) {
-            KSPMatSolve(ksp, buff[3], buff[0]);
-        } else {
-            MatCopy(buff[3], buff[0], SAME_NONZERO_PATTERN);
+        
+        for (int n = 2; n < N; ++n) {
+            apply_op(*mv_t1, *mv_t2, ChebyMode::NORMAL);
+            mv_t2->axpby(-1.0, *mv_t0, 2.0);
+            
+            V.dot(*mv_t2, moments[n]);
+            
+            mv_t0->swap(*mv_t1);
+            mv_t1->swap(*mv_t2);
         }
-
-        // init T_curr(buff[1])
-        MatMatMult(H, buff[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, buff+3);
-        if(!orthogonal) {
-            KSPMatSolve(ksp, buff[3], buff[1]);
-        } else {
-            MatCopy(buff[3], buff[1], SAME_NONZERO_PATTERN);
-        }
-        MatScale(buff[1], 2.0);
-        MatAXPY(buff[1], -1.0, Psi_in, SAME_NONZERO_PATTERN);
+        
+        return moments;
     }
 
-    // compute current scalar output
-    MatCopy(Psi_in, Psi_out, SAME_NONZERO_PATTERN);
-    MatScale(Psi_out, coeff[0]);
-    MatAXPY (Psi_out, coeff[1],buff[0],SAME_NONZERO_PATTERN);
-    MatAXPY (Psi_out, coeff[2],buff[1],SAME_NONZERO_PATTERN);
-
-
-    // Higher-order Chebyshev recurrence
-    if ( mode == ChebyMode::ADJOINT ){
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter_adjoint_mult(H, ksp, buff, buff+1, buff+2, buff+3, orthogonal);
-            MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
-        }
-    } else if ( mode == ChebyMode::CONJUGATE ) {
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter_conjugate_mult(H, ksp, buff, buff+1, buff+2, buff+3, orthogonal);
-            MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
-        }
-    } else {
-        for(std::size_t m = 3; m < n_coeff; ++m){
-            cheby_iter_mult(H, ksp, buff, buff+1, buff+2, buff+3, orthogonal);
-            MatAXPY(Psi_out, coeff[m], buff[1], SAME_NONZERO_PATTERN);
-        }
-    }
-
-}
-
+private:
+    std::unique_ptr<DistVector<T>> v_tmp, v_x_conj, v_t0, v_t1, v_t2;
+    std::unique_ptr<DistMultiVector<T>> mv_tmp, mv_x_conj, mv_t0, mv_t1, mv_t2;
 };
 
+} // namespace calc
+} // namespace rsatb
 
 #endif

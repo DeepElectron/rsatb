@@ -1,524 +1,286 @@
-#ifndef AC_CALC
-#define AC_CALC
+#ifndef RSATB_CALC_AC_HPP
+#define RSATB_CALC_AC_HPP
 
-#include <petsc.h>
 #include "cheby.hpp"
 #include "fermi_dirac.hpp"
-#include <math.h>
+#include <vector>
+#include <cmath>
+#include <complex>
+#include <iostream>
 
-namespace rsatb::calc{
+namespace rsatb {
+namespace calc {
 
-template<typename T>
-void current(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double scale=1.0, bool orthogonal=false){ 
-    // apply iS^{-1}[H, R] on Psi_in
-    // -i(e/\hbar)[\hat{H},\hat{R}] = iSinv(-HSinvR + RSinvH) -> -iSinv[R(-SinvHx) + HSinvRx] use atomic unit
+// Compute Current: J = -i S^{-1} [H, R] = -S^{-1} V (if V = -i[H,R])
+// Original code scales by -1.0 (assuming scale=1.0).
+// We assume Vx, Vy, Vz are the velocity operators V.
+// J = - S^{-1} V Psi
+template <typename T, typename Kernel, typename VectorType>
+void current(Chebyshev<T, Kernel>& cheby, 
+             BlockSpMat<T, Kernel>& Vx, 
+             BlockSpMat<T, Kernel>& Vy, 
+             BlockSpMat<T, Kernel>& Vz, 
+             const VectorType& Psi_in, 
+             VectorType* J_Psi, // Array of 3
+             double scale = 1.0) {
     
-    T buff1, buff2;
-    if constexpr (std::is_same_v<T, Vec>){
-        VecDuplicate(Psi_in, &buff1);
-        VecDuplicate(Psi_in, &buff2);
-
-        // buff2 = -S^{-1} H Psi_in
-        MatMult(H, Psi_in, buff2);
-        if(!orthogonal) KSPSolve(ksp, buff2, buff2);
-
-        VecScale(buff2, -1.0);
-
-        // x
-        MatMult(Rx, Psi_in, buff1);
-        if(!orthogonal) KSPSolve(ksp, buff1, buff1); // buff1 = S^{-1} Rx Rsi_in
-        MatMult(H, buff1, J_Psi[0]); // J_Psi = H S^{-1} Rx Psi_in
-        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]); // - Rx S^{-1} H Psi_in + H S^{-1} Rx Psi_in
-
-        // y
-        MatMult(Ry, Psi_in, buff1);
-        if(!orthogonal) KSPSolve(ksp, buff1, buff1);
-        MatMult(H, buff1, J_Psi[1]);
-        MatMultAdd(Ry, buff2, J_Psi[1], J_Psi[1]);
-
-        // z
-        MatMult(Rz, Psi_in, buff1);
-        if(!orthogonal) KSPSolve(ksp, buff1, buff1);
-        MatMult(H, buff1, J_Psi[2]);
-        MatMultAdd(Rz, buff2, J_Psi[2], J_Psi[2]);
-
-        // S^{-1} solve
-        if(!orthogonal){
-            KSPSolve(ksp, J_Psi[0], J_Psi[0]);
-            KSPSolve(ksp, J_Psi[1], J_Psi[1]);
-            KSPSolve(ksp, J_Psi[2], J_Psi[2]);
-        }
-
-        const PetscComplex  nI(0.0, -scale);
-        VecScale(J_Psi[0], nI);
-        VecScale(J_Psi[1], nI);
-        VecScale(J_Psi[2], nI);
-
-        VecDestroy(&buff1);
-        VecDestroy(&buff2);
-
+    // J_Psi[0] = Vx * Psi_in
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        Vx.mult_dense(const_cast<VectorType&>(Psi_in), J_Psi[0]);
+        Vy.mult_dense(const_cast<VectorType&>(Psi_in), J_Psi[1]);
+        Vz.mult_dense(const_cast<VectorType&>(Psi_in), J_Psi[2]);
     } else {
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff1);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff2);
-
-        MatMatMult(H, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, buff2);
-        else MatCopy(buff1, buff2, SAME_NONZERO_PATTERN);
-
-        // x
-        MatMatMult(Rx, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[0]);
-        else MatCopy(buff1, J_Psi[0], SAME_NONZERO_PATTERN);
-
-        MatMatMult(H, J_Psi[0], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatMatMult(Rx, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
-        MatAXPY(buff1, -1.0, J_Psi[0], SAME_NONZERO_PATTERN);
-
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[0]);
-        else MatCopy(buff1, J_Psi[0], SAME_NONZERO_PATTERN);
-
-
-        // y
-        MatMatMult(Ry, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[1]);
-        else MatCopy(buff1, J_Psi[1], SAME_NONZERO_PATTERN);
-
-        MatMatMult(H, J_Psi[1], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatMatMult(Ry, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
-        MatAXPY(buff1, -1.0, J_Psi[1], SAME_NONZERO_PATTERN);
-
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[1]);
-        else MatCopy(buff1, J_Psi[1], SAME_NONZERO_PATTERN);
-
-
-        // z
-        MatMatMult(Rz, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[2]);
-        else MatCopy(buff1, J_Psi[2], SAME_NONZERO_PATTERN);
-        MatMatMult(H, J_Psi[2], MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatMatMult(Rz, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
-        MatAXPY(buff1, -1.0, J_Psi[2], SAME_NONZERO_PATTERN);
-        if(!orthogonal) KSPMatSolve(ksp, buff1, J_Psi[2]);
-        else MatCopy(buff1, J_Psi[2], SAME_NONZERO_PATTERN);
-
-        const PetscComplex  nI(0.0, -scale);
-        MatScale(J_Psi[0], nI);
-        MatScale(J_Psi[1], nI);
-        MatScale(J_Psi[2], nI);
-
-        MatDestroy(&buff1);
-        MatDestroy(&buff2);
-    }
-}
-
-template<typename T>
-void current(Mat Vx, Mat Vy, Mat Vz, KSP ksp, T Psi_in, T *J_Psi, double scale=1.0, bool orthogonal=false){ 
-    // apply -iS^{-1}[H, R]=-V on Psi_in
-    
-    if constexpr (std::is_same_v<T, Vec>){
-        MatMult(Vx, Psi_in, J_Psi[0]);
-        MatMult(Vy, Psi_in, J_Psi[1]);
-        MatMult(Vz, Psi_in, J_Psi[2]);
-        
-        // S^{-1} solve
-        if(!orthogonal){
-            KSPSolve(ksp, J_Psi[0], J_Psi[0]);
-            KSPSolve(ksp, J_Psi[1], J_Psi[1]);
-            KSPSolve(ksp, J_Psi[2], J_Psi[2]);
-        }
-
-        const PetscComplex  nI(-scale, 0.0);
-        VecScale(J_Psi[0], nI);
-        VecScale(J_Psi[1], nI);
-        VecScale(J_Psi[2], nI);
-
-    } else {
-        Mat buff;
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff);
-        
-        MatMatMult(Vx, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff);
-        if(!orthogonal){
-            KSPMatSolve(ksp, buff, J_Psi[0]);
-        } else {
-            MatCopy(buff, J_Psi[0], SAME_NONZERO_PATTERN);
-        }
-        
-        MatMatMult(Vy, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff);
-        if(!orthogonal){
-            KSPMatSolve(ksp, buff, J_Psi[1]);
-        } else {
-            MatCopy(buff, J_Psi[1], SAME_NONZERO_PATTERN);
-        }
-        
-        MatMatMult(Vz, Psi_in, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff);
-        if(!orthogonal){
-            KSPMatSolve(ksp, buff, J_Psi[2]);
-        } else {
-            MatCopy(buff, J_Psi[2], SAME_NONZERO_PATTERN);
-        }
-
-        const PetscComplex  nI(-scale, 0.0);
-        MatScale(J_Psi[0], nI);
-        MatScale(J_Psi[1], nI);
-        MatScale(J_Psi[2], nI);
-
-        MatDestroy(&buff);
-    }
-}
-
-template<typename T>
-void current_adjoint(Mat H, KSP ksp, Mat Rx, Mat Ry, Mat Rz, T Psi_in, T *J_Psi, double scale=1.0, bool orthogonal=false){ 
-    // apply [R, H]S^{-1} on Psi_in
-    // (-i[\hat{H},\hat{R}])* = i(RSinvH - HSinvR)Sinv -> -i[R(-SinvHSinvx) + HSinvRSinvx]
-
-    // -i[H, R]^\dagger = i (HR-RH)^\dagger = i[R,H] = -i[H,R]
-    
-    T buff1, buff2, buff3;
-    if constexpr (std::is_same_v<T, Vec>){
-        VecDuplicate(Psi_in, &buff1);
-        VecDuplicate(Psi_in, &buff2);
-        VecDuplicate(Psi_in, &buff3);
-
-        if(!orthogonal) KSPSolve(ksp, Psi_in, buff3); // S^{-1} Psi_in
-        else VecCopy(Psi_in, buff3); // buff3 = S^{-1} Psi_in
-
-        MatMult(H, buff3, buff1); // HS^{-1} Psi_in
-        if(!orthogonal) KSPSolve(ksp, buff1, buff2); // buff2 = SinvHSinvx
-        else VecCopy(buff1, buff2);
-        VecScale(buff2, -1.0); // buff2 = - SinvHSinv Psi_in
-
-        // x
-        MatMult(Rx, buff3, J_Psi[0]); // J_Psi = R S^{-1} Psi_in
-        if(!orthogonal) KSPSolve(ksp, J_Psi[0], buff1); // buff1 = S^{-1} R S^{-1} Psi_in
-        else VecCopy(J_Psi[0], buff1);
-        MatMult(H, buff1, J_Psi[0]); // J_Psi = H S^{-1} R S^{-1} Psi_in
-        MatMultAdd(Rx, buff2, J_Psi[0], J_Psi[0]); // J_Psi = - R Sinv H Sinv Psi_in + H S^{-1} R S^{-1} Psi_in
-
-        // y
-        MatMult(Ry, buff3, J_Psi[1]);
-        if(!orthogonal) KSPSolve(ksp, J_Psi[1], buff1);
-        else VecCopy(J_Psi[1], buff1);
-        MatMult(H, buff1, J_Psi[1]);
-        MatMultAdd(Ry, buff2, J_Psi[1], J_Psi[1]);
-
-        // z
-        MatMult(Rz, buff3, J_Psi[2]);
-        if(!orthogonal) KSPSolve(ksp, J_Psi[2], buff1);
-        else VecCopy(J_Psi[2], buff1);
-        MatMult(H, buff1, J_Psi[2]);
-        MatMultAdd(Rz, buff2, J_Psi[2], J_Psi[2]);
-
-        const PetscComplex  nI(-scale, 0.0);
-        VecScale(J_Psi[0], nI);
-        VecScale(J_Psi[1], nI);
-        VecScale(J_Psi[2], nI);
-
-        VecDestroy(&buff1);
-        VecDestroy(&buff2);
-        VecDestroy(&buff3);
-    } else {
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff1);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff2);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff3);
-
-        if(!orthogonal) KSPMatSolve(ksp, Psi_in, buff3);
-        else MatCopy(Psi_in, buff3, SAME_NONZERO_PATTERN); // buff3 = Sinv x
-
-        MatMatMult(H, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1); // buff1 = H Sinv x
-        if(!orthogonal) KSPMatSolve(ksp, buff1, buff2); // buff2 = Sinv H Sinv x
-        else MatCopy(buff1, buff2, SAME_NONZERO_PATTERN);
-
-        // x
-        MatMatMult(Rx, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);  // J_Psi = R Sinv x
-        if(!orthogonal) KSPMatSolve(ksp, J_Psi[0], buff1); // buff1 = Sinv R Sinv x 
-        else MatCopy(J_Psi[0], buff1, SAME_NONZERO_PATTERN); 
-        MatMatMult(H, buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi); // J_Psi = H Sinv R Sinv x
-        MatMatMult(Rx, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1); // buff1 = R Sinv H Sinv x
-        MatAXPY(J_Psi[0], -1.0, buff1, SAME_NONZERO_PATTERN); // J_Psi = H Sinv R Sinv x - R Sinv H Sinv x = [HSinv, RSinv] x
-
-        // y
-        MatMatMult(Ry, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
-        if(!orthogonal) KSPMatSolve(ksp, J_Psi[1], buff1);
-        else MatCopy(J_Psi[1], buff1, SAME_NONZERO_PATTERN);
-        MatMatMult(H, buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
-        MatMatMult(Ry, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatAXPY(J_Psi[1], -1.0, buff1, SAME_NONZERO_PATTERN);
-
-        // z
-        MatMatMult(Rz, buff3, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
-        if(!orthogonal) KSPMatSolve(ksp, J_Psi[2], buff1);
-        else MatCopy(J_Psi[2], buff1, SAME_NONZERO_PATTERN);
-        MatMatMult(H, buff1, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
-        MatMatMult(Rz, buff2, MAT_REUSE_MATRIX, PETSC_DEFAULT, &buff1);
-        MatAXPY(J_Psi[2], -1.0, buff1, SAME_NONZERO_PATTERN);
-
-        const PetscComplex  nI(-scale, 0.0);
-        MatScale(J_Psi[0], nI);
-        MatScale(J_Psi[1], nI);
-        MatScale(J_Psi[2], nI);
-
-        MatDestroy(&buff1);
-        MatDestroy(&buff2);
-        MatDestroy(&buff3);
-    }
-}
-
-
-template<typename T>
-void current_adjoint(Mat Vx, Mat Vy, Mat Vz, KSP ksp, T Psi_in, T *J_Psi, double scale=1.0, bool orthogonal=false){ 
-    // apply -iS^{-1}[H, R]=-V on Psi_in
-    
-    if constexpr (std::is_same_v<T, Vec>){
-        // S^{-1} solve
-        Vec buff;
-        VecDuplicate(Psi_in, &buff);
-        if(!orthogonal){
-            KSPSolve(ksp, Psi_in, buff);
-        } else {
-            VecCopy(Psi_in, buff);
-        }
-        MatMult(Vx, buff, J_Psi[0]);
-        MatMult(Vy, buff, J_Psi[1]);
-        MatMult(Vz, buff, J_Psi[2]);
-
-        const PetscComplex  nI(-scale, 0.0);
-        VecScale(J_Psi[0], nI);
-        VecScale(J_Psi[1], nI);
-        VecScale(J_Psi[2], nI);
-
-        VecDestroy(&buff);
-
-    } else {
-        Mat buff;
-        MatDuplicate(Psi_in, MAT_COPY_VALUES, &buff);
-        
-        if(!orthogonal){
-            KSPMatSolve(ksp, Psi_in, buff);
-        }
-
-        MatMatMult(Vx, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi);
-        MatMatMult(Vy, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+1);
-        MatMatMult(Vz, buff, MAT_REUSE_MATRIX, PETSC_DEFAULT, J_Psi+2);
-
-        const PetscComplex  nI(-scale, 0.0);
-        MatScale(J_Psi[0], nI);
-        MatScale(J_Psi[1], nI);
-        MatScale(J_Psi[2], nI);
-
-        MatDestroy(&buff);
-    }
-}
-
-template<typename T>
-void corr_ac(
-    Mat H, Mat Vx, Mat Vy, Mat Vz, KSP ksp, T Psi_in, int nt, double temp, double mu, double scale, double shift, int n_kpm, 
-    double eps=1e-14, PetscComplex *cac=nullptr, bool orthogonal=false, bool verbose=true){
-    
-    double dt = M_PI;
-    PetscComplex *coeff;
-    PetscInt matdim, nrhs;
-    MPI_Comm comm;
-    PetscObjectGetComm((PetscObject)H, &comm);
-    int rank;
-    MPI_Comm_rank(comm, &rank);
-
-    if constexpr (std::is_same_v<T, Vec>){
-        VecGetSize(Psi_in, &matdim);
-        nrhs = 1;
-    } else {
-        MatGetSize(Psi_in, &matdim, &nrhs);
+        Vx.mult(const_cast<VectorType&>(Psi_in), J_Psi[0]);
+        Vy.mult(const_cast<VectorType&>(Psi_in), J_Psi[1]);
+        Vz.mult(const_cast<VectorType&>(Psi_in), J_Psi[2]);
     }
     
-    int n_bes=0;
-    timeprop_coeff(dt, 1e-14, true, &coeff, &n_bes);
-
-    std::fill(cac, cac+(nt+1)*6, 0.0);
-
-    T J_Psi[3], Psi0, J_Psi0[3], Psi_out, buff[4];
-    
-    if constexpr (std::is_same_v<T, Vec>){
-        VecDuplicate(Psi_in, &J_Psi[0]);
-        VecDuplicate(Psi_in, &J_Psi[1]);
-        VecDuplicate(Psi_in, &J_Psi[2]);
-        VecDuplicate(Psi_in, &Psi0);
-        VecDuplicate(Psi_in, &J_Psi0[0]);
-        VecDuplicate(Psi_in, &J_Psi0[1]);
-        VecDuplicate(Psi_in, &J_Psi0[2]);
-        VecDuplicate(Psi_in, &Psi_out);
-        VecDuplicate(Psi_in, &buff[0]);
-        VecDuplicate(Psi_in, &buff[1]);
-        VecDuplicate(Psi_in, &buff[2]);
-    } else {
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi[0]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi[1]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi[2]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &Psi0);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi0[0]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi0[1]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &J_Psi0[2]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &Psi_out);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff[0]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff[1]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff[2]);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &buff[3]);
-    }
-
-    // Psi0: apply fermi-dirac (adjoint=true)
-    if constexpr (std::is_same_v<T, Vec>){
-        VecConjugate(Psi_in);
-    }
-    else{
-        MatConjugate(Psi_in);
-    }
-    fermi_dirac_kpm<T>(H, ksp, Psi_in, Psi0, temp, mu, scale, shift, n_kpm, eps, ChebyMode::ADJOINT, orthogonal);
-
-    if constexpr (std::is_same_v<T, Vec>){
-        VecConjugate(Psi_in);
-    }
-    else{
-        MatConjugate(Psi_in);
-    }
-
-    // J_Psi = current(Psi_in)
-    current<T>(Vx, Vy, Vz, ksp, Psi_in, J_Psi, 1.0, orthogonal);
-
-    // Apply (1-f) to J_Psi
-    // (1-f) J Psi = J Psi - f J Psi
-    // Reuse buff[1] for temp
-    if constexpr (std::is_same_v<T, Vec>){
-        for(int i=0; i<3; ++i){
-            fermi_dirac_kpm<T>(H, ksp, J_Psi[i], buff[1], temp, mu, scale, shift, n_kpm, eps, ChebyMode::NORMAL, orthogonal);
-            VecAXPY(J_Psi[i], -1.0, buff[1]);
-        }
-    } else {
-        for(int i=0; i<3; ++i){
-            fermi_dirac_kpm<T>(H, ksp, J_Psi[i], buff[1], temp, mu, scale, shift, n_kpm, eps, ChebyMode::NORMAL, orthogonal);
-            MatAXPY(J_Psi[i], -1.0, buff[1], SAME_NONZERO_PATTERN);
-        }
-    }
-
-    // if constexpr (std::is_same_v<T, Vec>){
-    //     PetscReal norm;
-    //     std::cout << VecNorm(Psi0, NORM_FROBENIUS, &norm);
-    //     std::cout << " norm: " << norm << std::endl;
-    // }
-
-    // J_Psi0 = current_adjoint(Psi0)
-    current_adjoint<T>(Vx, Vy, Vz, ksp, Psi0, J_Psi0, 1.0, orthogonal);
-
-    // if constexpr (std::is_same_v<T, Vec>){
-    //     PetscReal norm;
-    //     std::cout << VecNorm(J_Psi0[0], NORM_FROBENIUS, &norm);
-    //     std::cout << " norm: " << norm << std::endl;
-    // }
-    // if constexpr (std::is_same_v<T, Vec>){
-    //     PetscReal norm;
-    //     std::cout << VecNorm(J_Psi0[1], NORM_FROBENIUS, &norm);
-    //     std::cout << " norm: " << norm << std::endl;
-    // }
-    // if constexpr (std::is_same_v<T, Vec>){
-    //     PetscReal norm;
-    //     std::cout << VecNorm(J_Psi0[2], NORM_FROBENIUS, &norm);
-    //     std::cout << " norm: " << norm << std::endl;
-    // }
-
-    // Initial correlation
-    PetscScalar tmp;
-    for(int i=0; i<3; ++i){ // J_Psi index (right)
-        for(int j=i; j<3; ++j){ // J_Psi0 index (left)
-            if constexpr (std::is_same_v<T, Vec>){
-                VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                cac[int((-i*i+5*i)/2+j)] = tmp; // Store in cac[0..8]
+    // Apply S^{-1} if needed
+    if (cheby.S) {
+        // Use temporary buffer for solve?
+        // solver.solve(S, b, x)
+        // We can solve in-place if supported, or use a temp.
+        // LinearSolver::solve(A, b, x).
+        // Let's use a temp.
+        // Let's use a temp.
+        auto construct_vec = [&](DistGraph* g, int nv) {
+            if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+                return VectorType(g, nv);
             } else {
-                Vec v_left, v_right;
-                PetscScalar sum_val = 0.0;
-                for(int in=0; in<nrhs; ++in){
-                    MatDenseGetColumnVecRead(J_Psi0[j], in, &v_left);
-                    MatDenseGetColumnVecRead(J_Psi[i], in, &v_right);
-                    VecDot(v_right, v_left, &tmp);
-                    sum_val += tmp;
-                    MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
-                    MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
-                }
-                cac[int((-i*i+5*i)/2+j)] = sum_val / nrhs;
+                return VectorType(g);
             }
+        };
+        int nv = 1;
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            nv = Psi_in.num_vectors;
+        }
+        VectorType tmp = construct_vec(Psi_in.graph, nv);
+
+        for (int i = 0; i < 3; ++i) {
+            tmp.copy_from(J_Psi[i]);
+            if (cheby.M) cheby.solver.solve(*cheby.S, tmp, J_Psi[i], *cheby.M, cheby.ptype);
+            else cheby.solver.solve(*cheby.S, tmp, J_Psi[i]);
+        }
+    }
+    
+    // Scale by -scale
+    // Original code: nI(-scale, 0.0) -> -scale
+    T val = static_cast<typename T::value_type>(-scale);
+    J_Psi[0].scale(val);
+    J_Psi[1].scale(val);
+    J_Psi[2].scale(val);
+}
+
+// Compute Adjoint Current: J = - V S^{-1} Psi
+template <typename T, typename Kernel, typename VectorType>
+void current_adjoint(Chebyshev<T, Kernel>& cheby, 
+                     BlockSpMat<T, Kernel>& Vx, 
+                     BlockSpMat<T, Kernel>& Vy, 
+                     BlockSpMat<T, Kernel>& Vz, 
+                     const VectorType& Psi_in, 
+                     VectorType* J_Psi, // Array of 3
+                     double scale = 1.0) {
+    
+    auto construct_vec = [&](DistGraph* g, int nv) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            return VectorType(g, nv);
+        } else {
+            return VectorType(g);
+        }
+    };
+    int nv = 1;
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        nv = Psi_in.num_vectors;
+    }
+    VectorType tmp = construct_vec(Psi_in.graph, nv);
+
+    // tmp = S^{-1} Psi_in
+    if (cheby.S) {
+        if (cheby.M) cheby.solver.solve(*cheby.S, Psi_in, tmp, *cheby.M, cheby.ptype);
+        else cheby.solver.solve(*cheby.S, Psi_in, tmp);
+    } else {
+        tmp.copy_from(Psi_in);
+    }
+    
+    // J_Psi = V * tmp
+    // J_Psi = V * tmp
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        Vx.mult_dense(tmp, J_Psi[0]);
+        Vy.mult_dense(tmp, J_Psi[1]);
+        Vz.mult_dense(tmp, J_Psi[2]);
+    } else {
+        Vx.mult(tmp, J_Psi[0]);
+        Vy.mult(tmp, J_Psi[1]);
+        Vz.mult(tmp, J_Psi[2]);
+    }
+    
+    // Scale by -scale
+    T val = static_cast<typename T::value_type>(-scale);
+    J_Psi[0].scale(val);
+    J_Psi[1].scale(val);
+    J_Psi[2].scale(val);
+}
+
+// AC Conductivity Correlation
+template <typename T, typename Kernel, typename VectorType>
+void corr_ac(Chebyshev<T, Kernel>& cheby, 
+             BlockSpMat<T, Kernel>& Vx, 
+             BlockSpMat<T, Kernel>& Vy, 
+             BlockSpMat<T, Kernel>& Vz, 
+             const VectorType& Psi_in, 
+             int nt, 
+             double temp, 
+             double mu, 
+             double scale, // Unused, relying on cheby
+             double shift, // Unused, relying on cheby
+             int n_kpm, 
+             double eps = 1e-14, 
+             std::complex<double>* cac = nullptr, 
+             bool verbose = true) {
+    
+    DistGraph* graph = Psi_in.graph;
+    int rank = graph->rank;
+    
+    // 1. Generate Time Propagation Coefficients
+    double dt = M_PI; // Fixed in original code?
+    // Let's stick to `dt = M_PI` as argument to `timeprop_coeff` as in original code.
+    
+    std::vector<std::complex<double>> coeffs;
+    timeprop_coeff(dt, eps, true, coeffs);
+    int n_bes = coeffs.size();
+
+    // Initialize cac
+    if (cac) std::fill(cac, cac + (nt + 1) * 6, 0.0);
+
+    // Prepare Vectors
+    // Helper to construct
+    auto construct_vec = [&](DistGraph* g, int nv) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            return VectorType(g, nv);
+        } else {
+            return VectorType(g);
+        }
+    };
+
+    int nv = 1;
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        nv = Psi_in.num_vectors;
+    }
+
+    VectorType Psi0 = construct_vec(graph, nv);
+    VectorType Psi_out = construct_vec(graph, nv);
+    VectorType buff = construct_vec(graph, nv);
+    
+    std::vector<VectorType> J_Psi_vec;
+    J_Psi_vec.reserve(3);
+    J_Psi_vec.emplace_back(construct_vec(graph, nv));
+    J_Psi_vec.emplace_back(construct_vec(graph, nv));
+    J_Psi_vec.emplace_back(construct_vec(graph, nv));
+    VectorType* J_Psi = J_Psi_vec.data();
+
+    std::vector<VectorType> J_Psi0_vec;
+    J_Psi0_vec.reserve(3);
+    J_Psi0_vec.emplace_back(construct_vec(graph, nv));
+    J_Psi0_vec.emplace_back(construct_vec(graph, nv));
+    J_Psi0_vec.emplace_back(construct_vec(graph, nv));
+    VectorType* J_Psi0 = J_Psi0_vec.data();
+
+    // 2. Compute Psi0 = f(H) Psi_in (Adjoint)
+    // Original code: VecConjugate(Psi_in); fermi...; VecConjugate(Psi_in);
+    // Why conjugate?
+    // If Psi_in is a ket |psi>, we want <psi| f(H) ...
+    // So we want <psi f(H)|.
+    // If we represent bra as conjugated ket, then yes.
+    // But `fermi_dirac_kpm` applies f(H) to a vector.
+    // If we want f(H) |psi>, we just call it.
+    // If we want <psi| f(H), and f(H) is Hermitian, it is <f(H) psi|.
+    // So we compute Psi0 = f(H) Psi_in.
+    // Original code:
+    // VecConjugate(Psi_in);
+    // fermi_dirac_kpm(..., ADJOINT, ...);
+    // VecConjugate(Psi_in);
+    // This suggests Psi_in is conjugated before KPM.
+    // Maybe Psi_in is treated as bra?
+    // Let's follow the original code exactly.
+    
+    // We need a non-const copy of Psi_in to conjugate
+    // VectorType Psi_in_copy(graph);
+    // if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+    //     Psi_in_copy = VectorType(graph, Psi_in.num_vectors);
+    // }
+    // Psi_in_copy.copy_from(Psi_in);
+    
+    // Psi_in_copy.conjugate();
+    fermi_dirac_kpm(cheby, Psi_in, Psi0, temp, mu, n_kpm, eps, ChebyMode::ADJOINT);
+    // Psi_in_copy.conjugate(); // Restore (though we use copy)
+
+    // 3. Compute J_Psi = current(Psi_in)
+    current(cheby, Vx, Vy, Vz, Psi_in, J_Psi, 1.0);
+
+    // 4. Apply (1-f) to J_Psi
+    // (1-f) J Psi = J Psi - f(J Psi)
+    for (int i = 0; i < 3; ++i) {
+        fermi_dirac_kpm(cheby, J_Psi[i], buff, temp, mu, n_kpm, eps, ChebyMode::NORMAL);
+        J_Psi[i].axpy(-1.0, buff);
+    }
+
+    // 5. Compute J_Psi0 = current_adjoint(Psi0)
+    current_adjoint(cheby, Vx, Vy, Vz, Psi0, J_Psi0, 1.0);
+
+    // 6. Initial Correlation (t=0)
+    for (int i = 0; i < 3; ++i) { // Right (J_Psi)
+        for (int j = i; j < 3; ++j) { // Left (J_Psi0)
+            std::complex<double> dot_val;
+            if constexpr (std::is_same_v<VectorType, DistVector<T>>) {
+                dot_val = J_Psi0[j].dot(J_Psi[i]);
+            } else {
+                std::vector<typename VectorType::value_type> dots;
+                J_Psi0[j].dot(J_Psi[i], dots);
+                std::complex<double> sum = 0;
+                for (auto d : dots) sum += d;
+                dot_val = sum / static_cast<double>(Psi_in.num_vectors);
+            }
+            if (cac) cac[int((-i * i + 5 * i) / 2 + j)] = dot_val;
         }
     }
 
-    // Time propagation
-    for(int it=0; it<nt; ++it){
-        if (rank == 0 && verbose) std::cout << "corr_ac calculation: " << it << " / " << nt << "\n";
+    // 7. Time Propagation
+    for (int it = 0; it < nt; ++it) {
+        if (rank == 0 && verbose) std::cout << "corr_ac calculation: " << it + 1 << " / " << nt << "\n";
 
-        // Propagate J_Psi (right)
-        for(int i=0; i<3; ++i){
-            if constexpr (std::is_same_v<T, Vec>){
-                cheby_recur(H, ksp, J_Psi[i], buff, coeff, n_bes, Psi_out, ChebyMode::NORMAL, orthogonal);
-                VecCopy(Psi_out, J_Psi[i]);
-            } else {
-                cheby_recur_mult(H, ksp, J_Psi[i], buff, coeff, n_bes, Psi_out, ChebyMode::NORMAL, orthogonal);
-                MatCopy(Psi_out, J_Psi[i], SAME_NONZERO_PATTERN);
-            }
+        // Propagate J_Psi (Right) - NORMAL
+        for (int i = 0; i < 3; ++i) {
+            cheby.propagate(J_Psi[i], Psi_out, coeffs, ChebyMode::NORMAL);
+            J_Psi[i].copy_from(Psi_out);
         }
 
-        // Propagate Psi0 (left, adjoint)
-        if constexpr (std::is_same_v<T, Vec>){
-            cheby_recur(H, ksp, Psi0, buff, coeff, n_bes, Psi_out, ChebyMode::ADJOINT, orthogonal);
-            VecCopy(Psi_out, Psi0);
-        } else {
-            cheby_recur_mult(H, ksp, Psi0, buff, coeff, n_bes, Psi_out, ChebyMode::ADJOINT, orthogonal);
-            MatCopy(Psi_out, Psi0, SAME_NONZERO_PATTERN);
-        }
+        // Propagate Psi0 (Left) - ADJOINT
+        cheby.propagate(Psi0, Psi_out, coeffs, ChebyMode::ADJOINT);
+        Psi0.copy_from(Psi_out);
 
-        // Update J_Psi0 from propagated Psi0
-        // current_adjoint<T>(H, ksp, Rx, Ry, Rz, Psi0, J_Psi0, scale, orthogonal);
-        current_adjoint<T>(Vx, Vy, Vz, ksp, Psi0, J_Psi0, 1.0, orthogonal);
+        // Update J_Psi0
+        current_adjoint(cheby, Vx, Vy, Vz, Psi0, J_Psi0, 1.0);
 
         // Correlation
-        for(int i=0; i<3; ++i){ // J_Psi index (right)
-            for(int j=i; j<3; ++j){ // J_Psi0 index (left)
-                if constexpr (std::is_same_v<T, Vec>){
-                    VecDot(J_Psi[i], J_Psi0[j], &tmp);
-                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] = tmp;
+        for (int i = 0; i < 3; ++i) {
+            for (int j = i; j < 3; ++j) {
+                std::complex<double> dot_val;
+                if constexpr (std::is_same_v<VectorType, DistVector<T>>) {
+                    dot_val = J_Psi0[j].dot(J_Psi[i]); // <J_Psi0 | J_Psi>
                 } else {
-                    Vec v_left, v_right;
-                    PetscScalar sum_val = 0.0;
-                    for(int in=0; in<nrhs; ++in){
-                        MatDenseGetColumnVecRead(J_Psi0[j], in, &v_left);
-                        MatDenseGetColumnVecRead(J_Psi[i], in, &v_right);
-                        VecDot(v_right, v_left, &tmp);
-                        sum_val = tmp;
-                        MatDenseRestoreColumnVecRead(J_Psi0[j], in, &v_left);
-                        MatDenseRestoreColumnVecRead(J_Psi[i], in, &v_right);
-                    }
-                    cac[(it+1)*6 + int((-i*i+5*i)/2+j)] = sum_val / nrhs;
-
-                    // std::cout << sum_val << std::endl;
+                    std::vector<typename VectorType::value_type> dots;
+                    J_Psi0[j].dot(J_Psi[i], dots);
+                    std::complex<double> sum = 0;
+                    for (auto d : dots) sum += d;
+                    dot_val = sum / static_cast<double>(Psi_in.num_vectors);
                 }
-                // std::cout << (it+1)*6 + int((-i*i+5*i)/2+j) << cac[(it+1)*6 + int((-i*i+5*i)/2+j)] << std::endl;
+                if (cac) cac[(it + 1) * 6 + int((-i * i + 5 * i) / 2 + j)] = dot_val;
             }
         }
     }
-
-    // Cleanup
-    if constexpr (std::is_same_v<T, Vec>){
-        VecDestroy(&J_Psi[0]); VecDestroy(&J_Psi[1]); VecDestroy(&J_Psi[2]);
-        VecDestroy(&Psi0);
-        VecDestroy(&J_Psi0[0]); VecDestroy(&J_Psi0[1]); VecDestroy(&J_Psi0[2]);
-        VecDestroy(&Psi_out);
-        VecDestroy(&buff[0]); VecDestroy(&buff[1]); VecDestroy(&buff[2]);
-    } else {
-        MatDestroy(&J_Psi[0]); MatDestroy(&J_Psi[1]); MatDestroy(&J_Psi[2]);
-        MatDestroy(&Psi0);
-        MatDestroy(&J_Psi0[0]); MatDestroy(&J_Psi0[1]); MatDestroy(&J_Psi0[2]);
-        MatDestroy(&Psi_out);
-        MatDestroy(&buff[0]); MatDestroy(&buff[1]); MatDestroy(&buff[2]); MatDestroy(&buff[3]);
-    }
-    delete coeff;
 }
 
-template void corr_ac<Vec>(Mat, Mat, Mat, Mat, KSP, Vec, int, double, double, double, double, int, double, PetscComplex*, bool, bool);
-template void corr_ac<Mat>(Mat, Mat, Mat, Mat, KSP, Mat, int, double, double, double, double, int, double, PetscComplex*, bool, bool);
-
-}
+} // namespace calc
+} // namespace rsatb
 
 #endif

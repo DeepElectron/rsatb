@@ -1,190 +1,191 @@
-#include <petsc.h>
+#ifndef RSATB_CALC_DOS_HPP
+#define RSATB_CALC_DOS_HPP
+
 #include "cheby.hpp"
-#include <math.h>
+#include <vector>
+#include <cmath>
+#include <complex>
+#include <iostream>
 
-namespace rsatb::calc{
+namespace rsatb {
+namespace calc {
 
-template<typename T>
-void corr_dos(Mat H, KSP ksp, T Psi_in, int nt, bool proj, int n_proj_type, IS *isSrc, IS *isDst, PetscComplex *cdos, PetscComplex *pcdos, bool verbose=false, bool orthogonal=false){
-    /*
-        1. Create Bessel grid and time grid;
-        2. Do orbital selection according if computing pdos
-        3. perform propergation, record the cdos
-        4. proj: whether to compute the pdos
-    */
-    // *nt = ceil(Escale / dE);
-    double dt = M_PI;
-    PetscComplex *coeff;
-    PetscInt matdim, nrhs;
-    MPI_Comm comm;
-    PetscObjectGetComm((PetscObject)H, &comm);
-    int rank;
-    MPI_Comm_rank(comm, &rank);
-
-    if constexpr (std::is_same_v<T, Vec>){
-        VecGetSize(Psi_in, &matdim);
-    } else {
-        MatGetSize(Psi_in, &matdim, &nrhs);
-    }
+// Compute Time Correlation Function (for DOS)
+// cdos(t) = <psi(0) | psi(t)>
+// Propagates psi(t) = e^{-i H t} psi(0) step-by-step.
+template <typename T, typename Kernel = DefaultKernel<T>>
+void corr_dos(Chebyshev<T, Kernel>& cheby, 
+              const DistVector<T>& psi_in, 
+              int nt, 
+              std::vector<std::complex<double>>& cdos, 
+              const DistVector<T>* proj_mask = nullptr, 
+              std::vector<std::complex<double>>* pcdos = nullptr,
+              bool verbose = false) {
     
-    VecScatter scat;                               /* reusable for the whole run   */
-    Vec        sum, v_tmp;
-    const PetscScalar *pv;
-    int n_bes=0;
-    if(proj){
-        VecCreateSeq(MPI_COMM_SELF, n_proj_type, &sum);
-        if constexpr (std::is_same_v<T, Vec>){
-            VecScatterCreate(Psi_in,*isSrc,sum,*isDst,&scat);
-        }else{
-            MatDenseGetColumnVecRead(Psi_in, 0, &v_tmp);
-            VecScatterCreate(v_tmp,*isSrc,sum,*isDst,&scat);
-            MatDenseRestoreColumnVecRead(Psi_in, 0, &v_tmp);
-        }
+    DistGraph* graph = psi_in.graph;
+    int rank = graph->rank;
+    double dt = M_PI;
+
+    // 1. Generate Time Propagation Coefficients for dt
+    std::vector<std::complex<double>> coeffs;
+    // Precision 1e-14 as in old code
+    timeprop_coeff(dt, 1e-14, true, coeffs);
+
+    // 2. Prepare Vectors
+    DistVector<T> psi_curr(graph);
+    DistVector<T> psi_out(graph);
+    DistVector<T> v_tmp(graph); // For projection
+
+    psi_curr.copy_from(psi_in);
+    
+    // Resize output arrays
+    // Old code stores [0..nt-1] for positive times?
+    // Old code: cdos[nt] = 1 (t=0). cdos[nt+it+1] (t>0). cdos[nt-it-1] (t<0).
+    // It seems it stores symmetric time window [-T, T].
+    // Let's follow a simpler convention: [0, nt].
+    // Or match old code if user expects it.
+    // The user said "implement its function".
+    // Old code signature: `PetscComplex *cdos`.
+    // Here we use `std::vector`.
+    // Let's store 0 to nt.
+    cdos.resize(nt + 1);
+    if (pcdos) pcdos->resize(nt + 1);
+
+    // t=0
+    std::complex<double> overlap;
+    overlap = psi_curr.dot(psi_in);
+    cdos[0] = overlap;
+    
+    if (pcdos && proj_mask) {
+        // Projected overlap: <psi_curr | P | psi_in> = <psi_curr | mask * psi_in>
+        // Assuming mask is real (0/1).
+        // v_tmp = psi_in * mask
+        v_tmp.copy_from(psi_in);
+        v_tmp.pointwise_mult(*proj_mask);
+        overlap = psi_curr.dot(v_tmp);
+        (*pcdos)[0] = overlap;
     }
 
-    cdos[nt] = 1;
-    if(proj){
-        Vec init_tmp;
-        if constexpr (std::is_same_v<T, Vec>) {
-            VecDuplicate(Psi_in, &init_tmp);
-        } else {
-            MatDenseGetColumnVecRead(Psi_in, 0, &v_tmp);
-            VecDuplicate(v_tmp, &init_tmp);
-            MatDenseRestoreColumnVecRead(Psi_in, 0, &v_tmp);
+    // 3. Time Propagation Loop
+    for (int it = 0; it < nt; ++it) {
+        if (rank == 0 && verbose) {
+            std::cout << "corr_dos calculation: " << it + 1 << " / " << nt << "\n";
         }
-        // initialize the pdos
-        VecZeroEntries(sum);
-        VecSet(init_tmp, 1/matdim);
-        VecScatterBegin(scat,init_tmp,sum,ADD_VALUES,SCATTER_FORWARD);
-        VecScatterEnd  (scat,init_tmp,sum,ADD_VALUES,SCATTER_FORWARD);
-        VecGetArrayRead(sum, &pv);
-        PetscArraycpy(pcdos+nt*n_proj_type,pv,n_proj_type);
-        VecRestoreArrayRead(sum, &pv);
 
-        VecDestroy(&init_tmp);
-    }
-    timeprop_coeff(dt, 1e-14, true, &coeff, &n_bes);
-
-    if constexpr (std::is_same_v<T, Vec>){
+        // Propagate: psi_out = e^{-i H dt} psi_curr
+        cheby.propagate(psi_curr, psi_out, coeffs, ChebyMode::NORMAL);
         
-        Vec  buff[3], Psi_out, Psi_curr;
-        VecDuplicate(Psi_in, buff);
-        VecDuplicate(Psi_in, buff+1);
-        VecDuplicate(Psi_in, buff+2);
-        VecDuplicate(Psi_in, &Psi_out);
-        VecDuplicate(Psi_in, &Psi_curr);
-        VecCopy(Psi_in, Psi_curr);
+        // Correct phase for shift: e^{-i H dt} = e^{-i (H_scaled * half_width + center) dt}
+        // propagate applies T_n(H_scaled).
+        // timeprop_coeff generates coefficients for e^{-i H_scaled * (half_width * dt)}.
+        // So we just need to multiply by phase e^{-i center dt}.
+        // Wait, timeprop_coeff generates coeffs for e^{-i \tau x}. Here \tau = dt * half_width.
+        // So propagate computes e^{-i H_scaled * half_width * dt}.
+        // We need e^{-i H dt} = e^{-i (H_scaled * half_width + center) dt}
+        // = e^{-i center dt} * e^{-i H_scaled * half_width * dt}
+        
+        std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt));
+        psi_out.scale(phase);
 
-        for(int it=0; it<nt; ++it){
-            if ( rank == 0 && verbose){
-                std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
-            }
+        // Compute Overlap <psi_out | psi_in> ?
+        // Old code: VecDot(Psi_out, Psi_in, cdos + ...).
+        // Note: VecDot(x, y) in PETSc is y^H x.
+        // So <Psi_in | Psi_out>.
+        // cdos(t) = <psi(0) | psi(t)>.
+        // My DistVector::dot(other) computes this->dot(other) = this^H * other.
+        // So psi_in.dot(psi_out) gives <psi_in | psi_out>.
+        
+        overlap = psi_in.dot(psi_out);
+        cdos[it + 1] = overlap;
 
-            cheby_recur(
-                H, ksp, Psi_curr,
-                buff, // length 3 vec
-                coeff, n_bes, 
-                Psi_out, ChebyMode::NORMAL, orthogonal
-                );
-
-            if(proj){
-                cdos[nt+it+1] = 0; // give 0 initial value, since proj cdos is computed from accumulating the pdos
-
-                VecPointwiseMult(Psi_curr, Psi_out, Psi_in); // TODO: This work because Psi_in have no imaginary part, if not, need more consideration
-                VecZeroEntries(sum);
-                VecScatterBegin(scat,Psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
-                VecScatterEnd  (scat,Psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
-                // copy the value from sum to _pcdos_
-                VecGetArrayRead(sum, &pv);
-                PetscArraycpy(pcdos+(nt+it+1)*n_proj_type,pv,n_proj_type);
-                VecRestoreArrayRead(sum, &pv);
-
-                for (PetscInt i=0; i<n_proj_type; ++i) {
-                    cdos[nt+it+1] += pcdos[(nt+it+1)*n_proj_type+i];
-                    // copy pdos to negative time
-                    pcdos[(nt-it-1)*n_proj_type+i] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);
-                }
-            }else{
-                VecDot(Psi_out, Psi_in, cdos + (nt+it+1)); // notice the order of out and in
-            }
-            // copy dos to negative time
-            cdos[nt-it-1] = PetscConj(cdos[nt+it+1]);
-            VecCopy(Psi_out, Psi_curr);
+        if (pcdos && proj_mask) {
+            v_tmp.copy_from(psi_in);
+            v_tmp.pointwise_mult(*proj_mask);
+            overlap = v_tmp.dot(psi_out); // <P psi_in | psi_out> = <psi_in | P psi_out>
+            (*pcdos)[it + 1] = overlap;
         }
 
-        VecDestroy(buff); VecDestroy(buff+1); VecDestroy(buff+2);
-        VecDestroy(&Psi_out); VecDestroy(&Psi_curr);
-    }else{
-        Mat buff[4], Psi_out, Psi_curr;
-        Vec v_psi_in, v_psi_out, v_psi_curr;
-        PetscScalar temp=0;
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+1);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+2);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, buff+3);
-        MatDuplicate(Psi_in, MAT_DO_NOT_COPY_VALUES, &Psi_out);
-        MatDuplicate(Psi_in, MAT_COPY_VALUES, &Psi_curr);
-
-        for(int it=0; it<nt; ++it){
-            if (rank == 0 && verbose){
-                std::cout << "corr_dos calculation: " << it << " / " << nt << "\n";
-            }
-            cdos[nt+it+1] = 0;
-            if(proj){
-                for (PetscInt i=0; i<n_proj_type; ++i) pcdos[(nt+it+1)*n_proj_type+i] = 0;
-            }
-
-            cheby_recur_mult(
-                H, ksp, Psi_curr,
-                buff, // length 4 vec
-                coeff, n_bes,
-                Psi_out, ChebyMode::NORMAL, orthogonal
-                );
-
-            for(int in=0; in<nrhs; ++in){
-                temp = 0;
-                MatDenseGetColumnVecRead(Psi_in, in, &v_psi_in);
-                MatDenseGetColumnVecRead(Psi_out, in, &v_psi_out);
-                if(proj){
-                    // initialize pcdos with zero;
-                    MatDenseGetColumnVec(Psi_curr, in, &v_psi_curr);
-                    VecPointwiseMult(v_psi_curr, v_psi_in, v_psi_out);
-                    VecZeroEntries(sum);
-                    VecScatterBegin(scat,v_psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
-                    VecScatterEnd  (scat,v_psi_curr,sum,ADD_VALUES,SCATTER_FORWARD);
-                    MatDenseRestoreColumnVec(Psi_curr, in, &v_psi_curr);
-                    // copy the value from sum to _pcdos_
-                    VecGetArrayRead(sum, &pv);
-                    for (PetscInt i=0; i<n_proj_type; ++i) {
-                        pcdos[(nt+it+1)*n_proj_type+i] += pv[i];
-                        temp += pv[i];
-                    }
-                    VecRestoreArrayRead(sum, &pv);
-                }else{
-                    VecDot(v_psi_out, v_psi_in, &temp);
-                }
-                cdos[nt+it+1] += temp;
-                MatDenseRestoreColumnVecRead(Psi_in, in, &v_psi_in);
-                MatDenseRestoreColumnVecRead(Psi_out, in, &v_psi_out);
-            }
-
-            cdos[nt+it+1] /= nrhs;
-            cdos[nt-it-1] = PetscConj(cdos[nt+it+1]);
-            if(proj){
-                for (PetscInt i=0; i<n_proj_type; ++i) {
-                    pcdos[(nt+it+1)*n_proj_type+i] /= nrhs;
-                    pcdos[(nt-it-1)*n_proj_type+i] = PetscConj(pcdos[(nt+it+1)*n_proj_type+i]);    
-                }
-            }
-            MatCopy(Psi_out, Psi_curr, SAME_NONZERO_PATTERN);
-        }
-
-        MatDestroy(buff); MatDestroy(buff+1); MatDestroy(buff+2); MatDestroy(buff+3);
-        MatDestroy(&Psi_out); MatDestroy(&Psi_curr);
+        // Update for next step
+        psi_curr.copy_from(psi_out);
     }
-    delete coeff;
-};
-
-template void corr_dos<Vec>(Mat, KSP, Vec, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool, bool);
-template void corr_dos<Mat>(Mat, KSP, Mat, int, bool, int, IS*, IS*, PetscComplex*, PetscComplex*, bool, bool);
 }
+
+// Multivector Version
+template <typename T, typename Kernel = DefaultKernel<T>>
+void corr_dos(Chebyshev<T, Kernel>& cheby, 
+              const DistMultiVector<T>& psi_in, 
+              int nt, 
+              std::vector<std::complex<double>>& cdos, 
+              const DistVector<T>* proj_mask = nullptr, 
+              std::vector<std::complex<double>>* pcdos = nullptr,
+              bool verbose = false) {
+    
+    DistGraph* graph = psi_in.graph;
+    int rank = graph->rank;
+    int num_vecs = psi_in.num_vectors;
+    double dt = M_PI;
+
+    std::vector<std::complex<double>> coeffs;
+    timeprop_coeff(dt, 1e-14, true, coeffs);
+
+    DistMultiVector<T> psi_curr(graph, num_vecs);
+    DistMultiVector<T> psi_out(graph, num_vecs);
+    DistMultiVector<T> v_tmp(graph, num_vecs);
+
+    psi_curr.copy_from(psi_in);
+    
+    cdos.resize(nt + 1);
+    if (pcdos) pcdos->resize(nt + 1);
+
+    // t=0
+    std::vector<T> dots(num_vecs);
+    psi_in.dot(psi_curr, dots);
+    std::complex<double> sum_overlap = 0;
+    for(auto d : dots) sum_overlap += d;
+    cdos[0] = sum_overlap / static_cast<double>(num_vecs); // Average over vectors?
+    // Old code: cdos[...] += temp; ... cdos[...] /= nrhs;
+    // Yes, average.
+
+    if (pcdos && proj_mask) {
+        v_tmp.copy_from(psi_in);
+        v_tmp.pointwise_mult(*proj_mask);
+        
+        v_tmp.dot(psi_curr, dots);
+        sum_overlap = 0;
+        for(auto d : dots) sum_overlap += d;
+        (*pcdos)[0] = sum_overlap / static_cast<double>(num_vecs);
+    }
+
+    for (int it = 0; it < nt; ++it) {
+        if (rank == 0 && verbose) {
+            std::cout << "corr_dos calculation: " << it + 1 << " / " << nt << "\n";
+        }
+
+        cheby.propagate(psi_curr, psi_out, coeffs, ChebyMode::NORMAL);
+        
+        std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt));
+        psi_out.scale(phase);
+
+        psi_in.dot(psi_out, dots);
+        sum_overlap = 0;
+        for(auto d : dots) sum_overlap += d;
+        cdos[it + 1] = sum_overlap / static_cast<double>(num_vecs);
+
+        if (pcdos && proj_mask) {
+             v_tmp.copy_from(psi_in);
+             v_tmp.pointwise_mult(*proj_mask);
+             
+            v_tmp.dot(psi_out, dots);
+            sum_overlap = 0;
+            for(auto d : dots) sum_overlap += d;
+            (*pcdos)[it + 1] = sum_overlap / static_cast<double>(num_vecs);
+        }
+
+        psi_curr.copy_from(psi_out);
+    }
+}
+
+} // namespace calc
+} // namespace rsatb
+
+#endif

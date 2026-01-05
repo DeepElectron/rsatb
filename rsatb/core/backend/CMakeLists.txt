@@ -56,3 +56,6 @@ target_include_directories(backend PUBLIC
 
 add_executable(test_atomic_data test/test_atomic_data.cpp $<TARGET_OBJECTS:backend>)
 target_link_libraries(test_atomic_data PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB})
+
+add_executable(test_image_container test/test_image_container.cpp $<TARGET_OBJECTS:backend>)
+target_link_libraries(test_image_container PUBLIC backend MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB})

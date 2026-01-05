@@ -1,17 +1,16 @@
-#ifndef RSATB_CALC_FFT_HPP
-#define RSATB_CALC_FFT_HPP
+#ifndef FFTW
+#define FFTW
 
 #include <stdlib.h>
 #include <math.h>
 #include <fftw3.h>
 #include <complex>
 
-namespace rsatb {
-namespace calc {
+namespace rsatb::calc{
 
 using cd = std::complex<double>;
 
-inline void fft_1d(int n, cd *in, cd *out){
+void fft_1d(int n, cd *in, cd *out){
     fftw_plan p = fftw_plan_dft_1d(
         n, reinterpret_cast<fftw_complex*>(in), 
         reinterpret_cast<fftw_complex*>(out), 
@@ -19,10 +18,10 @@ inline void fft_1d(int n, cd *in, cd *out){
         );
     fftw_execute(p);
     fftw_destroy_plan(p);
-    // fftw_cleanup(); // Avoid calling cleanup repeatedly in threaded env
+    fftw_cleanup();
 }
 
-inline void ifft_1d(int n, cd *in, cd *out){
+void ifft_1d(int n, cd *in, cd *out){
     fftw_plan p = fftw_plan_dft_1d(
         n, reinterpret_cast<fftw_complex*>(in), 
         reinterpret_cast<fftw_complex*>(out), 
@@ -31,9 +30,14 @@ inline void ifft_1d(int n, cd *in, cd *out){
 
     fftw_execute(p);
     fftw_destroy_plan(p);
+    fftw_cleanup();
 }
 
-inline void bifft_1d(int n, int nb, cd* in, cd* out) {
+// void bifft_id(){
+    
+// }
+
+void bifft_1d(int n, int nb, cd* in, cd* out) {
     /*
         batched transform of size [n, nb] shaped array
     */
@@ -51,9 +55,10 @@ inline void bifft_1d(int n, int nb, cd* in, cd* out) {
 
     fftw_execute(p);
     fftw_destroy_plan(p);
+    fftw_cleanup();
 }
 
-inline void bfft_1d(int n, int nb, cd* in, cd* out) {
+void bfft_1d(int n, int nb, cd* in, cd* out) {
     /*
         batched transform of size [nb, n] shaped array
     */
@@ -71,9 +76,9 @@ inline void bfft_1d(int n, int nb, cd* in, cd* out) {
 
     fftw_execute(p);
     fftw_destroy_plan(p);
+    fftw_cleanup();
 }
 
-} // namespace calc
-} // namespace rsatb
+};
 
 #endif
