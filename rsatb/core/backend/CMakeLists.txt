@@ -27,6 +27,7 @@ endif()
 
 add_library(backend OBJECT operator_construction.hpp)
 target_compile_features(backend PUBLIC cxx_std_11)
+target_compile_options(backend PUBLIC -mavx2 -mfma)
 
 target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads DBCSR::dbcsr_c BLAS::BLAS LAPACK::LAPACK)
 if(USE_OPENMP)
@@ -52,3 +53,6 @@ target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI
 
 add_executable(benchmark_dist vbcsr/test/benchmark_dist.cpp $<TARGET_OBJECTS:backend>)
 target_link_libraries(benchmark_dist PUBLIC backend MPI::MPI_CXX BLAS::BLAS LAPACK::LAPACK)
+
+add_executable(test_robustness vbcsr/test/test_robustness.cpp $<TARGET_OBJECTS:backend>)
+target_link_libraries(test_robustness PUBLIC backend MPI::MPI_CXX BLAS::BLAS LAPACK::LAPACK)
