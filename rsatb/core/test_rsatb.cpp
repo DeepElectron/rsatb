@@ -12,12 +12,41 @@ TEST(RSATBTest, TestSetupAndCompute) {
     MPI_Comm_size(MPI_COMM_WORLD, &size);
     
     // Use npar=1 if size=1, npar=2 if size=2
-    int npar = (size >= 2) ? 2 : 1;
+     // std::vector<std::vector<double>> kpoints = {
+    // {0.5 , 0.5 , 0.5 },
+    // {0.45, 0.45, 0.45},
+    // {0.4 , 0.4 , 0.4 },
+    // {0.35, 0.35, 0.35},
+    // {0.3 , 0.3 , 0.3 },
+    // {0.25, 0.25, 0.25},
+    // {0.2 , 0.2 , 0.2 },
+    // {0.15, 0.15, 0.15},
+    // {0.1 , 0.1 , 0.1 },
+    // {0.05, 0.05, 0.05},
+    // {0.  , 0.  , 0.  },
+    // {0.05, 0.  , 0.05},
+    // {0.1 , 0.  , 0.1 },
+    // {0.15, 0.  , 0.15},
+    // {0.2 , 0.  , 0.2 },
+    // {0.25, 0.  , 0.25},
+    // {0.3 , 0.  , 0.3 },
+    // {0.35, 0.  , 0.35},
+    // {0.4 , 0.  , 0.4 },
+    // {0.45, 0.  , 0.45},
+    // {0.5 , 0.  , 0.5 }
+    // };
+
+    std::vector<std::vector<double>> kpoints = {
+        {0.  , 0.  , 0.  }
+    };
+
+    int nk = kpoints.size();
+    int npar = (size >= 2) ? nk : 1;
     
     // 1. Instantiate RSATB
     std::unique_ptr<RSATB> rsatb_inst;
 
-    const std::string vasp_file = "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp";
+    const std::string vasp_file = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/diamond_sc444.vasp";
     const std::vector<double> r_max_per_type = {3.7};
     const std::vector<int> type_norb = {13};
     
@@ -28,38 +57,14 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // Buffers for merged data (must persist until RSATB is destroyed or at least constructed)
     
     // 2. Initialize Basis (needed for build_overlap)
-    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string orb_dir = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/";
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string psd_dir = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/";
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
 
-    std::vector<std::vector<double>> kpoints = {
-    {0.5 , 0.5 , 0.5 },
-    {0.45, 0.45, 0.45},
-    {0.4 , 0.4 , 0.4 },
-    {0.35, 0.35, 0.35},
-    {0.3 , 0.3 , 0.3 },
-    {0.25, 0.25, 0.25},
-    {0.2 , 0.2 , 0.2 },
-    {0.15, 0.15, 0.15},
-    {0.1 , 0.1 , 0.1 },
-    {0.05, 0.05, 0.05},
-    {0.  , 0.  , 0.  },
-    {0.05, 0.  , 0.05},
-    {0.1 , 0.  , 0.1 },
-    {0.15, 0.  , 0.15},
-    {0.2 , 0.  , 0.2 },
-    {0.25, 0.  , 0.25},
-    {0.3 , 0.  , 0.3 },
-    {0.35, 0.  , 0.35},
-    {0.4 , 0.  , 0.4 },
-    {0.45, 0.  , 0.45},
-    {0.5 , 0.  , 0.5 }
-    };
-    int nk = kpoints.size();
-    std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
+    std::string Hpath = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/H_diamond_sc444.h5";
     
-    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, "H", 100);
+    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, "H", 1);
     
     // 5. Verify Setup
     // Check if H(k) is created
@@ -68,48 +73,63 @@ TEST(RSATBTest, TestSetupAndCompute) {
     
     // // 6. Compute DOS
     std::vector<double> dos, omega;
-    rsatb_inst->compute_dos(500, dos, omega);
+    // rsatb_inst->compute_dos(500, dos, omega);
+    
+    // if (rank == 0) {
+    //     std::cout << "DOS computed. Size: " << dos.size() << std::endl;
+    //     // 2 K-points, 100 steps -> 2 * 200 = 400
+    //     // EXPECT_EQ(dos.size(), 2 * 200);
+    //     double sum_dos = 0;
+    //     for(auto d : dos) sum_dos += d;
+    //     std::cout << "Sum DOS: " << sum_dos << std::endl;
+    //     // EXPECT_GT(sum_dos, 0.0);
+
+    //     // Output DOS to file for checking
+    //     std::ofstream dos_file("dos.dat");
+    //     if (dos_file.is_open()) {
+    //         dos_file << "# Omega DOS" << std::endl;
+    //         // Assuming omega and dos have same size or omega is shared
+    //         // If omega is per-kpoint or global?
+    //         // Let's assume 1-to-1 mapping for now or print what we have.
+    //         size_t n = std::min(dos.size(), omega.size());
+    //         for (size_t i = 0; i < n; ++i) {
+    //             dos_file << omega[i] << " ";
+    //             for (size_t j=0; j<nk; ++j) {
+    //                 dos_file << dos[j*n+i] << " ";
+    //             }
+    //             dos_file << std::endl;
+    //         }
+    //         dos_file.close();
+    //         std::cout << "DOS written to dos.dat" << std::endl;
+    //     } else {
+    //         std::cerr << "Unable to open dos.dat for writing" << std::endl;
+    //     }
+    // }
+    
+    // // 7. Compute AC
+    std::vector<double> ac;
+    rsatb_inst->compute_ac(100, 1000, 1000.0, 16.225300864, ac, omega);
     
     if (rank == 0) {
-        std::cout << "DOS computed. Size: " << dos.size() << std::endl;
-        // 2 K-points, 100 steps -> 2 * 200 = 400
-        // EXPECT_EQ(dos.size(), 2 * 200);
-        double sum_dos = 0;
-        for(auto d : dos) sum_dos += d;
-        std::cout << "Sum DOS: " << sum_dos << std::endl;
-        // EXPECT_GT(sum_dos, 0.0);
-
-        // Output DOS to file for checking
-        std::ofstream dos_file("dos.dat");
-        if (dos_file.is_open()) {
-            dos_file << "# Omega DOS" << std::endl;
+        std::cout << "AC computed. Size: " << ac.size() << std::endl;
+        // 2 K-points, 101 steps, 6 components -> 2 * 101 * 6 = 1212
+        std::ofstream ac_file("ac.dat");
+        if (ac_file.is_open()) {
+            ac_file << "# AC" << std::endl;
             // Assuming omega and dos have same size or omega is shared
             // If omega is per-kpoint or global?
             // Let's assume 1-to-1 mapping for now or print what we have.
-            size_t n = std::min(dos.size(), omega.size());
+            size_t n = ac.size();
             for (size_t i = 0; i < n; ++i) {
-                dos_file << omega[i] << " ";
-                for (size_t j=0; j<nk; ++j) {
-                    dos_file << dos[j*n+i] << " ";
-                }
-                dos_file << std::endl;
+                ac_file << ac[i] << " ";
             }
-            dos_file.close();
+            ac_file << std::endl;
+            ac_file.close();
             std::cout << "DOS written to dos.dat" << std::endl;
         } else {
             std::cerr << "Unable to open dos.dat for writing" << std::endl;
         }
     }
-    
-    // // 7. Compute AC
-    // std::vector<double> ac;
-    // rsatb_inst->compute_ac(100, 10, 300.0, 0.0, ac, omega);
-    
-    // if (rank == 0) {
-    //     std::cout << "AC computed. Size: " << ac.size() << std::endl;
-    //     // 2 K-points, 101 steps, 6 components -> 2 * 101 * 6 = 1212
-    //     EXPECT_EQ(ac.size(), 2 * 101 * 6);
-    // }
 }
 
 int main(int argc, char** argv) {

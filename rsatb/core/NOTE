@@ -1,4 +1,4 @@
-PETSC_DIR=$CONDA_PREFIX/petsc/build/ PETSC_ARCH="../arch-linux-c-opt" HDF5_ROOT="${CONDA_PREFIX}" MPI_ROOT="${CONDA_PREFIX}" cmake -S. -Bbuild
+HDF5_ROOT="${CONDA_PREFIX}" MPI_ROOT="${CONDA_PREFIX}" cmake -S. -Bbuild
 
 # We need to also specify MPI_ROOT since the MPI used by mpi4py, petsc and our code does not match.
 OMP_NUM_THREADS=10 OMP_PROC_BIND=spread OMP_PLACES=cores mpirun -np 2 --map-by socket:PE=10 --bind-to core --report-bindings python ./test_binding.py

@@ -155,7 +155,7 @@ public:
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, factor, false);
+                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, factor, true);
                 precond_map_[k_idx] = std::move(P);
                 
                 if (precond == "H") {
@@ -172,8 +172,8 @@ public:
             Matrix* Hk = H_k_map_[k_idx].get();
             Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
             
-            esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, false, P->get_type());
-            esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, false, P->get_type());
+            esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, true, P->get_type());
+            esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, true, P->get_type());
             
             if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
             if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
@@ -314,11 +314,11 @@ public:
             
             std::unique_ptr<Chebyshev<Scalar>> cheby;
             if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, PreconditionerType::Symmetric, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_);
             } else if (Sk) {
                 cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_);
             } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, PreconditionerType::Symmetric, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_);
             } else {
                 cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_);
             }
@@ -326,10 +326,11 @@ public:
             std::vector<std::complex<double>> cac;
             
             if (nsamples_ == 1) {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, cac.data(), false);
+                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, true);
             } else {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_multi_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, cac.data(), false);
+                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_multi_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, true);
             }
+
             
             // Transform and store in local_ac
             size_t k_offset = k_idx * (nt + 1) * 6;

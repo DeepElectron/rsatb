@@ -32,8 +32,9 @@ TEST_F(AtomicDataTest, FromPoints) {
     std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {2.0, 2.0}; // For types 0 and 1
+    std::vector<int> type_norb = {13, 13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     int local_n = ad->n_atom;
     int total_n;
@@ -80,8 +81,9 @@ TEST_F(AtomicDataTest, Partition) {
     std::vector<double> cell = {20.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.5};
+    std::vector<int> type_norb = {13,13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Partition is done inside from_points
     AtomicData* ad_part = ad;
@@ -106,6 +108,8 @@ TEST_F(AtomicDataTest, Partition) {
 TEST_F(AtomicDataTest, IO_POSCAR) {
     int rank;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    std::vector<int> type_norb = {13,13};
     
     std::string filename = "test_poscar.vasp";
     if (rank == 0) {
@@ -118,7 +122,7 @@ TEST_F(AtomicDataTest, IO_POSCAR) {
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {2.0};
     
-    AtomicData* ad = AtomicData::from_file(filename, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_file(filename, r_max, type_norb, MPI_COMM_WORLD);
     
     int local_n = ad->n_atom;
     int total_n;
@@ -152,7 +156,8 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
-        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+        std::vector<int> type_norb = {13,13};
+        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
         
         for(int i=0; i<ad->n_atom; ++i) {
             if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
@@ -168,7 +173,9 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
-        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+        std::vector<int> type_norb = {13,13};
+
+        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
         
         for(int i=0; i<ad->n_atom; ++i) {
             if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
@@ -184,7 +191,9 @@ TEST_F(AtomicDataTest, DeterministicTypeMapping) {
         std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
         std::vector<bool> pbc = {false, false, false};
         std::vector<double> r_max = {1.0, 1.0};
-        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+        std::vector<int> type_norb = {13,13};
+
+        AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
         
         for(int i=0; i<ad->n_atom; ++i) {
             if (ad->z[i] == 1) EXPECT_EQ(ad->atom_type[i], 0);
@@ -225,8 +234,9 @@ TEST_F(AtomicDataTest, PartitionGrid) {
     std::vector<double> cell = {4.0, 0.0, 0.0,  0.0, 4.0, 0.0,  0.0, 0.0, 4.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.1}; // Connect nearest neighbors on grid
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     AtomicData* ad_part = ad;
     
@@ -279,9 +289,10 @@ TEST_F(AtomicDataTest, SingleProcess) {
     std::vector<int> z = {1};
     std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
     std::vector<bool> pbc = {false, false, false};
+    std::vector<int> type_norb = {13};
     
     std::vector<double> r_max = {1.0};
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     AtomicData* ad_part = ad;
     
     EXPECT_EQ(ad_part->n_atom, 1);
@@ -301,7 +312,8 @@ TEST_F(AtomicDataTest, NeighborListNonPeriodic) {
     std::vector<bool> pbc = {false, false, false};
     
     std::vector<double> r_max = {2.0};
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    std::vector<int> type_norb = {13};
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     int local_edges = ad->n_edge;
     int total_edges;
@@ -344,8 +356,9 @@ TEST_F(AtomicDataTest, LargeSystem) {
     std::vector<double> cell = {8.0, 0.0, 0.0,  0.0, 8.0, 0.0,  0.0, 0.0, 8.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.1}; 
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     AtomicData* ad_part = ad;
     
@@ -376,8 +389,9 @@ TEST_F(AtomicDataTest, MultiElementEdgeMapping) {
     std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
     std::vector<bool> pbc = {false, false, false};
     std::vector<double> r_max = {0.5, 0.5, 0.5, 0.5};
+    std::vector<int> type_norb = {13,13,13,13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Check local atoms and their types
     for(int i=0; i<ad->n_atom; ++i) {
@@ -426,11 +440,11 @@ TEST_F(AtomicDataTest, EdgeFiltering) {
     std::vector<int> z = {1, 2, 1, 1}; // Types: 0, 1, 0, 0
     std::vector<double> cell = {20,0,0, 0,20,0, 0,0,20};
     std::vector<bool> pbc = {false, false, false};
-    
+    std::vector<int> type_norb = {13,13};
     // r_max for types 0 and 1
     std::vector<double> r_max = {0.5, 1.0}; 
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     if (rank == 0) {
         // Check edges
@@ -516,8 +530,9 @@ TEST_F(AtomicDataTest, DistributedConstruction) {
     std::vector<double> cell = {20.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {0.6}; // Connect i to i+1
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Verify every atom has at least 1 neighbor (except ends if open, but PBC is true)
     // With PBC, 0 connects to 19 (dist 1.0? No, 20.0 box. 0 and 19 dist is 1.0 wrapped?
@@ -567,8 +582,9 @@ TEST_F(AtomicDataTest, PressureTest_DenseGraph) {
     std::vector<double> cell = {10,0,0, 0,10,0, 0,0,10};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {3.5}; 
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Verify total atoms
     int local_n = ad->n_atom;
@@ -616,8 +632,9 @@ TEST_F(AtomicDataTest, PressureTest_ExtremeAspect) {
     std::vector<double> cell = {100,0,0, 0,5,0, 0,0,5};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.5}; 
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Verify total atoms
     int local_n = ad->n_atom;
@@ -645,11 +662,12 @@ TEST_F(AtomicDataTest, Robustness) {
     std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.5};
+    std::vector<int> type_norb = {13};
 
     // 1. Empty Input
     std::vector<double> empty_pos;
     std::vector<int> empty_z;
-    AtomicData* ad = AtomicData::from_points(empty_pos, empty_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(empty_pos, empty_z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     EXPECT_EQ(ad->n_atom, 0);
     delete ad;
@@ -659,9 +677,10 @@ TEST_F(AtomicDataTest, Robustness) {
         std::vector<double> zero_cell = {0,0,0, 0,0,0, 0,0,0};
         std::vector<double> pos = {0,0,0};
         std::vector<int> z = {1};
+        std::vector<int> type_norb = {13};
         // NeighborList throws invalid_argument on zero volume
         EXPECT_THROW({
-            AtomicData::from_points(pos, z, zero_cell, pbc, r_max, MPI_COMM_WORLD);
+            AtomicData::from_points(pos, z, zero_cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
         }, std::invalid_argument);
     }
 }
@@ -684,8 +703,9 @@ TEST_F(AtomicDataTest, ThreeBodyGraph) {
     };
     std::vector<int> line_z = {1, 1, 1};
     std::vector<double> r_max_3b = {0.5}; 
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(line_pos, line_z, cell, pbc, r_max_3b, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(line_pos, line_z, cell, pbc, r_max_3b, type_norb, MPI_COMM_WORLD);
     
     DistGraph* g3 = ad->get_graph3b(r_max_3b, r_max_3b);
     
@@ -727,8 +747,9 @@ TEST_F(AtomicDataTest, Consistency) {
         pos = {0.0, 0.0, 0.0,  1.0, 0.0, 0.0};
         z = {1, 1};
     }
+    std::vector<int> type_norb = {13};
 
-    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Verify ad->graph contains all edges in ad->edges
     for(size_t k=0; k<ad->edges.size(); ++k) {
@@ -774,6 +795,7 @@ TEST_F(AtomicDataTest, PressureTest_Random) {
     int N = 1000;
     std::vector<double> r_pos(N * 3);
     std::vector<int> r_z(N);
+    std::vector<int> type_norb = {13};
     
     if (rank == 0) {
         for(int i=0; i<N; ++i) {
@@ -784,7 +806,7 @@ TEST_F(AtomicDataTest, PressureTest_Random) {
         }
     }
     
-    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     int total_n;
     int local_n = ad->n_atom;
@@ -824,8 +846,9 @@ TEST_F(AtomicDataTest, ThreeBodyCorrectness_BruteForce) {
     std::vector<double> cell = {10.0, 0.0, 0.0,  0.0, 10.0, 0.0,  0.0, 0.0, 10.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {2.5}; // Large enough to have many neighbors
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // 2. Get 3-body graph
     DistGraph* g3 = ad->get_graph3b(r_max, r_max);
@@ -962,8 +985,9 @@ TEST_F(AtomicDataTest, SingleProcess_Stress) {
     std::vector<double> cell = {5.0, 0.0, 0.0,  0.0, 5.0, 0.0,  0.0, 0.0, 5.0};
     std::vector<bool> pbc = {true, true, true};
     std::vector<double> r_max = {1.0}; 
+    std::vector<int> type_norb = {13};
     
-    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, MPI_COMM_WORLD);
+    AtomicData* ad = AtomicData::from_points(r_pos, r_z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD);
     
     // Verify basic properties
     EXPECT_EQ(ad->n_atom, N);

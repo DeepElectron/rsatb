@@ -131,7 +131,6 @@ public:
             // Set blocks
             int global_i = ad.get_global_index(i);
             std::vector<int> R = {0, 0, 0};
-            std::cout << std::endl;
             img->add_block(R, global_i, global_i, vS.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
         }
         

@@ -93,7 +93,7 @@ add_subdirectory(extern/nao-abacus)
 #     HINTS ${PETSC_INCLUDE_DIR}/../lib
 # )
 
-message(STATUS "SLEPC library: ${SLEPC_LIB}")
+# message(STATUS "SLEPC library: ${SLEPC_LIB}")
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 execute_process(
@@ -108,6 +108,8 @@ find_package(pybind11 CONFIG REQUIRED)
 
 find_library(PRIMME_LIB primme HINTS $ENV{CONDA_PREFIX}/lib ${CMAKE_SOURCE_DIR}/../../deps/install/lib)
 message(STATUS "PRIMME library: ${PRIMME_LIB}")
+
+include_directories(${CMAKE_SOURCE_DIR}/../../deps/install/include)
 
 # add the binding lib
 

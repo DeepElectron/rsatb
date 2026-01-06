@@ -135,7 +135,7 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
              double shift, // Unused, relying on cheby
              int n_kpm, 
              double eps = 1e-14, 
-             std::complex<double>* cac = nullptr, 
+             std::vector<std::complex<double>>* cac = nullptr, 
              bool verbose = true) {
     
     DistGraph* graph = Psi_in.graph;
@@ -150,7 +150,12 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
     int n_bes = coeffs.size();
 
     // Initialize cac
-    if (cac) std::fill(cac, cac + (nt + 1) * 6, 0.0);
+    if (cac!=nullptr) {
+        if (cac->size()<(nt+1)*6) {
+            cac->resize((nt+1)*6);
+        }
+        std::fill(cac->data(), cac->data() + (nt + 1) * 6, 0.0);
+    }
 
     // Prepare Vectors
     // Helper to construct
@@ -240,7 +245,7 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
                 for (auto d : dots) sum += d;
                 dot_val = sum / static_cast<double>(Psi_in.num_vectors);
             }
-            if (cac) cac[int((-i * i + 5 * i) / 2 + j)] = dot_val;
+            if (cac!=nullptr) (*cac)[int((-i * i + 5 * i) / 2 + j)] = dot_val;
         }
     }
 
@@ -274,7 +279,7 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
                     for (auto d : dots) sum += d;
                     dot_val = sum / static_cast<double>(Psi_in.num_vectors);
                 }
-                if (cac) cac[(it + 1) * 6 + int((-i * i + 5 * i) / 2 + j)] = dot_val;
+                if (cac!=nullptr) (*cac)[(it + 1) * 6 + int((-i * i + 5 * i) / 2 + j)] = dot_val;
             }
         }
     }
