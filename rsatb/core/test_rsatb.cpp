@@ -1,86 +1,121 @@
 #include "rsatb.hpp"
-#include <iostream>
+#include <gtest/gtest.h>
+#include <vector>
+#include <string>
 #include <mpi.h>
 
 using namespace rsatb;
 
-int main(int argc, char** argv) {
-    MPI_Init(&argc, &argv);
-    
-    int rank;
+TEST(RSATBTest, TestSetupAndCompute) {
+    int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
     
-    // Dummy Atomic Data
-    int atom_index[] = {0};
-    int atom_type[] = {0};
-    int edge_index[] = {0};
-    int type_norb[] = {10}; // 10 orbitals
-    int edge_shift_vec[] = {0, 0, 0};
-    double cell[] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
-    double pos[] = {0, 0, 0};
+    // Use npar=1 if size=1, npar=2 if size=2
+    int npar = (size >= 2) ? 2 : 1;
     
-    // Instantiate RSATB
-    RSATB solver(1, 1, 0, 1, 1, atom_index, atom_type, edge_index, type_norb, edge_shift_vec, cell, pos);
+    // 1. Instantiate RSATB
+    std::unique_ptr<RSATB> rsatb_inst;
+
+    const std::string vasp_file = "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp";
+    const std::vector<double> r_max_per_type = {3.7};
+    const std::vector<int> type_norb = {13};
     
-    if (rank == 0) std::cout << "RSATB instantiated." << std::endl;
+    rsatb_inst = std::make_unique<RSATB>(
+        npar, vasp_file,
+        r_max_per_type, type_norb, MPI_COMM_WORLD
+    );
+    // Buffers for merged data (must persist until RSATB is destroyed or at least constructed)
     
-    // Manually setup H (Diagonal)
-    solver.setup_K(0, 0, 0);
-    solver.init_matrices_manual();
+    // 2. Initialize Basis (needed for build_overlap)
+    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
+    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
+
+    std::vector<std::vector<double>> kpoints = {
+    {0.5 , 0.5 , 0.5 },
+    {0.45, 0.45, 0.45},
+    {0.4 , 0.4 , 0.4 },
+    {0.35, 0.35, 0.35},
+    {0.3 , 0.3 , 0.3 },
+    {0.25, 0.25, 0.25},
+    {0.2 , 0.2 , 0.2 },
+    {0.15, 0.15, 0.15},
+    {0.1 , 0.1 , 0.1 },
+    {0.05, 0.05, 0.05},
+    {0.  , 0.  , 0.  },
+    {0.05, 0.  , 0.05},
+    {0.1 , 0.  , 0.1 },
+    {0.15, 0.  , 0.15},
+    {0.2 , 0.  , 0.2 },
+    {0.25, 0.  , 0.25},
+    {0.3 , 0.  , 0.3 },
+    {0.35, 0.  , 0.35},
+    {0.4 , 0.  , 0.4 },
+    {0.45, 0.  , 0.45},
+    {0.5 , 0.  , 0.5 }
+    };
+    int nk = kpoints.size();
+    std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
     
-    // Fill H with diagonal 0..9
-    auto& H = solver.H();
-    auto& S = solver.S();
+    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, "H", 100);
     
-    // BlockSpMat doesn't expose easy element access, but we can use set_local_block if we know the structure.
-    // Or we can hack it since we know it's 1 atom, 1 block.
-    // The graph has 1 vertex (0).
-    // H has 1 block (0,0).
+    // 5. Verify Setup
+    // Check if H(k) is created
+    // K-points are distributed.
+    // Rank 0 should have some K-points (if npar=1, all; if npar=2, half).
     
-    std::vector<std::complex<double>> h_block(100, 0.0);
-    std::vector<std::complex<double>> s_block(100, 0.0);
-    
-    for(int i=0; i<10; ++i) {
-        h_block[i*10+i] = static_cast<double>(i);
-        s_block[i*10+i] = 1.0;
-    }
-    
-    // We need to use set_local_block.
-    // But RSATB doesn't expose set_local_block directly.
-    // But H() returns BlockSpMat&.
-    // BlockSpMat has set_local_block.
-    // We need to know local row/col indices.
-    // With 1 process, 1 atom, local row 0 is global row 0.
-    
-    H.set_local_block(0, 0, h_block.data());
-    S.set_local_block(0, 0, s_block.data());
-    
-    H.assemble();
-    S.assemble();
-    
-    if (rank == 0) std::cout << "Matrices initialized." << std::endl;
-    
-    // Test scale_shift_H
-    solver.scale_shift_H();
-    if (rank == 0) std::cout << "H scaled and shifted." << std::endl;
-    
-    // Test compute_eigenvalues
-    // Note: H is scaled now, so eigenvalues will be scaled.
-    // But compute_eigenvalues uses H directly.
-    // We should probably test eigenvalues BEFORE scaling or account for scaling.
-    // Let's re-init for eigenvalue test or check scaled values.
-    // Scaled: (E - shift) / scale.
-    // E_min ~ 0, E_max ~ 9.
-    // shift ~ 4.5. scale ~ 4.5 + 4 = 8.5.
-    // Expected: (0-4.5)/8.5 ~ -0.53, (9-4.5)/8.5 ~ 0.53.
-    
-    std::vector<double> evals;
-    solver.compute_eigenvalues(1, 1e-6, evals, true);
+    // // 6. Compute DOS
+    std::vector<double> dos, omega;
+    rsatb_inst->compute_dos(500, dos, omega);
     
     if (rank == 0) {
-        std::cout << "Computed eigenvalue: " << evals[0] << std::endl;
+        std::cout << "DOS computed. Size: " << dos.size() << std::endl;
+        // 2 K-points, 100 steps -> 2 * 200 = 400
+        // EXPECT_EQ(dos.size(), 2 * 200);
+        double sum_dos = 0;
+        for(auto d : dos) sum_dos += d;
+        std::cout << "Sum DOS: " << sum_dos << std::endl;
+        // EXPECT_GT(sum_dos, 0.0);
+
+        // Output DOS to file for checking
+        std::ofstream dos_file("dos.dat");
+        if (dos_file.is_open()) {
+            dos_file << "# Omega DOS" << std::endl;
+            // Assuming omega and dos have same size or omega is shared
+            // If omega is per-kpoint or global?
+            // Let's assume 1-to-1 mapping for now or print what we have.
+            size_t n = std::min(dos.size(), omega.size());
+            for (size_t i = 0; i < n; ++i) {
+                dos_file << omega[i] << " ";
+                for (size_t j=0; j<nk; ++j) {
+                    dos_file << dos[j*n+i] << " ";
+                }
+                dos_file << std::endl;
+            }
+            dos_file.close();
+            std::cout << "DOS written to dos.dat" << std::endl;
+        } else {
+            std::cerr << "Unable to open dos.dat for writing" << std::endl;
+        }
     }
     
+    // // 7. Compute AC
+    // std::vector<double> ac;
+    // rsatb_inst->compute_ac(100, 10, 300.0, 0.0, ac, omega);
+    
+    // if (rank == 0) {
+    //     std::cout << "AC computed. Size: " << ac.size() << std::endl;
+    //     // 2 K-points, 101 steps, 6 components -> 2 * 101 * 6 = 1212
+    //     EXPECT_EQ(ac.size(), 2 * 101 * 6);
+    // }
+}
+
+int main(int argc, char** argv) {
+    MPI_Init(&argc, &argv);
+    ::testing::InitGoogleTest(&argc, argv);
+    int result = RUN_ALL_TESTS();
     MPI_Finalize();
-    return 0;
+    return result;
 }

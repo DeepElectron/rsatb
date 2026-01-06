@@ -22,6 +22,8 @@ kpoints, kdist, hsp = abacus_kpath(
     ]
 )
 
+print(kpoints)
+
 HFile = os.path.join(root, "H_diamond_sc111.h5")
 orbroot = root
 orblist = ["C_gga_7au_100Ry_2s2p1d.orb"]

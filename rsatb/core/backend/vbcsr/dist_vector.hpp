@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstring>
 #include <cmath>
+#include <random>
 
 #include <complex>
 #include "scalar_traits.hpp"
@@ -103,6 +104,26 @@ public:
         T global_dot;
         allreduce_sum(&local_dot, &global_dot, 1);
         return global_dot;
+    }
+
+    void set_random_normal(bool normalize = true) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::normal_distribution<double> d(0.0, 1.0);
+        
+        for (int i = 0; i < local_size; ++i) {
+            if constexpr (std::is_same<T, std::complex<double>>::value) {
+                data[i] = std::complex<double>(d(gen), d(gen));
+            } else {
+                data[i] = (T)d(gen);
+            }
+        }
+        
+        if (normalize) {
+            T n = this->dot(*this);
+            double norm = std::sqrt(std::abs(n));
+            this->scale(1.0 / norm);
+        }
     }
 
     // Create a duplicate with the same structure and data

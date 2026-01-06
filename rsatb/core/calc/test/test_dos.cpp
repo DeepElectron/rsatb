@@ -1,4 +1,4 @@
-#include "dos.hpp"
+#include "../dos.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

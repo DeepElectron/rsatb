@@ -107,35 +107,35 @@ void Op2c::overlap(size_t itype, size_t jtype, ModuleBase::Vector3<double> Rij, 
     int il, izeta, im;
     int jl, jzeta, jm;
     int shift, m_phase;
-    double* grad_out;
+    double* grad_out=nullptr;
 
-    if (dvx || dvy || dvz){
+    if (dvx!=nullptr || dvy!=nullptr || dvz!=nullptr){
         grad_out = new double[3];
     }
 
     if (v.size() < inorb * jnorb){
-        std::cout << "Warning: v.size() < inorb * jnorb" << std::endl;
+        std::cout << "Warning: v.size() " << v.size() << " < inorb * jnorb: " << inorb * jnorb << std::endl;
         v.resize(inorb * jnorb);
     } else if (v.size() > inorb * jnorb){
-        std::cout << "Warning: v.size() > inorb * jnorb" << std::endl;
+        std::cout << "Warning: v.size() " << v.size() << " > inorb * jnorb: " << inorb * jnorb << std::endl;
     }
-    if (dvx){
+    if (dvx != nullptr){
         if (dvx->size() < inorb * jnorb){
-            std::cout << "Warning: dvx.size() < inorb * jnorb" << std::endl;
+            std::cout << "Warning: dvx.size() " << dvx->size() << " < inorb * jnorb: " << inorb * jnorb << std::endl;
             dvx->resize(inorb * jnorb);
         } else if (dvx->size() > inorb * jnorb){
-            std::cout << "Warning: dvx.size() > inorb * jnorb" << std::endl;
+            std::cout << "Warning: dvx.size() " << dvx->size() << " > inorb * jnorb: " << inorb * jnorb << std::endl;
         }
     }
-    if (dvy){
+    if (dvy != nullptr){
         if (dvy->size() < inorb * jnorb){
-            std::cout << "Warning: dvy.size() < inorb * jnorb" << std::endl;
+            std::cout << "Warning: dvy.size() " << dvy->size() << " < inorb * jnorb: " << inorb * jnorb << std::endl;
             dvy->resize(inorb * jnorb);
         } else if (dvy->size() > inorb * jnorb){
-            std::cout << "Warning: dvy.size() > inorb * jnorb" << std::endl;
+            std::cout << "Warning: dvy.size() " << dvy->size() << " > inorb * jnorb: " << inorb * jnorb << std::endl;
         }
     }
-    if (dvz){
+    if (dvz != nullptr){
         if (dvz->size() < inorb * jnorb){
             std::cout << "Warning: dvz.size() < inorb * jnorb" << std::endl;
             dvz->resize(inorb * jnorb);
@@ -163,16 +163,18 @@ void Op2c::overlap(size_t itype, size_t jtype, ModuleBase::Vector3<double> Rij, 
             
             m_phase = (im+jm) % 2 == 0 ? 1 : -1;
             v.data()[shift] *= m_phase;
-            grad_out[0] *= m_phase;
-            grad_out[1] *= m_phase;
-            grad_out[2] *= m_phase;
+            if (grad_out != nullptr) {
+                grad_out[0] *= m_phase;
+                grad_out[1] *= m_phase;
+                grad_out[2] *= m_phase;
+            }
 
-            if (dvx) dvx->data()[shift] = grad_out[0];
-            if (dvy) dvy->data()[shift] = grad_out[1];
-            if (dvz) dvz->data()[shift] = grad_out[2];
+            if (dvx != nullptr) dvx->data()[shift] = grad_out[0];
+            if (dvy != nullptr) dvy->data()[shift] = grad_out[1];
+            if (dvz != nullptr) dvz->data()[shift] = grad_out[2];
         }
     }
-    if (grad_out) delete[] grad_out;
+    if (grad_out != nullptr) delete[] grad_out;
 }
 
 void Op2c::overlap_position(

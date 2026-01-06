@@ -1,7 +1,7 @@
 #ifndef RSATB_CALC_ISQRTM_HPP
 #define RSATB_CALC_ISQRTM_HPP
 
-#include "../backend/block_csr.hpp"
+#include "../backend/vbcsr/block_csr.hpp"
 #include "../backend/dbcsr_conversions.hpp"
 #include <dbcsr.h>
 #include <vector>
@@ -27,7 +27,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
     MPI_Comm comm = graph->comm;
     int rank = graph->rank;
 
-    if (rank == 0) std::cout << "isqrtm: Entry. factor=" << factor << " tol=" << tol << " maxit=" << maxit << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Entry. factor=" << factor << " tol=" << tol << " maxit=" << maxit << std::endl;
 
     // 1. Convert S to DBCSR
     dbcsr_matrix S;
@@ -35,9 +35,9 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
     char mat_type = 'N'; // Treat as general to avoid symmetry storage issues with full input
     // DMat2DBCSR uses 'H' for S.
     
-    if (rank == 0) std::cout << "isqrtm: Calling BlockSpMat2DBCSR for S..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Calling BlockSpMat2DBCSR for S..." << std::endl;
     BlockSpMat2DBCSR(S_mat, &S, mat_type);
-    if (rank == 0) std::cout << "isqrtm: S converted." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: S converted." << std::endl;
     
     // 2. Initialize Z (result)
     // Reference initializes Z from mat_isqrt which is shifted by factor.
@@ -51,7 +51,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
     c_dbcsr_get_distribution(S, &dist);
     
     int NGlobal = c_dbcsr_nblkrows_total(S);
-    if (rank == 0) std::cout << "isqrtm: NGlobal=" << NGlobal << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: NGlobal=" << NGlobal << std::endl;
     
     std::vector<int> blksize(NGlobal);
     c_dbcsr_get_col_blk_size(S, blksize.data(), NGlobal);
@@ -61,7 +61,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
     else data_type = dbcsr_type_complex_8;
     
     bool mutable_work = true;
-    if (rank == 0) std::cout << "isqrtm: Creating Z..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Creating Z..." << std::endl;
     c_dbcsr_create_new(&Z, "MatISQRT", dist, 'N', blksize.data(), NGlobal, blksize.data(), NGlobal, nullptr, &data_type, nullptr, nullptr, &mutable_work, nullptr);
     
     // Initialize Z = factor * I
@@ -292,21 +292,21 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
     // 7. Output Result
     DBCSR2BlockSpMat(Z, S_inv_sqrt);
     
-    if (rank == 0) std::cout << "isqrtm: Cleanup Z..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup Z..." << std::endl;
     c_dbcsr_release(&Z);
-    if (rank == 0) std::cout << "isqrtm: Cleanup tmp1..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup tmp1..." << std::endl;
     c_dbcsr_release(&tmp1);
-    if (rank == 0) std::cout << "isqrtm: Cleanup tmp2..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup tmp2..." << std::endl;
     c_dbcsr_release(&tmp2);
-    if (rank == 0) std::cout << "isqrtm: Cleanup tmp3..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup tmp3..." << std::endl;
     c_dbcsr_release(&tmp3);
-    if (rank == 0) std::cout << "isqrtm: Cleanup I..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup I..." << std::endl;
     c_dbcsr_release(&I);
     
-    if (rank == 0) std::cout << "isqrtm: Cleanup S..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup S..." << std::endl;
     c_dbcsr_release(&S);
     
-    if (rank == 0) std::cout << "isqrtm: Cleanup Done." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Cleanup Done." << std::endl;
     // dist is managed by S? No, get_distribution returns pointer to internal?
     // Reference calls c_dbcsr_distribution_release(&dist) only if it created it?
     // Reference: c_dbcsr_get_distribution(S, &dist); ... c_dbcsr_distribution_release(&dist);

@@ -1,4 +1,4 @@
-#include "solver.hpp"
+#include "../solver.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

@@ -84,8 +84,8 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         // We need e^{-i H dt} = e^{-i (H_scaled * half_width + center) dt}
         // = e^{-i center dt} * e^{-i H_scaled * half_width * dt}
         
-        std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt));
-        psi_out.scale(phase);
+        // std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt / cheby.half_width));
+        // psi_out.scale(phase);
 
         // Compute Overlap <psi_out | psi_in> ?
         // Old code: VecDot(Psi_out, Psi_in, cdos + ...).
@@ -163,8 +163,8 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
 
         cheby.propagate(psi_curr, psi_out, coeffs, ChebyMode::NORMAL);
         
-        std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt));
-        psi_out.scale(phase);
+        // std::complex<double> phase = std::exp(std::complex<double>(0, -cheby.center * dt / cheby.half_width));
+        // psi_out.scale(phase);
 
         psi_in.dot(psi_out, dots);
         sum_overlap = 0;

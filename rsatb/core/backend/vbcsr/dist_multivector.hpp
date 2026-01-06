@@ -6,6 +6,7 @@
 #include <cassert>
 #include <cstring>
 #include <algorithm>
+#include <random>
 
 #include <complex>
 #include "scalar_traits.hpp"
@@ -198,6 +199,31 @@ public:
     // Column-wise dot product (alias to bdot, matching implementation plan)
     void dot(const DistMultiVector<T>& other, std::vector<T>& results) const {
         results = bdot(other);
+    }
+
+    void set_random_normal(bool normalize = true) {
+        std::random_device rd;
+        std::mt19937 gen(rd());
+        std::normal_distribution<double> d(0.0, 1.0);
+        
+        for (auto& val : data) {
+            if constexpr (std::is_same<T, std::complex<double>>::value) {
+                val = std::complex<double>(d(gen), d(gen));
+            } else {
+                val = (T)d(gen);
+            }
+        }
+        
+        if (normalize) {
+            std::vector<T> dots = this->bdot(*this);
+            for (int c = 0; c < num_vectors; ++c) {
+                double norm = std::sqrt(std::abs(dots[c]));
+                T scale_factor = 1.0 / norm;
+                T* col = col_data(c);
+                int total_rows = local_rows + ghost_rows;
+                for(int i=0; i<total_rows; ++i) col[i] *= scale_factor;
+            }
+        }
     }
 
     // Persistent buffers

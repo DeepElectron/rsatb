@@ -1,9 +1,9 @@
 #ifndef RSATB_CALC_CHEBY_HPP
 #define RSATB_CALC_CHEBY_HPP
 
-#include "../backend/block_csr.hpp"
-#include "../backend/dist_vector.hpp"
-#include "../backend/dist_multivector.hpp"
+#include "../backend/vbcsr/block_csr.hpp"
+#include "../backend/vbcsr/dist_vector.hpp"
+#include "../backend/vbcsr/dist_multivector.hpp"
 #include "preconditioner.hpp"
 #include "solver.hpp"
 #include "bessel.hpp"

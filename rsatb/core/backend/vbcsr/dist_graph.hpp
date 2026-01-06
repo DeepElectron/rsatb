@@ -514,6 +514,7 @@ private:
     }
     
     void fetch_ghost_block_sizes(const std::vector<int>& displ) {
+        // std::cerr << "fetch_ghost_block_sizes called. n_ghosts: " << ghost_global_indices.size() << std::endl;
         // Similar to build_comm_pattern, but we exchange block sizes
         // 1. Identify owners of ghosts
         int n_ghosts = ghost_global_indices.size();
@@ -572,12 +573,21 @@ private:
             if (ghosts_by_rank.count(i)) {
                 for (size_t k = 0; k < ghosts_by_rank[i].size(); ++k) {
                     int gid = ghosts_by_rank[i][k];
-                    int size = resp_recv_buf[offset + k];
+                    int recv_size = resp_recv_buf[offset + k];
                     int lid = global_to_local[gid];
-                    block_sizes[lid] = size;
+                    // std::cerr << "[DEBUG] Rank " << rank << " filling ghost GID " << gid << " (lid=" << lid << ") with size " << recv_size << " from resp_recv_buf[" << (offset + k) << "]" << std::endl;
+                    block_sizes[lid] = recv_size;
                 }
             }
             offset += req_counts[i];
+        }
+        
+        // Check for any remaining zeros in ghost block sizes
+        int n_owned = owned_global_indices.size();
+        for (size_t i = n_owned; i < block_sizes.size(); ++i) {
+            if (block_sizes[i] == 0) {
+                std::cerr << "[WARNING] Rank " << rank << " ghost block_sizes[" << i << "] is still ZERO! (GID=" << ghost_global_indices[i - n_owned] << ")" << std::endl;
+            }
         }
     }
 };

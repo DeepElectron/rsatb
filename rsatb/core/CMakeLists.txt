@@ -25,6 +25,10 @@ find_package(Threads REQUIRED)
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
 find_package(DBCSR 2.0.0 CONFIG REQUIRED)
 # find_package(FFTW REQUIRED)
+# ParMETIS
+find_library(PARMETIS_LIB parmetis HINTS $ENV{CONDA_PREFIX}/lib)
+find_library(METIS_LIB metis HINTS $ENV{CONDA_PREFIX}/lib)
+include_directories($ENV{CONDA_PREFIX}/include)
 
 # add math_libs
 if(DEFINED ENV{MKLROOT} AND NOT DEFINED MKLROOT)
@@ -82,7 +86,7 @@ endif()
 add_subdirectory(backend)
 add_subdirectory(io)
 add_subdirectory(extern/nao-abacus)
-add_subdirectory(calc)
+# add_subdirectory(calc)
 
 # find_library(SLEPC_LIB
 #     NAMES slepc
@@ -102,65 +106,16 @@ message(STATUS "mpi4py include: ${MPI4PY_INCLUDE_DIR}")
 set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG REQUIRED)
 
-
-# add hr2hk lib
-add_library(hr2hk SHARED hr2hk.cpp hr2hk.hpp $<TARGET_OBJECTS:backend>)
-target_compile_features(hr2hk PUBLIC cxx_std_11)
-
-target_include_directories(
-    hr2hk PUBLIC
-    ./ 
-    ./extern/nao-abacus/
-    ./extern/nao-abacus/source_base/module_container 
-    ./extern/nao-abacus/source_base/module_device 
-    )
-
-target_link_libraries(hr2hk PUBLIC backend io base numerical_atomic_orbitals estate)
-
-# add solver lib
-add_library(solver SHARED solver.cpp solver.hpp)
-target_compile_features(solver PUBLIC cxx_std_11)
-target_include_directories(
-    solver PUBLIC 
-    ./ 
-)
-target_link_libraries(solver PUBLIC hr2hk calc backend io ${SLEPC_LIB})
+find_library(PRIMME_LIB primme HINTS $ENV{CONDA_PREFIX}/lib ${CMAKE_SOURCE_DIR}/../../deps/install/lib)
+message(STATUS "PRIMME library: ${PRIMME_LIB}")
 
 # add the binding lib
-
-pybind11_add_module(binding SHARED binding.cpp)
-target_compile_features(binding PUBLIC cxx_std_11)
-target_include_directories(
-    binding PUBLIC 
-    ./ 
-    ${MPI4PY_INCLUDE_DIR}
-)
-
-target_link_libraries(binding PUBLIC solver)
-
-install(TARGETS binding solver hr2hk DESTINATION rsatb/core)
 
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 # Manually add DBCSR path since it's in a non-standard location
 set(DBCSR_LIB_PATH "${CMAKE_SOURCE_DIR}/../../deps/install/lib64")
 
-# Extract PETSc lib dir manually to ensure it's in RPATH (fixes local deployment issues)
-list(GET PETSC_LIBRARIES 0 PETSC_MAIN_LIB)
-get_filename_component(PETSC_LIB_DIR "${PETSC_MAIN_LIB}" DIRECTORY)
+add_executable(test_rsatb test_rsatb.cpp $<TARGET_OBJECTS:backend>)
+target_include_directories(test_rsatb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../.. backend extern extern/nao-abacus extern/nao-abacus/source_base/module_container)
+target_link_libraries(test_rsatb PRIVATE io base numerical_atomic_orbitals estate GTest::gtest MPI::MPI_CXX DBCSR::dbcsr_c HDF5::HDF5 FFTW::FFTW LAPACK::LAPACK ${PRIMME_LIB} ${PARMETIS_LIB} ${METIS_LIB})
 
-# Extract SLEPc lib dir manually
-get_filename_component(SLEPC_LIB_DIR "${SLEPC_LIB}" DIRECTORY)
-
-set_target_properties(binding PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
-set_target_properties(solver PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
-set_target_properties(hr2hk PROPERTIES INSTALL_RPATH "$ORIGIN:${DBCSR_LIB_PATH}:${PETSC_LIB_DIR}:${SLEPC_LIB_DIR}")
-
-add_executable(test ./test.cpp)
-target_link_libraries(test PRIVATE solver GTest::gtest)
-
-add_executable(test_hr2hk ./test_hr2hk.cpp)
-target_link_libraries(test_hr2hk PRIVATE solver GTest::gtest)
-
-add_executable(test_operator_construction backend/test/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_operator_construction PRIVATE backend extern/nao-abacus extern/nao-abacus/source_base/module_container)
-target_link_libraries(test_operator_construction PRIVATE io base numerical_atomic_orbitals estate GTest::gtest)

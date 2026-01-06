@@ -1,4 +1,4 @@
-#include "ac.hpp"
+#include "../ac.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

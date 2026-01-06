@@ -1,4 +1,4 @@
-#include "cheby.hpp"
+#include "../cheby.hpp"
 #include <iostream>
 #include <complex>
 #include <vector>

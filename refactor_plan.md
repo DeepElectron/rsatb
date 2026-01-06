@@ -43,3 +43,29 @@ These two DBCSR data type transformation should be added in the backend module, 
 
 10. It is good to have a HS container like feature class that grap a set of blockcsr class according to the R vector, it is helpful to avoid the io or 2c integrals again when forming matrix at different K point, and easier to implement method like the velocity matrix calculation in real space method Vij=Hij(Rj-Ri).
 <!-- Third, the MKL, BLAS, OpenBLAS, etc. for linear algebra support of the dense MVP, MM kernel. -->
+
+RSATB -> Solver:
+The solver class should be replaced with RSATB class, which provide all functions that use the implemented new interfaces. The new RSATB class should have these functions:
+
+class construction:
+
+1. comm partition. The RSATB should incharge of the all parrallel structure of the code. Two parralization are needed, one is the K point parrallelization, the other is the atom parrallelization. First, the RSATB class should divide the totoal comm into subcomm, determined by the user's input of npar. Then, each kpoint will be assigned to a subcomm, and the atom parrallelization will be done within each subcomm. Then, each subcomm will incharge of the parallelization of the matrix construction, and the matrix assembly, and the matrix solve, each process in the subcomm will contains a partition of atoms. Each subcomm's rank 0 process will form a new comm, called master comm to gather the result after solve.
+
+The result gathar will also be done at the master comm, once all calculation is done.
+
+2. AtomicData construction:
+The atomic data should be constructed at the class constructor stage. It will calls the from point or from file function of the atomic data to perform the construction. The resulting atomicdata are owned by each subcomm, and is partitioned across the subcomm.
+
+3. Matrix allocation.
+The overlap, Hamiltonian matrix need to be allocated. The overlap matrix should have a input tag, indicating whether this system is orthogonal or not. If it is, the overlap matrix should be empty. The Hamiltonian and Overlap should be allocated as a image container class.
+
+class function:
+1. setup (Hfile, kpoints, orb_names, orb_dirs, psd_names, psd_dirs, precond="H/S"):
+This step setup the Hamiltonian and/or Overlap files, the kpoints, the scale/shift factor, and the preconditioner. The image container will first read in the files to construct the Hamiltonian and Overlap matrix for each R, using the orb and psd given. In orthogonal case, the overlap will not be constructed. Then, the kpoint will be looped to compute the preconditioner first. Each preconditioner will be saved in the RSATB class as a map from the kpoint to the preconditioner. The constructed Hamiltonian and/or Overlap matrix at each k will also be saved as maps. in each kpoint loop, the computed preconditioner will be used to compute the largest and lowest eigenvalues of the Hamiltonian operator using the PRIMME interface. The computed eigenvalues will be communicated globally to find the largest and lowest, which determined the final scale/shift factor. If the precond is on H, then after the comptuation of preconditioner, the overlap matrix will be dropped as nullptr, mem will be freeed.
+
+
+2. Compute_dos
+It should loop over all kpoints in each subcomm and compute the does using the setup Hamiltonian, overlap and preconditioner. Then, it should collect the result of the dos from all subcomm to the master comm.
+
+3. compute_ac
+It should loop over all kpoints in each subcomm. It should load the current Hamiltonian and overlap, preconditioner matrix. It also need to call the operator construction function to compute the velocity matrix for this. Then, it should perform the AC calculation.

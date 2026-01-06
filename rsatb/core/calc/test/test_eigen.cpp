@@ -1,4 +1,4 @@
-#include "eigen.hpp"
+#include "../eigen.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

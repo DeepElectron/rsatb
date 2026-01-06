@@ -85,6 +85,16 @@ public:
             }
         }
         
+        // Ensure R=0 has diagonal blocks
+        std::vector<int> R0 = {0, 0, 0};
+        if (adj_by_r.find(R0) == adj_by_r.end()) {
+            adj_by_r[R0].resize(n_owned);
+        }
+        for (int i = 0; i < n_owned; ++i) {
+            int gid = atom_data->get_global_index(i);
+            adj_by_r[R0][i].push_back(gid);
+        }
+        
         // Also need to ensure all ranks agree on the set of Rs?
         // DistGraph construction is collective. If a rank has no edges for a specific R, 
         // but other ranks do, it must still participate in DistGraph construction 
@@ -194,36 +204,6 @@ public:
         // 2. Iterate over all image blocks and accumulate
         // result = sum_R ( H(R) * phase(R) )
         
-        // We can iterate over local blocks of each image_blocks[R] and add to result.
-        // Since image_graphs[R] is a subgraph of base_graph, every local block in image_blocks[R]
-        // should exist in result (which uses base_graph).
-        
-        // However, the local indices might differ if the graphs are constructed differently?
-        // DistGraph construction is deterministic based on input.
-        // But base_graph has all edges. image_graph[R] has subset.
-        // The "owned" atoms are the same (same partition).
-        // The "ghost" atoms might differ (image_graph might have fewer ghosts).
-        // So local indices in image_graph[R] are NOT the same as in base_graph.
-        // We must map via global indices.
-        
-        // Optimization: We can build a local_to_local map for each R?
-        // Or just use global indices to update `result`.
-        // Using `add_block` on `result` with global indices is safe but might be slow if we do it for every block.
-        // But `result` is local (mostly). `add_block` checks local first.
-        
-        // Let's try to map local indices.
-        // For each R:
-        //   For each local row i (owned):
-        //     Global Row G = image_graph[R]->owned_global_indices[i]
-        //     Local Row i_base = base_graph->global_to_local[G] (Should be same as i if sorted same way)
-        //     Actually, owned_global_indices are usually sorted.
-        
-        // Let's verify if owned indices are identical.
-        // In `build_image_graphs`, we passed `owned_indices` from `atom_data`.
-        // So `image_graph[R]->owned_global_indices` should be identical to `base_graph->owned_global_indices`.
-        // So local row index `i` is the same for both.
-        
-        // For columns (ghosts), they will differ.
         // We need a map: image_graph[R]->col_ind[k] (local col) -> Global Col -> base_graph local col.
         
         int n_owned = base_graph->owned_global_indices.size();
@@ -233,22 +213,7 @@ public:
             BlockSpMat<T, Kernel>* mat_R = kv.second;
             DistGraph* graph_R = mat_R->graph;
             
-            // Calculate phase factor for R part
-            // K dot R
-            double KR = K[0]*R_vec[0] + K[1]*R_vec[1] + K[2]*R_vec[2]; // R is integer?
-            // Wait, R in AtomicData is integer shift. We need to multiply by cell?
-            // Usually K is in reciprocal coords (2pi units) and R is in lattice coords (integer).
-            // Then K dot R = 2pi * (k1*n1 + k2*n2 + k3*n3).
-            // If K is Cartesian, we need R Cartesian.
-            // "sample_k: it will do a R to K transform using FFT... multiplication of their specific block of the fourier phase."
-            // "Two convention... One compute the phase use the R and K"
-            // Usually in electronic structure:
-            // If K is fractional (units of b1, b2, b3), and R is integer (n1, n2, n3), phase is 2*pi*K*R.
-            // If K is Cartesian, R must be Cartesian.
-            // Let's assume K is fractional (standard in VASP/QE etc) and R is integer.
-            // Phase = 2 * pi * dot(K, R).
-            
-            double phase_R_val = 2.0 * M_PI * (K[0]*R_vec[0] + K[1]*R_vec[1] + K[2]*R_vec[2]);
+            double phase_R_val = -2.0 * M_PI * (K[0]*R_vec[0] + K[1]*R_vec[1] + K[2]*R_vec[2]);
             std::complex<double> exp_iKR = std::exp(std::complex<double>(0, phase_R_val));
             
             // Precompute col map for this graph_R
@@ -296,25 +261,10 @@ public:
                         }
                     } else {
                         // R_AND_POSITION
-                        // phase = exp(i * K * (R + r_j - r_i))
-                        //       = exp(iKR) * exp(i * K * (r_j - r_i))
-                        // r_j and r_i are fractional or Cartesian?
-                        // Usually positions are Cartesian or Fractional.
-                        // AtomicData stores x, y, z (Cartesian usually).
-                        // If K is fractional, we need to convert r_j - r_i to fractional?
-                        // Or convert K to Cartesian?
-                        // "atomic_data to get the atomic positional and cell information"
-                        // Let's assume K is fractional.
-                        // r_diff_cart = r_j - r_i
-                        // r_diff_frac = inv_cell * r_diff_cart
-                        // phase = 2pi * K * (R + r_diff_frac)
                         
                         // Get positions
                         double ri[3], rj[3];
                         atom_data->get_pos(i, &ri[0], &ri[1], &ri[2]); // i is local owned
-                        
-                        // For j, we need local index in AtomicData.
-                        // col_Base is local index in base_graph, which matches AtomicData local index (0..n_owned+n_ghost).
                         atom_data->get_pos(col_Base, &rj[0], &rj[1], &rj[2]);
                         
                         double dx = rj[0] - ri[0];
@@ -322,12 +272,10 @@ public:
                         double dz = rj[2] - ri[2];
                         
                         // Convert to fractional
-                        // We need inverse cell. AtomicData has invert_cell helper.
-                        // But invert_cell modifies in place.
                         double fdx = dx, fdy = dy, fdz = dz;
                         atom_data->invert_cell(&fdx, &fdy, &fdz);
                         
-                        double phase_pos = 2.0 * M_PI * (K[0]*fdx + K[1]*fdy + K[2]*fdz);
+                        double phase_pos = -2.0 * M_PI * (K[0]*fdx + K[1]*fdy + K[2]*fdz);
                         std::complex<double> total_phase = exp_iKR * std::exp(std::complex<double>(0, phase_pos));
                         
                         for (int e = 0; e < n_elem; ++e) {

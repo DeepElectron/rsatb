@@ -17,26 +17,58 @@ void test_image_container() {
     // 1. Setup AtomicData
     // 2 atoms: 0 at (0,0,0), 1 at (0.5, 0.5, 0.5)
     // Cell: 10, 10, 10
-    int n_atom = 2;
-    int atom_offset = 0; // Single rank for simplicity or simple partition
-    // Let's run with 1 rank first to keep it simple, or handle parallel if needed.
-    // If we run with 1 rank:
     
-    std::vector<int> atom_index = {0, 1};
-    std::vector<int> atom_type = {0, 0};
+    // Partition atoms:
+    // Rank 0: Atom 0
+    // Rank 1: Atom 1
+    // If size=1, Rank 0 has both.
+    
+    int my_n_atom = (rank < 2) ? 1 : 0;
+    if (size == 1) my_n_atom = 2;
+    
+    int atom_offset = (rank == 1) ? 1 : 0;
+    
+    std::vector<int> atom_index;
+    std::vector<int> atom_type;
+    std::vector<double> pos;
+    
+    if (size == 1) {
+        atom_index = {0, 1};
+        atom_type = {0, 0};
+        pos = {0.0, 0.0, 0.0, 5.0, 5.0, 5.0};
+    } else {
+        if (rank == 0) {
+            atom_index = {0};
+            atom_type = {0};
+            pos = {0.0, 0.0, 0.0};
+        } else if (rank == 1) {
+            atom_index = {1};
+            atom_type = {0};
+            pos = {5.0, 5.0, 5.0};
+        }
+    }
+
     std::vector<int> type_norb = {1}; // 1 orbital per atom
     std::vector<double> cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
-    std::vector<double> pos = {0.0, 0.0, 0.0, 5.0, 5.0, 5.0};
     
     // Edges:
     // 0->1 R=(0,0,0)
     // 0->1 R=(1,0,0)
-    std::vector<int> edge_index = {0, 1, 0, 1};
-    std::vector<int> edge_shift = {0, 0, 0, 1, 0, 0};
-    int n_edge = 2;
+    
+    std::vector<int> edge_index;
+    std::vector<int> edge_shift;
+    
+    // Edges must be provided by owner of source.
+    // Src 0 is on Rank 0.
+    if (rank == 0) {
+        edge_index = {0, 1, 0, 1};
+        edge_shift = {0, 0, 0, 1, 0, 0};
+    }
+    
+    int n_edge = edge_index.size() / 2;
     
     AtomicData* data = new AtomicData(
-        n_atom, n_atom, atom_offset, n_edge, n_edge,
+        my_n_atom, 2, atom_offset, n_edge, 2,
         atom_index.data(), atom_type.data(), edge_index.data(), type_norb.data(), edge_shift.data(),
         cell.data(), pos.data(), MPI_COMM_WORLD
     );
@@ -64,8 +96,18 @@ void test_image_container() {
     double val0 = 1.0;
     double val1 = 2.0;
     
-    img->add_block(R0, 0, 1, &val0, 1, 1);
-    img->add_block(R1, 0, 1, &val1, 1, 1);
+    // Add blocks. Only owner of the row (src) should add?
+    // Or anyone can add remote blocks?
+    // ImageContainer::add_block handles remote blocks.
+    // But we should avoid double adding.
+    // In this test, we add for 0->1. Src is 0.
+    // Rank 0 owns 0.
+    // So Rank 0 adds.
+    
+    if (rank == 0) {
+        img->add_block(R0, 0, 1, &val0, 1, 1);
+        img->add_block(R1, 0, 1, &val1, 1, 1);
+    }
     
     img->assemble();
     
@@ -78,27 +120,24 @@ void test_image_container() {
     auto* res0 = img->sample_k(K0, PhaseConvention::R_ONLY);
     
     // Check result
-    // res0 is BlockSpMat<complex<double>>
-    // We need to access value at 0, 1
-    // 0 is local row 0. 1 is local col?
-    // In base_graph, 0 is owned. 1 is owned (if 1 rank).
-    // Let's check local indices.
-    int l_row = data->graph->global_to_local.at(0);
-    int l_col = data->graph->global_to_local.at(1);
-    
-    // Find block
-    bool found = false;
-    int start = res0->row_ptr[l_row];
-    int end = res0->row_ptr[l_row+1];
-    for (int k = start; k < end; ++k) {
-        if (res0->col_ind[k] == l_col) {
-            std::complex<double> val = res0->val[res0->blk_ptr[k]];
-            if (rank == 0) std::cout << "K=0 Val: " << val << std::endl;
-            assert(std::abs(val.real() - 3.0) < 1e-9);
-            found = true;
+    // 0->1 is owned by Rank 0.
+    if (rank == 0) {
+        int l_row = data->graph->global_to_local.at(0);
+        int l_col = data->graph->global_to_local.at(1);
+        
+        bool found = false;
+        int start = res0->row_ptr[l_row];
+        int end = res0->row_ptr[l_row+1];
+        for (int k = start; k < end; ++k) {
+            if (res0->col_ind[k] == l_col) {
+                std::complex<double> val = res0->val[res0->blk_ptr[k]];
+                if (rank == 0) std::cout << "K=0 Val: " << val << std::endl;
+                assert(std::abs(val.real() - 3.0) < 1e-9);
+                found = true;
+            }
         }
+        assert(found);
     }
-    assert(found);
     delete res0;
 
     // K = (0.5, 0, 0) -> Phase R=1 is exp(i * 2pi * 0.5 * 1) = exp(i*pi) = -1
@@ -106,18 +145,23 @@ void test_image_container() {
     std::vector<double> K1 = {0.5, 0.0, 0.0};
     auto* res1 = img->sample_k(K1, PhaseConvention::R_ONLY);
     
-    found = false;
-    start = res1->row_ptr[l_row];
-    end = res1->row_ptr[l_row+1];
-    for (int k = start; k < end; ++k) {
-        if (res1->col_ind[k] == l_col) {
-            std::complex<double> val = res1->val[res1->blk_ptr[k]];
-            if (rank == 0) std::cout << "K=0.5 Val: " << val << std::endl;
-            assert(std::abs(val.real() - (-1.0)) < 1e-9);
-            found = true;
+    if (rank == 0) {
+        int l_row = data->graph->global_to_local.at(0);
+        int l_col = data->graph->global_to_local.at(1);
+        
+        bool found = false;
+        int start = res1->row_ptr[l_row];
+        int end = res1->row_ptr[l_row+1];
+        for (int k = start; k < end; ++k) {
+            if (res1->col_ind[k] == l_col) {
+                std::complex<double> val = res1->val[res1->blk_ptr[k]];
+                if (rank == 0) std::cout << "K=0.5 Val: " << val << std::endl;
+                assert(std::abs(val.real() - (-1.0)) < 1e-9);
+                found = true;
+            }
         }
+        assert(found);
     }
-    assert(found);
     delete res1;
     
     // Test R_AND_POSITION
@@ -130,19 +174,25 @@ void test_image_container() {
     // Total = i - 2i = -i
     
     auto* res2 = img->sample_k(K1, PhaseConvention::R_AND_POSITION);
-    found = false;
-    start = res2->row_ptr[l_row];
-    end = res2->row_ptr[l_row+1];
-    for (int k = start; k < end; ++k) {
-        if (res2->col_ind[k] == l_col) {
-            std::complex<double> val = res2->val[res2->blk_ptr[k]];
-            if (rank == 0) std::cout << "K=0.5 Pos Val: " << val << std::endl;
-            assert(std::abs(val.real()) < 1e-9);
-            assert(std::abs(val.imag() - (-1.0)) < 1e-9);
-            found = true;
+    
+    if (rank == 0) {
+        int l_row = data->graph->global_to_local.at(0);
+        int l_col = data->graph->global_to_local.at(1);
+        
+        bool found = false;
+        int start = res2->row_ptr[l_row];
+        int end = res2->row_ptr[l_row+1];
+        for (int k = start; k < end; ++k) {
+            if (res2->col_ind[k] == l_col) {
+                std::complex<double> val = res2->val[res2->blk_ptr[k]];
+                if (rank == 0) std::cout << "K=0.5 Pos Val: " << val << std::endl;
+                assert(std::abs(val.real()) < 1e-9);
+                assert(std::abs(val.imag() - (-1.0)) < 1e-9);
+                found = true;
+            }
         }
+        assert(found);
     }
-    assert(found);
     delete res2;
 
     delete img;

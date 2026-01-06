@@ -1,10 +1,10 @@
 #ifndef RSATB_CALC_EIGEN_HPP
 #define RSATB_CALC_EIGEN_HPP
 
-#include "rsatb/core/backend/block_csr.hpp"
-#include "rsatb/core/backend/dist_vector.hpp"
-#include "rsatb/core/backend/dist_multivector.hpp"
-#include "rsatb/core/backend/scalar_traits.hpp"
+#include "rsatb/core/backend/vbcsr/block_csr.hpp"
+#include "rsatb/core/backend/vbcsr/dist_vector.hpp"
+#include "rsatb/core/backend/vbcsr/dist_multivector.hpp"
+#include "rsatb/core/backend/vbcsr/scalar_traits.hpp"
 #include "solver.hpp" // For LinearSolver
 #include <vector>
 #include <iostream>
@@ -136,7 +136,7 @@ public:
         if constexpr (std::is_same_v<T, double>) {
             ret = dprimme(evals_buf.data(), evecs_buf.data(), res_norms_buf.data(), &primme);
         } else if constexpr (std::is_same_v<T, std::complex<double>>) {
-            ret = zprimme(evals_buf.data(), (void*)evecs_buf.data(), res_norms_buf.data(), &primme);
+            ret = zprimme(evals_buf.data(), evecs_buf.data(), res_norms_buf.data(), &primme);
         } else {
             throw std::runtime_error("PrimmeEigenSolver only supports double and complex<double>");
         }
@@ -172,6 +172,18 @@ public:
                        bool verbose=false,
                        PreconditionerType pc_type = PreconditionerType::Left) {
         solve(H, S, M, num, primme_largest, tol, evals, evecs, verbose, pc_type);
+    }
+
+    void solve_smallest(BlockSpMat<T, Kernel>& H, 
+                        BlockSpMat<T, Kernel>* S, 
+                        Preconditioner<T, Kernel>* M,
+                        int num, 
+                        double tol, 
+                        std::vector<Real>& evals, 
+                        std::vector<DistVector<T>>& evecs, 
+                       bool verbose=false,
+                       PreconditionerType pc_type = PreconditionerType::Left) {
+        solve(H, S, M, num, primme_smallest, tol, evals, evecs, verbose, pc_type);
     }
 
     // Helper to find extremal eigenvalues (min and max) of H
@@ -318,7 +330,7 @@ private:
         ctx->tmp_mv_out->set_constant(0.0);
         
         if (ctx->M) {
-            ctx->solver->solve(*ctx->S, *ctx->tmp_mv_in, *ctx->tmp_mv_out, *ctx->M, PreconditionerType::Left);
+            ctx->solver->solve(*ctx->S, *ctx->tmp_mv_in, *ctx->tmp_mv_out, *ctx->M, ctx->M->get_type());
         } else {
             ctx->solver->solve(*ctx->S, *ctx->tmp_mv_in, *ctx->tmp_mv_out);
         }

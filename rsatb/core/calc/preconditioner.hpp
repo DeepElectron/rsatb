@@ -1,9 +1,9 @@
 #ifndef RSATB_CALC_PRECONDITIONER_HPP
 #define RSATB_CALC_PRECONDITIONER_HPP
 
-#include "../backend/block_csr.hpp"
-#include "../backend/dist_vector.hpp"
-#include "../backend/dist_multivector.hpp"
+#include "../backend/vbcsr/block_csr.hpp"
+#include "../backend/vbcsr/dist_vector.hpp"
+#include "../backend/vbcsr/dist_multivector.hpp"
 #include "isqrtm.hpp"
 #include <vector>
 #include <cmath>
@@ -23,6 +23,8 @@ namespace calc {
 
 using namespace rsatb::backend;
 
+enum class PreconditionerType { Left, Right, Symmetric };
+
 // Base class for Preconditioners
 template <typename T, typename Kernel = DefaultKernel<T>>
 class Preconditioner {
@@ -32,6 +34,7 @@ public:
     virtual void apply(const DistMultiVector<T>& src, DistMultiVector<T>& dst) = 0;
     virtual void apply_adjoint(const DistVector<T>& src, DistVector<T>& dst) = 0;
     virtual void apply_adjoint(const DistMultiVector<T>& src, DistMultiVector<T>& dst) = 0;
+    virtual PreconditionerType get_type() const = 0;
 };
 
 // Block Jacobian Preconditioner
@@ -45,6 +48,8 @@ public:
     BlockJacobianPreconditioner(BlockSpMat<T, Kernel>& A) : P(A.graph) {
         compute(A);
     }
+
+    PreconditionerType get_type() const override { return PreconditionerType::Left; }
 
     void compute(BlockSpMat<T, Kernel>& A) {
         // Iterate local blocks of A
@@ -146,6 +151,8 @@ public:
         // Compute P = S^-1/2
         isqrtm(S, P, tol, 1e-6, max_iter, factor, verbose);
     }
+
+    PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }
 
     ISQRTMPreconditioner(BlockSpMat<T, Kernel>& P) : P(P) {}
 

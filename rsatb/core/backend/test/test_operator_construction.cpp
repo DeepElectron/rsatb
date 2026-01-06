@@ -262,13 +262,15 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     DistGraph* g3 = ad->get_graph3b(r_max_left, r_max_right);
     if(rank==0) std::cout << "Allocating 3-body graph DONE." << std::endl;
     
-    BlockSpMat<std::complex<double>> S(ad->dm());
+    BlockSpMat<std::complex<double>> S(ad->graph);
     BlockSpMat<std::complex<double>> Vx3(g3);
     BlockSpMat<std::complex<double>> Vy3(g3);
     BlockSpMat<std::complex<double>> Vz3(g3);
     
     if(rank==0) std::cout << "Building velocity..." << std::endl;
-    op_const.build_velocity(S, &Vx3, &Vy3, &Vz3, *ad, 0.0, 0.0, 0.0);
+    if(rank==0) std::cout << "Building velocity..." << std::endl;
+    auto img_S = op_const.build_overlap_velocity(&Vx3, &Vy3, &Vz3, *ad, 0.0, 0.0, 0.0);
+    if(rank==0) std::cout << "Building velocity DONE." << std::endl;
     if(rank==0) std::cout << "Building velocity DONE." << std::endl;
     
     // Verify
@@ -287,6 +289,64 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     
     delete ad;
     delete g3;
+}
+
+TEST(OperatorConstructionTest, TestBuildOverlap) {
+    int rank, size;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    
+    if (size != 2) return;
+
+    GlobalEnv env;
+    AtomicData* ad = nullptr;
+    
+    if (rank == 0) {
+        ad = new AtomicData(
+            env.n_atom, env.n_atom*2, env.atom_offset1, env.n_edge, env.n_edge * 2,
+            &env.atom_index1, env.atom_type1, edge_index1, env.type_norb, edge_shift_vec1,
+            env.cell, env.pos1, MPI_COMM_WORLD
+        );
+    } else {
+        ad = new AtomicData(
+            env.n_atom, env.n_atom*2, env.atom_offset2, env.n_edge, env.n_edge * 2,
+            &env.atom_index2, env.atom_type2, edge_index2, env.type_norb, edge_shift_vec2,
+            env.cell, env.pos2, MPI_COMM_WORLD
+        );
+    }
+    
+    OperatorConstruction op_const(MPI_COMM_WORLD);
+    
+    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};
+    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf", "C_ONCV_PBE-1.0.upf"};
+    
+    op_const.init(2, 1, false, orb_dir, orb_names, psd_dir, psd_names, "op_const_overlap.log");
+    
+
+    
+    if(rank==0) std::cout << "Building overlap..." << std::endl;
+    if(rank==0) std::cout << "Building overlap..." << std::endl;
+    auto img_S = op_const.build_overlap(*ad);
+    if(rank==0) std::cout << "Building overlap DONE." << std::endl;
+    
+    auto* S_ptr = img_S->sample_k({0,0,0}, PhaseConvention::R_AND_POSITION);
+    BlockSpMat<std::complex<double>>& S = *S_ptr;
+    
+    double norm_s = 0.0;
+    for(auto v : S.val) norm_s += std::abs(v);
+    
+    double global_norm_s;
+    MPI_Allreduce(&norm_s, &global_norm_s, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    
+    if (rank == 0) {
+        std::cout << "Global Norm S: " << global_norm_s << std::endl;
+        EXPECT_GT(global_norm_s, 0.0);
+    }
+    
+    delete S_ptr;
+    delete ad;
 }
 
 int main(int argc, char** argv) {

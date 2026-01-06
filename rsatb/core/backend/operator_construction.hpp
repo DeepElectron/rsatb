@@ -2,6 +2,7 @@
 #define RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
 
 #include "atomic_data.hpp"
+#include "image_container.hpp"
 #include "vbcsr/block_csr.hpp"
 #include "../io/hdf5.hpp"
 #include "../extern/nao-abacus/source_estate/op2c.hpp"
@@ -32,9 +33,11 @@ public:
 
     // Build matrix from HDF5
     // Reads blocks from HDF5 and fills BlockSpMat
-    template <typename MatrixType>
-    void build_from_hdf5(MatrixType& mat, AtomicData& ad, rsatb::io::HDF5Handler& h5, 
-                        double Kx, double Ky, double Kz) {
+    // Build matrix from HDF5
+    // Reads blocks from HDF5 and fills ImageContainer
+    std::unique_ptr<ImageContainer<double>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
+        auto img = std::make_unique<ImageContainer<double>>(&ad);
+        
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
         bool found;
@@ -52,7 +55,9 @@ public:
             double* v=nullptr;
             h5.read_from_ijR_dense(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
             if (found) {
-                set_local_block(mat, ad, i, i, 0, 0, 0, Kx, Ky, Kz, v);
+                int global_i = ad.get_global_index(i);
+                std::vector<int> R = {0, 0, 0};
+                img->add_block(R, global_i, global_i, v, inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
             }
         }
         
@@ -86,27 +91,29 @@ public:
                     if (m != inorb || n != jnorb) {
                         std::cerr << "Dimension mismatch in HDF5 read: expected " << inorb << "x" << jnorb << ", got " << m << "x" << n << std::endl;
                     } else {
-                        set_local_block(mat, ad, i, j, Rx, Ry, Rz, Kx, Ky, Kz, buffer);
+                        int global_i = ad.get_global_index(i);
+                        int global_j = ad.get_global_index(j);
+                        std::vector<int> R = {Rx, Ry, Rz};
+                        img->add_block(R, global_i, global_j, buffer, inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
                     }
                     if(buffer) delete[] buffer;
                 }
             }
         }
         
-        mat.assemble();
+        img->assemble();
+        return img;
     }
 
-    template <typename MatrixType>
-    void build_overlap_position(MatrixType& S, MatrixType* Rx, MatrixType* Ry, MatrixType* Rz,
-                              AtomicData& ad,
-                              double Kx, double Ky, double Kz) {
+    std::unique_ptr<ImageContainer<double>> build_overlap(AtomicData& ad) {
+        
+        auto img = std::make_unique<ImageContainer<double>>(&ad);
         
         int ntype = ad.n_type();
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
         
-        ModuleBase::Vector3<double> vR(0,0,0), R2(0,0,0);
-        double x, y, z;
+        ModuleBase::Vector3<double> vR(0,0,0);
         
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
@@ -116,28 +123,16 @@ public:
             int itype;
             ad.get_atom_type(i, &itype);
             
-            ad.get_pos(i, &x, &y, &z);
-            R2.set(x, y, z);
-            R2 *= 1.8897259886; // Bohr
-            
             // On-site
-            std::vector<double> vS(inorb*inorb), vX, vY, vZ;
+            std::vector<double> vS(inorb*inorb);
             
-            if(Rx) vX.resize(inorb*inorb);
-            if(Ry) vY.resize(inorb*inorb);
-            if(Rz) vZ.resize(inorb*inorb);
-            
-            std::vector<double> *pvX = Rx ? &vX : nullptr;
-            std::vector<double> *pvY = Ry ? &vY : nullptr;
-            std::vector<double> *pvZ = Rz ? &vZ : nullptr;
-            
-            op2c_->overlap(itype, itype, vR, false, vS, pvX, pvY, pvZ);
+            op2c_->overlap(itype, itype, vR, false, vS, nullptr, nullptr, nullptr);
             
             // Set blocks
-            set_local_block(S, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vS.data());
-            if(Rx) set_local_block(*Rx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data());
-            if(Ry) set_local_block(*Ry, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data());
-            if(Rz) set_local_block(*Rz, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data());
+            int global_i = ad.get_global_index(i);
+            std::vector<int> R = {0, 0, 0};
+            std::cout << std::endl;
+            img->add_block(R, global_i, global_i, vS.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
         }
         
         // Edges
@@ -164,54 +159,36 @@ public:
                 double ry = Rx_*cell[1] + Ry_*cell[4] + Rz_*cell[7];
                 double rz = Rx_*cell[2] + Ry_*cell[5] + Rz_*cell[8];
                 
+                double x, y, z;
                 ad.get_pos(j, &x, &y, &z);
-                R2.set(rx+x, ry+y, rz+z);
+                vR.set(rx+x, ry+y, rz+z);
                 ad.get_pos(i, &x, &y, &z);
-                vR.set(R2.x-x, R2.y-y, R2.z-z);
+                vR.set(vR.x-x, vR.y-y, vR.z-z);
                 
                 vR *= 1.8897259886;
-                R2 *= 1.8897259886;
                 
-                std::vector<double> vS(inorb*jnorb), vX, vY, vZ;
-                std::vector<double> *pvX = Rx ? &vX : nullptr;
-                std::vector<double> *pvY = Ry ? &vY : nullptr;
-                std::vector<double> *pvZ = Rz ? &vZ : nullptr;
-                if(Rx) vX.resize(inorb*jnorb);
-                if(Ry) vY.resize(inorb*jnorb);
-                if(Rz) vZ.resize(inorb*jnorb);
+                std::vector<double> vS(inorb*jnorb);
                 
-                op2c_->overlap(itype, jtype, vR, false, vS, pvX, pvY, pvZ);
+                op2c_->overlap(itype, jtype, vR, false, vS, nullptr, nullptr, nullptr);
                 
                 // Set blocks
-                set_local_block(S, ad, i, j, Rx_, Ry_, Rz_, Kx, Ky, Kz, vS.data());
-                
-                if (Rx || Ry || Rz) {
-                    // Compute fractional displacement
-                    double frx = vR.x / 1.8897259886;
-                    double fry = vR.y / 1.8897259886;
-                    double frz = vR.z / 1.8897259886;
-                    ad.invert_cell(&frx, &fry, &frz);
-                    
-                    std::complex<double> factor(0, 1); // IMAG_UNIT
-                    factor *= (27.211386245981 / 1.8897259886); // erfactor
-                    
-                    if(Rx) set_local_block(*Rx, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), factor);
-                    if(Ry) set_local_block(*Ry, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), factor);
-                    if(Rz) set_local_block(*Rz, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), factor);
-                }
+                int global_i = ad.get_global_index(i);
+                int global_j = ad.get_global_index(j);
+                std::vector<int> R = {Rx_, Ry_, Rz_};
+                img->add_block(R, global_i, global_j, vS.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
             }
         }
         
-        S.assemble();
-        if(Rx) Rx->assemble();
-        if(Ry) Ry->assemble();
-        if(Rz) Rz->assemble();
+        img->assemble();
+        return img;
     }
 
     template <typename MatrixType>
-    void build_velocity(MatrixType& S, MatrixType* Vx, MatrixType* Vy, MatrixType* Vz,
+    std::unique_ptr<ImageContainer<double>> build_overlap_velocity(MatrixType* Vx, MatrixType* Vy, MatrixType* Vz,
                        AtomicData& ad,
                        double Kx, double Ky, double Kz) {
+        
+        auto img_S = std::make_unique<ImageContainer<double>>(&ad);
         
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
@@ -236,16 +213,20 @@ public:
             
             // On-site
             std::vector<double> vS(inorb*inorb), vX, vY, vZ;
-            std::vector<double> *pvX = Vx ? &vX : nullptr;
-            std::vector<double> *pvY = Vy ? &vY : nullptr;
-            std::vector<double> *pvZ = Vz ? &vZ : nullptr;
             if(Vx) vX.resize(inorb*inorb);
             if(Vy) vY.resize(inorb*inorb);
             if(Vz) vZ.resize(inorb*inorb);
+            std::vector<double> *pvX = Vx ? &vX : nullptr;
+            std::vector<double> *pvY = Vy ? &vY : nullptr;
+            std::vector<double> *pvZ = Vz ? &vZ : nullptr;
+            
             
             op2c_->overlap(itype, itype, vR, false, vS, pvX, pvY, pvZ);
             
-            set_local_block(S, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vS.data());
+            int global_i = ad.get_global_index(i);
+            std::vector<int> R = {0, 0, 0};
+            img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb);
+            
             if(Vx) set_local_block(*Vx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
             if(Vy) set_local_block(*Vy, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
             if(Vz) set_local_block(*Vz, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
@@ -273,10 +254,15 @@ public:
                 if(Vx) vX.assign(inorb*jnorb, 0);
                 if(Vy) vY.assign(inorb*jnorb, 0);
                 if(Vz) vZ.assign(inorb*jnorb, 0);
+                std::vector<double> *pvX = Vx ? &vX : nullptr;
+                std::vector<double> *pvY = Vy ? &vY : nullptr;
+                std::vector<double> *pvZ = Vz ? &vZ : nullptr;
                 
                 op2c_->overlap(itype, jtype, vR, false, vS, pvX, pvY, pvZ);
                 
-                set_local_block(S, ad, i, j, Rx_, Ry_, Rz_, Kx, Ky, Kz, vS.data());
+                int global_j = ad.get_global_index(j);
+                std::vector<int> R_vec = {Rx_, Ry_, Rz_};
+                img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb);
                 
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);
@@ -378,10 +364,13 @@ public:
             }
         }
         
-        S.assemble();
+        img_S->assemble();
+        
         if(Vx) Vx->assemble();
         if(Vy) Vy->assemble();
         if(Vz) Vz->assemble();
+        
+        return img_S;
     }
 
 private:
@@ -408,7 +397,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.set_local_block(i, j, v_complex.data());
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
     }
 
     template <typename MatrixType>
@@ -429,7 +418,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.set_local_block(i, j, v_complex.data());
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
     }
 
     template <typename MatrixType>
@@ -450,7 +439,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.set_local_block(i, j, v_complex.data());
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
     }
 
     template <typename MatrixType>
@@ -471,7 +460,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.set_local_block(i, j, v_complex.data());
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
     }
 
     template <typename MatrixType>

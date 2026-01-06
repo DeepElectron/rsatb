@@ -1,9 +1,9 @@
 #ifndef RSATB_CALC_SOLVER_HPP
 #define RSATB_CALC_SOLVER_HPP
 
-#include "../backend/block_csr.hpp"
-#include "../backend/dist_vector.hpp"
-#include "../backend/dist_multivector.hpp"
+#include "../backend/vbcsr/block_csr.hpp"
+#include "../backend/vbcsr/dist_vector.hpp"
+#include "../backend/vbcsr/dist_multivector.hpp"
 #include "preconditioner.hpp"
 #include <iostream>
 #include <cmath>
@@ -12,8 +12,6 @@ namespace rsatb {
 namespace calc {
 
 using namespace rsatb::backend;
-
-enum class PreconditionerType { Left, Right, Symmetric };
 
 // Linear Solver class
 // Currently implements Conjugate Gradient (CG) for SPD matrices

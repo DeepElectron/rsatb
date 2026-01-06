@@ -217,6 +217,23 @@ public:
         int search_range_y = 1;
         int search_range_z = 1;
 
+        // Calculate search range based on cutoff and bin physical size
+        // bin_phys_size approx face_dist / nbins
+        // We need search_range * bin_phys_size >= cutoff
+        // So search_range >= cutoff / (face_dist / nbins) = (cutoff * nbins) / face_dist
+        
+        auto get_search_range = [&](double dist, int nbins) {
+            double bin_phys = dist / nbins;
+            // We add a small buffer or use ceil
+            int range = static_cast<int>(std::ceil(cutoff / bin_phys));
+            if (range < 1) range = 1;
+            return range;
+        };
+
+        search_range_x = get_search_range(face_dist[0], nbins_c[0]);
+        search_range_y = get_search_range(face_dist[1], nbins_c[1]);
+        search_range_z = get_search_range(face_dist[2], nbins_c[2]);
+
         // If not PBC and nbins=1, search range is 0? No, still need self check.
         
         double cutoff_sq = cutoff * cutoff;
@@ -247,22 +264,25 @@ public:
                                 
                                 // Handle PBC
                                 if (pbc[0]) {
-                                    if (nbx < 0) { nbx += nbins_c[0]; shift_x = -1.0; }
-                                    else if (nbx >= nbins_c[0]) { nbx -= nbins_c[0]; shift_x = 1.0; }
+                                    shift_x = std::floor(static_cast<double>(nbx) / nbins_c[0]);
+                                    nbx = nbx % nbins_c[0];
+                                    if (nbx < 0) nbx += nbins_c[0];
                                 } else {
                                     if (nbx < 0 || nbx >= nbins_c[0]) continue;
                                 }
                                 
                                 if (pbc[1]) {
-                                    if (nby < 0) { nby += nbins_c[1]; shift_y = -1.0; }
-                                    else if (nby >= nbins_c[1]) { nby -= nbins_c[1]; shift_y = 1.0; }
+                                    shift_y = std::floor(static_cast<double>(nby) / nbins_c[1]);
+                                    nby = nby % nbins_c[1];
+                                    if (nby < 0) nby += nbins_c[1];
                                 } else {
                                     if (nby < 0 || nby >= nbins_c[1]) continue;
                                 }
                                 
                                 if (pbc[2]) {
-                                    if (nbz < 0) { nbz += nbins_c[2]; shift_z = -1.0; }
-                                    else if (nbz >= nbins_c[2]) { nbz -= nbins_c[2]; shift_z = 1.0; }
+                                    shift_z = std::floor(static_cast<double>(nbz) / nbins_c[2]);
+                                    nbz = nbz % nbins_c[2];
+                                    if (nbz < 0) nbz += nbins_c[2];
                                 } else {
                                     if (nbz < 0 || nbz >= nbins_c[2]) continue;
                                 }

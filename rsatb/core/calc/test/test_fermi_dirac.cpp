@@ -1,4 +1,4 @@
-#include "fermi_dirac.hpp"
+#include "../fermi_dirac.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>

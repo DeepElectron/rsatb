@@ -176,8 +176,8 @@ public:
     
     static AtomicData* from_points(const std::vector<double>& pos, const std::vector<int>& z, 
                                    const std::vector<double>& cell, const std::vector<bool>& pbc, 
-                                   const std::vector<double>& r_max_per_type, MPI_Comm comm,
-                                   const std::vector<int>& type_norb_in = {}) {
+                                   const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb_in, 
+                                   MPI_Comm comm) {
         int rank, size;
         MPI_Comm_rank(comm, &rank);
         MPI_Comm_size(comm, &size);
@@ -275,7 +275,7 @@ public:
         return construct_final_object(comm, rank, size, cell, total_recv, r_indices, r_types, r_pos, r_edges, type_norb);
     }
     
-    static AtomicData* from_file(const std::string& filename, const std::vector<double>& r_max_per_type, MPI_Comm comm, const std::string& format="") {
+    static AtomicData* from_file(const std::string& filename, const std::vector<double>& r_max_per_type, std::vector<int> type_norb, MPI_Comm comm, const std::string& format="") {
         int rank;
         MPI_Comm_rank(comm, &rank);
         
@@ -303,7 +303,7 @@ public:
             pbc = data.pbc;
         }
         
-        return from_points(pos, z, cell, pbc, r_max_per_type, comm);
+        return from_points(pos, z, cell, pbc, r_max_per_type, type_norb, comm);
     }
 
     ~AtomicData() {
@@ -465,6 +465,26 @@ public:
         *x = a;
         *y = b;
         *z = c;
+    }
+
+    // Compute global number of orbitals
+    int norb() {
+        int local_norb = 0;
+        for(int i=0; i<n_atom; ++i) {
+            local_norb += type_norb[atom_type[i]];
+        }
+        int global_norb = 0;
+        MPI_Allreduce(&local_norb, &global_norb, 1, MPI_INT, MPI_SUM, comm);
+        return global_norb;
+    }
+
+    // Compute cell volume
+    double volume() {
+        if (cell.size() < 9) return 0.0;
+        double det = cell[0] * (cell[4] * cell[8] - cell[5] * cell[7])
+                   - cell[1] * (cell[3] * cell[8] - cell[5] * cell[6])
+                   + cell[2] * (cell[3] * cell[7] - cell[4] * cell[6]);
+        return std::abs(det);
     }
 
     DistGraph* get_graph3b(const std::vector<double>& r_max_left, const std::vector<double>& r_max_right) {

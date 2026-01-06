@@ -7,6 +7,10 @@
 #include "kernels.hpp"
 #include <vector>
 #include <omp.h>
+#include <fstream>
+#include <iomanip>
+#include <complex>
+#include <type_traits>
 
 namespace rsatb {
 namespace backend {
@@ -19,6 +23,23 @@ enum class AssemblyMode {
 enum class MatrixLayout {
     RowMajor,
     ColMajor
+};
+
+// Helper for Matrix Market output
+template<typename T>
+struct MMWriter {
+    static void write(std::ostream& os, const T& v) {
+        os << v;
+    }
+    static bool is_complex() { return false; }
+};
+
+template<typename T>
+struct MMWriter<std::complex<T>> {
+    static void write(std::ostream& os, const std::complex<T>& v) {
+        os << v.real() << " " << v.imag();
+    }
+    static bool is_complex() { return true; }
 };
 
 template <typename T, typename Kernel = DefaultKernel<T>>
@@ -367,8 +388,13 @@ public:
                 T* target = val.data() + offset;
                 
                 // Check dims
+                
                 if (row_dims[local_row] != rows || col_dims[local_col] != cols) {
-                    throw std::runtime_error("Dimension mismatch in update_local_block");
+                    std::stringstream ss;
+                    ss << "\n Dimension mismatch in update_local_block (DEBUG): "
+                       << "Row: " << local_row << " (Expected: " << row_dims[local_row] << ", Got: " << rows << ") \n"
+                       << "Col: " << local_col << " (Expected: " << col_dims[local_col] << ", Got: " << cols << ") \n";
+                    throw std::runtime_error(ss.str());
                 }
 
                 int r_dim = row_dims[local_row];
@@ -701,6 +727,83 @@ public:
                 
                 for (int b = 0; b < block_size; ++b) {
                     C_ptr[b] = H_ptr[b] * diff;
+                }
+            }
+        }
+    }
+
+    // Export to Matrix Market format (Serial only)
+    void save_matrix_market(const std::string& filename) {
+        if (graph->size > 1) {
+            throw std::runtime_error("save_matrix_market only supported for serial execution (MPI size = 1)");
+        }
+
+        std::ofstream file(filename);
+        if (!file.is_open()) {
+            throw std::runtime_error("Could not open file for writing: " + filename);
+        }
+
+        file << "%%MatrixMarket matrix coordinate " << (MMWriter<T>::is_complex() ? "complex" : "real") << " general\n";
+
+        // Calculate total NNZ and dimensions
+        size_t element_nnz = 0;
+        int total_rows = 0;
+        int total_cols = 0;
+        
+        int n_owned = row_ptr.size() - 1;
+        
+        // Calculate total rows
+        for (int i = 0; i < n_owned; ++i) {
+            total_rows += row_dims[i];
+        }
+        
+        // Calculate total cols (assuming serial, so owned == all local cols)
+        for (size_t i = 0; i < col_dims.size(); ++i) {
+             total_cols += col_dims[i];
+        }
+        
+        // Count NNZ
+        for (int i = 0; i < n_owned; ++i) {
+            int r_dim = row_dims[i];
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            for (int k = start; k < end; ++k) {
+                int col = col_ind[k];
+                int c_dim = col_dims[col];
+                element_nnz += r_dim * c_dim;
+            }
+        }
+        
+        file << total_rows << " " << total_cols << " " << element_nnz << "\n";
+        
+        // Write data
+        file << std::scientific << std::setprecision(16);
+        
+        for (int i = 0; i < n_owned; ++i) {
+            int r_dim = row_dims[i];
+            int row_start_idx = y_offsets[i] + 1; // 1-based
+            
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
+            
+            for (int k = start; k < end; ++k) {
+                int col = col_ind[k];
+                int c_dim = col_dims[col];
+                int col_start_idx = x_offsets[col] + 1; // 1-based
+                
+                size_t offset = blk_ptr[k];
+                const T* block_data = val.data() + offset;
+                
+                // Block is stored in ColMajor
+                for (int c = 0; c < c_dim; ++c) {
+                    for (int r = 0; r < r_dim; ++r) {
+                        T value = block_data[c * r_dim + r];
+                        
+                        // Write (row, col, val)
+                        file << (row_start_idx + r) << " " << (col_start_idx + c) << " ";
+                        MMWriter<T>::write(file, value);
+                        file << "\n";
+                    }
                 }
             }
         }
