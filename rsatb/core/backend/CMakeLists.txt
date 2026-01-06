@@ -49,3 +49,6 @@ target_include_directories(test_operator_construction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus/source_base/module_container
 )
 target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io base numerical_atomic_orbitals estate LAPACK::LAPACK FFTW::Double)
+
+add_executable(benchmark_dist vbcsr/test/benchmark_dist.cpp $<TARGET_OBJECTS:backend>)
+target_link_libraries(benchmark_dist PUBLIC backend MPI::MPI_CXX BLAS::BLAS LAPACK::LAPACK)

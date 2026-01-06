@@ -478,7 +478,7 @@ public:
                 const T* x_val = x.data.data() + x_offsets[col]; // x.data includes ghosts
                 
                 // y_block += A_block * x_block
-                Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
+                SmartKernel<T>::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_val, 1);
             }
         }
     }
@@ -510,7 +510,7 @@ public:
                 int ldb = X.local_rows + X.ghost_rows;
                 
                 T beta = first ? T(0) : T(1);
-                Kernel::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
+                SmartKernel<T>::gemm(r_dim, num_vecs, c_dim, T(1), block_val, r_dim, x_ptr, ldb, beta, y_ptr, ldc);
                 first = false;
             }
             

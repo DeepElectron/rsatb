@@ -106,6 +106,56 @@ struct NaiveKernel {
     }
 };
 
+// Template Kernel for Fixed Block Sizes
+// M, N are compile-time constants
+template <typename T, int M, int N>
+struct FixedBlockKernel {
+    static void gemv(const T* __restrict__ A, const T* __restrict__ x, T* __restrict__ y, T alpha, T beta) {
+        // y = alpha * A * x + beta * y
+        // A is ColMajor: A[i + j*M]
+        
+        // Scale y
+        #pragma omp simd
+        for (int i = 0; i < M; ++i) {
+            y[i] *= beta;
+        }
+        
+        // Accumulate
+        for (int j = 0; j < N; ++j) {
+            T x_val = alpha * x[j];
+            #pragma omp simd
+            for (int i = 0; i < M; ++i) {
+                y[i] += A[i + j*M] * x_val;
+            }
+        }
+    }
+
+    static void gemm(int n, const T* __restrict__ A, int lda, const T* __restrict__ B, int ldb, T* __restrict__ C, int ldc, T alpha, T beta) {
+        // C = alpha * A * B + beta * C
+        // A: M x N (template N is K here) (lda), B: N x n (runtime n) (ldb), C: M x n (ldc)
+        // Fixed M, K (template N). Runtime n (num_vecs).
+        
+        for (int j = 0; j < n; ++j) {
+            T* C_col = &C[j*ldc];
+            
+            #pragma omp simd
+            for (int i = 0; i < M; ++i) {
+                C_col[i] *= beta;
+            }
+            
+            for (int l = 0; l < N; ++l) { // N here is K (block col dim)
+                T b_val = alpha * B[l + j*ldb];
+                const T* A_col = &A[l*lda];
+                
+                #pragma omp simd
+                for (int i = 0; i < M; ++i) {
+                    C_col[i] += A_col[i] * b_val;
+                }
+            }
+        }
+    }
+};
+
 // MKL/BLAS Kernel
 struct BLASKernel {
     // Double
@@ -148,6 +198,80 @@ struct BLASKernel {
 #endif
     }
 };
+
+// Smart Kernel Dispatcher
+// Smart Kernel Dispatcher
+template <typename T>
+struct SmartKernel {
+    // Dispatch macros
+    #define CASE_GEMV(R, C) case C: FixedBlockKernel<T, R, C>::gemv(A, x, y, alpha, beta); break;
+    #define SWITCH_GEMV(R) \
+        switch(n) { \
+            CASE_GEMV(R, 1) CASE_GEMV(R, 2) CASE_GEMV(R, 3) CASE_GEMV(R, 4) CASE_GEMV(R, 5) \
+            CASE_GEMV(R, 6) CASE_GEMV(R, 7) CASE_GEMV(R, 8) CASE_GEMV(R, 9) CASE_GEMV(R, 10) \
+            CASE_GEMV(R, 11) CASE_GEMV(R, 12) CASE_GEMV(R, 13) CASE_GEMV(R, 14) CASE_GEMV(R, 15) \
+            CASE_GEMV(R, 16) \
+            default: BLASKernel::gemv(m, n, alpha, A, m, x, 1, beta, y, 1); break; \
+        }
+
+    #define CASE_ROW_GEMV(R) case R: SWITCH_GEMV(R); break;
+
+    static void gemv(int m, int n, T alpha, const T* A, int lda, const T* x, int incx, T beta, T* y, int incy) {
+        // Only optimized for unit stride and packed A (lda=m)
+        if (incx == 1 && incy == 1 && lda == m) {
+            switch(m) {
+                CASE_ROW_GEMV(1) CASE_ROW_GEMV(2) CASE_ROW_GEMV(3) CASE_ROW_GEMV(4) CASE_ROW_GEMV(5)
+                CASE_ROW_GEMV(6) CASE_ROW_GEMV(7) CASE_ROW_GEMV(8) CASE_ROW_GEMV(9) CASE_ROW_GEMV(10)
+                CASE_ROW_GEMV(11) CASE_ROW_GEMV(12) CASE_ROW_GEMV(13) CASE_ROW_GEMV(14) CASE_ROW_GEMV(15)
+                CASE_ROW_GEMV(16)
+                default: BLASKernel::gemv(m, n, alpha, A, lda, x, incx, beta, y, incy); break;
+            }
+        } else {
+            BLASKernel::gemv(m, n, alpha, A, lda, x, incx, beta, y, incy);
+        }
+    }
+
+    #define CASE_GEMM(R, C) case C: FixedBlockKernel<T, R, C>::gemm(n, A, lda, B, ldb, C_ptr, ldc, alpha, beta); break;
+    #define SWITCH_GEMM(R) \
+        switch(k) { \
+            CASE_GEMM(R, 1) CASE_GEMM(R, 2) CASE_GEMM(R, 3) CASE_GEMM(R, 4) CASE_GEMM(R, 5) \
+            CASE_GEMM(R, 6) CASE_GEMM(R, 7) CASE_GEMM(R, 8) CASE_GEMM(R, 9) CASE_GEMM(R, 10) \
+            CASE_GEMM(R, 11) CASE_GEMM(R, 12) CASE_GEMM(R, 13) CASE_GEMM(R, 14) CASE_GEMM(R, 15) \
+            CASE_GEMM(R, 16) CASE_GEMM(R, 17) CASE_GEMM(R, 18) CASE_GEMM(R, 19) CASE_GEMM(R, 20) \
+            CASE_GEMM(R, 21) CASE_GEMM(R, 22) CASE_GEMM(R, 23) CASE_GEMM(R, 24) CASE_GEMM(R, 25) \
+            CASE_GEMM(R, 26) CASE_GEMM(R, 27) CASE_GEMM(R, 28) CASE_GEMM(R, 29) CASE_GEMM(R, 30) \
+            CASE_GEMM(R, 31) CASE_GEMM(R, 32) CASE_GEMM(R, 33) CASE_GEMM(R, 34) CASE_GEMM(R, 35) \
+            CASE_GEMM(R, 36) CASE_GEMM(R, 37) CASE_GEMM(R, 38) CASE_GEMM(R, 39) CASE_GEMM(R, 40) \
+            CASE_GEMM(R, 41) CASE_GEMM(R, 44) CASE_GEMM(R, 45) CASE_GEMM(R, 46) CASE_GEMM(R, 49) CASE_GEMM(R, 54) \
+            default: BLASKernel::gemm(m, n, k, alpha, A, lda, B, ldb, beta, C_ptr, ldc); break; \
+        }
+
+    #define CASE_ROW_GEMM(R) case R: SWITCH_GEMM(R); break;
+
+    static void gemm(int m, int n, int k, T alpha, const T* A, int lda, const T* B, int ldb, T beta, T* C_ptr, int ldc) {
+        // Only optimized for packed A (lda=m) and NoTrans
+        if (lda == m) {
+            switch(m) {
+                CASE_ROW_GEMM(1) CASE_ROW_GEMM(2) CASE_ROW_GEMM(3) CASE_ROW_GEMM(4) CASE_ROW_GEMM(5)
+                CASE_ROW_GEMM(6) CASE_ROW_GEMM(7) CASE_ROW_GEMM(8) CASE_ROW_GEMM(9) CASE_ROW_GEMM(10)
+                default: BLASKernel::gemm(m, n, k, alpha, A, lda, B, ldb, beta, C_ptr, ldc); break;
+            }
+        } else {
+            BLASKernel::gemm(m, n, k, alpha, A, lda, B, ldb, beta, C_ptr, ldc);
+        }
+    }
+    
+    // Cleanup macros
+    #undef CASE_GEMV
+    #undef SWITCH_GEMV
+    #undef CASE_ROW_GEMV
+    #undef CASE_GEMM
+    #undef SWITCH_GEMM
+    #undef CASE_ROW_GEMM
+};
+
+
+
 
 // Default alias
 template <typename T>
