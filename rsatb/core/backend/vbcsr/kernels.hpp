@@ -9,10 +9,18 @@
 #pragma omp declare reduction(+: std::complex<double>: omp_out += omp_in) initializer(omp_priv = std::complex<double>(0, 0))
 #endif
 
+#ifdef RSATB_USE_MKL
+#include <mkl.h>
+#elif defined(RSATB_USE_OPENBLAS)
+#include <cblas.h>
+extern "C" void openblas_set_num_threads(int num_threads);
+#endif
+
 // Forward declare CBLAS functions if needed or include header
 // For now, we assume a standard CBLAS interface is available via linking
 // or we provide a naive fallback.
 
+#if !defined(RSATB_USE_MKL) && !defined(RSATB_USE_OPENBLAS)
 extern "C" {
     // Basic BLAS signatures
     void cblas_dgemv(const int Order, const int TransA, const int M, const int N,
@@ -39,12 +47,15 @@ extern "C" {
                      const void *B, const int ldb,
                      const void *beta, void *C, const int ldc);
 }
+#endif
 
 namespace rsatb {
 namespace backend {
 
+#if !defined(RSATB_USE_MKL) && !defined(RSATB_USE_OPENBLAS)
 enum CBLAS_ORDER {CblasRowMajor=101, CblasColMajor=102};
 enum CBLAS_TRANSPOSE {CblasNoTrans=111, CblasTrans=112, CblasConjTrans=113};
+#endif
 
 // Naive Kernel (Fallback)
 template <typename T>
@@ -113,6 +124,28 @@ struct BLASKernel {
 
     static void gemm(int m, int n, int k, std::complex<double> alpha, const std::complex<double>* A, int lda, const std::complex<double>* B, int ldb, std::complex<double> beta, std::complex<double>* C, int ldc, CBLAS_TRANSPOSE transA = CblasNoTrans, CBLAS_TRANSPOSE transB = CblasNoTrans) {
         cblas_zgemm(CblasColMajor, transA, transB, m, n, k, &alpha, A, lda, B, ldb, &beta, C, ldc);
+    }
+
+    static void init_threading() {
+#ifdef RSATB_USE_MKL
+        mkl_set_num_threads(1);
+#elif defined(RSATB_USE_OPENBLAS)
+        openblas_set_num_threads(1);
+#else
+        // Generic BLAS: Do nothing. 
+        // We do NOT want to call omp_set_num_threads(1) here because it would disable
+        // parallelism for the outer loops (Sparse MVP/MM).
+#endif
+    }
+
+    static std::string name() {
+#ifdef RSATB_USE_MKL
+        return "Intel MKL";
+#elif defined(RSATB_USE_OPENBLAS)
+        return "OpenBLAS";
+#else
+        return "Generic BLAS";
+#endif
     }
 };
 

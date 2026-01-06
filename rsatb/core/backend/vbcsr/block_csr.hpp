@@ -46,6 +46,7 @@ template <typename T, typename Kernel = DefaultKernel<T>>
 class BlockSpMat {
 public:
     DistGraph* graph;
+    using KernelType = Kernel;
     
     // CSR structure (local indices)
     std::vector<int> row_ptr;

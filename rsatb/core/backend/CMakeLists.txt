@@ -28,7 +28,10 @@ endif()
 add_library(backend OBJECT operator_construction.hpp)
 target_compile_features(backend PUBLIC cxx_std_11)
 
-target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads DBCSR::dbcsr_c BLAS::BLAS)
+target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads DBCSR::dbcsr_c BLAS::BLAS LAPACK::LAPACK)
+if(USE_OPENMP)
+    target_link_libraries(backend PUBLIC OpenMP::OpenMP_CXX)
+endif()
 target_include_directories(backend PUBLIC 
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus 
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus/source_base/module_container

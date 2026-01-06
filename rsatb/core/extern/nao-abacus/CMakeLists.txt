@@ -31,46 +31,52 @@ message(STATUS "set nao_path as ${NAO_PATH}")
 # add math_libs
 
 if (PROJECT_IS_TOP_LEVEL)
-    if(DEFINED ENV{MKLROOT} AND NOT DEFINED MKLROOT)
-        set(MKLROOT "$ENV{MKLROOT}")
+    # Options
+    option(USE_OPENMP "Use OpenMP" ON)
+    set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
+    set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
+
+    # OpenMP
+    if(USE_OPENMP)
+        find_package(OpenMP REQUIRED)
+        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
+        add_link_options(${OpenMP_CXX_LIBRARIES})
     endif()
 
-    if(MKLROOT)
-        set(MKL_INTERFACE lp64)
-        set(USE_OPENMP ON)
-        if(USE_OPENMP)
-          find_package(OpenMP REQUIRED)
-          set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-          add_link_options(${OpenMP_CXX_LIBRARIES})
-        endif()
-        find_package(MKL REQUIRED)
-        set(INT2C_USE_MKL ON)
-        # add_definitions(-D__MKL)
-        # include_directories(${MKL_INCLUDE} ${MKL_INCLUDE}/fftw)
-
-        list(APPEND math_libs IntelMKL::MKL)
-
-        if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
-          list(APPEND math_libs -lifcore)
-        endif()
-    else()
+    # BLAS/LAPACK Selection
+    if(BLAS_BACKEND STREQUAL "MKL")
+        set(BLA_VENDOR "Intel10_64lp")
+        find_package(BLAS REQUIRED)
         find_package(LAPACK REQUIRED)
-        
-        find_package(PkgConfig REQUIRED)
-        pkg_check_modules(FFTW3 REQUIRED fftw3)
-        set(INT2C_USE_FFTW ON)
-        
-        # add_compile_definitions(__FFTW)
-        if(NOT TARGET FFTW::FFTW)
-          add_library(FFTW::FFTW INTERFACE IMPORTED)
-          set_target_properties(FFTW::FFTW PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${FFTW3_INCLUDE_DIRS}" 
-            INTERFACE_LINK_LIBRARIES     "${FFTW3_LIBRARIES}")
+        set(INT2C_USE_MKL ON)
+        add_compile_definitions(__MKL RSATB_USE_MKL)
+        if(DEFINED ENV{MKLROOT})
+            include_directories($ENV{MKLROOT}/include)
         endif()
-        # include_directories(${FFTW3_INCLUDE_DIRS})
-        message(STATUS "FFTW_INCLUDE_DIRS: ${FFTW3_INCLUDE_DIRS}")
-        list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK)
+    elseif(BLAS_BACKEND STREQUAL "OpenBLAS")
+        set(BLA_VENDOR "OpenBLAS")
+        find_package(BLAS REQUIRED)
+        find_package(LAPACK REQUIRED)
+        add_compile_definitions(__OPENBLAS RSATB_USE_OPENBLAS)
+    else()
+        # Generic
+        find_package(BLAS REQUIRED)
+        find_package(LAPACK REQUIRED)
     endif()
+
+    # FFTW
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFTW3 REQUIRED fftw3)
+    set(INT2C_USE_FFTW ON)
+    
+    if(NOT TARGET FFTW::FFTW)
+      add_library(FFTW::FFTW INTERFACE IMPORTED)
+      set_target_properties(FFTW::FFTW PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${FFTW3_INCLUDE_DIRS}" 
+        INTERFACE_LINK_LIBRARIES     "${FFTW3_LIBRARIES}")
+    endif()
+    message(STATUS "FFTW_INCLUDE_DIRS: ${FFTW3_INCLUDE_DIRS}")
+    list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
 endif()
 
 # add include directories

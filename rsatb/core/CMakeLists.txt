@@ -30,41 +30,51 @@ find_library(PARMETIS_LIB parmetis HINTS $ENV{CONDA_PREFIX}/lib)
 find_library(METIS_LIB metis HINTS $ENV{CONDA_PREFIX}/lib)
 include_directories($ENV{CONDA_PREFIX}/include)
 
-# add math_libs
-if(DEFINED ENV{MKLROOT} AND NOT DEFINED MKLROOT)
-    set(MKLROOT "$ENV{MKLROOT}")
+# Options
+option(USE_OPENMP "Use OpenMP" ON)
+set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
+set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
+
+# OpenMP
+if(USE_OPENMP)
+    find_package(OpenMP REQUIRED)
 endif()
 
-if(MKLROOT)
-    set(MKL_INTERFACE lp64)
-    set(USE_OPENMP ON)
-    if(USE_OPENMP)
-        find_package(OpenMP REQUIRED)
-        set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OpenMP_CXX_FLAGS}")
-        add_link_options(${OpenMP_CXX_LIBRARIES})
-    endif()
-    find_package(MKL REQUIRED)
-    add_definitions(-D__MKL)
-    include_directories(${MKL_INCLUDE} ${MKL_INCLUDE}/fftw)
-
-    list(APPEND math_libs IntelMKL::MKL)
-
-    if(CMAKE_CXX_COMPILER_ID MATCHES Intel)
-    list(APPEND math_libs -lifcore)
-    endif()
-else()
+# BLAS/LAPACK Selection
+if(BLAS_BACKEND STREQUAL "MKL")
+    set(BLA_VENDOR "Intel10_64lp")
+    find_package(BLAS REQUIRED)
     find_package(LAPACK REQUIRED)
-    find_package(FFTW REQUIRED)
-    add_compile_definitions(__FFTW)
-    if(NOT TARGET FFTW::FFTW)
-        add_library(FFTW::FFTW INTERFACE IMPORTED)
-        set_target_properties(FFTW::FFTW PROPERTIES
-            INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
-            INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+    add_compile_definitions(__MKL RSATB_USE_MKL)
+    # MKL often requires specific include directories
+    if(DEFINED ENV{MKLROOT})
+        include_directories($ENV{MKLROOT}/include)
     endif()
-    include_directories(${FFTW_INCLUDE_DIRS})
-    message(STATUS "FFTW_INCLUDE_DIRS: ${FFTW_INCLUDE_DIRS}")
-    list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK)
+elseif(BLAS_BACKEND STREQUAL "OpenBLAS")
+    set(BLA_VENDOR "OpenBLAS")
+    find_package(BLAS REQUIRED)
+    find_package(LAPACK REQUIRED)
+    add_compile_definitions(__OPENBLAS RSATB_USE_OPENBLAS)
+else()
+    # Generic
+    find_package(BLAS REQUIRED)
+    find_package(LAPACK REQUIRED)
+endif()
+
+# FFTW
+find_package(FFTW REQUIRED)
+add_compile_definitions(__FFTW)
+if(NOT TARGET FFTW::FFTW)
+    add_library(FFTW::FFTW INTERFACE IMPORTED)
+    set_target_properties(FFTW::FFTW PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
+        INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+endif()
+include_directories(${FFTW_INCLUDE_DIRS})
+
+list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
+if(USE_OPENMP)
+    list(APPEND math_libs OpenMP::OpenMP_CXX)
 endif()
 
 

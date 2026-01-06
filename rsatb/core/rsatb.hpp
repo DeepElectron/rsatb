@@ -48,6 +48,10 @@ public:
           const double *cell, const double *pos,
           MPI_Comm comm = MPI_COMM_WORLD) 
         : world_comm_(comm), npar_(npar) {
+        
+        // Initialize threading for BLAS kernels
+        Matrix::KernelType::init_threading();
+
         init_comms();
         atomic_data_ = std::make_unique<AtomicData>(
             n_atom, N_atom, atom_offset, n_edge, N_edge,
@@ -57,8 +61,13 @@ public:
         init_components();
     }
 
+    std::string get_kernel_info() const {
+        return Matrix::KernelType::name();
+    }
+
     RSATB(int npar, const std::string& filename, const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar) {
+        Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_file(filename, r_max_per_type, type_norb, sub_comm_));
         init_components();
@@ -68,6 +77,7 @@ public:
           const std::vector<double>& cell, const std::vector<bool>& pbc, 
           const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar) {
+        Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(pos, z, cell, pbc, r_max_per_type, type_norb, sub_comm_));
         init_components();
