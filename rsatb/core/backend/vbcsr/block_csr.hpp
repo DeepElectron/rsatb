@@ -5,6 +5,7 @@
 #include "dist_vector.hpp"
 #include "dist_multivector.hpp"
 #include "kernels.hpp"
+#include <xmmintrin.h>
 #include <vector>
 #include <omp.h>
 #include <fstream>
@@ -472,6 +473,11 @@ public:
             int end = row_ptr[i+1];
             
             for (int k = start; k < end; ++k) {
+                if (k + 1 < end) {
+                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    int next_col = col_ind[k+1];
+                    _mm_prefetch((const char*)(x.data.data() + x_offsets[next_col]), _MM_HINT_T0);
+                }
                 int col = col_ind[k];
                 int c_dim = col_dims[col];
                 const T* block_val = val.data() + blk_ptr[k];
@@ -503,6 +509,11 @@ public:
             
             bool first = true;
             for (int k = start; k < end; ++k) {
+                if (k + 1 < end) {
+                    _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                    int next_col = col_ind[k+1];
+                    _mm_prefetch((const char*)(&X(x_offsets[next_col], 0)), _MM_HINT_T0);
+                }
                 int col = col_ind[k];
                 int c_dim = col_dims[col];
                 const T* block_val = val.data() + blk_ptr[k];
@@ -557,8 +568,14 @@ public:
                     const T* block_val = val.data() + blk_ptr[k];
                     T* y_target = y_local.data() + x_offsets[col];
                     
+                    if (k + 1 < end) {
+                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        int next_col = col_ind[k+1];
+                        _mm_prefetch((const char*)(y_local.data() + x_offsets[next_col]), _MM_HINT_T0);
+                    }
+                    
                     // y_target += A_block^dagger * x_block
-                    Kernel::gemv(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1, CblasConjTrans);
+                    SmartKernel<T>::gemv_trans(r_dim, c_dim, T(1), block_val, r_dim, x_val, 1, T(1), y_target, 1);
                 }
             }
             
@@ -607,7 +624,14 @@ public:
                     // A_block is r_dim x c_dim. A_block^dagger is c_dim x r_dim.
                     // X_block is r_dim x num_vecs.
                     // Y_target is c_dim x num_vecs.
-                    Kernel::gemm(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local, CblasConjTrans, CblasNoTrans);
+                    
+                    if (k + 1 < end) {
+                        _mm_prefetch((const char*)(val.data() + blk_ptr[k+1]), _MM_HINT_T0);
+                        int next_col = col_ind[k+1];
+                        _mm_prefetch((const char*)(Y_local.data() + x_offsets[next_col]), _MM_HINT_T0);
+                    }
+                    
+                    SmartKernel<T>::gemm_trans(c_dim, num_vecs, r_dim, T(1), block_val, r_dim, x_ptr, ldb, T(1), y_target, ldc_local);
                 }
             }
             
