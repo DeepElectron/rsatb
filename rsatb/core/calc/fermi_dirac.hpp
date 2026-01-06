@@ -32,7 +32,8 @@ void fermi_dirac_kpm(Chebyshev<T, Kernel>& cheby,
                      double mu, 
                      int n_kpm, 
                      double eps = 1e-14, 
-                     ChebyMode mode = ChebyMode::NORMAL) {
+                     ChebyMode mode = ChebyMode::NORMAL,
+                     bool verbose=false) {
     
     // Scale parameters
     // H_scaled = (H - center) / half_width
@@ -48,6 +49,7 @@ void fermi_dirac_kpm(Chebyshev<T, Kernel>& cheby,
     
     double scale = cheby.half_width;
     double center = cheby.center;
+    int rank = Psi_in.graph->rank;
     
     // Adjust mu and beta for scaled Hamiltonian
     // f(E) = 1 / (exp(beta*(E-mu)) + 1)
@@ -101,7 +103,11 @@ void fermi_dirac_kpm(Chebyshev<T, Kernel>& cheby,
     // Ensure n_kpm_ is at least 1
     if (n_kpm_ < 1) n_kpm_ = 1;
 
-    // std::cout << "fermi-dirac calculation: #KPM moments - " << n_kpm_ << "\n";
+    if (verbose){
+        if (rank == 0){
+            std::cout << "fermi-dirac calculation: #KPM moments - " << n_kpm_ << "\n";
+        }
+    }
 
     // Propagate
     // y = sum c_n T_n(H) x

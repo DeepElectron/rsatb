@@ -216,7 +216,7 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
     // Psi_in_copy.copy_from(Psi_in);
     
     // Psi_in_copy.conjugate();
-    fermi_dirac_kpm(cheby, Psi_in, Psi0, temp, mu, n_kpm, eps, ChebyMode::ADJOINT);
+    fermi_dirac_kpm(cheby, Psi_in, Psi0, temp, mu, n_kpm, eps, ChebyMode::ADJOINT, verbose);
     // Psi_in_copy.conjugate(); // Restore (though we use copy)
 
     // 3. Compute J_Psi = current(Psi_in)
@@ -225,7 +225,7 @@ void corr_ac(Chebyshev<T, Kernel>& cheby,
     // 4. Apply (1-f) to J_Psi
     // (1-f) J Psi = J Psi - f(J Psi)
     for (int i = 0; i < 3; ++i) {
-        fermi_dirac_kpm(cheby, J_Psi[i], buff, temp, mu, n_kpm, eps, ChebyMode::NORMAL);
+        fermi_dirac_kpm(cheby, J_Psi[i], buff, temp, mu, n_kpm, eps, ChebyMode::NORMAL, verbose);
         J_Psi[i].axpy(-1.0, buff);
     }
 

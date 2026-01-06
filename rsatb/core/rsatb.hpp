@@ -151,7 +151,7 @@ public:
             
             // Compute Preconditioner
             if (Sk) {
-                Sk->save_matrix_market("S.mtx");
+                // Sk->save_matrix_market("S.mtx");
                 // Solve largest eigenvalue of S for scaling
                 PrimmeEigenSolver<Scalar> esolver;
                 std::vector<double> evals;
