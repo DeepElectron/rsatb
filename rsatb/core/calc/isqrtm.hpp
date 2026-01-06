@@ -204,7 +204,8 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
             
             // Z = Z + tmp3 (Wait, reference says: c_dbcsr_add_z(Z, tmp3, 0.0, 1.0); which means Z = tmp3)
             // Yes, Z = Z * P_k
-            c_dbcsr_add_d(Z, tmp3, 0.0, 1.0);
+            // c_dbcsr_add_d(Z, tmp3, 0.0, 1.0);
+            std::swap(Z, tmp3);
             c_dbcsr_filter(Z, &st_sptol, nullptr, nullptr, nullptr);
             
             // Update tmp2 (next X)
@@ -235,7 +236,8 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
             
             c_dbcsr_multiply_z('N', 'N', 1.0, Z, tmp1, 0.0, tmp3, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &retain_sparsity, &sptol, &cflop);
             
-            c_dbcsr_add_z(Z, tmp3, 0.0, 1.0);
+            // c_dbcsr_add_z(Z, tmp3, 0.0, 1.0);
+            std::swap(Z, tmp3);
             c_dbcsr_filter(Z, &st_sptol, nullptr, nullptr, nullptr);
             
             if (norm < 1e-1 && ((count + 1) % 5 != 0)) {
