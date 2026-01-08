@@ -11,6 +11,23 @@ PYBIND11_MODULE(_rsatb, m) {
     m.doc() = "RSATB Python Binding";
 
     py::class_<rsatb::RSATB>(m, "RSATB")
+        .def(py::init([](int npar,
+                         size_t n_atom, size_t N_atom, size_t atom_offset, size_t n_edge, size_t N_edge,
+                         py::array_t<int> atom_index, py::array_t<int> atom_type, 
+                         py::array_t<int> edge_index, py::array_t<int> type_norb, 
+                         py::array_t<int> edge_shift_vec,
+                         py::array_t<double> cell, py::array_t<double> pos) {
+            return new rsatb::RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
+                                    atom_index.data(), atom_type.data(), 
+                                    edge_index.data(), type_norb.data(), 
+                                    edge_shift_vec.data(),
+                                    cell.data(), pos.data());
+        }),
+        py::arg("npar"), py::arg("n_atom"), py::arg("N_atom"), py::arg("atom_offset"), 
+        py::arg("n_edge"), py::arg("N_edge"),
+        py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"), 
+        py::arg("type_norb"), py::arg("edge_shift_vec"),
+        py::arg("cell"), py::arg("pos"))
         .def(py::init<int, const std::string&, const std::vector<double>&, const std::vector<int>&>(),
              py::arg("npar"), py::arg("filename"), py::arg("r_max_per_type"), py::arg("type_norb"))
         .def(py::init<int, const std::vector<double>&, const std::vector<int>&, 
@@ -28,5 +45,7 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("nt"), py::arg("dos_out"), py::arg("omega_out"))
         .def("compute_ac", &rsatb::RSATB::compute_ac,
              py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"),
-             py::arg("ac_out"), py::arg("omega_out"));
+             py::arg("ac_out"), py::arg("omega_out"))
+        .def("get_operator_construction", &rsatb::RSATB::get_operator_construction, py::return_value_policy::reference)
+        .def("atomic_data", &rsatb::RSATB::atomic_data, py::return_value_policy::reference);
 }
