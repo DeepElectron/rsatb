@@ -1,52 +1,52 @@
 cmake_minimum_required(VERSION 3.15...4.0)
 project(rsatb LANGUAGES CXX Fortran C)
-set(CONDA_PREFIX $ENV{CONDA_PREFIX})
+
+# --- Configuration ---
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+
+# Set CONDA_PREFIX if available
+if(DEFINED ENV{CONDA_PREFIX})
+    set(CONDA_PREFIX $ENV{CONDA_PREFIX})
+endif()
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
-set(CMAKE_POSITION_INDEPENDENT_CODE ON)
-
-find_package(MPI REQUIRED)
-find_package(GTest)
-if(NOT GTest_FOUND)
-  message(STATUS "GTest not found, fetching from source...")
-  include(FetchContent)
-  FetchContent_Declare(
-    googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-  )
-  # For Windows: Prevent overriding the parent project's compiler/linker settings
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
-endif()
-
-find_package(Threads REQUIRED)
-# find_package(PETSc REQUIRED)
-find_package(HDF5 REQUIRED COMPONENTS C CXX)
-find_package(DBCSR 2.0.0 CONFIG REQUIRED)
-# find_package(FFTW REQUIRED)
-# ParMETIS
-find_library(PARMETIS_LIB parmetis HINTS $ENV{CONDA_PREFIX}/lib)
-find_library(METIS_LIB metis HINTS $ENV{CONDA_PREFIX}/lib)
-include_directories($ENV{CONDA_PREFIX}/include)
-
-# Options
+# --- Options ---
 option(USE_OPENMP "Use OpenMP" ON)
 set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
 set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
+
+# --- Dependencies ---
+include(FetchContent)
+
+# Set MPI_HOME to help FindMPI with Conda
+if(DEFINED CONDA_PREFIX)
+    set(MPI_HOME ${CONDA_PREFIX})
+    list(APPEND CMAKE_PREFIX_PATH ${CONDA_PREFIX})
+endif()
+
+# MPI
+find_package(MPI REQUIRED)
+
+# Threads
+find_package(Threads REQUIRED)
+
+# HDF5
+find_package(HDF5 REQUIRED COMPONENTS C CXX)
 
 # OpenMP
 if(USE_OPENMP)
     find_package(OpenMP REQUIRED)
 endif()
 
-# BLAS/LAPACK Selection
+# BLAS/LAPACK
 if(BLAS_BACKEND STREQUAL "MKL")
     set(BLA_VENDOR "Intel10_64lp")
     find_package(BLAS REQUIRED)
     find_package(LAPACK REQUIRED)
     add_compile_definitions(__MKL RSATB_USE_MKL)
-    # MKL often requires specific include directories
     if(DEFINED ENV{MKLROOT})
         include_directories($ENV{MKLROOT}/include)
     endif()
@@ -72,39 +72,7 @@ if(NOT TARGET FFTW::FFTW)
 endif()
 include_directories(${FFTW_INCLUDE_DIRS})
 
-list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
-if(USE_OPENMP)
-    list(APPEND math_libs OpenMP::OpenMP_CXX)
-endif()
-
-
-# Wrap into a modern imported target so the rest of your code can stay target-based
-# if(NOT TARGET PETSc::PETSc)
-#     add_library(PETSc::PETSc INTERFACE IMPORTED)
-#     set_target_properties(PETSc::PETSc PROPERTIES
-#       INTERFACE_INCLUDE_DIRECTORIES "${PETSC_INCLUDE_DIR};${PETSCCONF_INCLUDE_DIR}"
-#       INTERFACE_LINK_LIBRARIES     "${PETSC_LIBRARIES}")
-# endif()
-
-# if(NOT TARGET FFTW::FFTW)
-#     add_library(FFTW::FFTW INTERFACE IMPORTED)
-#     set_target_properties(FFTW::FFTW PROPERTIES
-#       INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
-#       INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
-# endif()
-
-add_subdirectory(backend)
-add_subdirectory(io)
-add_subdirectory(extern/nao-abacus)
-# add_subdirectory(calc)
-
-# find_library(SLEPC_LIB
-#     NAMES slepc
-#     HINTS ${PETSC_INCLUDE_DIR}/../lib
-# )
-
-# message(STATUS "SLEPC library: ${SLEPC_LIB}")
-
+# Python & Pybind11
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import mpi4py, sys; sys.stdout.write(mpi4py.get_include())"
@@ -116,18 +84,185 @@ message(STATUS "mpi4py include: ${MPI4PY_INCLUDE_DIR}")
 set(PYBIND11_FINDPYTHON ON)
 find_package(pybind11 CONFIG REQUIRED)
 
-find_library(PRIMME_LIB primme HINTS $ENV{CONDA_PREFIX}/lib ${CMAKE_SOURCE_DIR}/../../deps/install/lib)
-message(STATUS "PRIMME library: ${PRIMME_LIB}")
+# --- Local / Fetched Dependencies ---
 
-include_directories(${CMAKE_SOURCE_DIR}/../../deps/install/include)
+# GTest (FetchContent)
+find_package(GTest)
+if(NOT GTest_FOUND)
+  message(STATUS "GTest not found, fetching from source...")
+  FetchContent_Declare(
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+  )
+  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  FetchContent_MakeAvailable(googletest)
+  if(TARGET gtest AND NOT TARGET GTest::gtest)
+      add_library(GTest::gtest ALIAS gtest)
+  endif()
+  if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
+      add_library(GTest::gtest_main ALIAS gtest_main)
+  endif()
+endif()
 
-# add the binding lib
+# 1. ParMETIS & METIS (Required System/Conda)
+find_library(PARMETIS_LIB parmetis HINTS ${CONDA_PREFIX}/lib)
+find_library(METIS_LIB metis HINTS ${CONDA_PREFIX}/lib)
 
-set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
-# Manually add DBCSR path since it's in a non-standard location
-set(DBCSR_LIB_PATH "${CMAKE_SOURCE_DIR}/../../deps/install/lib64")
+if(NOT PARMETIS_LIB OR NOT METIS_LIB)
+    message(FATAL_ERROR "ParMETIS or METIS not found! Please install them (e.g., 'conda install -c conda-forge parmetis metis') or set CMAKE_PREFIX_PATH.")
+endif()
 
+# 2. DBCSR (Use existing sources in extern/, or fetch if missing)
+set(RSATB_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../deps/install")
+list(APPEND CMAKE_PREFIX_PATH "${RSATB_DEPS_DIR}")
+
+# Disable git updates for FetchContent (faster rebuilds)
+set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
+
+find_package(DBCSR 2.0.0 CONFIG QUIET HINTS "${RSATB_DEPS_DIR}/lib/cmake/dbcsr")
+if(NOT DBCSR_FOUND)
+    set(DBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/dbcsr")
+    
+    if(EXISTS "${DBCSR_SOURCE_DIR}/CMakeLists.txt")
+        message(STATUS "DBCSR sources found in extern/dbcsr, using existing sources")
+    else()
+        message(STATUS "DBCSR not found, fetching from GitHub...")
+        FetchContent_Declare(
+            dbcsr
+            GIT_REPOSITORY https://github.com/cp2k/dbcsr.git
+            GIT_TAG        v2.6.0
+            SOURCE_DIR     "${DBCSR_SOURCE_DIR}"
+            PATCH_COMMAND  sed -i "s|\${CMAKE_SOURCE_DIR}/DBCSR.md|\${CMAKE_CURRENT_SOURCE_DIR}/../DBCSR.md|g" docs/CMakeLists.txt
+        )
+        FetchContent_Populate(dbcsr)
+    endif()
+    
+    # Add subdirectory (works whether freshly fetched or already exists)
+    set(WITH_C_API ON CACHE BOOL "" FORCE)
+    add_subdirectory(${DBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/dbcsr)
+    
+    # Create alias
+    if(TARGET dbcsr_c AND NOT TARGET DBCSR::dbcsr_c)
+         add_library(DBCSR::dbcsr_c ALIAS dbcsr_c) 
+    elseif(TARGET dbcsr AND NOT TARGET DBCSR::dbcsr_c)
+         add_library(DBCSR::dbcsr_c ALIAS dbcsr)
+    endif()
+endif()
+
+# 3. PRIMME (Use existing sources in extern/, or fetch if missing)
+find_library(PRIMME_LIB primme HINTS ${CONDA_PREFIX}/lib "${RSATB_DEPS_DIR}/lib")
+if(NOT PRIMME_LIB)
+    set(PRIMME_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/primme")
+    
+    if(EXISTS "${PRIMME_SOURCE_DIR}/include/primme.h")
+        message(STATUS "PRIMME sources found in extern/primme, using existing sources")
+    else()
+        message(STATUS "PRIMME not found, fetching from GitHub...")
+        FetchContent_Declare(
+            primme
+            GIT_REPOSITORY https://github.com/primme/primme.git
+            GIT_TAG        v3.2
+            SOURCE_DIR     "${PRIMME_SOURCE_DIR}"
+        )
+        FetchContent_Populate(primme)
+    endif()
+    
+    # PRIMME has no CMakeLists.txt, so we define the target manually
+    if(NOT TARGET primme)
+        file(GLOB_RECURSE PRIMME_SOURCES "${PRIMME_SOURCE_DIR}/src/*.c")
+        add_library(primme STATIC ${PRIMME_SOURCES})
+        target_include_directories(primme PUBLIC 
+            "$<BUILD_INTERFACE:${PRIMME_SOURCE_DIR}/include>"
+            "$<BUILD_INTERFACE:${PRIMME_SOURCE_DIR}/src/include>"
+        )
+        target_link_libraries(primme PRIVATE BLAS::BLAS LAPACK::LAPACK)
+    endif()
+    set(PRIMME_LIB primme)
+else()
+    message(STATUS "PRIMME library found: ${PRIMME_LIB}")
+endif()
+
+# 4. VBCSR (Use existing sources in extern/, or fetch if missing)
+set(VBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/vbcsr")
+
+if(EXISTS "${VBCSR_SOURCE_DIR}/CMakeLists.txt")
+    message(STATUS "VBCSR sources found in extern/vbcsr, using existing sources")
+else()
+    message(STATUS "VBCSR not found, fetching from GitHub...")
+    FetchContent_Declare(
+        vbcsr
+        GIT_REPOSITORY https://github.com/floatingCatty/vbcsr.git
+        GIT_TAG        main
+        SOURCE_DIR     "${VBCSR_SOURCE_DIR}"
+    )
+    FetchContent_Populate(vbcsr)
+endif()
+
+# Add subdirectory (works whether freshly fetched or already exists)
+add_subdirectory(${VBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/vbcsr)
+
+# Fix include path for namespaced includes (vbcsr/core/...)
+if(TARGET vbcsr)
+    target_include_directories(vbcsr INTERFACE "$<BUILD_INTERFACE:${VBCSR_SOURCE_DIR}>")
+endif()
+
+# --- Subdirectories ---
+add_subdirectory(backend)
+add_subdirectory(io)
+add_subdirectory(extern/nao-abacus)
+
+# --- Targets ---
+
+# Common Link Libraries
+set(RSATB_LINK_LIBS
+    vbcsr
+    io
+    base
+    numerical_atomic_orbitals
+    estate
+    MPI::MPI_CXX
+    DBCSR::dbcsr_c
+    HDF5::HDF5
+    FFTW::FFTW
+    LAPACK::LAPACK
+    ${PRIMME_LIB}
+    ${PARMETIS_LIB}
+    ${METIS_LIB}
+)
+
+if(USE_OPENMP)
+    list(APPEND RSATB_LINK_LIBS OpenMP::OpenMP_CXX)
+endif()
+
+# Common Include Directories
+set(RSATB_INCLUDE_DIRS
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../..
+    backend
+    extern
+    extern/nao-abacus
+    extern/nao-abacus/source_base/module_container
+    extern/vbcsr
+)
+
+if(DEFINED RSATB_DEPS_DIR)
+    list(APPEND RSATB_INCLUDE_DIRS "${RSATB_DEPS_DIR}/include")
+endif()
+if(DEFINED CONDA_PREFIX)
+    list(APPEND RSATB_INCLUDE_DIRS "${CONDA_PREFIX}/include")
+endif()
+
+
+# Executable: test_rsatb
 add_executable(test_rsatb test_rsatb.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_rsatb PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/../.. backend extern extern/nao-abacus extern/nao-abacus/source_base/module_container)
-target_link_libraries(test_rsatb PRIVATE io base numerical_atomic_orbitals estate GTest::gtest MPI::MPI_CXX DBCSR::dbcsr_c HDF5::HDF5 FFTW::FFTW LAPACK::LAPACK ${PRIMME_LIB} ${PARMETIS_LIB} ${METIS_LIB})
+target_include_directories(test_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_rsatb PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+# Python Module: _rsatb
+pybind11_add_module(_rsatb pybind_rsatb.cpp)
+target_include_directories(_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(_rsatb PRIVATE ${RSATB_LINK_LIBS})
+
+# Install
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
+install(TARGETS _rsatb DESTINATION .)

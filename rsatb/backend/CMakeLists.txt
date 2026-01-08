@@ -26,10 +26,11 @@ if (PROJECT_IS_TOP_LEVEL)
 endif()
 
 add_library(backend OBJECT operator_construction.hpp)
+set_target_properties(backend PROPERTIES LINKER_LANGUAGE CXX)
 target_compile_features(backend PUBLIC cxx_std_11)
 target_compile_options(backend PUBLIC -mavx2 -mfma)
 
-target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads DBCSR::dbcsr_c BLAS::BLAS LAPACK::LAPACK)
+target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads DBCSR::dbcsr_c BLAS::BLAS LAPACK::LAPACK vbcsr)
 if(USE_OPENMP)
     target_link_libraries(backend PUBLIC OpenMP::OpenMP_CXX)
 endif()
@@ -49,10 +50,10 @@ target_include_directories(test_operator_construction PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus 
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus/source_base/module_container
 )
-target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io base numerical_atomic_orbitals estate LAPACK::LAPACK FFTW::Double)
+target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io base numerical_atomic_orbitals estate LAPACK::LAPACK BLAS::BLAS FFTW::Double)
 
-add_executable(benchmark_dist vbcsr/test/benchmark_dist.cpp $<TARGET_OBJECTS:backend>)
+add_executable(benchmark_dist ../extern/vbcsr/vbcsr/core/test/benchmark_dist.cpp $<TARGET_OBJECTS:backend>)
 target_link_libraries(benchmark_dist PUBLIC backend MPI::MPI_CXX BLAS::BLAS LAPACK::LAPACK)
 
-add_executable(test_robustness vbcsr/test/test_robustness.cpp $<TARGET_OBJECTS:backend>)
+add_executable(test_robustness ../extern/vbcsr/vbcsr/core/test/test_robustness.cpp $<TARGET_OBJECTS:backend>)
 target_link_libraries(test_robustness PUBLIC backend MPI::MPI_CXX BLAS::BLAS LAPACK::LAPACK)

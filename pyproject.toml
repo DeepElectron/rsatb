@@ -14,58 +14,37 @@ dependencies = [
     "mpi4py",
 ]
 
-[tool.poetry]
-name = "rsatb"
-version = "0.1.0"
-license = "LGPL-3.0"
-description = "A random state method for abinitio tight-binding calculations"
-readme = "README.md"
-repository = "https://github.com/floatingCatty/rsatb"
-
-include = [
-  { path = "rsatb/core/build/binding.cpython-312-x86_64-linux-gnu.so", format = "wheel" }
-]
-
-packages = [
-  { include = "rsatb" }
-]
-
-[tool.scikit-build]
-wheel.packages = ["rsatb"]
-metadata.version.provider = "scikit_build_core.metadata.regex"
-metadata.version.input = "rsatb/__init__.py"
-
-[tool.scikit-build.cmake]
-version = ">=3.15"
-source-dir = "rsatb/core"
-
-[tool.poetry.dependencies]
-python = ">=3.9"
-pytest = ">=7.2.0"
-pytest-order = "1.2.0"
-numpy = "*"
-scipy = "*"
-matplotlib = "*"
-ase = "*"
-h5py = ">=3.7.0,<=3.11.0,!=3.10.0"
-lmdb = "1.4.1"
-mpi4py = "*"
-
 [build-system]
-requires = ["scikit-build-core", "pybind11", "mpi4py"]
+requires = ["scikit-build-core>=0.5", "pybind11>=2.10", "mpi4py", "fypp"]
 build-backend = "scikit_build_core.build"
 
+[tool.scikit-build]
+# Python package location
+wheel.packages = ["rsatb"]
 
-[tool.poetry-dynamic-versioning]
-enable = true
-vcs = "git"
-strict = false
-format-jinja = """
-    {%- if distance == 0 -%}
-        {{ serialize_pep440(base, stage, revision) }}
-    {%- elif revision is not none -%}
-        {{ serialize_pep440(base, stage, revision + 1, dev=distance, metadata=[commit]) }}
-    {%- else -%}
-        {{ serialize_pep440(bump_version(base), stage, revision, dev=distance, metadata=[commit]) }}
-    {%- endif -%}
-"""
+# CMake configuration
+cmake.source-dir = "rsatb"
+cmake.build-type = "Release"
+cmake.args = [
+    "-DUSE_OPENMP=ON",
+    "-DBLAS_BACKEND=Generic",
+]
+
+# Install the built extension module
+wheel.install-dir = "rsatb"
+
+# Build directory (relative to source)
+build-dir = "build/{wheel_tag}"
+
+[tool.scikit-build.cmake.define]
+# Pass any CMake defines here if needed
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.2.0",
+    "pytest-order>=1.2.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

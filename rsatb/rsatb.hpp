@@ -2,9 +2,9 @@
 #define RSATB_CORE_RSATB_HPP
 
 #include "backend/atomic_data.hpp"
-#include "backend/vbcsr/block_csr.hpp"
-#include "backend/vbcsr/dist_vector.hpp"
-#include "backend/vbcsr/dist_multivector.hpp"
+#include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_vector.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 #include "backend/operator_construction.hpp"
 #include "backend/image_container.hpp"
 #include "backend/dbcsr_conversions.hpp"

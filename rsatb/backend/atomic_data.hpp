@@ -1,5 +1,5 @@
 #pragma once
-#include "vbcsr/dist_graph.hpp"
+#include "vbcsr/core/dist_graph.hpp"
 #include <vector>
 #include <map>
 #include <algorithm>

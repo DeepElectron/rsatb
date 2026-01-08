@@ -1,9 +1,9 @@
 #ifndef RSATB_CALC_SOLVER_HPP
 #define RSATB_CALC_SOLVER_HPP
 
-#include "../backend/vbcsr/block_csr.hpp"
-#include "../backend/vbcsr/dist_vector.hpp"
-#include "../backend/vbcsr/dist_multivector.hpp"
+#include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_vector.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 #include "preconditioner.hpp"
 #include <iostream>
 #include <cmath>

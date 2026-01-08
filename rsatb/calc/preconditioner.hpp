@@ -1,9 +1,9 @@
 #ifndef RSATB_CALC_PRECONDITIONER_HPP
 #define RSATB_CALC_PRECONDITIONER_HPP
 
-#include "../backend/vbcsr/block_csr.hpp"
-#include "../backend/vbcsr/dist_vector.hpp"
-#include "../backend/vbcsr/dist_multivector.hpp"
+#include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_vector.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 #include "isqrtm.hpp"
 #include <vector>
 #include <cmath>
@@ -69,8 +69,8 @@ public:
                 if (global_row == global_col) {
                     // Found diagonal block
                     size_t offset = A.blk_ptr[k];
-                    int rows = A.row_dims[i];
-                    int cols = A.col_dims[local_col];
+                    int rows = A.graph->block_sizes[i];
+                    int cols = A.graph->block_sizes[local_col];
                     
                     if (rows != cols) {
                         throw std::runtime_error("BlockJacobianPreconditioner: Diagonal block is not square.");

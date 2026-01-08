@@ -1,7 +1,7 @@
 #ifndef RSATB_BACKEND_DBCSR_CONVERSIONS_HPP
 #define RSATB_BACKEND_DBCSR_CONVERSIONS_HPP
 
-#include "vbcsr/block_csr.hpp"
+#include "vbcsr/core/block_csr.hpp"
 #include "dbcsr_capi.h"
 #include <dbcsr.h>
 #include <vector>
@@ -57,7 +57,7 @@ void BlockSpMat2DBCSR(BlockSpMat<T, Kernel>& mat, dbcsr_matrix* m_dbcsr, char ma
     // Fill local info
     for (size_t i = 0; i < graph->owned_global_indices.size(); ++i) {
         int gid = graph->owned_global_indices[i];
-        blk_size[gid] = mat.row_dims[i]; // row_dims corresponds to owned indices
+        blk_size[gid] = graph->block_sizes[i]; // i is local index of owned block
         dist_row_brd[gid] = rank;
     }
     
@@ -97,7 +97,7 @@ void BlockSpMat2DBCSR(BlockSpMat<T, Kernel>& mat, dbcsr_matrix* m_dbcsr, char ma
         int gid_r = graph->owned_global_indices[i];
         int start = mat.row_ptr[i];
         int end = mat.row_ptr[i+1];
-        int r_dim = mat.row_dims[i];
+        int r_dim = graph->block_sizes[i];
         
         for (int k = start; k < end; ++k) {
             int lid_c = mat.col_ind[k];
@@ -109,7 +109,7 @@ void BlockSpMat2DBCSR(BlockSpMat<T, Kernel>& mat, dbcsr_matrix* m_dbcsr, char ma
                 gid_c = graph->ghost_global_indices[lid_c - n_owned];
             }
             
-            int c_dim = mat.col_dims[lid_c];
+            int c_dim = graph->block_sizes[lid_c];
             const T* block_val = mat.val.data() + mat.blk_ptr[k];
             
             if constexpr (std::is_same<T, double>::value) {

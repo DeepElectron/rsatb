@@ -1,10 +1,10 @@
 #ifndef RSATB_CALC_EIGEN_HPP
 #define RSATB_CALC_EIGEN_HPP
 
-#include "rsatb/core/backend/vbcsr/block_csr.hpp"
-#include "rsatb/core/backend/vbcsr/dist_vector.hpp"
-#include "rsatb/core/backend/vbcsr/dist_multivector.hpp"
-#include "rsatb/core/backend/vbcsr/scalar_traits.hpp"
+#include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_vector.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
+#include "vbcsr/core/scalar_traits.hpp"
 #include "solver.hpp" // For LinearSolver
 #include <vector>
 #include <iostream>
@@ -65,7 +65,7 @@ public:
         
         DistGraph* graph = H.graph;
         int n_local = 0;
-        for(int dim : H.row_dims) n_local += dim;
+        for(int i=0; i<graph->owned_global_indices.size(); ++i) n_local += graph->block_sizes[i];
         
         long long n_global_long = 0;
         long long n_local_long = n_local;

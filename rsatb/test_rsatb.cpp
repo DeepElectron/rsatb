@@ -46,7 +46,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // 1. Instantiate RSATB
     std::unique_ptr<RSATB> rsatb_inst;
 
-    const std::string vasp_file = "/nessa/users/zhanghao/dev/moire/MD/ucell/2.5K/test_moire2.5K1.08ucell.vasp";
+    const std::string vasp_file = "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp";
     const std::vector<double> r_max_per_type = {3.7};
     const std::vector<int> type_norb = {13};
     
@@ -62,12 +62,12 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // Buffers for merged data (must persist until RSATB is destroyed or at least constructed)
     
     // 2. Initialize Basis (needed for build_overlap)
-    std::string orb_dir = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/";
+    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = "/nessa/users/zhanghao/dev/rsatb/test/data/diamond/";
+    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
 
-    std::string Hpath = "/nessa/users/zhanghao/dev/moire/MD/ucell/2.5K/H_moire1.08d1.5K.h5";
+    std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
     
     rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, "H", 1);
     

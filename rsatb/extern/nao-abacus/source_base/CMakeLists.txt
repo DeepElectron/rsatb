@@ -27,7 +27,7 @@ if (PROJECT_IS_TOP_LEVEL)
 endif()
 
 
-target_link_libraries(base PUBLIC container MPI::MPI_CXX ${math_libs})
+target_link_libraries(base PUBLIC container MPI::MPI_CXX ${math_libs} LAPACK::LAPACK BLAS::BLAS)
 
 target_include_directories(base PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>

@@ -1,6 +1,6 @@
 #pragma once
 #include "atomic_data.hpp"
-#include "vbcsr/block_csr.hpp"
+#include "vbcsr/core/block_csr.hpp"
 #include <map>
 #include <vector>
 #include <complex>
@@ -247,8 +247,8 @@ public:
                     // We need to compute data first.
                     
                     size_t offset = mat_R->blk_ptr[k];
-                    int r_dim = mat_R->row_dims[i];
-                    int c_dim = mat_R->col_dims[col_R];
+                    int r_dim = mat_R->graph->block_sizes[i];
+                    int c_dim = mat_R->graph->block_sizes[col_R];
                     int n_elem = r_dim * c_dim;
                     
                     const T* data_R = mat_R->val.data() + offset;

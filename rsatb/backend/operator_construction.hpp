@@ -3,7 +3,7 @@
 
 #include "atomic_data.hpp"
 #include "image_container.hpp"
-#include "vbcsr/block_csr.hpp"
+#include "vbcsr/core/block_csr.hpp"
 #include "../io/hdf5.hpp"
 #include "../extern/nao-abacus/source_estate/op2c.hpp"
 #include <memory>

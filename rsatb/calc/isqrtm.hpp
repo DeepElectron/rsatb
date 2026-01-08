@@ -1,7 +1,7 @@
 #ifndef RSATB_CALC_ISQRTM_HPP
 #define RSATB_CALC_ISQRTM_HPP
 
-#include "../backend/vbcsr/block_csr.hpp"
+#include "vbcsr/core/block_csr.hpp"
 #include "../backend/dbcsr_conversions.hpp"
 #include <dbcsr.h>
 #include <vector>
