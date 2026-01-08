@@ -125,6 +125,9 @@ if(NOT DBCSR_FOUND)
     
     if(EXISTS "${DBCSR_SOURCE_DIR}/CMakeLists.txt")
         message(STATUS "DBCSR sources found in extern/dbcsr, using existing sources")
+        # Add subdirectory (works whether freshly fetched or already exists)
+        set(WITH_C_API ON CACHE BOOL "" FORCE)
+        add_subdirectory(${DBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/dbcsr)
     else()
         message(STATUS "DBCSR not found, fetching from GitHub...")
         FetchContent_Declare(
@@ -132,14 +135,11 @@ if(NOT DBCSR_FOUND)
             GIT_REPOSITORY https://github.com/cp2k/dbcsr.git
             GIT_TAG        v2.6.0
             SOURCE_DIR     "${DBCSR_SOURCE_DIR}"
+            BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/dbcsr"
             PATCH_COMMAND  sed -i "s|\${CMAKE_SOURCE_DIR}/DBCSR.md|\${CMAKE_CURRENT_SOURCE_DIR}/../DBCSR.md|g" docs/CMakeLists.txt
         )
-        FetchContent_Populate(dbcsr)
+        FetchContent_MakeAvailable(dbcsr)
     endif()
-    
-    # Add subdirectory (works whether freshly fetched or already exists)
-    set(WITH_C_API ON CACHE BOOL "" FORCE)
-    add_subdirectory(${DBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/dbcsr)
     
     # Create alias
     if(TARGET dbcsr_c AND NOT TARGET DBCSR::dbcsr_c)
@@ -163,8 +163,9 @@ if(NOT PRIMME_LIB)
             GIT_REPOSITORY https://github.com/primme/primme.git
             GIT_TAG        v3.2
             SOURCE_DIR     "${PRIMME_SOURCE_DIR}"
+            BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/primme"
         )
-        FetchContent_Populate(primme)
+        FetchContent_MakeAvailable(primme)
     endif()
     
     # PRIMME has no CMakeLists.txt, so we define the target manually
@@ -187,6 +188,13 @@ set(VBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/vbcsr")
 
 if(EXISTS "${VBCSR_SOURCE_DIR}/CMakeLists.txt")
     message(STATUS "VBCSR sources found in extern/vbcsr, using existing sources")
+    # Add subdirectory (works whether freshly fetched or already exists)
+    add_subdirectory(${VBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/vbcsr)
+
+    # Fix include path for namespaced includes (vbcsr/core/...)
+    if(TARGET vbcsr)
+        target_include_directories(vbcsr INTERFACE "$<BUILD_INTERFACE:${VBCSR_SOURCE_DIR}>")
+    endif()
 else()
     message(STATUS "VBCSR not found, fetching from GitHub...")
     FetchContent_Declare(
@@ -194,16 +202,9 @@ else()
         GIT_REPOSITORY https://github.com/floatingCatty/vbcsr.git
         GIT_TAG        main
         SOURCE_DIR     "${VBCSR_SOURCE_DIR}"
+        BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/vbcsr"
     )
-    FetchContent_Populate(vbcsr)
-endif()
-
-# Add subdirectory (works whether freshly fetched or already exists)
-add_subdirectory(${VBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/vbcsr)
-
-# Fix include path for namespaced includes (vbcsr/core/...)
-if(TARGET vbcsr)
-    target_include_directories(vbcsr INTERFACE "$<BUILD_INTERFACE:${VBCSR_SOURCE_DIR}>")
+    FetchContent_MakeAvailable(vbcsr)
 endif()
 
 # --- Subdirectories ---
