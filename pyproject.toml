@@ -9,9 +9,7 @@ dependencies = [
     "scipy",
     "matplotlib",
     "ase",
-    "h5py>=3.7.0,<=3.11.0,!=3.10.0",
-    "lmdb==1.4.1",
-    "mpi4py",
+    "mpi4py"
 ]
 
 [build-system]

@@ -207,6 +207,8 @@ else()
     FetchContent_MakeAvailable(vbcsr)
 endif()
 
+list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
+
 # --- Subdirectories ---
 add_subdirectory(backend)
 add_subdirectory(io)
