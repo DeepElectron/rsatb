@@ -23,6 +23,7 @@ examples/_*
 *.dat
 *log
 *.mtx
+*CMakeFiles/
 build*
 rsatb/test/data/**/out*/config_*.json
 bandstructure.npy
