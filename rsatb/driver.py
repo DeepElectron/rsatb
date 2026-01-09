@@ -105,9 +105,7 @@ class RSATB:
         Returns:
             tuple: (dos_out, omega_out) as numpy arrays.
         """
-        dos_out = []
-        omega_out = []
-        self._cpp_obj.compute_dos(nt, dos_out, omega_out)
+        dos_out, omega_out = self._cpp_obj.compute_dos(nt)
         return np.array(dos_out), np.array(omega_out)
 
     def compute_ac(self, nt, n_kpm, temp, mu):
@@ -123,9 +121,7 @@ class RSATB:
         Returns:
             tuple: (ac_out, omega_out) as numpy arrays.
         """
-        ac_out = []
-        omega_out = []
-        self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out)
+        ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
         ntp1 = ac_out.shape[1] # [n_subk, (nt+1)*6]
         

@@ -41,11 +41,18 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("orb_names") = std::vector<std::string>{}, py::arg("orb_dirs") = "",
              py::arg("psd_names") = std::vector<std::string>{}, py::arg("psd_dirs") = "",
              py::arg("precond") = "H/S", py::arg("nsamples") = 1)
-        .def("compute_dos", &rsatb::RSATB::compute_dos,
-             py::arg("nt"), py::arg("dos_out"), py::arg("omega_out"))
-        .def("compute_ac", &rsatb::RSATB::compute_ac,
-             py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"),
-             py::arg("ac_out"), py::arg("omega_out"))
+        .def("compute_dos", [](rsatb::RSATB& self, int nt) {
+             std::vector<double> dos_out;
+             std::vector<double> omega_out;
+             self.compute_dos(nt, dos_out, omega_out);
+             return std::make_pair(dos_out, omega_out);
+         }, py::arg("nt"))
+        .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu) {
+             std::vector<double> ac_out;
+             std::vector<double> omega_out;
+             self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out);
+             return std::make_pair(ac_out, omega_out);
+         }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"))
         .def("get_operator_construction", &rsatb::RSATB::get_operator_construction, py::return_value_policy::reference)
         .def("atomic_data", &rsatb::RSATB::atomic_data, py::return_value_policy::reference);
 }
