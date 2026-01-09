@@ -126,7 +126,16 @@ class RSATB:
         ac_out = []
         omega_out = []
         self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out)
-        return np.array(ac_out), np.array(omega_out)
+        ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
+        ntp1 = ac_out.shape[1] # [n_subk, (nt+1)*6]
+        
+        sigma = np.zeros((-1, 2*ntp1, 6))
+        sigma[:, ntp1:, :] = ac_out
+        sigma[:, 1:ntp1+1, :] = ac_out[:, ::-1, :]
+        ac_out = ac_out + 1j * np.imag(sp.signal.hilbert(sigma, axis=1))[:,ntp1:2*ntp1,:]
+        ac_out = ac_out.reshape(-1, (nt+1)*6)
+
+        return ac_out, np.array(omega_out)
 
     def get_kernel_info(self):
         """
