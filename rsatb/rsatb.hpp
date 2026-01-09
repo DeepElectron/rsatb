@@ -246,9 +246,9 @@ public:
             std::vector<std::complex<double>>* null_res = nullptr;
             
             if (nsamples_ == 1) {
-                rsatb::calc::corr_dos(*cheby, *sample_vec_, nt, cdos, null_vec, null_res, false);
+                rsatb::calc::corr_dos(*cheby, *sample_vec_, nt, cdos, null_vec, null_res, true);
             } else {
-                rsatb::calc::corr_dos(*cheby, *sample_multi_vec_, nt, cdos, null_vec, null_res, false);
+                rsatb::calc::corr_dos(*cheby, *sample_multi_vec_, nt, cdos, null_vec, null_res, true);
             }
             
             // Transform per K-point
