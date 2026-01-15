@@ -716,11 +716,7 @@ TEST_F(AtomicDataTest, ThreeBodyGraph) {
     // 2: (1,1), (1,2), (2,1), (2,2) -> 4
     // Total = 17
     
-    int local_edges = 0;
-    for(size_t i=0; i<g3->adj_list.size(); ++i) {
-        local_edges += g3->adj_list[i].size();
-    }
-    
+    int local_edges = g3->adj_ptr.back();
     int total_edges;
     MPI_Allreduce(&local_edges, &total_edges, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
     
@@ -757,7 +753,9 @@ TEST_F(AtomicDataTest, Consistency) {
         int v_lid = ad->edges[k].dst;
         int v_gid = ad->get_global_index(v_lid);
         
-        const auto& neighbors = ad->graph->adj_list[u_lid];
+        std::vector<int> neighbors;
+        neighbors.resize(ad->graph->adj_ptr[u_lid+1] - ad->graph->adj_ptr[u_lid]);
+        std::copy(ad->graph->adj_ind.begin() + ad->graph->adj_ptr[u_lid], ad->graph->adj_ind.begin() + ad->graph->adj_ptr[u_lid+1], neighbors.begin());
         bool found = false;
         for(int n : neighbors) {
             if (n == v_gid) {
@@ -771,7 +769,9 @@ TEST_F(AtomicDataTest, Consistency) {
     // Check self-edges
     for(int i=0; i<ad->n_atom; ++i) {
         int my_gid = ad->get_global_index(i);
-        const auto& neighbors = ad->graph->adj_list[i];
+        std::vector<int> neighbors;
+        neighbors.resize(ad->graph->adj_ptr[i+1] - ad->graph->adj_ptr[i]);
+        std::copy(ad->graph->adj_ind.begin() + ad->graph->adj_ptr[i], ad->graph->adj_ind.begin() + ad->graph->adj_ptr[i+1], neighbors.begin());
         bool found = false;
         for(int n : neighbors) {
             if (n == my_gid) {
@@ -815,7 +815,8 @@ TEST_F(AtomicDataTest, PressureTest_Random) {
     
     for(int i=0; i<ad->n_atom; ++i) {
         bool has_self = false;
-        for(int n : ad->graph->adj_list[i]) {
+        for(int in=ad->graph->adj_ptr[i]; in<ad->graph->adj_ptr[i+1]; ++in) {
+            int n = ad->graph->adj_ind[in];
             if (n == i) has_self = true;
         }
         EXPECT_TRUE(has_self);
@@ -890,8 +891,9 @@ TEST_F(AtomicDataTest, ThreeBodyCorrectness_BruteForce) {
     std::vector<int> local_edges_3b_flat;
     for(int i=0; i<ad->n_atom; ++i) {
         int u_gid = ad->get_global_index(i);
-        for(int v_lid : g3->adj_list[i]) {
-            int v_gid = g3->get_global_index(v_lid);
+        for(int in=ad->graph->adj_ptr[i]; in<ad->graph->adj_ptr[i+1]; ++in) {
+            int v_gid = ad->graph->adj_ind[in];
+            v_gid = ad->get_global_index(v_gid);
             local_edges_3b_flat.push_back(u_gid);
             local_edges_3b_flat.push_back(v_gid);
         }
@@ -1060,7 +1062,8 @@ TEST_F(AtomicDataTest, SingleProcess_Stress) {
     for(int i=0; i<N; ++i) {
         // g3->adj_list[i] contains neighbors of atom i (local index i)
         int orig_i = ad->atom_index[i];
-        for(int neighbor : g3->adj_list[i]) {
+        for(int inei=ad->graph->adj_ptr[i]; inei<ad->graph->adj_ptr[i+1]; ++inei) {
+            int neighbor = ad->graph->adj_ind[inei];
             int orig_neighbor = ad->atom_index[neighbor];
             actual_3b.push_back({orig_i, orig_neighbor});
         }

@@ -12,6 +12,8 @@
 #include "io.hpp"
 #include <parmetis.h>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace backend {
 
@@ -574,7 +576,8 @@ public:
 
         // add two-body and onsite edges
         for(int i=0; i<n_atom; ++i) {
-            for(int j_lid : graph->adj_list[i]) {
+            for(int j=graph->adj_ptr[i]; j<graph->adj_ptr[i+1]; ++j) {
+                int j_lid = graph->adj_ind[j];
                 int j_gid = get_gid(j_lid);
                 matrix_adj[i].push_back(j_gid);
             }

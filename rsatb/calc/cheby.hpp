@@ -12,6 +12,8 @@
 #include <complex>
 #include <memory>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace calc {
 

@@ -119,35 +119,35 @@ list(APPEND CMAKE_PREFIX_PATH "${RSATB_DEPS_DIR}")
 # Disable git updates for FetchContent (faster rebuilds)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 
-find_package(DBCSR 2.0.0 CONFIG QUIET HINTS "${RSATB_DEPS_DIR}/lib/cmake/dbcsr")
-if(NOT DBCSR_FOUND)
-    set(DBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/dbcsr")
-    
-    if(EXISTS "${DBCSR_SOURCE_DIR}/CMakeLists.txt")
-        message(STATUS "DBCSR sources found in extern/dbcsr, using existing sources")
-        # Add subdirectory (works whether freshly fetched or already exists)
-        set(WITH_C_API ON CACHE BOOL "" FORCE)
-        add_subdirectory(${DBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/dbcsr)
-    else()
-        message(STATUS "DBCSR not found, fetching from GitHub...")
-        FetchContent_Declare(
-            dbcsr
-            GIT_REPOSITORY https://github.com/cp2k/dbcsr.git
-            GIT_TAG        v2.6.0
-            SOURCE_DIR     "${DBCSR_SOURCE_DIR}"
-            BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/dbcsr"
-            PATCH_COMMAND  sed -i "s|\${CMAKE_SOURCE_DIR}/DBCSR.md|\${CMAKE_CURRENT_SOURCE_DIR}/../DBCSR.md|g" docs/CMakeLists.txt
-        )
-        FetchContent_MakeAvailable(dbcsr)
-    endif()
-    
-    # Create alias
-    if(TARGET dbcsr_c AND NOT TARGET DBCSR::dbcsr_c)
-         add_library(DBCSR::dbcsr_c ALIAS dbcsr_c) 
-    elseif(TARGET dbcsr AND NOT TARGET DBCSR::dbcsr_c)
-         add_library(DBCSR::dbcsr_c ALIAS dbcsr)
-    endif()
-endif()
+# find_package(DBCSR 2.0.0 CONFIG QUIET HINTS "${RSATB_DEPS_DIR}/lib/cmake/dbcsr")
+# if(NOT DBCSR_FOUND)
+#     set(DBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/dbcsr")
+#     
+#     if(EXISTS "${DBCSR_SOURCE_DIR}/CMakeLists.txt")
+#         message(STATUS "DBCSR sources found in extern/dbcsr, using existing sources")
+#         # Add subdirectory (works whether freshly fetched or already exists)
+#         set(WITH_C_API ON CACHE BOOL "" FORCE)
+#         add_subdirectory(${DBCSR_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/dbcsr)
+#     else()
+#         message(STATUS "DBCSR not found, fetching from GitHub...")
+#         FetchContent_Declare(
+#             dbcsr
+#             GIT_REPOSITORY https://github.com/cp2k/dbcsr.git
+#             GIT_TAG        v2.6.0
+#             SOURCE_DIR     "${DBCSR_SOURCE_DIR}"
+#             BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/dbcsr"
+#             PATCH_COMMAND  sed -i "s|\${CMAKE_SOURCE_DIR}/DBCSR.md|\${CMAKE_CURRENT_SOURCE_DIR}/../DBCSR.md|g" docs/CMakeLists.txt
+#         )
+#         FetchContent_MakeAvailable(dbcsr)
+#     endif()
+#     
+#     # Create alias
+#     if(TARGET dbcsr_c AND NOT TARGET DBCSR::dbcsr_c)
+#          add_library(DBCSR::dbcsr_c ALIAS dbcsr_c) 
+#     elseif(TARGET dbcsr AND NOT TARGET DBCSR::dbcsr_c)
+#          add_library(DBCSR::dbcsr_c ALIAS dbcsr)
+#     endif()
+# endif()
 
 # 3. PRIMME (Use existing sources in extern/, or fetch if missing)
 find_library(PRIMME_LIB primme HINTS ${CONDA_PREFIX}/lib "${RSATB_DEPS_DIR}/lib")
@@ -224,7 +224,7 @@ set(RSATB_LINK_LIBS
     numerical_atomic_orbitals
     estate
     MPI::MPI_CXX
-    DBCSR::dbcsr_c
+    # DBCSR::dbcsr_c
     HDF5::HDF5
     FFTW::FFTW
     LAPACK::LAPACK
@@ -269,3 +269,8 @@ target_link_libraries(_rsatb PRIVATE ${RSATB_LINK_LIBS})
 # Install
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 install(TARGETS _rsatb DESTINATION .)
+
+# Test: test_isqrtm_vbcsr
+add_executable(test_isqrtm_vbcsr calc/test/test_isqrtm_vbcsr.cpp)
+target_include_directories(test_isqrtm_vbcsr PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_isqrtm_vbcsr PRIVATE ${RSATB_LINK_LIBS})

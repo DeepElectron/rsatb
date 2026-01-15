@@ -8,6 +8,8 @@
 #include <complex>
 #include <iostream>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace calc {
 

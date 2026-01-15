@@ -9,6 +9,8 @@
 #include <complex>
 #include <iostream>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace calc {
 
@@ -192,7 +194,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>& S_inv_sqrt,
             c_dbcsr_multiply_d('N', 'N', 1.0, tmp2, tmp2, 0.0, tmp1, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, &retain_sparsity, &sptol, &cflop);
             
             // update Z
-            // tmp1 = 0.375 * tmp2 - 1.25 * tmp1
+            // tmp1 = 0.375 * tmp1 - 1.25 * tmp2
             c_dbcsr_add_d(tmp1, tmp2, 0.375, -1.25);
             // tmp1 = tmp1 + 1.875 * I
             c_dbcsr_add_d(tmp1, I, 1.0, 1.875);

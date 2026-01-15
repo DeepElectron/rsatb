@@ -7,12 +7,11 @@
 #include "vbcsr/core/dist_multivector.hpp"
 #include "backend/operator_construction.hpp"
 #include "backend/image_container.hpp"
-#include "backend/dbcsr_conversions.hpp"
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
 #include "calc/ac.hpp"
 #include "calc/fermi_dirac.hpp"
-#include "calc/isqrtm.hpp"
+#include "calc/isqrtm_vbcsr.hpp"
 #include "calc/preconditioner.hpp"
 #include "calc/solver.hpp" 
 #include "calc/cheby.hpp"
@@ -26,12 +25,14 @@
 #include <iostream>
 #include <map>
 #include <mpi.h>
-#include <dbcsr.h>
+
+using namespace vbcsr;
 
 namespace rsatb {
 
 using namespace rsatb::backend;
 using namespace rsatb::calc;
+
 
 class RSATB {
 public:
@@ -165,7 +166,7 @@ public:
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, factor, true);
+                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, true);
                 precond_map_[k_idx] = std::move(P);
                 
                 if (precond == "H") {

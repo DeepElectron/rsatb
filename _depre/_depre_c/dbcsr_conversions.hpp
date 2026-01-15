@@ -10,6 +10,8 @@
 
 #include <type_traits>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace backend {
 
@@ -276,7 +278,7 @@ void DBCSR2BlockSpMat(dbcsr_matrix m_dbcsr, BlockSpMat<T, Kernel>& mat) {
                 double* v_real;
                 c_dbcsr_get_block_p_d(m_brd, i_blk, j_blk, &v_real, &tr, &found, &nrow, &ncol);
                 if (found) {
-                     mat.add_block(i_blk, j_blk, reinterpret_cast<T*>(v_real), nrow, ncol, AssemblyMode::INSERT, rsatb::backend::MatrixLayout::ColMajor);
+                     mat.add_block(i_blk, j_blk, reinterpret_cast<T*>(v_real), nrow, ncol, AssemblyMode::INSERT, MatrixLayout::ColMajor);
                 }
             } else {
                 double _Complex* v_complex;
@@ -287,9 +289,9 @@ void DBCSR2BlockSpMat(dbcsr_matrix m_dbcsr, BlockSpMat<T, Kernel>& mat) {
                         for(int i=0; i<nrow*ncol; ++i) {
                             real_block[i] = __real__ v_complex[i];
                         }
-                        mat.add_block(i_blk, j_blk, real_block.data(), nrow, ncol, AssemblyMode::INSERT, rsatb::backend::MatrixLayout::ColMajor);
+                        mat.add_block(i_blk, j_blk, real_block.data(), nrow, ncol, AssemblyMode::INSERT, MatrixLayout::ColMajor);
                     } else {
-                        mat.add_block(i_blk, j_blk, reinterpret_cast<T*>(v_complex), nrow, ncol, AssemblyMode::INSERT, rsatb::backend::MatrixLayout::ColMajor);
+                        mat.add_block(i_blk, j_blk, reinterpret_cast<T*>(v_complex), nrow, ncol, AssemblyMode::INSERT, MatrixLayout::ColMajor);
                     }
                 }
             }

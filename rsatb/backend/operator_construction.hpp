@@ -8,6 +8,8 @@
 #include "../extern/nao-abacus/source_estate/op2c.hpp"
 #include <memory>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace backend {
 

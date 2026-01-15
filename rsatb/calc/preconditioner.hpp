@@ -4,7 +4,7 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
-#include "isqrtm.hpp"
+#include "isqrtm_vbcsr.hpp"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -24,6 +24,7 @@ namespace rsatb {
 namespace calc {
 
 using namespace rsatb::backend;
+using namespace vbcsr;
 
 enum class PreconditionerType { Left, Right, Symmetric };
 
@@ -161,9 +162,9 @@ class ISQRTMPreconditioner : public Preconditioner<T, Kernel> {
 public:
     BlockSpMat<T, Kernel> P; // Stores S^-1/2
 
-    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& S, int max_iter = 10, double tol = 1e-5, double factor = 0.31, bool verbose = false) : P(S.graph) {
+    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& S, int max_iter = 10, double tol = 1e-5, bool verbose = false) : P(S.graph) {
         // Compute P = S^-1/2
-        isqrtm(S, P, tol, 1e-5, max_iter, factor, verbose);
+        isqrtm(S, &P, tol, 1e-5, max_iter, verbose);
     }
 
     PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }

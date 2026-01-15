@@ -7,6 +7,8 @@
 #include <cmath>
 #include <iostream>
 
+using namespace vbcsr;
+
 namespace rsatb {
 namespace backend {
 
