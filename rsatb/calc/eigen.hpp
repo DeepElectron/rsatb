@@ -279,7 +279,7 @@ private:
             // y = M * H * M * x
             ctx->M->apply(*ctx->tmp_mv_in, *ctx->tmp_mv_out);      // out = M * x (reuse out as temp)
             ctx->H->mult_dense(*ctx->tmp_mv_out, *ctx->tmp_mv_aux); // aux = H * out
-            ctx->M->apply(*ctx->tmp_mv_aux, *ctx->tmp_mv_out);     // out = M * aux
+            ctx->M->apply_adjoint(*ctx->tmp_mv_aux, *ctx->tmp_mv_out);     // out = M * aux
         }
         
         copy_out(ctx, y, bs, ctx->tmp_mv_out);
