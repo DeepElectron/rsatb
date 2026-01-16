@@ -174,6 +174,8 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
             int total_dim = 0;
             for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
 
+            if (total_dim == 0) continue;
+
             if (rank==0 || verbose) {
                 // std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
             }
