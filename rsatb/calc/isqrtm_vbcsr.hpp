@@ -241,16 +241,25 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
 // Computes S^{-1/2}
 template <typename T, typename Kernel = DefaultKernel<T>>
 void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
-            double tol = 1e-7, double sptol = 1e-6, int maxit = 20, 
+            double tol = 1e-7, double sptol = 1e-6, int maxit = 20, std::string init_method = "graph", double factor = 1.0,
             bool verbose = false) {
     
     DistGraph* graph = S_mat.graph;
     int rank = graph->rank;
-
-    isqrtm_init(S_mat, S_inv_sqrt, verbose);
-
-    // S_inv_sqrt.shift(T(factor));
     
+    if (init_method == "graph") {
+        isqrtm_init(S_mat, S_inv_sqrt, verbose);
+    } else if (init_method == "simple") {
+        S_inv_sqrt->shift(T(factor));   
+    } else if (init_method == "taylor") {
+        S_inv_sqrt->shift(T(1.5));
+        S_inv_sqrt->axpy(T(0.5), S_mat);
+    } else {
+        throw std::runtime_error("Invalid init_method");
+    }
+
+    // ZSZ = (1-0.5D)(1+D)(1-0.5D)=(1+0.5D-0.5D^2)(1-0.5D)=1-0.75D^2+0.25D^3
+
     // 2. Newton-Schulz Iteration
     // BlockSpMat<T, Kernel> Z = S_inv_sqrt.duplicate(); // Working copy
     BlockSpMat<T, Kernel> tmp1(graph), tmp2(graph);

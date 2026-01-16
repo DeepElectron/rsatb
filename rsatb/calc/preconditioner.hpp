@@ -163,9 +163,9 @@ class ISQRTMPreconditioner : public Preconditioner<T, Kernel> {
 public:
     BlockSpMat<T, Kernel> P; // Stores S^-1/2
 
-    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& S, int max_iter = 10, double tol = 1e-5, bool verbose = false) : P(S.graph) {
+    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& S, int max_iter = 10, double tol = 1e-5, std::string init_method = "graph", double factor = 1.0, bool verbose = false) : P(S.graph) {
         // Compute P = S^-1/2
-        isqrtm(S, &P, tol, 1e-5, max_iter, verbose);
+        isqrtm(S, &P, tol, 1e-5, max_iter, init_method, factor, verbose);
     }
 
     PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }

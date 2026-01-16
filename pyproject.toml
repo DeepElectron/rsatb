@@ -25,7 +25,7 @@ cmake.source-dir = "rsatb"
 cmake.build-type = "Release"
 cmake.args = [
     "-DUSE_OPENMP=ON",
-    "-DBLAS_BACKEND=MKL",
+    "-DBLAS_BACKEND=MKL", # MKL, OpenBLAS or Generic
 ]
 
 # Install the built extension module

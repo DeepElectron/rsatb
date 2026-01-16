@@ -152,9 +152,7 @@ public:
             
             // Compute Preconditioner
             if (Sk) {
-                // Sk->save_matrix_market("S.mtx");
-                // Solve largest eigenvalue of S for scaling
-                PrimmeEigenSolver<Scalar> esolver;
+                PrimmeEigenSolver<Scalar, Matrix::KernelType> esolver;
                 std::vector<double> evals;
                 std::vector<Vector> evecs;
                 
@@ -166,7 +164,7 @@ public:
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, true);
+                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, "graph", factor, true);
                 precond_map_[k_idx] = std::move(P);
                 
                 if (precond == "H") {
