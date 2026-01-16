@@ -271,6 +271,11 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 install(TARGETS _rsatb DESTINATION .)
 
 # Test: test_isqrtm_vbcsr
-add_executable(test_isqrtm_vbcsr calc/test/test_isqrtm_vbcsr.cpp)
-target_include_directories(test_isqrtm_vbcsr PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_isqrtm_vbcsr PRIVATE ${RSATB_LINK_LIBS})
+# add_executable(test_isqrtm_vbcsr calc/test/test_isqrtm_vbcsr.cpp)
+# target_include_directories(test_isqrtm_vbcsr PRIVATE ${RSATB_INCLUDE_DIRS})
+# target_link_libraries(test_isqrtm_vbcsr PRIVATE ${RSATB_LINK_LIBS})
+
+# Benchmark: benchmark_isqrtm_heavy
+# add_executable(benchmark_isqrtm_heavy calc/test/benchmark_isqrtm_heavy.cpp)
+# target_include_directories(benchmark_isqrtm_heavy PRIVATE ${RSATB_INCLUDE_DIRS})
+# target_link_libraries(benchmark_isqrtm_heavy PRIVATE ${RSATB_LINK_LIBS})

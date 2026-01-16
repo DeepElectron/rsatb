@@ -16,6 +16,10 @@ extern "C" {
     
     // Complex double Hermitian eigendecomposition
     void zheev_(const char* jobz, const char* uplo, const int* n, std::complex<double>* a, const int* lda, double* w, std::complex<double>* work, const int* lwork, double* rwork, int* info);
+
+    // BLAS Thread control
+    void openblas_set_num_threads(int num_threads);
+    void mkl_set_num_threads_local(int num_threads);
 }
 
 namespace rsatb {
@@ -75,15 +79,15 @@ void dense_isqrt(int n, std::vector<T>& M) {
     M = Res;
 }
 
-// Matrix Inverse Square Root using Newton-Schulz Iteration
-// Computes S^{-1/2}
+
 template <typename T, typename Kernel = DefaultKernel<T>>
-void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
+void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
             double tol = 1e-7, double sptol = 1e-6, int maxit = 20, 
             bool verbose = false) {
     
     DistGraph* graph = S_mat.graph;
     int rank = graph->rank;
+    MPI_Comm comm = graph->comm;
 
     // 1. Initialize Z0 (S_inv_sqrt)
     if (rank == 0 && verbose) std::cout << "isqrtm: Initializing Z0 using subgraph method..." << std::endl;
@@ -97,73 +101,136 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
     std::fill(S_inv_sqrt->val.begin(), S_inv_sqrt->val.end(), T(0));
     
     int n_owned = graph->owned_global_indices.size();
+    int n_owned_max = 0;
+    MPI_Allreduce(&n_owned, &n_owned_max, 1, MPI_INT, MPI_MAX, comm);
     
-    // Iterate over local rows
-    for (int i = 0; i < n_owned; ++i) {
-        int global_row = graph->owned_global_indices[i];
+    // batch size
+    int batch_size = 16;
+    
+    int nbatch = n_owned_max / batch_size;
+    if (n_owned_max % batch_size != 0) nbatch++;
+
+    std::vector<std::vector<int>> batch_indices(batch_size);
+
+    for (int b = 0; b < nbatch; ++b) {
+        // Avoid thread oversubscription in BLAS/LAPACK
+        #ifdef RSATB_USE_MKL
+        mkl_set_num_threads_local(1);
+        #elif defined(RSATB_USE_OPENBLAS)
+        openblas_set_num_threads(1);
+        #endif
+
+        batch_indices.clear();
+        batch_indices.resize(batch_size);
         
-        // Identify Neighborhood C_i
-        std::vector<int> neighbors;
-        int start = S_mat.row_ptr[i];
-        int end = S_mat.row_ptr[i+1];
-        for (int k = start; k < end; ++k) {
-            int col_lid = S_mat.col_ind[k];
-            int col_gid = graph->get_global_index(col_lid);
-            neighbors.push_back(col_gid);
-        }
-        // Ensure global_row is in neighbors (diagonal)
-        bool has_diag = false;
-        for(int gid : neighbors) if(gid == global_row) has_diag = true;
-        if(!has_diag) neighbors.push_back(global_row);
-        
-        // Sort for consistency
-        std::sort(neighbors.begin(), neighbors.end());
-        
-        // Extract Submatrix
-        BlockSpMat<T, Kernel> sub_mat = S_mat.extract_submatrix(neighbors);
-        
-        // Convert to Dense
-        std::vector<T> M = sub_mat.to_dense();
-        
-        // M is row-major, size (total_dim) x (total_dim)
-        int total_dim = 0;
-        for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
-        
-        // Compute M^{-1/2}
-        dense_isqrt(total_dim, M);
-        
-        // Insert Row corresponding to global_row into S_inv_sqrt
-        auto it = std::lower_bound(neighbors.begin(), neighbors.end(), global_row);
-        int block_idx = std::distance(neighbors.begin(), it);
-        
-        // Calculate offset in dense matrix M
-        int row_offset = 0;
-        for(int k=0; k<block_idx; ++k) row_offset += sub_mat.graph->block_sizes[k];
-        int r_dim = sub_mat.graph->block_sizes[block_idx];
-        
-        // Iterate over columns (neighbors)
-        int col_offset = 0;
-        for(size_t k=0; k<neighbors.size(); ++k) {
-            int col_gid = neighbors[k];
-            int c_dim = sub_mat.graph->block_sizes[k];
+        // Store neighbors for parallel phase
+        std::vector<std::vector<int>> batch_neighbors(batch_size);
+
+        for (int i=0; i < batch_size; ++i) {
+            int idx = b * batch_size + i;
             
-            // Extract block (r_dim x c_dim) from M at (row_offset, col_offset)
-            std::vector<T> block_data(r_dim * c_dim);
-            for(int c=0; c<c_dim; ++c) {
-                for(int r=0; r<r_dim; ++r) {
-                    // M is RowMajor
-                    block_data[c * r_dim + r] = M[(col_offset + c) * total_dim + (row_offset + r)];
+            if (idx < n_owned) {
+                int global_row = graph->owned_global_indices[idx];
+                // Identify Neighborhood C_i
+                std::vector<int> neighbors;
+                int start = S_mat.row_ptr[idx]; // Use local index idx
+                int end = S_mat.row_ptr[idx+1];
+                for (int k = start; k < end; ++k) {
+                    int col_lid = S_mat.col_ind[k];
+                    int col_gid = graph->get_global_index(col_lid);
+                    neighbors.push_back(col_gid);
                 }
+                // Ensure global_row is in neighbors (diagonal)
+                bool has_diag = false;
+                for(int gid : neighbors) if(gid == global_row) has_diag = true;
+                if(!has_diag) neighbors.push_back(global_row);
+                
+                // Sort for consistency
+                std::sort(neighbors.begin(), neighbors.end());
+
+                batch_indices[i] = neighbors;
+            } else {
+                // Padding: Empty request
+                batch_indices[i] = {};
+            }
+        }
+        
+        auto batch_blocks = S_mat.fetch_blocks(batch_indices);
+
+        #pragma omp parallel for schedule(dynamic)
+        for (int i=0; i < batch_size; ++i) {
+            int idx = b * batch_size + i;
+            if (idx >= n_owned) continue;
+            
+            int global_row = graph->owned_global_indices[idx];
+            const auto& neighbors = batch_indices[i];
+
+            BlockSpMat<T, Kernel> sub_mat = S_mat.construct_submatrix(neighbors, batch_blocks);
+
+            // Convert to Dense
+            std::vector<T> M = sub_mat.to_dense();
+        
+            // M is row-major, size (total_dim) x (total_dim)
+            int total_dim = 0;
+            for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
+
+            if (rank==0 || verbose) {
+                // std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
             }
             
-            // Insert
-            S_inv_sqrt->add_block(global_row, col_gid, block_data.data(), r_dim, c_dim, AssemblyMode::ADD, MatrixLayout::ColMajor);
+            // Compute M^{-1/2}
+            dense_isqrt(total_dim, M);
+
+            // Insert Row corresponding to global_row into S_inv_sqrt
+            auto it = std::lower_bound(neighbors.begin(), neighbors.end(), global_row);
+            int block_idx = std::distance(neighbors.begin(), it);
             
-            col_offset += c_dim;
+            // Calculate offset in dense matrix M
+            int row_offset = 0;
+            for(int k=0; k<block_idx; ++k) row_offset += sub_mat.graph->block_sizes[k];
+            int r_dim = sub_mat.graph->block_sizes[block_idx];
+            
+            // Iterate over columns (neighbors)
+            int col_offset = 0;
+            for(size_t k=0; k<neighbors.size(); ++k) {
+                int col_gid = neighbors[k];
+                int c_dim = sub_mat.graph->block_sizes[k];
+                
+                // Extract block (r_dim x c_dim) from M at (row_offset, col_offset)
+                std::vector<T> block_data(r_dim * c_dim);
+                for(int c=0; c<c_dim; ++c) {
+                    for(int r=0; r<r_dim; ++r) {
+                        // M is RowMajor
+                        block_data[c * r_dim + r] = M[(col_offset + c) * total_dim + (row_offset + r)];
+                    }
+                }
+                
+                S_inv_sqrt->add_block(global_row, col_gid, block_data.data(), r_dim, c_dim, AssemblyMode::ADD, MatrixLayout::ColMajor);
+                
+                col_offset += c_dim;
+                    
+            }
         }
     }
     
+    if (rank == 0 && verbose) std::cout << "isqrtm: Z0 Loop Finished. Assembling..." << std::endl;
+    if (rank == 0) std::cout << "isqrtm: remote_blocks size: " << S_inv_sqrt->remote_blocks.size() << std::endl;
+
     S_inv_sqrt->assemble();
+    
+}
+// Matrix Inverse Square Root using Newton-Schulz Iteration
+// Computes S^{-1/2}
+template <typename T, typename Kernel = DefaultKernel<T>>
+void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
+            double tol = 1e-7, double sptol = 1e-6, int maxit = 20, 
+            bool verbose = false) {
+    
+    DistGraph* graph = S_mat.graph;
+    int rank = graph->rank;
+
+    isqrtm_init(S_mat, S_inv_sqrt, tol, sptol, maxit, verbose);
+
     // S_inv_sqrt.shift(T(factor));
     
     // 2. Newton-Schulz Iteration
@@ -198,8 +265,9 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
     int count = 0;
     
     while (norm > tol && count < maxit && std::abs(norm_pre - norm) > 0.005 * norm) {
+        double density = S_inv_sqrt->get_block_density();
         if (rank == 0 && verbose) {
-            std::cout << "Recursive Factorization of S: current error: maxabs norm - " << norm << " with density " << S_inv_sqrt->get_block_density() << std::endl;
+            std::cout << "Recursive Factorization of S: current error: maxabs norm - " << norm << " with density " << density << std::endl;
         }
         
         if (norm > 100.0) {
@@ -273,8 +341,9 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
         count++;
     }
     
+    double final_density = S_inv_sqrt->get_block_density();
     if (rank == 0 && verbose) {
-        std::cout << "Recursive Factorization of S: Converge at maxabs norm - " << norm << " with density " << S_inv_sqrt->get_block_density() << std::endl;
+        std::cout << "Recursive Factorization of S: Converge at maxabs norm - " << norm << " with density " << final_density << std::endl;
     }
 }
 
