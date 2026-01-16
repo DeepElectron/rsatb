@@ -11,12 +11,15 @@
 #include <memory>
 
 // LAPACK declarations for block inversion
+// LAPACK declarations for block inversion
+#if !defined(RSATB_USE_MKL)
 extern "C" {
     void dgetrf_(const int* m, const int* n, double* a, const int* lda, int* ipiv, int* info);
     void dgetri_(const int* n, double* a, const int* lda, const int* ipiv, double* work, const int* lwork, int* info);
     void zgetrf_(const int* m, const int* n, std::complex<double>* a, const int* lda, int* ipiv, int* info);
     void zgetri_(const int* n, std::complex<double>* a, const int* lda, const int* ipiv, std::complex<double>* work, const int* lwork, int* info);
 }
+#endif
 
 namespace rsatb {
 namespace calc {
@@ -131,14 +134,22 @@ private:
         int info;
         std::vector<int> ipiv(n);
         
+#ifdef RSATB_USE_MKL
+        zgetrf_(&n, &n, reinterpret_cast<MKL_Complex16*>(a), &n, ipiv.data(), &info);
+#else
         zgetrf_(&n, &n, a, &n, ipiv.data(), &info);
+#endif
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetrf).");
         
         int lwork = n * n;
         std::vector<std::complex<double>> work(lwork);
         
+#ifdef RSATB_USE_MKL
+        zgetri_(&n, reinterpret_cast<MKL_Complex16*>(a), &n, ipiv.data(), reinterpret_cast<MKL_Complex16*>(work.data()), &lwork, &info);
+#else
         zgetri_(&n, a, &n, ipiv.data(), work.data(), &lwork, &info);
+#endif
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetri).");
     }

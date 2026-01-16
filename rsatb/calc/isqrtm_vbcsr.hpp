@@ -10,6 +10,7 @@
 #include <set>
 
 // LAPACK Declarations
+#if !defined(RSATB_USE_MKL) && !defined(VBCSR_USE_MKL)
 extern "C" {
     // Double precision symmetric eigendecomposition
     void dsyev_(const char* jobz, const char* uplo, const int* n, double* a, const int* lda, double* w, double* work, const int* lwork, int* info);
@@ -17,15 +18,23 @@ extern "C" {
     // Complex double Hermitian eigendecomposition
     void zheev_(const char* jobz, const char* uplo, const int* n, std::complex<double>* a, const int* lda, double* w, std::complex<double>* work, const int* lwork, double* rwork, int* info);
 
-    // BLAS Thread control
-    void openblas_set_num_threads(int num_threads);
-    void mkl_set_num_threads_local(int num_threads);
 }
+#endif
+
+#if defined(RSATB_USE_OPENBLAS) || defined(VBCSR_USE_OPENBLAS)
+extern "C" void openblas_set_num_threads(int num_threads);
+#endif
+
+#if defined(RSATB_USE_MKL) || defined(VBCSR_USE_MKL)
+extern "C" {
+    void mkl_set_num_threads_local_(int* num_threads);
+}
+#endif
+
+using namespace vbcsr;
 
 namespace rsatb {
 namespace calc {
-
-using namespace vbcsr;
 
 // Helper to compute M^{-1/2} for a dense matrix M
 template <typename T>
@@ -43,12 +52,21 @@ void dense_isqrt(int n, std::vector<T>& M) {
         std::vector<double> work(lwork);
         dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), work.data(), &lwork, &info);
     } else {
+        #if defined(RSATB_USE_MKL) || defined(VBCSR_USE_MKL)
+        MKL_Complex16 wkopt_mkl;
+        std::vector<double> rwork(3 * n - 2);
+        zheev_("V", "U", &n, reinterpret_cast<MKL_Complex16*>(M.data()), &n, w.data(), &wkopt_mkl, &lwork, rwork.data(), &info);
+        lwork = (int)wkopt_mkl.real;
+        std::vector<MKL_Complex16> work(lwork);
+        zheev_("V", "U", &n, reinterpret_cast<MKL_Complex16*>(M.data()), &n, w.data(), work.data(), &lwork, rwork.data(), &info);
+        #else
         std::complex<double> wkopt;
         std::vector<double> rwork(3 * n - 2);
         zheev_("V", "U", &n, (std::complex<double>*)M.data(), &n, w.data(), &wkopt, &lwork, rwork.data(), &info);
         lwork = (int)wkopt.real();
         std::vector<std::complex<double>> work(lwork);
         zheev_("V", "U", &n, (std::complex<double>*)M.data(), &n, w.data(), work.data(), &lwork, rwork.data(), &info);
+        #endif
     }
     
     if (info != 0) {
@@ -71,9 +89,9 @@ void dense_isqrt(int n, std::vector<T>& M) {
     std::vector<T> Res(n * n, T(0));
     
     if constexpr (std::is_same<T, double>::value) {
-        vbcsr::BLASKernel::gemm(n, n, n, 1.0, (double*)M.data(), n, (double*)M.data(), n, 0.0, (double*)Res.data(), n, vbcsr::CblasNoTrans, vbcsr::CblasConjTrans); // ConjTrans for double is Trans
+        vbcsr::BLASKernel::gemm(n, n, n, 1.0, (double*)M.data(), n, (double*)M.data(), n, 0.0, (double*)Res.data(), n, CblasNoTrans, CblasConjTrans); // ConjTrans for double is Trans
     } else {
-        vbcsr::BLASKernel::gemm(n, n, n, std::complex<double>(1.0), (std::complex<double>*)M.data(), n, (std::complex<double>*)M.data(), n, std::complex<double>(0.0), (std::complex<double>*)Res.data(), n, vbcsr::CblasNoTrans, vbcsr::CblasConjTrans);
+        vbcsr::BLASKernel::gemm(n, n, n, std::complex<double>(1.0), (std::complex<double>*)M.data(), n, (std::complex<double>*)M.data(), n, std::complex<double>(0.0), (std::complex<double>*)Res.data(), n, CblasNoTrans, CblasConjTrans);
     }
     
     M = Res;
@@ -114,7 +132,8 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
     for (int b = 0; b < nbatch; ++b) {
         // Avoid thread oversubscription in BLAS/LAPACK
         #ifdef RSATB_USE_MKL
-        mkl_set_num_threads_local(1);
+        int one = 1;
+        mkl_set_num_threads_local_(&one);
         #elif defined(RSATB_USE_OPENBLAS)
         openblas_set_num_threads(1);
         #endif

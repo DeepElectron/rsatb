@@ -4,6 +4,12 @@
 #  MKL_INCLUDE - where to find mkl.h, etc.
 #  MKL_FOUND        - True if mkl found.
 
+if(NOT DEFINED MKLROOT)
+    if(DEFINED ENV{MKLROOT})
+        set(MKLROOT $ENV{MKLROOT})
+    endif()
+endif()
+
 find_package(MKL NO_MODULE) # try using official module first
 if(NOT TARGET MKL::MKL)
 
