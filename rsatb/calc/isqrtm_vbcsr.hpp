@@ -81,12 +81,11 @@ void dense_isqrt(int n, std::vector<T>& M) {
 
 
 template <typename T, typename Kernel = DefaultKernel<T>>
-void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
-            double tol = 1e-7, double sptol = 1e-6, int maxit = 20, 
-            bool verbose = false) {
+void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, bool verbose = false) {
     
     DistGraph* graph = S_mat.graph;
     int rank = graph->rank;
+    int size = graph->size;
     MPI_Comm comm = graph->comm;
 
     // 1. Initialize Z0 (S_inv_sqrt)
@@ -105,7 +104,7 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
     MPI_Allreduce(&n_owned, &n_owned_max, 1, MPI_INT, MPI_MAX, comm);
     
     // batch size
-    int batch_size = 16;
+    int batch_size = std::max(1, omp_get_max_threads() / size);
     
     int nbatch = n_owned_max / batch_size;
     if (n_owned_max % batch_size != 0) nbatch++;
@@ -174,10 +173,8 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
             int total_dim = 0;
             for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
 
-            if (total_dim == 0) continue;
-
             if (rank==0 || verbose) {
-                // std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
+                std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
             }
             
             // Compute M^{-1/2}
@@ -231,7 +228,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
     DistGraph* graph = S_mat.graph;
     int rank = graph->rank;
 
-    isqrtm_init(S_mat, S_inv_sqrt, tol, sptol, maxit, verbose);
+    isqrtm_init(S_mat, S_inv_sqrt, verbose);
 
     // S_inv_sqrt.shift(T(factor));
     
@@ -258,7 +255,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
         MPI_Allreduce(&norm, &global_norm, 1, MPI_DOUBLE, MPI_MAX, graph->comm);
         norm = global_norm;
     }
-    if (rank == 0) std::cout << "isqrtm: Initial norm=" << norm << std::endl;
+    if (rank == 0) std::cout << "isqrtm: Initial norm=" << norm <<  std::endl;
     
     // Restore tmp2
     tmp2.shift(T(1.0));
@@ -304,7 +301,8 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
         }
         // -------------------------
         // *S_inv_sqrt = S_inv_sqrt->spmm(S_inv_sqrt->transpose(), sptol);
-        // S_inv_sqrt->axpby(T(0.5), S_inv_sqrt->transpose(), T(0.5));
+        S_inv_sqrt->axpby(T(0.5), S_inv_sqrt->transpose(), T(0.5));
+        S_inv_sqrt->filter_blocks(sptol);
 
         // Approximate update?
         // tmp3 = tmp1^H * tmp2
