@@ -138,12 +138,12 @@ void run_test(int rank, int size) {
                     max_err = 1.0;
                 } else {
                     // Compare values
-                    size_t off1 = mat.blk_ptr[k];
-                    size_t off2 = mat2.blk_ptr[idx2];
-                    size_t size = mat.blk_ptr[k+1] - off1;
+                    T* data1 = mat.arena.get_ptr(mat.blk_handles[k]);
+                    T* data2 = mat2.arena.get_ptr(mat2.blk_handles[idx2]);
+                    size_t size = mat.blk_sizes[k];
                     
                     for (size_t j = 0; j < size; ++j) {
-                        double diff = std::abs(mat.val[off1 + j] - mat2.val[off2 + j]);
+                        double diff = std::abs(data1[j] - data2[j]);
                         if (diff > 1e-12) {
                             max_err = std::max(max_err, diff);
                         }

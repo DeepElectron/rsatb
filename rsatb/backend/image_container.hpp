@@ -248,12 +248,10 @@ public:
                     // But update_local_block takes pointer to data.
                     // We need to compute data first.
                     
-                    size_t offset = mat_R->blk_ptr[k];
+                    int n_elem = mat_R->blk_sizes[k];
                     int r_dim = mat_R->graph->block_sizes[i];
                     int c_dim = mat_R->graph->block_sizes[col_R];
-                    int n_elem = r_dim * c_dim;
-                    
-                    const T* data_R = mat_R->val.data() + offset;
+                    const T* data_R = mat_R->arena.get_ptr(mat_R->blk_handles[k]);
                     
                     std::vector<ResultT> block_res(n_elem);
                     

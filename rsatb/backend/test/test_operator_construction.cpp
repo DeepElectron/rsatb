@@ -277,7 +277,12 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     // Check if matrices have non-zero elements
     // We can check local values
     double norm_x = 0.0;
-    for(auto v : Vx3.val) norm_x += std::abs(v);
+    for(int i=0;i<Vx3.blk_handles.size();i++) {
+        const std::complex<double>* data = Vx3.arena.get_ptr(Vx3.blk_handles[i]);
+        for(int j=0;j<Vx3.blk_sizes[i];j++) {
+            norm_x += std::abs(data[j]);
+        }
+    }
     
     double global_norm_x;
     MPI_Allreduce(&norm_x, &global_norm_x, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
@@ -335,7 +340,12 @@ TEST(OperatorConstructionTest, TestBuildOverlap) {
     BlockSpMat<std::complex<double>>& S = *S_ptr;
     
     double norm_s = 0.0;
-    for(auto v : S.val) norm_s += std::abs(v);
+    for(int i=0;i<S.blk_handles.size();i++) {
+        const std::complex<double>* data = S.arena.get_ptr(S.blk_handles[i]);
+        for(int j=0;j<S.blk_sizes[i];j++) {
+            norm_s += std::abs(data[j]);
+        }
+    }
     
     double global_norm_s;
     MPI_Allreduce(&norm_s, &global_norm_s, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);

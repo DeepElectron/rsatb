@@ -70,7 +70,7 @@ public:
                 
                 if (global_row == global_col) {
                     // Found diagonal block
-                    size_t offset = A.blk_ptr[k];
+                    T* data = A.arena.get_ptr(A.blk_handles[k]);
                     int rows = A.graph->block_sizes[i];
                     int cols = A.graph->block_sizes[local_col];
                     
@@ -80,7 +80,7 @@ public:
                     
                     // Copy block data
                     std::vector<T> block(rows * cols);
-                    std::copy(A.val.begin() + offset, A.val.begin() + offset + rows*cols, block.begin());
+                    std::copy(data, data + rows*cols, block.begin());
                     
                     // Invert block
                     invert_block(block.data(), rows);

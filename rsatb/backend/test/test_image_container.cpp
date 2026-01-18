@@ -130,7 +130,7 @@ void test_image_container() {
         int end = res0->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res0->col_ind[k] == l_col) {
-                std::complex<double> val = res0->val[res0->blk_ptr[k]];
+                std::complex<double> val = res0->arena.get_ptr(res0->blk_handles[k])[0];
                 if (rank == 0) std::cout << "K=0 Val: " << val << std::endl;
                 assert(std::abs(val.real() - 3.0) < 1e-9);
                 found = true;
@@ -154,7 +154,7 @@ void test_image_container() {
         int end = res1->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res1->col_ind[k] == l_col) {
-                std::complex<double> val = res1->val[res1->blk_ptr[k]];
+                std::complex<double> val = res1->arena.get_ptr(res1->blk_handles[k])[0];
                 if (rank == 0) std::cout << "K=0.5 Val: " << val << std::endl;
                 assert(std::abs(val.real() - (-1.0)) < 1e-9);
                 found = true;
@@ -184,7 +184,7 @@ void test_image_container() {
         int end = res2->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res2->col_ind[k] == l_col) {
-                std::complex<double> val = res2->val[res2->blk_ptr[k]];
+                std::complex<double> val = res2->arena.get_ptr(res2->blk_handles[k])[0];
                 if (rank == 0) std::cout << "K=0.5 Pos Val: " << val << std::endl;
                 assert(std::abs(val.real()) < 1e-9);
                 assert(std::abs(val.imag() - (-1.0)) < 1e-9);
@@ -336,9 +336,9 @@ void test_multielement_multiorbital() {
         int end = res->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res->col_ind[k] == l_col) {
-                size_t offset = res->blk_ptr[k];
+                std::complex<double>* data = res->arena.get_ptr(res->blk_handles[k]);
                 for (int i=0; i<2*3; ++i) {
-                    std::complex<double> val = res->val[offset + i];
+                    std::complex<double> val = data[i];
                     if (i == 0) std::cout << "0->1 Val: " << val << std::endl;
                     assert(std::abs(val.real() - 1.0) < 1e-9);
                     assert(std::abs(val.imag() - 2.0) < 1e-9);
@@ -359,9 +359,9 @@ void test_multielement_multiorbital() {
         int end = res->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res->col_ind[k] == l_col) {
-                size_t offset = res->blk_ptr[k];
+                std::complex<double>* data = res->arena.get_ptr(res->blk_handles[k]);
                 for (int i=0; i<3*2; ++i) {
-                    std::complex<double> val = res->val[offset + i];
+                    std::complex<double> val = data[i];
                     if (i == 0) std::cout << "1->0 Val: " << val << std::endl;
                     assert(std::abs(val.real() - 3.0) < 1e-9);
                     assert(std::abs(val.imag() - 0.0) < 1e-9);
@@ -409,8 +409,8 @@ void test_multielement_multiorbital() {
         int end = res2->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res2->col_ind[k] == l_col) {
-                size_t offset = res2->blk_ptr[k];
-                std::complex<double> val = res2->val[offset]; // Check first element
+                std::complex<double>* data = res2->arena.get_ptr(res2->blk_handles[k]);
+                std::complex<double> val = data[0]; // Check first element
                 std::cout << "0->1 Pos Val: " << val << " Expected: " << -1.0/s2 << " + " << 3.0/s2 << "i" << std::endl;
                 
                 assert(std::abs(val.real() - (-1.0/s2)) < 1e-9);
@@ -430,8 +430,8 @@ void test_multielement_multiorbital() {
         int end = res2->row_ptr[l_row+1];
         for (int k = start; k < end; ++k) {
             if (res2->col_ind[k] == l_col) {
-                size_t offset = res2->blk_ptr[k];
-                std::complex<double> val = res2->val[offset];
+                std::complex<double>* data = res2->arena.get_ptr(res2->blk_handles[k]);
+                std::complex<double> val = data[0];
                 std::cout << "1->0 Pos Val: " << val << " Expected: " << 3.0/s2 << " - " << 3.0/s2 << "i" << std::endl;
                 
                 assert(std::abs(val.real() - (3.0/s2)) < 1e-9);

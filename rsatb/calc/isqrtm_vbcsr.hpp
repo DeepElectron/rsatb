@@ -110,12 +110,12 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
     if (rank == 0 && verbose) std::cout << "isqrtm: Initializing Z0 using subgraph method..." << std::endl;
 
     // check S_inv_sqrt allocation
-    if (S_inv_sqrt->val.size() == 0 || S_inv_sqrt == nullptr || S_inv_sqrt == NULL) {
+    if (S_inv_sqrt == nullptr || S_inv_sqrt == NULL) {
         *S_inv_sqrt = S_mat.duplicate();
     }
     
     // Clear S_inv_sqrt
-    std::fill(S_inv_sqrt->val.begin(), S_inv_sqrt->val.end(), T(0));
+    S_inv_sqrt->fill(T(0));
     
     int n_owned = graph->owned_global_indices.size();
     int n_owned_max = 0;

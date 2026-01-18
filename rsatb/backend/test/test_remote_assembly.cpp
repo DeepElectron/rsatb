@@ -33,7 +33,6 @@ int main(int argc, char** argv) {
     BlockSpMat<double> mat(&graph);
     
     // Initialize to 0
-    std::fill(mat.val.begin(), mat.val.end(), 0.0);
     
     // Test Scenario:
     // 1. Rank 0 INSERTs 1.0 to (0,0) [Local]
@@ -77,13 +76,13 @@ int main(int argc, char** argv) {
             else gid_c = graph.ghost_global_indices[lid_c - n_owned];
             
             if (gid_r == gid_c) { 
-                size_t offset = mat.blk_ptr[k];
+                double* data = mat.arena.get_ptr(mat.blk_handles[k]);
                 double expected = (gid_r == 0) ? 1.5 : 2.5;
                 
                 for (int n = 0; n < 4; ++n) {
-                    if (std::abs(mat.val[offset + n] - expected) > 1e-9) {
+                    if (std::abs(data[n] - expected) > 1e-9) {
                         std::cout << "Rank " << rank << " Failed at " << gid_r << "," << gid_c 
-                                  << " val=" << mat.val[offset+n] << " expected=" << expected << std::endl;
+                                  << " val=" << data[n] << " expected=" << expected << std::endl;
                         MPI_Abort(MPI_COMM_WORLD, 1);
                     }
                 }
