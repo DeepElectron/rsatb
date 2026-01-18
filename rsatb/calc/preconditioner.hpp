@@ -4,7 +4,7 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
-#include "isqrtm_vbcsr.hpp"
+#include "isqrtm.hpp"
 #include <vector>
 #include <cmath>
 #include <algorithm>

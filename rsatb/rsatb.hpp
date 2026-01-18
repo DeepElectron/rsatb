@@ -11,7 +11,7 @@
 #include "calc/dos.hpp"
 #include "calc/ac.hpp"
 #include "calc/fermi_dirac.hpp"
-#include "calc/isqrtm_vbcsr.hpp"
+#include "calc/isqrtm.hpp"
 #include "calc/preconditioner.hpp"
 #include "calc/solver.hpp" 
 #include "calc/cheby.hpp"
