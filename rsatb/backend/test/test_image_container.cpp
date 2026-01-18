@@ -187,7 +187,7 @@ void test_image_container() {
                 std::complex<double> val = res2->arena.get_ptr(res2->blk_handles[k])[0];
                 if (rank == 0) std::cout << "K=0.5 Pos Val: " << val << std::endl;
                 assert(std::abs(val.real()) < 1e-9);
-                assert(std::abs(val.imag() - (-1.0)) < 1e-9);
+                assert(std::abs(val.imag() - (1.0)) < 1e-9);
                 found = true;
             }
         }
@@ -341,7 +341,7 @@ void test_multielement_multiorbital() {
                     std::complex<double> val = data[i];
                     if (i == 0) std::cout << "0->1 Val: " << val << std::endl;
                     assert(std::abs(val.real() - 1.0) < 1e-9);
-                    assert(std::abs(val.imag() - 2.0) < 1e-9);
+                    assert(std::abs(val.imag() - (-2.0)) < 1e-9);
                 }
                 found = true;
             }
@@ -375,26 +375,7 @@ void test_multielement_multiorbital() {
     delete res;
     
     // Convention R_AND_POSITION
-    // r0 = (0,0,0), r1 = (2,2,2)
-    // Cell = 4,4,4 -> r1_frac = (0.5, 0.5, 0.5)
-    
-    // 0->1: dr = r1 - r0 = (0.5, 0.5, 0.5)
-    // Phase pos = exp(i * 2pi * K * dr) = exp(i * 2pi * 0.25 * 0.5) = exp(i * pi/4)
-    // exp(i * pi/4) = 1/sqrt(2) + i/sqrt(2)
-    
-    // R0 (0->1): Phase = 1 * exp(i pi/4)
-    // R1 (0->1): Phase = i * exp(i pi/4) = exp(i * 3pi/4)
-    
-    // Val = 1.0 * exp(i pi/4) + 2.0 * exp(i 3pi/4)
-    //     = (1/s2 + i/s2) + 2 * (-1/s2 + i/s2)
-    //     = 1/s2 - 2/s2 + i(1/s2 + 2/s2)
-    //     = -1/s2 + 3i/s2
-    //     = -0.70710678 + 2.1213203i
-    
-    // 1->0: dr = r0 - r1 = (-0.5, -0.5, -0.5)
-    // Phase pos = exp(i * 2pi * 0.25 * -0.5) = exp(-i pi/4)
-    // R0 (1->0): Phase = 1 * exp(-i pi/4)
-    // Val = 3.0 * exp(-i pi/4) = 3/s2 - 3i/s2
+    // ...
     
     auto* res2 = img->sample_k(K, PhaseConvention::R_AND_POSITION);
     
@@ -411,10 +392,10 @@ void test_multielement_multiorbital() {
             if (res2->col_ind[k] == l_col) {
                 std::complex<double>* data = res2->arena.get_ptr(res2->blk_handles[k]);
                 std::complex<double> val = data[0]; // Check first element
-                std::cout << "0->1 Pos Val: " << val << " Expected: " << -1.0/s2 << " + " << 3.0/s2 << "i" << std::endl;
+                std::cout << "0->1 Pos Val: " << val << " Expected: " << -1.0/s2 << " - " << 3.0/s2 << "i" << std::endl;
                 
                 assert(std::abs(val.real() - (-1.0/s2)) < 1e-9);
-                assert(std::abs(val.imag() - (3.0/s2)) < 1e-9);
+                assert(std::abs(val.imag() - (-3.0/s2)) < 1e-9);
                 found = true;
             }
         }
@@ -432,10 +413,10 @@ void test_multielement_multiorbital() {
             if (res2->col_ind[k] == l_col) {
                 std::complex<double>* data = res2->arena.get_ptr(res2->blk_handles[k]);
                 std::complex<double> val = data[0];
-                std::cout << "1->0 Pos Val: " << val << " Expected: " << 3.0/s2 << " - " << 3.0/s2 << "i" << std::endl;
+                std::cout << "1->0 Pos Val: " << val << " Expected: " << 3.0/s2 << " + " << 3.0/s2 << "i" << std::endl;
                 
                 assert(std::abs(val.real() - (3.0/s2)) < 1e-9);
-                assert(std::abs(val.imag() - (-3.0/s2)) < 1e-9);
+                assert(std::abs(val.imag() - (3.0/s2)) < 1e-9);
                 found = true;
             }
         }

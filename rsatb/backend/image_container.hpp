@@ -171,7 +171,8 @@ public:
     }
 
     void add_block(const std::vector<int>& R, int global_row, int global_col, const T* data, int rows, int cols, AssemblyMode mode = AssemblyMode::ADD, MatrixLayout layout = MatrixLayout::ColMajor) {
-        if (image_blocks.find(R) == image_blocks.end()) {
+        auto it = image_blocks.find(R);
+        if (it == image_blocks.end()) {
              // This should not happen if we built graphs for all Rs in AtomicData.
              // Unless the user is adding a block for an R that didn't exist in the original edges?
              // The requirement says: "if not, it should allocate the block_csr using the graph corresponding to that R."
@@ -186,7 +187,7 @@ public:
              throw std::runtime_error("R vector not found in ImageContainer (must be present in AtomicData)");
         }
         
-        image_blocks[R]->add_block(global_row, global_col, data, rows, cols, mode, layout);
+        it->second->add_block(global_row, global_col, data, rows, cols, mode, layout);
     }
     
     void assemble() {

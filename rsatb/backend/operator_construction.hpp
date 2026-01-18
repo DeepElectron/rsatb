@@ -45,6 +45,7 @@ public:
         bool found;
         
         // Loop over atoms
+        #pragma omp parallel for
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
             
@@ -66,6 +67,7 @@ public:
         // Loop over edges
         int estart, eend;
         ad.get_edge_range_local(&estart, &eend);
+        #pragma omp parallel for
         for(int ie=estart; ie<eend; ++ie) {
             int i, j;
             ad.get_connected_atoms(ie, &i, &j);
@@ -116,7 +118,7 @@ public:
         ad.get_vertex_range_local(&nstart, &nend);
         
         ModuleBase::Vector3<double> vR(0,0,0);
-        
+        // #pragma omp parallel for
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
             
@@ -140,7 +142,8 @@ public:
         int estart, eend;
         ad.get_edge_range_local(&estart, &eend);
         const double* cell = ad.cell_ptr();
-        
+
+        // #pragma omp parallel for
         for(int ie=estart; ie<eend; ++ie) {
             int i, j;
             ad.get_connected_atoms(ie, &i, &j);
@@ -198,6 +201,7 @@ public:
         std::complex<double> erfactor = 27.211386245981 / 1.8897259886;
 
         // 1. 2-body part (Overlap + Gradient)
+        // #pragma omp parallel for
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
             
