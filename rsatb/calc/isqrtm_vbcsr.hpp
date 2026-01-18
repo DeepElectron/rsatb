@@ -192,9 +192,9 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
             int total_dim = 0;
             for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
 
-            if (rank==0 || verbose) {
-                std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
-            }
+            // if (rank==0 || verbose) {
+            //     std::cout << "working on atom: "<< idx << " total dim: " << total_dim << std::endl;
+            // }
             
             // Compute M^{-1/2}
             dense_isqrt(total_dim, M);
@@ -231,8 +231,8 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
         }
     }
     
-    if (rank == 0 && verbose) std::cout << "isqrtm: Z0 Loop Finished. Assembling..." << std::endl;
-    if (rank == 0) std::cout << "isqrtm: remote_blocks size: " << S_inv_sqrt->remote_blocks.size() << std::endl;
+    // if (rank == 0 && verbose) std::cout << "isqrtm: Z0 Loop Finished. Assembling..." << std::endl;
+    // if (rank == 0) std::cout << "isqrtm: remote_blocks size: " << S_inv_sqrt->remote_blocks.size() << std::endl;
 
     S_inv_sqrt->assemble();
     
@@ -283,7 +283,7 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
         MPI_Allreduce(&norm, &global_norm, 1, MPI_DOUBLE, MPI_MAX, graph->comm);
         norm = global_norm;
     }
-    if (rank == 0) std::cout << "isqrtm: Initial norm=" << norm <<  std::endl;
+    // if (rank == 0) std::cout << "isqrtm: Initial norm=" << norm <<  std::endl;
     
     // Restore tmp2
     tmp2.shift(T(1.0));
@@ -305,51 +305,62 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
         norm_pre = norm;
         
         // tmp1 = tmp2 * tmp2
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing tmp1..." << std::endl;
         tmp1 = tmp2.spmm(tmp2, sptol);
         
         // tmp1 = 0.375 * tmp1 - 1.25 * tmp2 + 1.875 * I
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing tmp1= 0.375 * tmp1 - 1.25 * tmp2." << std::endl;
         tmp1.axpby(T(-1.25), tmp2, T(0.375));
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing tmp1 = tmp1 + 1.875 * I..." << std::endl;
         tmp1.shift(T(1.875));
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Filtering tmp1..." << std::endl;
         tmp1.filter_blocks(sptol);
         
         // Z = Z * tmp1
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing Z = Z * tmp1..." << std::endl;
         *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
         
         // --- Debug Z Hermitian ---
-        if (verbose) {
-            BlockSpMat<T, Kernel> Z_H = S_inv_sqrt->transpose();
-            BlockSpMat<T, Kernel> diff_Z = S_inv_sqrt->duplicate();
-            diff_Z.axpby(T(-1.0), Z_H, T(1.0));
-            double d_norm = 0.0;
-            const auto& norms = diff_Z.get_block_norms();
-            for(double n : norms) d_norm = std::max(d_norm, n);
-            double global_d_norm;
-            MPI_Allreduce(&d_norm, &global_d_norm, 1, MPI_DOUBLE, MPI_MAX, graph->comm);
-            if (rank == 0) std::cout << "DEBUG: Z Hermitian Diff: " << global_d_norm << std::endl;
-        }
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Debugging Z Hermitian..." << std::endl;
+        // if (verbose) {
+        //     BlockSpMat<T, Kernel> Z_H = S_inv_sqrt->transpose();
+        //     BlockSpMat<T, Kernel> diff_Z = S_inv_sqrt->duplicate();
+        //     if (rank == 0 && verbose) std::cout << "isqrtm: Computing diff_Z = Z - Z_H..." << std::endl;
+        //     diff_Z.axpby(T(-1.0), Z_H, T(1.0));
+        //     if (rank == 0 && verbose) std::cout << "isqrtm: Computing norm of diff_Z..." << std::endl;
+        //     double d_norm = 0.0;
+        //     const auto& norms = diff_Z.get_block_norms();
+        //     for(double n : norms) d_norm = std::max(d_norm, n);
+        //     double global_d_norm;
+        //     MPI_Allreduce(&d_norm, &global_d_norm, 1, MPI_DOUBLE, MPI_MAX, graph->comm);
+        //     if (rank == 0) std::cout << "DEBUG: Z Hermitian Diff: " << global_d_norm << std::endl;
+        // }
         // -------------------------
         // *S_inv_sqrt = S_inv_sqrt->spmm(S_inv_sqrt->transpose(), sptol);
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing S_inv_sqrt = S_inv_sqrt * S_inv_sqrt^H..." << std::endl;
         S_inv_sqrt->axpby(T(0.5), S_inv_sqrt->transpose(), T(0.5));
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Filtering S_inv_sqrt..." << std::endl;
         S_inv_sqrt->filter_blocks(sptol);
 
         // Approximate update?
         // tmp3 = tmp1^H * tmp2
         // tmp2 = tmp3 * tmp1
+        // if (rank == 0 && verbose) std::cout << "isqrtm: Computing tmp2 = tmp1^H * tmp2..." << std::endl;
         if (norm < 1e-1 && ((count + 1) % 5 != 0)) {
             tmp2 = tmp1.spmm(tmp2, sptol, true, false);
             tmp2 = tmp2.spmm(tmp1, sptol, false, false);
 
-            if (rank == 0 && verbose) {
-                std::cout << "Approximate update: " << std::endl;
-            }
+            // if (rank == 0 && verbose) {
+            //     std::cout << "Approximate update: " << std::endl;
+            // }
         } else {
             // Update tmp2 (X_{k+1})
             tmp2 = S_inv_sqrt->spmm(S_mat, sptol, true, false);
             tmp2 = tmp2.spmm(*S_inv_sqrt, sptol, false, false);
 
-            if (rank == 0 && verbose) {
-                std::cout << "Exact update" << std::endl;
-            }
+            // if (rank == 0 && verbose) {
+            //     std::cout << "Exact update" << std::endl;
+            // }
         }
         
         tmp2.shift(T(-1.0));
