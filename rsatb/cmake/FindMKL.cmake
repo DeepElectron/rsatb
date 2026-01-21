@@ -16,7 +16,15 @@ if(NOT TARGET MKL::MKL)
 find_path(MKL_INCLUDE mkl_service.h HINTS ${MKLROOT}/include)
 
 find_library(MKL_INTEL NAMES mkl_intel_lp64 HINTS ${MKLROOT}/lib ${MKLROOT}/lib/intel64)
+find_library(MKL_GNU_THREAD NAMES mkl_gnu_thread HINTS ${MKLROOT}/lib ${MKLROOT}/lib/intel64)
 find_library(MKL_INTEL_THREAD NAMES mkl_intel_thread HINTS ${MKLROOT}/lib ${MKLROOT}/lib/intel64)
+
+if(MKL_GNU_THREAD)
+    set(MKL_THREAD_LIB ${MKL_GNU_THREAD})
+else()
+    set(MKL_THREAD_LIB ${MKL_INTEL_THREAD})
+endif()
+
 find_library(MKL_CORE NAMES mkl_core HINTS ${MKLROOT}/lib ${MKLROOT}/lib/intel64)
 if(ENABLE_MPI)
   find_library(MKL_SCALAPACK NAMES mkl_scalapack_lp64 HINTS ${MKLROOT}/lib ${MKLROOT}/lib/intel64)
@@ -28,9 +36,9 @@ include(FindPackageHandleStandardArgs)
 # if all listed variables are TRUE
 
 if(ENABLE_MPI)
-  find_package_handle_standard_args(MKL DEFAULT_MSG MKL_INTEL MKL_INTEL_THREAD MKL_CORE MKL_SCALAPACK MKL_BLACS_INTELMPI MKL_INCLUDE)
+  find_package_handle_standard_args(MKL DEFAULT_MSG MKL_INTEL MKL_THREAD_LIB MKL_CORE MKL_SCALAPACK MKL_BLACS_INTELMPI MKL_INCLUDE)
 else()
-  find_package_handle_standard_args(MKL MKL_INTEL MKL_INTEL_THREAD MKL_CORE MKL_INCLUDE)
+  find_package_handle_standard_args(MKL MKL_INTEL MKL_THREAD_LIB MKL_CORE MKL_INCLUDE)
 endif()
 
 if(MKL_FOUND)
@@ -40,12 +48,14 @@ if(MKL_FOUND)
       IMPORTED_LOCATION "${MKL_INTEL}"
       INTERFACE_INCLUDE_DIRECTORIES "${MKL_INCLUDE}")
   endif()
-  if(NOT TARGET MKL::INTEL_THREAD)
-    add_library(MKL::INTEL_THREAD UNKNOWN IMPORTED)
-    set_target_properties(MKL::INTEL_THREAD PROPERTIES
-      IMPORTED_LOCATION "${MKL_INTEL_THREAD}"
+  
+  if(NOT TARGET MKL::THREAD)
+    add_library(MKL::THREAD UNKNOWN IMPORTED)
+    set_target_properties(MKL::THREAD PROPERTIES
+      IMPORTED_LOCATION "${MKL_THREAD_LIB}"
       INTERFACE_INCLUDE_DIRECTORIES "${MKL_INCLUDE}")
   endif()
+
   if(NOT TARGET MKL::CORE)
     add_library(MKL::CORE UNKNOWN IMPORTED)
     set_target_properties(MKL::CORE PROPERTIES
@@ -69,14 +79,14 @@ if(MKL_FOUND)
     set_property(TARGET MKL::MKL PROPERTY
     INTERFACE_LINK_LIBRARIES
     "-Wl,--start-group"
-    MKL::INTEL MKL::INTEL_THREAD MKL::CORE MKL::MKL_SCALAPACK MKL::BLACS_INTELMPI
+    MKL::INTEL MKL::THREAD MKL::CORE MKL::MKL_SCALAPACK MKL::BLACS_INTELMPI
     "-Wl,--end-group"
     )
   else()
     set_property(TARGET MKL::MKL PROPERTY
     INTERFACE_LINK_LIBRARIES
     "-Wl,--start-group"
-    MKL::INTEL MKL::INTEL_THREAD MKL::CORE)
+    MKL::INTEL MKL::THREAD MKL::CORE)
   endif()
 endif()
 
