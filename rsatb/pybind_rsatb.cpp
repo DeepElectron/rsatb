@@ -16,25 +16,25 @@ PYBIND11_MODULE(_rsatb, m) {
                          py::array_t<int> atom_index, py::array_t<int> atom_type, 
                          py::array_t<int> edge_index, py::array_t<int> type_norb, 
                          py::array_t<int> edge_shift_vec,
-                         py::array_t<double> cell, py::array_t<double> pos) {
+                         py::array_t<double> cell, py::array_t<double> pos, bool verbose) {
             return new rsatb::RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
                                     atom_index.data(), atom_type.data(), 
                                     edge_index.data(), type_norb.data(), 
                                     edge_shift_vec.data(),
-                                    cell.data(), pos.data());
+                                    cell.data(), pos.data(), verbose);
         }),
         py::arg("npar"), py::arg("n_atom"), py::arg("N_atom"), py::arg("atom_offset"), 
         py::arg("n_edge"), py::arg("N_edge"),
         py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"), 
         py::arg("type_norb"), py::arg("edge_shift_vec"),
-        py::arg("cell"), py::arg("pos"))
-        .def(py::init<int, const std::string&, const std::vector<double>&, const std::vector<int>&>(),
-             py::arg("npar"), py::arg("filename"), py::arg("r_max_per_type"), py::arg("type_norb"))
+        py::arg("cell"), py::arg("pos"), py::arg("verbose") = true)
+        .def(py::init<int, const std::string&, const std::vector<double>&, const std::vector<int>&, bool>(),
+             py::arg("npar"), py::arg("filename"), py::arg("r_max_per_type"), py::arg("type_norb"), py::arg("verbose") = true)
         .def(py::init<int, const std::vector<double>&, const std::vector<int>&, 
                       const std::vector<double>&, const std::vector<bool>&, 
-                      const std::vector<double>&, const std::vector<int>&>(),
+                      const std::vector<double>&, const std::vector<int>&, bool>(),
              py::arg("npar"), py::arg("pos"), py::arg("z"), py::arg("cell"), py::arg("pbc"),
-             py::arg("r_max_per_type"), py::arg("type_norb"))
+             py::arg("r_max_per_type"), py::arg("type_norb"), py::arg("verbose") = true)
         .def("get_kernel_info", &rsatb::RSATB::get_kernel_info)
         .def("setup", &rsatb::RSATB::setup,
              py::arg("Hfile"), py::arg("kpoints"),

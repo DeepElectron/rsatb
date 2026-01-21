@@ -47,8 +47,9 @@ public:
           const size_t n_atom, const size_t N_atom, const size_t atom_offset, const size_t n_edge, const size_t N_edge,
           const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
           const double *cell, const double *pos,
+          bool verbose = false,
           MPI_Comm comm = MPI_COMM_WORLD) 
-        : world_comm_(comm), npar_(npar) {
+        : world_comm_(comm), npar_(npar), verbose_(verbose) {
         
         // Initialize threading for BLAS kernels
         Matrix::KernelType::init_threading();
@@ -66,8 +67,8 @@ public:
         return Matrix::KernelType::name();
     }
 
-    RSATB(int npar, const std::string& filename, const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, MPI_Comm comm = MPI_COMM_WORLD)
-        : world_comm_(comm), npar_(npar) {
+    RSATB(int npar, const std::string& filename, const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
+        : world_comm_(comm), npar_(npar), verbose_(verbose) {
         Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_file(filename, r_max_per_type, type_norb, sub_comm_));
@@ -76,8 +77,8 @@ public:
 
     RSATB(int npar, const std::vector<double>& pos, const std::vector<int>& z, 
           const std::vector<double>& cell, const std::vector<bool>& pbc, 
-          const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, MPI_Comm comm = MPI_COMM_WORLD)
-        : world_comm_(comm), npar_(npar) {
+          const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
+        : world_comm_(comm), npar_(npar), verbose_(verbose) {
         Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(pos, z, cell, pbc, r_max_per_type, type_norb, sub_comm_));
@@ -159,12 +160,12 @@ public:
                 // esolver.solve_smallest(*Sk, nullptr, nullptr, 1, 1e-3, evals, evecs, false);
                 double max_eig = 1;
                 // std::cout << "max_eig = " << max_eig << std::endl;
-                esolver.solve_largest(*Sk, nullptr, nullptr, 1, 1e-3, evals, evecs, false);
+                esolver.solve_largest(*Sk, nullptr, nullptr, 1, 1e-3, evals, evecs, verbose_);
                 max_eig = evals[0];
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-5, "graph", factor, true);
+                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-7, "graph", factor, verbose_);
                 precond_map_[k_idx] = std::move(P);
                 
                 if (precond == "H") {
@@ -181,8 +182,8 @@ public:
             Matrix* Hk = H_k_map_[k_idx].get();
             Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
             
-            esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, true, P->get_type());
-            esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, true, P->get_type());
+            esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, P->get_type());
+            esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type());
             
             if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
             if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
@@ -231,13 +232,13 @@ public:
             
             std::unique_ptr<Chebyshev<Scalar>> cheby;
             if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
             } else if (Sk) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
             } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
             } else {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
             }
             
             std::vector<std::complex<double>> cdos;
@@ -245,9 +246,9 @@ public:
             std::vector<std::complex<double>>* null_res = nullptr;
             
             if (nsamples_ == 1) {
-                rsatb::calc::corr_dos(*cheby, *sample_vec_, nt, cdos, null_vec, null_res, true);
+                rsatb::calc::corr_dos(*cheby, *sample_vec_, nt, cdos, null_vec, null_res, verbose_);
             } else {
-                rsatb::calc::corr_dos(*cheby, *sample_multi_vec_, nt, cdos, null_vec, null_res, true);
+                rsatb::calc::corr_dos(*cheby, *sample_multi_vec_, nt, cdos, null_vec, null_res, verbose_);
             }
             
             // Transform per K-point
@@ -323,21 +324,21 @@ public:
             
             std::unique_ptr<Chebyshev<Scalar>> cheby;
             if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
             } else if (Sk) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
             } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
             } else {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_);
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
             }
             
             std::vector<std::complex<double>> cac;
             
             if (nsamples_ == 1) {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, true);
+                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
             } else {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_multi_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, true);
+                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_multi_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
             }
 
             
@@ -424,6 +425,7 @@ private:
     int world_rank_, world_size_;
     int sub_rank_, sub_size_;
     int npar_;
+    bool verbose_;
     
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<OperatorConstruction> op_construction_;

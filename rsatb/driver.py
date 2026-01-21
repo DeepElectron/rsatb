@@ -12,7 +12,7 @@ class RSATB:
         self._cpp_obj = cpp_obj
 
     @classmethod
-    def from_file(cls, npar, filename, r_max_per_type, type_norb):
+    def from_file(cls, npar, filename, r_max_per_type, type_norb, verbose=True):
         """
         Initialize RSATB from a file.
 
@@ -22,11 +22,11 @@ class RSATB:
             r_max_per_type (list of float): Cutoff radii per atom type.
             type_norb (list of int): Number of orbitals per atom type.
         """
-        cpp_obj = _rsatb.RSATB(npar, filename, r_max_per_type, type_norb)
+        cpp_obj = _rsatb.RSATB(npar, filename, r_max_per_type, type_norb, verbose)
         return cls(cpp_obj)
 
     @classmethod
-    def from_points(cls, npar, pos, z, cell, pbc, r_max_per_type, type_norb):
+    def from_points(cls, npar, pos, z, cell, pbc, r_max_per_type, type_norb, verbose=True):
         """
         Initialize RSATB from atomic positions.
 
@@ -39,13 +39,13 @@ class RSATB:
             r_max_per_type (list of float): Cutoff radii per atom type.
             type_norb (list of int): Number of orbitals per atom type.
         """
-        cpp_obj = _rsatb.RSATB(npar, pos, z, cell, pbc, r_max_per_type, type_norb)
+        cpp_obj = _rsatb.RSATB(npar, pos, z, cell, pbc, r_max_per_type, type_norb, verbose)
         return cls(cpp_obj)
 
     @classmethod
     def from_raw_data(cls, npar, n_atom, N_atom, atom_offset, n_edge, N_edge, 
                       atom_index, atom_type, edge_index, type_norb, edge_shift_vec, 
-                      cell, pos):
+                      cell, pos, verbose=True):
         """
         Initialize RSATB from raw arrays (matching the pointer-based C++ constructor).
 
@@ -74,7 +74,7 @@ class RSATB:
         
         cpp_obj = _rsatb.RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
                                atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
-                               cell, pos)
+                               cell, pos, verbose)
         return cls(cpp_obj)
 
     def setup(self, Hfile, kpoints, orb_names=None, orb_dirs="", psd_names=None, psd_dirs="", precond="H/S", nsamples=1):

@@ -52,7 +52,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
     
     rsatb_inst = std::make_unique<RSATB>(
         npar, vasp_file,
-        r_max_per_type, type_norb, MPI_COMM_WORLD
+        r_max_per_type, type_norb, true, MPI_COMM_WORLD
     );
     
     if (rank == 0) {
