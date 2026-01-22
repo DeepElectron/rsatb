@@ -1,4 +1,5 @@
 #include "cubic_spline.h"
+#include "nao_lapack_types.h"
 
 #include <cassert>
 #include <algorithm>
@@ -11,7 +12,9 @@ using ModuleBase::CubicSpline;
 extern "C"
 {
     // solve a tridiagonal linear system
-    void dgtsv_(int* N, int* NRHS, double* DL, double* D, double* DU, double* B, int* LDB, int* INFO);
+#if !defined(__MKL)
+    void dgtsv_(nao_lapack_int* N, nao_lapack_int* NRHS, double* DL, double* D, double* DU, double* B, nao_lapack_int* LDB, nao_lapack_int* INFO);
+#endif
 };
 
 
@@ -370,7 +373,7 @@ void CubicSpline::_validate_eval(
 
 
 void CubicSpline::_build(
-    int n,
+    int n_in,
     const double* dx,
     const double* y,
     const BoundaryCondition& bc_start,
@@ -378,6 +381,7 @@ void CubicSpline::_build(
     double* dy
 )
 {
+    nao_lapack_int n = n_in;
     _validate_build(n, dx, y, bc_start, bc_end);
 
     if (n == 2 && bc_start.type == BoundaryType::periodic)
@@ -475,9 +479,9 @@ void CubicSpline::_build(
                              + dd[n - 3] * dx[n - 2] * dx[n - 2]) / l[n - 2];
             }
 
-            int nrhs = 1;
-            int ldb = n;
-            int info = 0;
+            nao_lapack_int nrhs = 1;
+            nao_lapack_int ldb = n;
+            nao_lapack_int info = 0;
             dgtsv_(&n, &nrhs, l, d, u, dy, &ldb, &info);
         }
     }
@@ -536,8 +540,9 @@ int CubicSpline::_index(int n, double x0, double dx, double x)
 }
 
 
-void CubicSpline::_solve_cyctri(int n, double* d, double* u, double* l, double* b)
+void CubicSpline::_solve_cyctri(int n_in, double* d, double* u, double* l, double* b)
 {
+    nao_lapack_int n = n_in;
     // flexible non-zero parameters that can affect the condition number of the
     // tridiagonal linear system
     double alpha = 1.0;
@@ -551,9 +556,9 @@ void CubicSpline::_solve_cyctri(int n, double* d, double* u, double* l, double* 
     d[0] -= u[n - 1] * beta / alpha;
     d[n - 1] -= l[n - 1] * alpha / beta;
 
-    int nrhs = 2;
-    int info = 0;
-    int ldb = n;
+    nao_lapack_int nrhs = 2;
+    nao_lapack_int info = 0;
+    nao_lapack_int ldb = n;
     dgtsv_(&n, &nrhs, l, d, u, bp.data(), &ldb, &info);
 
     double fac = (beta * u[n - 1] * bp[0] + alpha * l[n - 1] * bp[n - 1])
