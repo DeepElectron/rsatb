@@ -516,7 +516,7 @@ private:
 
     /// Computational routine for building cubic spline interpolant
     static void _build(
-        int n_in,
+        int n,
         const double* dx,
         const double* y,
         const BoundaryCondition& bc_start,
@@ -603,7 +603,7 @@ private:
      * @note d, l, u are all overwritten in this function.
      *
      */
-    static void _solve_cyctri(int n_in, double* d, double* u, double* l, double* b);
+    static void _solve_cyctri(int n, double* d, double* u, double* l, double* b);
 };
 
 } // namespace ModuleBase

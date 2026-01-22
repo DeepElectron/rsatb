@@ -17,6 +17,7 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 option(USE_OPENMP "Use OpenMP" ON)
 set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
 set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
+option(USE_ILP64 "Use 64-bit integers for BLAS/LAPACK" OFF)
 
 # --- Dependencies ---
 include(FetchContent)
@@ -43,7 +44,14 @@ endif()
 
 # BLAS/LAPACK
 if(BLAS_BACKEND STREQUAL "MKL")
-    set(BLA_VENDOR "Intel10_64lp")
+    if(USE_ILP64)
+        set(BLA_VENDOR "Intel10_64ilp")
+        add_compile_definitions(MKL_ILP64) # For MKL headers
+        set(RSATB_USE_ILP64 ON)
+    else()
+        set(BLA_VENDOR "Intel10_64lp")
+        set(RSATB_USE_ILP64 OFF)
+    endif()
     find_package(BLAS REQUIRED)
     find_package(LAPACK REQUIRED)
     add_compile_definitions(__MKL RSATB_USE_MKL VBCSR_USE_MKL)
@@ -60,6 +68,14 @@ else()
     find_package(BLAS REQUIRED)
     find_package(LAPACK REQUIRED)
 endif()
+
+# Generate config.hpp
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/calc/config.hpp.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/calc/config.hpp"
+)
+# Add binary dir to include path so config.hpp is found
+include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # FFTW
 find_package(FFTW REQUIRED)
@@ -185,6 +201,12 @@ else()
 endif()
 
 # 4. VBCSR (Use existing sources in extern/, or fetch if missing)
+if(USE_ILP64)
+    set(VBCSR_BLAS_ILP64 ON CACHE BOOL "Use 64-bit integers for BLAS/LAPACK interfaces" FORCE)
+else()
+    set(VBCSR_BLAS_ILP64 OFF CACHE BOOL "Use 64-bit integers for BLAS/LAPACK interfaces" FORCE)
+endif()
+
 set(VBCSR_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/vbcsr")
 
 if(EXISTS "${VBCSR_SOURCE_DIR}/CMakeLists.txt")
@@ -270,6 +292,7 @@ target_link_libraries(_rsatb PRIVATE ${RSATB_LINK_LIBS})
 # Install
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 install(TARGETS _rsatb DESTINATION .)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/calc/config.hpp" DESTINATION include/rsatb/calc)
 
 # Test: test_isqrtm_vbcsr
 # add_executable(test_isqrtm_vbcsr calc/test/test_isqrtm_vbcsr.cpp)

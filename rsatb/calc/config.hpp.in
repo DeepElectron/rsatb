@@ -1,0 +1,7 @@
+#ifndef RSATB_CALC_CONFIG_HPP
+#define RSATB_CALC_CONFIG_HPP
+
+/* Define if we want to use 64-bit integers for BLAS/LAPACK */
+#cmakedefine RSATB_USE_ILP64
+
+#endif // RSATB_CALC_CONFIG_HPP

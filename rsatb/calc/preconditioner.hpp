@@ -13,14 +13,7 @@
 
 // LAPACK declarations for block inversion
 // LAPACK declarations for block inversion
-#if !defined(RSATB_USE_MKL)
-extern "C" {
-    void dgetrf_(const rsatb::calc::rsatb_lapack_int* m, const rsatb::calc::rsatb_lapack_int* n, double* a, const rsatb::calc::rsatb_lapack_int* lda, rsatb::calc::rsatb_lapack_int* ipiv, rsatb::calc::rsatb_lapack_int* info);
-    void dgetri_(const rsatb::calc::rsatb_lapack_int* n, double* a, const rsatb::calc::rsatb_lapack_int* lda, const rsatb::calc::rsatb_lapack_int* ipiv, double* work, const rsatb::calc::rsatb_lapack_int* lwork, rsatb::calc::rsatb_lapack_int* info);
-    void zgetrf_(const rsatb::calc::rsatb_lapack_int* m, const rsatb::calc::rsatb_lapack_int* n, std::complex<double>* a, const rsatb::calc::rsatb_lapack_int* lda, rsatb::calc::rsatb_lapack_int* ipiv, rsatb::calc::rsatb_lapack_int* info);
-    void zgetri_(const rsatb::calc::rsatb_lapack_int* n, std::complex<double>* a, const rsatb::calc::rsatb_lapack_int* lda, const rsatb::calc::rsatb_lapack_int* ipiv, std::complex<double>* work, const rsatb::calc::rsatb_lapack_int* lwork, rsatb::calc::rsatb_lapack_int* info);
-}
-#endif
+// LAPACK declarations are now in lapack_types.hpp
 
 namespace rsatb {
 namespace calc {
@@ -137,22 +130,15 @@ private:
         rsatb_lapack_int info;
         std::vector<rsatb_lapack_int> ipiv(n);
         
-#ifdef RSATB_USE_MKL
-        zgetrf_(&n, &n, reinterpret_cast<MKL_Complex16*>(a), &n, ipiv.data(), &info);
-#else
-        zgetrf_(&n, &n, a, &n, ipiv.data(), &info);
-#endif
+        rsatb_complex_double* a_ptr = reinterpret_cast<rsatb_complex_double*>(a);
+        zgetrf_(&n, &n, a_ptr, &n, ipiv.data(), &info);
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetrf).");
         
         rsatb_lapack_int lwork = n * n;
-        std::vector<std::complex<double>> work(lwork);
+        std::vector<rsatb_complex_double> work(lwork);
         
-#ifdef RSATB_USE_MKL
-        zgetri_(&n, reinterpret_cast<MKL_Complex16*>(a), &n, ipiv.data(), reinterpret_cast<MKL_Complex16*>(work.data()), &lwork, &info);
-#else
-        zgetri_(&n, a, &n, ipiv.data(), work.data(), &lwork, &info);
-#endif
+        zgetri_(&n, a_ptr, &n, ipiv.data(), work.data(), &lwork, &info);
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetri).");
     }
