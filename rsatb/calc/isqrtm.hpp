@@ -9,14 +9,16 @@
 #include <algorithm>
 #include <set>
 
+#include "lapack_types.hpp"
+
 // LAPACK Declarations
 #if !defined(RSATB_USE_MKL) && !defined(VBCSR_USE_MKL)
 extern "C" {
     // Double precision symmetric eigendecomposition
-    void dsyev_(const char* jobz, const char* uplo, const int* n, double* a, const int* lda, double* w, double* work, const int* lwork, int* info);
+    void dsyev_(const char* jobz, const char* uplo, const rsatb::calc::rsatb_lapack_int* n, double* a, const rsatb::calc::rsatb_lapack_int* lda, double* w, double* work, const rsatb::calc::rsatb_lapack_int* lwork, rsatb::calc::rsatb_lapack_int* info);
     
     // Complex double Hermitian eigendecomposition
-    void zheev_(const char* jobz, const char* uplo, const int* n, std::complex<double>* a, const int* lda, double* w, std::complex<double>* work, const int* lwork, double* rwork, int* info);
+    void zheev_(const char* jobz, const char* uplo, const rsatb::calc::rsatb_lapack_int* n, std::complex<double>* a, const rsatb::calc::rsatb_lapack_int* lda, double* w, std::complex<double>* work, const rsatb::calc::rsatb_lapack_int* lwork, double* rwork, rsatb::calc::rsatb_lapack_int* info);
 
 }
 #endif
@@ -38,17 +40,18 @@ namespace calc {
 
 // Helper to compute M^{-1/2} for a dense matrix M
 template <typename T>
-void dense_isqrt(int n, std::vector<T>& M) {
+void dense_isqrt(int n_in, std::vector<T>& M) {
+    rsatb_lapack_int n = n_in;
     if (n == 0) return;
     
     std::vector<double> w(n); // Eigenvalues
-    int info;
-    int lwork = -1;
+    rsatb_lapack_int info;
+    rsatb_lapack_int lwork = -1;
     
     if constexpr (std::is_same<T, double>::value) {
         double wkopt;
         dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), &wkopt, &lwork, &info);
-        lwork = (int)wkopt;
+        lwork = (rsatb_lapack_int)wkopt;
         std::vector<double> work(lwork);
         dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), work.data(), &lwork, &info);
     } else {
@@ -56,14 +59,14 @@ void dense_isqrt(int n, std::vector<T>& M) {
         MKL_Complex16 wkopt_mkl;
         std::vector<double> rwork(3 * n - 2);
         zheev_("V", "U", &n, reinterpret_cast<MKL_Complex16*>(M.data()), &n, w.data(), &wkopt_mkl, &lwork, rwork.data(), &info);
-        lwork = (int)wkopt_mkl.real;
+        lwork = (rsatb_lapack_int)wkopt_mkl.real;
         std::vector<MKL_Complex16> work(lwork);
         zheev_("V", "U", &n, reinterpret_cast<MKL_Complex16*>(M.data()), &n, w.data(), work.data(), &lwork, rwork.data(), &info);
         #else
         std::complex<double> wkopt;
         std::vector<double> rwork(3 * n - 2);
         zheev_("V", "U", &n, (std::complex<double>*)M.data(), &n, w.data(), &wkopt, &lwork, rwork.data(), &info);
-        lwork = (int)wkopt.real();
+        lwork = (rsatb_lapack_int)wkopt.real();
         std::vector<std::complex<double>> work(lwork);
         zheev_("V", "U", &n, (std::complex<double>*)M.data(), &n, w.data(), work.data(), &lwork, rwork.data(), &info);
         #endif

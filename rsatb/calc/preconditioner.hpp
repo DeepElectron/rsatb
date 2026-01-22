@@ -5,6 +5,7 @@
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
 #include "isqrtm.hpp"
+#include "lapack_types.hpp"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -14,10 +15,10 @@
 // LAPACK declarations for block inversion
 #if !defined(RSATB_USE_MKL)
 extern "C" {
-    void dgetrf_(const int* m, const int* n, double* a, const int* lda, int* ipiv, int* info);
-    void dgetri_(const int* n, double* a, const int* lda, const int* ipiv, double* work, const int* lwork, int* info);
-    void zgetrf_(const int* m, const int* n, std::complex<double>* a, const int* lda, int* ipiv, int* info);
-    void zgetri_(const int* n, std::complex<double>* a, const int* lda, const int* ipiv, std::complex<double>* work, const int* lwork, int* info);
+    void dgetrf_(const rsatb::calc::rsatb_lapack_int* m, const rsatb::calc::rsatb_lapack_int* n, double* a, const rsatb::calc::rsatb_lapack_int* lda, rsatb::calc::rsatb_lapack_int* ipiv, rsatb::calc::rsatb_lapack_int* info);
+    void dgetri_(const rsatb::calc::rsatb_lapack_int* n, double* a, const rsatb::calc::rsatb_lapack_int* lda, const rsatb::calc::rsatb_lapack_int* ipiv, double* work, const rsatb::calc::rsatb_lapack_int* lwork, rsatb::calc::rsatb_lapack_int* info);
+    void zgetrf_(const rsatb::calc::rsatb_lapack_int* m, const rsatb::calc::rsatb_lapack_int* n, std::complex<double>* a, const rsatb::calc::rsatb_lapack_int* lda, rsatb::calc::rsatb_lapack_int* ipiv, rsatb::calc::rsatb_lapack_int* info);
+    void zgetri_(const rsatb::calc::rsatb_lapack_int* n, std::complex<double>* a, const rsatb::calc::rsatb_lapack_int* lda, const rsatb::calc::rsatb_lapack_int* ipiv, std::complex<double>* work, const rsatb::calc::rsatb_lapack_int* lwork, rsatb::calc::rsatb_lapack_int* info);
 }
 #endif
 
@@ -110,29 +111,31 @@ public:
     }
 
 private:
-    void invert_block(double* a, int n) {
+    void invert_block(double* a, int n_in) {
+        rsatb_lapack_int n = n_in;
         if (n == 1) {
             a[0] = 1.0 / a[0];
             return;
         }
-        int info;
-        std::vector<int> ipiv(n);
+        rsatb_lapack_int info;
+        std::vector<rsatb_lapack_int> ipiv(n);
         dgetrf_(&n, &n, a, &n, ipiv.data(), &info);
         if (info != 0) throw std::runtime_error("Block inversion failed (dgetrf).");
         
-        int lwork = n * n;
+        rsatb_lapack_int lwork = n * n;
         std::vector<double> work(lwork);
         dgetri_(&n, a, &n, ipiv.data(), work.data(), &lwork, &info);
         if (info != 0) throw std::runtime_error("Block inversion failed (dgetri).");
     }
 
-    void invert_block(std::complex<double>* a, int n) {
+    void invert_block(std::complex<double>* a, int n_in) {
+        rsatb_lapack_int n = n_in;
         if (n == 1) {
             a[0] = 1.0 / a[0];
             return;
         }
-        int info;
-        std::vector<int> ipiv(n);
+        rsatb_lapack_int info;
+        std::vector<rsatb_lapack_int> ipiv(n);
         
 #ifdef RSATB_USE_MKL
         zgetrf_(&n, &n, reinterpret_cast<MKL_Complex16*>(a), &n, ipiv.data(), &info);
@@ -142,7 +145,7 @@ private:
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetrf).");
         
-        int lwork = n * n;
+        rsatb_lapack_int lwork = n * n;
         std::vector<std::complex<double>> work(lwork);
         
 #ifdef RSATB_USE_MKL
@@ -210,7 +213,7 @@ public:
         // y = P * A * P * x
         P.apply(x, *v_tmp1);
         A.mult_optimized(*v_tmp1, *v_tmp2);
-        P.apply(*v_tmp2, y);
+        P.apply_adjoint(*v_tmp2, y);
     }
 
     void mult_dense(const DistMultiVector<T>& X, DistMultiVector<T>& Y) {
@@ -224,7 +227,7 @@ public:
         // Y = P * A * P * X
         P.apply(X, *mv_tmp1);
         A.mult_dense(*mv_tmp1, *mv_tmp2);
-        P.apply(*mv_tmp2, Y);
+        P.apply_adjoint(*mv_tmp2, Y);
     }
     
 
