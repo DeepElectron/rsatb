@@ -1,6 +1,7 @@
 #include "cubic_spline.h"
 #include "nao_lapack_types.h"
 
+#include <iostream>
 #include <cassert>
 #include <algorithm>
 #include <numeric>
@@ -482,6 +483,8 @@ void CubicSpline::_build(
             nao_lapack_int nrhs = 1;
             nao_lapack_int ldb = n;
             nao_lapack_int info = 0;
+            std::cout << "DEBUG: sizeof(nao_lapack_int) = " << sizeof(nao_lapack_int) << std::endl;
+            std::cout << "DEBUG: Calling dgtsv_ with N=" << n << ", NRHS=" << nrhs << ", LDB=" << ldb << std::endl;
             dgtsv_(&n, &nrhs, l, d, u, dy, &ldb, &info);
         }
     }
