@@ -100,12 +100,12 @@ public:
         if (type == PreconditionerType::Symmetric) {
             // Explicit Symmetric Preconditioning: P * A * P * y = P * b, x = P * y
             // Requires P approx A^-1/2
-            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PAP(A, P);
-            DistVector<T> Pb = b.duplicate();
-            P.apply(b, Pb);
+            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PHAP(A, P);
+            DistVector<T> PHb = b.duplicate();
+            P.apply_adjoint(b, PHb);
             DistVector<T> y = x.duplicate();
-            y.set_constant(0.0); // Assume x0=0 or handle initial guess mapping
-            solve(PAP, Pb, y);
+            y.set_constant(0.0); // Assume x0=0 or handle initial guess mapping, since PHAP approx Identity, y=PHb is the good initial guess maybe?
+            solve(PHAP, PHb, y);
             P.apply(y, x);
         } else {
             // Standard Preconditioned CG (PCG)
