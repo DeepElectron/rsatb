@@ -108,6 +108,7 @@ public:
     void setup(const std::string& Hfile, const std::vector<std::vector<double>>& kpoints,
                const std::vector<std::string>& orb_names, const std::string& orb_dirs,
                const std::vector<std::string>& psd_names, const std::string& psd_dirs,
+               double tol=1e-7, double sptol=1e-5, int maxiter=20, const std::string& method="graph",
                const std::string& precond = "H/S", int nsamples = 1) {
         
         nsamples_ = nsamples;
@@ -165,7 +166,7 @@ public:
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, 20, 1e-7, "graph", factor, verbose_);
+                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, maxiter, tol, sptol, method, factor, verbose_);
                 precond_map_[k_idx] = std::move(P);
                 
                 if (precond == "H") {
@@ -175,35 +176,41 @@ public:
             }
             
             // Compute eigenvalues of H
-            PrimmeEigenSolver<Scalar> esolver;
-            std::vector<double> evals_min, evals_max;
-            std::vector<Vector> evecs;
-            
-            Matrix* Hk = H_k_map_[k_idx].get();
-            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
-            
-            esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, P->get_type());
-            esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type());
-            
-            if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
-            if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
-        }
-        
-        // 4. Global Reduction for emin/emax
-        double global_emin = local_emin;
-        double global_emax = local_emax;
-        
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(&local_emin, &global_emin, 1, MPI_DOUBLE, MPI_MIN, master_comm_);
-            MPI_Allreduce(&local_emax, &global_emax, 1, MPI_DOUBLE, MPI_MAX, master_comm_);
-        }
-        
-        MPI_Bcast(&global_emin, 1, MPI_DOUBLE, 0, sub_comm_);
-        MPI_Bcast(&global_emax, 1, MPI_DOUBLE, 0, sub_comm_);
+            if (!Hfile.empty()) {
+                
+                PrimmeEigenSolver<Scalar> esolver;
+                std::vector<double> evals_min, evals_max;
+                std::vector<Vector> evecs;
+                
+                Matrix* Hk = H_k_map_[k_idx].get();
+                Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
+                
+                esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, P->get_type());
+                esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type());
+                
+                if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
+                if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
 
-        emin_ = global_emin - 0.5; // Buffer
-        emax_ = global_emax + 0.5;
+            }
+        }
         
+        if (!Hfile.empty()) {
+            // 4. Global Reduction for emin/emax
+            double global_emin = local_emin;
+            double global_emax = local_emax;
+            
+            if (master_comm_ != MPI_COMM_NULL) {
+                MPI_Allreduce(&local_emin, &global_emin, 1, MPI_DOUBLE, MPI_MIN, master_comm_);
+                MPI_Allreduce(&local_emax, &global_emax, 1, MPI_DOUBLE, MPI_MAX, master_comm_);
+            }
+            
+            MPI_Bcast(&global_emin, 1, MPI_DOUBLE, 0, sub_comm_);
+            MPI_Bcast(&global_emax, 1, MPI_DOUBLE, 0, sub_comm_);
+
+            emin_ = global_emin - 0.5; // Buffer
+            emax_ = global_emax + 0.5;
+        }
+            
         // 5. Initialize Random Samples
         if (nsamples_ == 1) {
             sample_vec_ = std::make_unique<Vector>(atomic_data_->get_graph());
@@ -213,6 +220,23 @@ public:
             sample_multi_vec_ = std::make_unique<MultiVector>(atomic_data_->get_graph(), nsamples_);
             sample_multi_vec_->set_random_normal();
             sample_vec_ = nullptr;
+        }
+    }
+
+    void test_solve() {
+        LinearSolver<Scalar, Matrix::KernelType> solver(1e-8, 1000, verbose_);
+        for (const auto& kp : my_kpoints_) {
+            int k_idx = kp.first;
+            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
+            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
+            if (nsamples_ == 1) {
+                Vector y = sample_vec_->duplicate();
+                solver.solve(
+                    *Sk, *sample_vec_, y, *P, P->get_type()
+                );
+            } else {
+                continue;
+            }
         }
     }
 

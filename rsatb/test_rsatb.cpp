@@ -69,7 +69,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
 
     std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
     
-    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, "H", 1);
+    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, 1e-7, 1e-5, 20, "graph", "H", 1);
     
     // 5. Verify Setup
     // Check if H(k) is created

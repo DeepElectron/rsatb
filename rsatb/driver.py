@@ -77,7 +77,7 @@ class RSATB:
                                cell, pos, verbose)
         return cls(cpp_obj)
 
-    def setup(self, Hfile, kpoints, orb_names=None, orb_dirs="", psd_names=None, psd_dirs="", precond="H/S", nsamples=1):
+    def setup(self, Hfile, kpoints, orb_names=None, orb_dirs="", psd_names=None, psd_dirs="", tol=1e-7, sptol=1e-5, maxiter=20, method="graph", precond="H/S", nsamples=1):
         """
         Setup the RSATB calculation.
 
@@ -93,7 +93,10 @@ class RSATB:
         """
         if orb_names is None: orb_names = []
         if psd_names is None: psd_names = []
-        self._cpp_obj.setup(Hfile, kpoints, orb_names, orb_dirs, psd_names, psd_dirs, precond, nsamples)
+        self._cpp_obj.setup(Hfile, kpoints, orb_names, orb_dirs, psd_names, psd_dirs, tol, sptol, maxiter, method, precond, nsamples)
+
+    def test_solve(self):
+        self._cpp_obj.test_solve()
 
     def compute_dos(self, nt):
         """
