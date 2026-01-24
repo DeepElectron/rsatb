@@ -129,11 +129,11 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
             tmp2 = tmp1.spmm(tmp2, sptol, true, false);
             tmp2 = tmp2.spmm(tmp1, sptol, false, false);
 
-        //     // if (rank == 0 && verbose) {
-        //     //     std::cout << "Approximate update: " << std::endl;
-        //     // }
+        // //     // if (rank == 0 && verbose) {
+        // //     //     std::cout << "Approximate update: " << std::endl;
+        // //     // }
         } else {
-            // Update tmp2 (X_{k+1})
+        //     // Update tmp2 (X_{k+1})
             tmp2 = S_inv_sqrt->spmm(S_mat, sptol, true, false);
             tmp2 = tmp2.spmm(*S_inv_sqrt, sptol, false, false);
 
