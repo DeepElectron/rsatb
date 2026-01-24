@@ -61,7 +61,9 @@ void dense_matrix_function(int n_in, std::vector<T>& M, std::function<T(double)>
     if constexpr (std::is_same<T, double>::value) {
         double wkopt;
         rsatb_lapack_int iwkopt;
-        dsyevd_("V", "U", &n, (double*)M.data(), &n, w.data(), &wkopt, &lwork, &iwkopt, &lwork, &info);
+        rsatb_lapack_int lwork_query = -1;
+        rsatb_lapack_int liwork_query = -1;
+        dsyevd_("V", "U", &n, (double*)M.data(), &n, w.data(), &wkopt, &lwork_query, &iwkopt, &liwork_query, &info);
         lwork = (rsatb_lapack_int)wkopt;
         rsatb_lapack_int liwork = iwkopt;
         std::vector<double> work(lwork);
@@ -71,8 +73,11 @@ void dense_matrix_function(int n_in, std::vector<T>& M, std::function<T(double)>
         rsatb_complex_double wkopt;
         double rwkopt;
         rsatb_lapack_int iwkopt;
+        rsatb_lapack_int lwork_query = -1;
+        rsatb_lapack_int lrwork_query = -1;
+        rsatb_lapack_int liwork_query = -1;
         rsatb_complex_double* a_ptr = reinterpret_cast<rsatb_complex_double*>(M.data());
-        zheevd_("V", "U", &n, a_ptr, &n, w.data(), &wkopt, &lwork, &rwkopt, &lwork, &iwkopt, &lwork, &info);
+        zheevd_("V", "U", &n, a_ptr, &n, w.data(), &wkopt, &lwork_query, &rwkopt, &lrwork_query, &iwkopt, &liwork_query, &info);
         lwork = (rsatb_lapack_int)wkopt.real();
         rsatb_lapack_int lrwork = (rsatb_lapack_int)rwkopt;
         rsatb_lapack_int liwork = iwkopt;

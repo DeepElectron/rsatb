@@ -27,13 +27,7 @@ namespace calc {
 template <typename T, typename Kernel = DefaultKernel<T>>
 void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, bool verbose = false) {
     auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
-    graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "lanczos", verbose);
-    
-    // Symmetrize S_inv_sqrt to ensure it's a valid starting point for Newton-Schulz
-    // Z = 0.5 * (Z + Z^T)
-    BlockSpMat<T, Kernel> S_inv_sqrt_T = S_inv_sqrt->transpose();
-    S_inv_sqrt->axpy(T(1.0), S_inv_sqrt_T);
-    S_inv_sqrt->scale(T(0.5));
+    graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "dense", verbose);
 }
 // Matrix Inverse Square Root using Newton-Schulz Iteration
 // Computes S^{-1/2}
