@@ -303,3 +303,8 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/calc/config.hpp" DESTINATION include/
 # add_executable(benchmark_isqrtm_heavy calc/test/benchmark_isqrtm_heavy.cpp)
 # target_include_directories(benchmark_isqrtm_heavy PRIVATE ${RSATB_INCLUDE_DIRS})
 # target_link_libraries(benchmark_isqrtm_heavy PRIVATE ${RSATB_LINK_LIBS})
+
+# add_executable(test_lapack_query calc/test/test_lapack_query.cpp)
+# target_include_directories(test_lapack_query PRIVATE ${RSATB_INCLUDE_DIRS})
+# target_link_libraries(test_lapack_query PRIVATE ${RSATB_LINK_LIBS})
+

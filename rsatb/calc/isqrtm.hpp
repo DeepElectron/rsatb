@@ -2,17 +2,15 @@
 #define RSATB_CALC_ISQRTM_VBCSR_HPP
 
 #include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 #include <vector>
 #include <cmath>
 #include <complex>
 #include <iostream>
 #include <algorithm>
 #include <set>
-
-#include "lapack_types.hpp"
-
-// LAPACK Declarations
-// LAPACK Declarations are now in lapack_types.hpp
+#include "submf.hpp"
+#include "graphmf.hpp"
 
 #if defined(RSATB_USE_OPENBLAS) || defined(VBCSR_USE_OPENBLAS)
 extern "C" void openblas_set_num_threads(int num_threads);
@@ -25,201 +23,11 @@ using namespace vbcsr;
 namespace rsatb {
 namespace calc {
 
-// Helper to compute M^{-1/2} for a dense matrix M
-template <typename T>
-void dense_isqrt(int n_in, std::vector<T>& M) {
-    rsatb_lapack_int n = n_in;
-    if (n == 0) return;
-    
-    std::vector<double> w(n); // Eigenvalues
-    rsatb_lapack_int info;
-    rsatb_lapack_int lwork = -1;
-    
-    if constexpr (std::is_same<T, double>::value) {
-        double wkopt;
-        dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), &wkopt, &lwork, &info);
-        lwork = (rsatb_lapack_int)wkopt;
-        std::vector<double> work(lwork);
-        dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), work.data(), &lwork, &info);
-    } else {
-        rsatb_complex_double wkopt;
-        std::vector<double> rwork(3 * n - 2);
-        // Cast M.data() to rsatb_complex_double* (safe since T is complex<double>)
-        rsatb_complex_double* a_ptr = reinterpret_cast<rsatb_complex_double*>(M.data());
-        
-        zheev_("V", "U", &n, a_ptr, &n, w.data(), &wkopt, &lwork, rwork.data(), &info);
-        lwork = (rsatb_lapack_int)wkopt.real();
-        std::vector<rsatb_complex_double> work(lwork);
-        zheev_("V", "U", &n, a_ptr, &n, w.data(), work.data(), &lwork, rwork.data(), &info);
-    }
-    
-    if (info != 0) {
-        std::cerr << "Error in LAPACK eigendecomposition (info=" << info << ")" << std::endl;
-        return; // Handle error?
-    }
-    
-    // M now contains eigenvectors V. w contains eigenvalues.
-    // M^{-1/2} = V * diag(w^{-1/2}) * V^H
-    
-    // 1. Scale columns of V by w^{-1/4}
-    for (int j = 0; j < n; ++j) {
-        double val = (w[j] > 1e-12) ? std::pow(w[j], -0.25) : 0.0;
-        for (int i = 0; i < n; ++i) {
-            M[i + j * n] *= val;
-        }
-    }
-    
-    // 2. Compute Res = M * M^H
-    std::vector<T> Res(n * n, T(0));
-    
-    if constexpr (std::is_same<T, double>::value) {
-        vbcsr::BLASKernel::gemm(n, n, n, 1.0, (double*)M.data(), n, (double*)M.data(), n, 0.0, (double*)Res.data(), n, CblasNoTrans, CblasConjTrans); // ConjTrans for double is Trans
-    } else {
-        vbcsr::BLASKernel::gemm(n, n, n, std::complex<double>(1.0), (std::complex<double>*)M.data(), n, (std::complex<double>*)M.data(), n, std::complex<double>(0.0), (std::complex<double>*)Res.data(), n, CblasNoTrans, CblasConjTrans);
-    }
-    
-    M = Res;
-}
-
 
 template <typename T, typename Kernel = DefaultKernel<T>>
 void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, bool verbose = false) {
-    
-    DistGraph* graph = S_mat.graph;
-    int rank = graph->rank;
-    int size = graph->size;
-    MPI_Comm comm = graph->comm;
-
-    // 1. Initialize Z0 (S_inv_sqrt)
-    if (rank == 0 && verbose) std::cout << "isqrtm: Initializing Z0 using subgraph method..." << std::endl;
-
-    // check S_inv_sqrt allocation
-    if (S_inv_sqrt == nullptr || S_inv_sqrt == NULL) {
-        *S_inv_sqrt = S_mat.duplicate();
-    }
-    
-    // Clear S_inv_sqrt
-    S_inv_sqrt->fill(T(0));
-    
-    int n_owned = graph->owned_global_indices.size();
-    int n_owned_max = 0;
-    MPI_Allreduce(&n_owned, &n_owned_max, 1, MPI_INT, MPI_MAX, comm);
-    
-    // batch size
-    int batch_size = std::max(1, omp_get_max_threads() / size);
-    
-    int nbatch = n_owned_max / batch_size;
-    if (n_owned_max % batch_size != 0) nbatch++;
-
-    std::vector<std::vector<int>> batch_indices(batch_size);
-
-    for (int b = 0; b < nbatch; ++b) {
-        // Avoid thread oversubscription in BLAS/LAPACK
-        #ifdef RSATB_USE_MKL
-        int one = 1;
-        mkl_set_num_threads_(&one);
-        #elif defined(RSATB_USE_OPENBLAS)
-        openblas_set_num_threads(1);
-        #endif
-
-        batch_indices.clear();
-        batch_indices.resize(batch_size);
-        
-        // Store neighbors for parallel phase
-        std::vector<std::vector<int>> batch_neighbors(batch_size);
-
-        for (int i=0; i < batch_size; ++i) {
-            int idx = b * batch_size + i;
-            
-            if (idx < n_owned) {
-                int global_row = graph->owned_global_indices[idx];
-                // Identify Neighborhood C_i
-                std::vector<int> neighbors;
-                int start = S_mat.row_ptr[idx]; // Use local index idx
-                int end = S_mat.row_ptr[idx+1];
-                for (int k = start; k < end; ++k) {
-                    int col_lid = S_mat.col_ind[k];
-                    int col_gid = graph->get_global_index(col_lid);
-                    neighbors.push_back(col_gid);
-                }
-                // Ensure global_row is in neighbors (diagonal)
-                bool has_diag = false;
-                for(int gid : neighbors) if(gid == global_row) has_diag = true;
-                if(!has_diag) neighbors.push_back(global_row);
-                
-                // Sort for consistency
-                std::sort(neighbors.begin(), neighbors.end());
-
-                batch_indices[i] = neighbors;
-            } else {
-                // Padding: Empty request
-                batch_indices[i] = {};
-            }
-        }
-        
-        auto batch_blocks = S_mat.fetch_blocks(batch_indices);
-
-        #pragma omp parallel for schedule(dynamic)
-        for (int i=0; i < batch_size; ++i) {
-            int idx = b * batch_size + i;
-            if (idx >= n_owned) continue;
-            
-            int global_row = graph->owned_global_indices[idx];
-            const auto& neighbors = batch_indices[i];
-
-            BlockSpMat<T, Kernel> sub_mat = S_mat.construct_submatrix(neighbors, batch_blocks);
-
-            // Convert to Dense
-            std::vector<T> M = sub_mat.to_dense();
-        
-            // M is row-major, size (total_dim) x (total_dim)
-            int total_dim = 0;
-            for(size_t k=0; k<neighbors.size(); ++k) total_dim += sub_mat.graph->block_sizes[k];
-
-            if (rank==0 || verbose) {
-                std::cout << "working on atom: "<< idx << "/" << n_owned_max << " total dim: " << total_dim << std::endl;
-            }
-            
-            // Compute M^{-1/2}
-            dense_isqrt(total_dim, M);
-
-            // Insert Row corresponding to global_row into S_inv_sqrt
-            auto it = std::lower_bound(neighbors.begin(), neighbors.end(), global_row);
-            int block_idx = std::distance(neighbors.begin(), it);
-            
-            // Calculate offset in dense matrix M
-            int row_offset = 0;
-            for(int k=0; k<block_idx; ++k) row_offset += sub_mat.graph->block_sizes[k];
-            int r_dim = sub_mat.graph->block_sizes[block_idx];
-            
-            // Iterate over columns (neighbors)
-            int col_offset = 0;
-            for(size_t k=0; k<neighbors.size(); ++k) {
-                int col_gid = neighbors[k];
-                int c_dim = sub_mat.graph->block_sizes[k];
-                
-                // Extract block (r_dim x c_dim) from M at (row_offset, col_offset)
-                std::vector<T> block_data(r_dim * c_dim);
-                for(int c=0; c<c_dim; ++c) {
-                    for(int r=0; r<r_dim; ++r) {
-                        // M is RowMajor
-                        block_data[c * r_dim + r] = M[(col_offset + c) * total_dim + (row_offset + r)];
-                    }
-                }
-                
-                S_inv_sqrt->add_block(global_row, col_gid, block_data.data(), r_dim, c_dim, AssemblyMode::ADD, MatrixLayout::ColMajor);
-                
-                col_offset += c_dim;
-                    
-            }
-        }
-    }
-    
-    // if (rank == 0 && verbose) std::cout << "isqrtm: Z0 Loop Finished. Assembling..." << std::endl;
-    // if (rank == 0) std::cout << "isqrtm: remote_blocks size: " << S_inv_sqrt->remote_blocks.size() << std::endl;
-
-    S_inv_sqrt->assemble();
-    
+    auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
+    graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "dense", verbose);
 }
 // Matrix Inverse Square Root using Newton-Schulz Iteration
 // Computes S^{-1/2}
