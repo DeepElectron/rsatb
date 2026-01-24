@@ -2,17 +2,14 @@
 #define RSATB_CALC_ISQRTM_VBCSR_HPP
 
 #include "vbcsr/core/block_csr.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 #include <vector>
 #include <cmath>
 #include <complex>
 #include <iostream>
 #include <algorithm>
 #include <set>
-
-#include "lapack_types.hpp"
-
-// LAPACK Declarations
-// LAPACK Declarations are now in lapack_types.hpp
+#include "lanmf.hpp"
 
 #if defined(RSATB_USE_OPENBLAS) || defined(VBCSR_USE_OPENBLAS)
 extern "C" void openblas_set_num_threads(int num_threads);
@@ -24,62 +21,6 @@ using namespace vbcsr;
 
 namespace rsatb {
 namespace calc {
-
-// Helper to compute M^{-1/2} for a dense matrix M
-template <typename T>
-void dense_isqrt(int n_in, std::vector<T>& M) {
-    rsatb_lapack_int n = n_in;
-    if (n == 0) return;
-    
-    std::vector<double> w(n); // Eigenvalues
-    rsatb_lapack_int info;
-    rsatb_lapack_int lwork = -1;
-    
-    if constexpr (std::is_same<T, double>::value) {
-        double wkopt;
-        dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), &wkopt, &lwork, &info);
-        lwork = (rsatb_lapack_int)wkopt;
-        std::vector<double> work(lwork);
-        dsyev_("V", "U", &n, (double*)M.data(), &n, w.data(), work.data(), &lwork, &info);
-    } else {
-        rsatb_complex_double wkopt;
-        std::vector<double> rwork(3 * n - 2);
-        // Cast M.data() to rsatb_complex_double* (safe since T is complex<double>)
-        rsatb_complex_double* a_ptr = reinterpret_cast<rsatb_complex_double*>(M.data());
-        
-        zheev_("V", "U", &n, a_ptr, &n, w.data(), &wkopt, &lwork, rwork.data(), &info);
-        lwork = (rsatb_lapack_int)wkopt.real();
-        std::vector<rsatb_complex_double> work(lwork);
-        zheev_("V", "U", &n, a_ptr, &n, w.data(), work.data(), &lwork, rwork.data(), &info);
-    }
-    
-    if (info != 0) {
-        std::cerr << "Error in LAPACK eigendecomposition (info=" << info << ")" << std::endl;
-        return; // Handle error?
-    }
-    
-    // M now contains eigenvectors V. w contains eigenvalues.
-    // M^{-1/2} = V * diag(w^{-1/2}) * V^H
-    
-    // 1. Scale columns of V by w^{-1/4}
-    for (int j = 0; j < n; ++j) {
-        double val = (w[j] > 1e-12) ? std::pow(w[j], -0.25) : 0.0;
-        for (int i = 0; i < n; ++i) {
-            M[i + j * n] *= val;
-        }
-    }
-    
-    // 2. Compute Res = M * M^H
-    std::vector<T> Res(n * n, T(0));
-    
-    if constexpr (std::is_same<T, double>::value) {
-        vbcsr::BLASKernel::gemm(n, n, n, 1.0, (double*)M.data(), n, (double*)M.data(), n, 0.0, (double*)Res.data(), n, CblasNoTrans, CblasConjTrans); // ConjTrans for double is Trans
-    } else {
-        vbcsr::BLASKernel::gemm(n, n, n, std::complex<double>(1.0), (std::complex<double>*)M.data(), n, (std::complex<double>*)M.data(), n, std::complex<double>(0.0), (std::complex<double>*)Res.data(), n, CblasNoTrans, CblasConjTrans);
-    }
-    
-    M = Res;
-}
 
 
 template <typename T, typename Kernel = DefaultKernel<T>>
@@ -167,7 +108,12 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
             int global_row = graph->owned_global_indices[idx];
             const auto& neighbors = batch_indices[i];
 
+            // Find block index of global_row
+            auto it = std::find(neighbors.begin(), neighbors.end(), global_row);
+            int block_idx = std::distance(neighbors.begin(), it);
             BlockSpMat<T, Kernel> sub_mat = S_mat.construct_submatrix(neighbors, batch_blocks);
+            
+            int r_dim = sub_mat.graph->block_sizes[block_idx];
 
             // Convert to Dense
             std::vector<T> M = sub_mat.to_dense();
@@ -180,17 +126,17 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
                 std::cout << "working on atom: "<< idx << "/" << n_owned_max << " total dim: " << total_dim << std::endl;
             }
             
-            // Compute M^{-1/2}
-            dense_isqrt(total_dim, M);
-
-            // Insert Row corresponding to global_row into S_inv_sqrt
-            auto it = std::lower_bound(neighbors.begin(), neighbors.end(), global_row);
-            int block_idx = std::distance(neighbors.begin(), it);
-            
             // Calculate offset in dense matrix M
             int row_offset = 0;
             for(int k=0; k<block_idx; ++k) row_offset += sub_mat.graph->block_sizes[k];
-            int r_dim = sub_mat.graph->block_sizes[block_idx];
+            
+            // Compute M^{-1/2} using Lanczos
+            // We want the columns of M^{-1/2} corresponding to global_row
+            // These start at row_offset and have size r_dim
+            DistMultiVector<T> X(sub_mat.graph, r_dim);
+            
+            // Use lanczos_isqrtm_dense with global_col_start = row_offset
+            lanczos_isqrtm_dense(M, X, r_dim, sub_mat.graph, 1e-8, 100, verbose, false, row_offset);
             
             // Iterate over columns (neighbors)
             int col_offset = 0;
@@ -198,19 +144,26 @@ void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt
                 int col_gid = neighbors[k];
                 int c_dim = sub_mat.graph->block_sizes[k];
                 
-                // Extract block (r_dim x c_dim) from M at (row_offset, col_offset)
+                // Extract block (r_dim x c_dim) from X
+                // X contains M^{-1/2}(:, row_offset:row_offset+r_dim)
+                // We want block (global_row, col_gid) of S^{-1/2}
+                // In sub_mat, this is block (block_idx, k).
+                // M^{-1/2}(row_offset:row_offset+r_dim, col_offset:col_offset+c_dim)
+                // By symmetry = M^{-1/2}(col_offset:col_offset+c_dim, row_offset:row_offset+r_dim)^T
+                // X has rows col_offset:col_offset+c_dim
+                
                 std::vector<T> block_data(r_dim * c_dim);
                 for(int c=0; c<c_dim; ++c) {
                     for(int r=0; r<r_dim; ++r) {
-                        // M is RowMajor
-                        block_data[c * r_dim + r] = M[(col_offset + c) * total_dim + (row_offset + r)];
+                        // X(row, col) = X.data[row + col * total_dim]
+                        // We want X(col_offset + c, r)
+                        block_data[c * r_dim + r] = X.data[(col_offset + c) + r * total_dim];
                     }
                 }
                 
                 S_inv_sqrt->add_block(global_row, col_gid, block_data.data(), r_dim, c_dim, AssemblyMode::ADD, MatrixLayout::ColMajor);
                 
                 col_offset += c_dim;
-                    
             }
         }
     }
