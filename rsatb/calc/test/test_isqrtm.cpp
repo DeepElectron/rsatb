@@ -4,7 +4,6 @@
 #include <cmath>
 #include <random>
 
-using namespace rsatb::backend;
 using namespace rsatb::calc;
 
 int main(int argc, char** argv) {
@@ -62,8 +61,8 @@ int main(int argc, char** argv) {
     // The new duplicate() method handles this automatically
     BlockSpMat<double> S_inv_sqrt = S.duplicate(true);
     
-    // isqrtm(S, S_inv_sqrt, tol, sptol, maxit, factor, verbose)
-    isqrtm(S, S_inv_sqrt, 1e-7, 1e-8, 50, factor, true);
+    // isqrtm(S, S_inv_sqrt, tol, sptol, maxit, init_method, factor, verbose)
+    isqrtm(S, &S_inv_sqrt, 1e-7, 1e-8, 50, "graph", factor, true);
     
     // 4. Verify: S_inv_sqrt * S * S_inv_sqrt * v should be v
     double max_err = 0.0;
@@ -88,7 +87,7 @@ int main(int argc, char** argv) {
         // tmp2 = S * tmp1
         S.mult_optimized(tmp1, tmp2);
         // v_out = S_inv_sqrt * tmp2
-        S_inv_sqrt.mult_optimized(tmp2, v_out);
+        S_inv_sqrt.mult_adjoint(tmp2, v_out);
         
         // Check v_out - v
         for (int i = 0; i < v.local_size; ++i) {

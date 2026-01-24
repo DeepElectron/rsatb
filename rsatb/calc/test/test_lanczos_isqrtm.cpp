@@ -1,4 +1,4 @@
-#include "../lanmf.hpp"
+#include "../submf.hpp"
 #include "../isqrtm.hpp"
 #include <iostream>
 #include <cassert>
@@ -161,7 +161,8 @@ int main(int argc, char** argv) {
         MPI_Barrier(MPI_COMM_WORLD);
         double start_time = MPI_Wtime();
         
-        lanczos_isqrtm(S, X, b, 1e-8, 100, true); // verbose=true
+        auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
+        lanczos_matrix_function(S, X, std::function<double(double)>(func), b, 1e-8, 100, true); // verbose=true
         
         MPI_Barrier(MPI_COMM_WORLD);
         double end_time = MPI_Wtime();
@@ -184,11 +185,12 @@ int main(int argc, char** argv) {
     
     // Full computation
     DistMultiVector<double> X_full(&graph_S, b_full);
-    lanczos_isqrtm(S, X_full, b_full, 1e-8, 100, false);
+    auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
+    lanczos_matrix_function(S, X_full, std::function<double(double)>(func), b_full, 1e-8, 100, false);
     
     // Subset computation
     DistMultiVector<double> X_subset(&graph_S, n_subset);
-    lanczos_isqrtm(S, X_subset, n_subset, 1e-8, 100, false, true, start_col);
+    lanczos_matrix_function(S, X_subset, std::function<double(double)>(func), n_subset, 1e-8, 100, false, true, start_col);
     
     // Compare
     double max_diff = 0.0;

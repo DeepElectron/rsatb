@@ -10,6 +10,7 @@
 #include <iostream>
 #include <algorithm>
 #include <set>
+#include <functional>
 
 using namespace vbcsr;
 
@@ -45,9 +46,9 @@ namespace detail {
 } // namespace detail
 
 
-// Helper to compute M^{-1/2} for a dense matrix M
+// Helper to compute f(M) for a dense matrix M
 template <typename T>
-void dense_isqrt(int n_in, std::vector<T>& M, int k_cols = -1) {
+void dense_matrix_function(int n_in, std::vector<T>& M, std::function<T(double)> func, int k_cols = -1, int col_start_idx = 0) {
     rsatb_lapack_int n = n_in;
     if (n == 0) return;
     
@@ -87,10 +88,10 @@ void dense_isqrt(int n_in, std::vector<T>& M, int k_cols = -1) {
     }
     
     // M now contains eigenvectors V. w contains eigenvalues.
-    // Result_subset = (V * diag(w^{-1/2})) * (V^H[:, 0:k-1])
+    // Result_subset = (V * diag(f(w))) * (V^H)[:, col_start_idx : col_start_idx + k]
     std::vector<T> V_scaled = M;
     for (int j = 0; j < n; ++j) {
-        double val = (w[j] > 1e-12) ? std::pow(w[j], -0.5) : 0.0;
+        T val = func(w[j]);
         for (int i = 0; i < n; ++i) {
             V_scaled[i + j * n] *= val;
         }
@@ -98,13 +99,15 @@ void dense_isqrt(int n_in, std::vector<T>& M, int k_cols = -1) {
     
     std::vector<T> Res(n * k, T(0));
     // C(n x k) = V_scaled(n x n) * M(k x n)^H
-    detail::dense_gemm(n, k, n, T(1.0), V_scaled.data(), n, M.data(), n, T(0.0), Res.data(), n, false, true);
+    // Select rows [col_start_idx, col_start_idx + k) of V (M).
+    // Pointer arithmetic `M.data() + col_start_idx` with stride `n` correctly slices the rows.
+    detail::dense_gemm(n, k, n, T(1.0), V_scaled.data(), n, M.data() + col_start_idx, n, T(0.0), Res.data(), n, false, true);
     M = Res;
 }
 
-// Block Lanczos Method for ISQRTM (First k columns) - Dense MVP Version
+// Block Lanczos Method for Matrix Function (First k columns) - Dense MVP Version
 template <typename T, typename Kernel = DefaultKernel<T>>
-void lanczos_isqrtm_dense(const std::vector<T>& dense_S, DistMultiVector<T>& X, int n_cols, DistGraph* graph, double tol = 1e-7, int max_iter = 50, bool verbose = false, bool reorth = true, int global_col_start = 0) {
+void lanczos_matrix_function_dense(const std::vector<T>& dense_S, DistMultiVector<T>& X, std::function<T(double)> func, int n_cols, DistGraph* graph, double tol = 1e-7, int max_iter = 50, bool verbose = false, bool reorth = true, int global_col_start = 0) {
     int rank = graph->rank;
     
     int m_owned = X.local_rows;
@@ -298,11 +301,11 @@ void lanczos_isqrtm_dense(const std::vector<T>& dense_S, DistMultiVector<T>& X, 
             
             // Compute f(Tm)
             // Use n_cols for optimized calculation if available
-            dense_isqrt(total_dim_curr, Tm_curr, n_cols);
+            dense_matrix_function(total_dim_curr, Tm_curr, func, n_cols);
             
             // Extract Y_curr = f(Tm)[:, 0:n_cols]
             // Tm_curr is ColMajor (or we treat it as such for BLAS)
-            // Actually dense_isqrt modifies Tm_curr in place to be f(Tm).
+            // Actually dense_matrix_function modifies Tm_curr in place to be f(Tm).
             // We want the first n_cols columns.
             
             static std::vector<T> Y_prev;
@@ -378,7 +381,7 @@ void lanczos_isqrtm_dense(const std::vector<T>& dense_S, DistMultiVector<T>& X, 
     }
     
     double t4 = MPI_Wtime();
-    dense_isqrt(total_dim, Tm, n_cols);
+    dense_matrix_function(total_dim, Tm, func, n_cols);
     t_tm_isqrt = MPI_Wtime() - t4;
     
     X.bind_to_graph(graph); X.set_constant(T(0));
@@ -398,9 +401,9 @@ void lanczos_isqrtm_dense(const std::vector<T>& dense_S, DistMultiVector<T>& X, 
     }
 }
 
-// Block Lanczos Method for ISQRTM (First k columns)
+// Block Lanczos Method for Matrix Function (First k columns)
 template <typename T, typename Kernel = DefaultKernel<T>>
-void lanczos_isqrtm(BlockSpMat<T, Kernel>& S, DistMultiVector<T>& X, int n_cols, double tol = 1e-7, int max_iter = 50, bool verbose = false, bool reorth = true, int global_col_start = 0) {
+void lanczos_matrix_function(BlockSpMat<T, Kernel>& S, DistMultiVector<T>& X, std::function<T(double)> func, int n_cols, double tol = 1e-7, int max_iter = 50, bool verbose = false, bool reorth = true, int global_col_start = 0) {
     double t_start = MPI_Wtime();
     std::vector<T> dense_S = S.to_dense();
     double t_to_dense = MPI_Wtime() - t_start;
@@ -409,7 +412,7 @@ void lanczos_isqrtm(BlockSpMat<T, Kernel>& S, DistMultiVector<T>& X, int n_cols,
     //     std::cout << "  to_dense time: " << t_to_dense << " s" << std::endl;
     // }
     
-    lanczos_isqrtm_dense(dense_S, X, n_cols, S.graph, tol, max_iter, verbose, reorth, global_col_start);
+    lanczos_matrix_function_dense(dense_S, X, func, n_cols, S.graph, tol, max_iter, verbose, reorth, global_col_start);
 }
 } // namespace calc
 } // namespace rsatb
