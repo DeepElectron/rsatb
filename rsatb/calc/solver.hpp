@@ -277,13 +277,13 @@ public:
     template <typename MatrixType>
     void solve(MatrixType& A, const DistMultiVector<T>& B, DistMultiVector<T>& X, Preconditioner<T, Kernel>& P, PreconditionerType type) {
         if (type == PreconditionerType::Symmetric) {
-            // Explicit Symmetric Preconditioning: P * A * P * Y = P * B, X = P * Y
-            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PAP(A, P);
-            DistMultiVector<T> Pb = B;
-            P.apply(B, Pb);
+            // Explicit Symmetric Preconditioning: PH * A * P * Y = PH * B, X = P * Y
+            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PHAP(A, P);
+            DistMultiVector<T> PHb = B;
+            P.apply_adjoint(B, PHb);
             DistMultiVector<T> Y = X;
             std::fill(Y.data.begin(), Y.data.end(), 0.0);
-            solve(PAP, Pb, Y);
+            solve(PHAP, PHb, Y);
             P.apply(Y, X);
         } else {
             // Batched PCG
