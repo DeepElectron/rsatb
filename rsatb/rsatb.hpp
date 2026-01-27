@@ -214,11 +214,12 @@ public:
         // 5. Initialize Random Samples
         if (nsamples_ == 1) {
             sample_vec_ = std::make_unique<Vector>(atomic_data_->get_graph());
-            sample_vec_->set_random_normal();
+            sample_vec_->set_random_normal(true);
+
             sample_multi_vec_ = nullptr;
         } else {
             sample_multi_vec_ = std::make_unique<MultiVector>(atomic_data_->get_graph(), nsamples_);
-            sample_multi_vec_->set_random_normal();
+            sample_multi_vec_->set_random_normal(true);
             sample_vec_ = nullptr;
         }
     }
@@ -313,14 +314,14 @@ public:
         }
     }
 
-    void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out) {
+    void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
         // Output size: global_nk * (nt+1) * 6
         std::vector<double> local_ac(global_nk_ * (nt + 1) * 6, 0.0);
         
         double scale = (emax_ - emin_) / 2.0;
         double shift = (emax_ + emin_) / 2.0;
         double beta = 1.0 / (temp * 8.617333262e-5);
-        double ac_prefactor = (double)atomic_data_->norb() / atomic_data_->volume(); 
+        double ac_prefactor = (double)atomic_data_->norb() / atomic_data_->volume(axis);
         double t_step = M_PI / scale;
         
         // Precompute omega

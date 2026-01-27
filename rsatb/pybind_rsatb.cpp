@@ -49,12 +49,12 @@ PYBIND11_MODULE(_rsatb, m) {
              self.compute_dos(nt, dos_out, omega_out);
              return std::make_pair(dos_out, omega_out);
          }, py::arg("nt"))
-        .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu) {
+        .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;
-             self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out);
+             self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
              return std::make_pair(ac_out, omega_out);
-         }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"))
+         }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"), py::arg("axis") = "abc")
         .def("get_operator_construction", &rsatb::RSATB::get_operator_construction, py::return_value_policy::reference)
         .def("atomic_data", &rsatb::RSATB::atomic_data, py::return_value_policy::reference);
 }

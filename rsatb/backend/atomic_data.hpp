@@ -481,12 +481,21 @@ public:
     }
 
     // Compute cell volume
-    double volume() {
-        if (cell.size() < 9) return 0.0;
-        double det = cell[0] * (cell[4] * cell[8] - cell[5] * cell[7])
+    double volume(std::string axis="abc") {
+        // compute cross product of cell vectors
+        if (axis == "ab") return std::sqrt(std::pow(cell[1]*cell[5] - cell[2]*cell[4], 2) 
+            + std::pow(cell[2]*cell[3] - cell[0]*cell[5], 2) 
+            + std::pow(cell[0]*cell[4] - cell[1]*cell[3], 2));
+        if (axis == "bc") return std::sqrt(std::pow(cell[4]*cell[8] - cell[5]*cell[7], 2) 
+            + std::pow(cell[5]*cell[6] - cell[3]*cell[8], 2) 
+            + std::pow(cell[3]*cell[7] - cell[4]*cell[6], 2));
+        if (axis == "ca") return std::sqrt(std::pow(cell[7]*cell[2] - cell[8]*cell[1], 2) 
+            + std::pow(cell[8]*cell[0] - cell[6]*cell[2], 2) 
+            + std::pow(cell[6]*cell[1] - cell[7]*cell[0], 2));
+        if (axis == "abc") return std::abs(cell[0] * (cell[4] * cell[8] - cell[5] * cell[7])
                    - cell[1] * (cell[3] * cell[8] - cell[5] * cell[6])
-                   + cell[2] * (cell[3] * cell[7] - cell[4] * cell[6]);
-        return std::abs(det);
+                   + cell[2] * (cell[3] * cell[7] - cell[4] * cell[6]));
+        throw std::runtime_error("Invalid axis");
     }
 
     DistGraph* get_graph3b(const std::vector<double>& r_max_left, const std::vector<double>& r_max_right) {

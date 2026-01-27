@@ -26,6 +26,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
     
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
+    int n = graph->block_offsets[-1];
     double dt = M_PI;
 
     // 1. Generate Time Propagation Coefficients for dt
@@ -65,7 +66,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         v_tmp.copy_from(psi_in);
         v_tmp.pointwise_mult(*proj_mask);
         overlap = psi_curr.dot(v_tmp);
-        (*pcdos)[0] = overlap;
+        (*pcdos)[0] = overlap * n;
     }
 
     // 3. Time Propagation Loop
@@ -104,7 +105,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
             v_tmp.copy_from(psi_in);
             v_tmp.pointwise_mult(*proj_mask);
             overlap = v_tmp.dot(psi_out); // <P psi_in | psi_out> = <psi_in | P psi_out>
-            (*pcdos)[it + 1] = overlap;
+            (*pcdos)[it + 1] = overlap * n;
         }
 
         // Update for next step
@@ -125,6 +126,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
     int num_vecs = psi_in.num_vectors;
+    int n = graph->block_offsets[-1];
     double dt = M_PI;
 
     std::vector<std::complex<double>> coeffs;
@@ -155,7 +157,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         v_tmp.dot(psi_curr, dots);
         sum_overlap = 0;
         for(auto d : dots) sum_overlap += d;
-        (*pcdos)[0] = sum_overlap / static_cast<double>(num_vecs);
+        (*pcdos)[0] = sum_overlap / static_cast<double>(num_vecs) * n;
     }
 
     for (int it = 0; it < nt; ++it) {
@@ -174,13 +176,13 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         cdos[it + 1] = sum_overlap / static_cast<double>(num_vecs);
 
         if (pcdos && proj_mask) {
-             v_tmp.copy_from(psi_in);
-             v_tmp.pointwise_mult(*proj_mask);
-             
+            v_tmp.copy_from(psi_in);
+            v_tmp.pointwise_mult(*proj_mask);
+            
             v_tmp.dot(psi_out, dots);
             sum_overlap = 0;
             for(auto d : dots) sum_overlap += d;
-            (*pcdos)[it + 1] = sum_overlap / static_cast<double>(num_vecs);
+            (*pcdos)[it + 1] = sum_overlap / static_cast<double>(num_vecs) * n;
         }
 
         psi_curr.copy_from(psi_out);

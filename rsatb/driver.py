@@ -111,7 +111,7 @@ class RSATB:
         dos_out, omega_out = self._cpp_obj.compute_dos(nt)
         return np.array(dos_out), np.array(omega_out)
 
-    def compute_ac(self, nt, n_kpm, temp, mu):
+    def compute_ac(self, nt, n_kpm, temp, mu, axis="abc"):
         """
         Compute the AC conductivity.
 
@@ -120,11 +120,12 @@ class RSATB:
             n_kpm (int): Number of KPM moments.
             temp (float): Temperature.
             mu (float): Chemical potential.
+            axis (str, optional): Axis for volume calculation. Defaults to "abc".
 
         Returns:
             tuple: (ac_out, omega_out) as numpy arrays.
         """
-        ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu)
+        ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
         ntp1 = ac_out.shape[1] # [n_subk, (nt+1)*6]
         
