@@ -1,5 +1,6 @@
 import _rsatb
 import numpy as np
+import scipy.signal as sp
 
 class RSATB:
     """
@@ -124,18 +125,62 @@ class RSATB:
 
         Returns:
             tuple: (ac_out, omega_out) as numpy arrays.
+            unit in S/m for ac_out and cm-1 for omega_out
         """
         ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
-        ntp1 = ac_out.shape[1] # [n_subk, (nt+1)*6]
+        n_k, ntp1 = ac_out.shape[0], ac_out.shape[1]
         
-        sigma = np.zeros((-1, 2*ntp1, 6))
+        sigma = np.zeros((n_k, 2*ntp1, 6))
         sigma[:, ntp1:, :] = ac_out
         sigma[:, 1:ntp1+1, :] = ac_out[:, ::-1, :]
-        ac_out = ac_out + 1j * np.imag(sp.signal.hilbert(sigma, axis=1))[:,ntp1:2*ntp1,:]
-        ac_out = ac_out.reshape(-1, (nt+1)*6)
+        ac_out = ac_out + 1j * np.imag(sp.hilbert(sigma, axis=1))[:,ntp1:2*ntp1,:]
+        # ac_out is now (n_k, nt+1, 6)
+        
+        # now compute other properties from ac
+        # dielectric function
+        # epsilon = 1 + i * sigma / (epsilon_0 * omega)
+        
+        omega_ev = np.array(omega_out)
+        omega_out = omega_ev * 8065.56
+        epsilon_0 = 8.8541878128e-12
+        hbar = 6.582119569e-16 # eV*s
+        
+        # Avoid division by zero at omega=0
+        mask = omega_ev > 1e-10
+        eps = np.ones_like(ac_out, dtype=np.complex128)
+        
+        # sigma is ac_out * 2.434e6
+        sigma_si = ac_out * 2.4341348 * 1e6
+        
+        # eps[:, mask, :] = 1.0 + 1j * sigma_si[:, mask, :] * hbar / (epsilon_0 * omega_ev[mask, None])
+        # Need to broadcast omega_ev[mask] to (n_k, sum(mask), 6)
+        eps[:, mask, :] = 1.0 + 1j * sigma_si[:, mask, :] * hbar / (epsilon_0 * omega_ev[mask][None, :, None])
 
-        return ac_out, np.array(omega_out)
+        # refractive index N = n + ik = sqrt(epsilon)
+        ref_index = np.sqrt(eps)
+        n = np.real(ref_index)
+        k = np.imag(ref_index)
+
+        # absorption coefficient alpha = 2 * omega_rad_s * k / c
+        alpha = np.zeros_like(k)
+        alpha[:, mask, :] = 2 * (omega_ev[mask][None, :, None] / hbar) * k[:, mask, :] / 2.99792458e8 / 100.0
+
+        # Reshape everything to (-1, (nt+1)*6) for consistency with previous return format
+        ac_out = (ac_out * 2.4341348 * 1e6).reshape(-1, (nt+1)*6)
+        eps = eps.reshape(-1, (nt+1)*6)
+        n = n.reshape(-1, (nt+1)*6)
+        k = k.reshape(-1, (nt+1)*6)
+        alpha = alpha.reshape(-1, (nt+1)*6)
+
+        properties = {
+            "epsilon": eps,
+            "refractive_index": n,
+            "extinction_coefficient": k,
+            "absorption_coefficient": alpha
+        }
+
+        return ac_out, omega_out, properties
 
     def get_kernel_info(self):
         """
