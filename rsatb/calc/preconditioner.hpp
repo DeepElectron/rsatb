@@ -5,7 +5,6 @@
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
 #include "isqrtm.hpp"
-#include "lapack_types.hpp"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -105,38 +104,38 @@ public:
 
 private:
     void invert_block(double* a, int n_in) {
-        rsatb_lapack_int n = n_in;
+        vbcsr_lapack_int n = n_in;
         if (n == 1) {
             a[0] = 1.0 / a[0];
             return;
         }
-        rsatb_lapack_int info;
-        std::vector<rsatb_lapack_int> ipiv(n);
+        vbcsr_lapack_int info;
+        std::vector<vbcsr_lapack_int> ipiv(n);
         dgetrf_(&n, &n, a, &n, ipiv.data(), &info);
         if (info != 0) throw std::runtime_error("Block inversion failed (dgetrf).");
         
-        rsatb_lapack_int lwork = n * n;
+        vbcsr_lapack_int lwork = n * n;
         std::vector<double> work(lwork);
         dgetri_(&n, a, &n, ipiv.data(), work.data(), &lwork, &info);
         if (info != 0) throw std::runtime_error("Block inversion failed (dgetri).");
     }
 
     void invert_block(std::complex<double>* a, int n_in) {
-        rsatb_lapack_int n = n_in;
+        vbcsr_lapack_int n = n_in;
         if (n == 1) {
             a[0] = 1.0 / a[0];
             return;
         }
-        rsatb_lapack_int info;
-        std::vector<rsatb_lapack_int> ipiv(n);
+        vbcsr_lapack_int info;
+        std::vector<vbcsr_lapack_int> ipiv(n);
         
-        rsatb_complex_double* a_ptr = reinterpret_cast<rsatb_complex_double*>(a);
+        vbcsr_complex_double* a_ptr = reinterpret_cast<vbcsr_complex_double*>(a);
         zgetrf_(&n, &n, a_ptr, &n, ipiv.data(), &info);
 
         if (info != 0) throw std::runtime_error("Block inversion failed (zgetrf).");
         
-        rsatb_lapack_int lwork = n * n;
-        std::vector<rsatb_complex_double> work(lwork);
+        vbcsr_lapack_int lwork = n * n;
+        std::vector<vbcsr_complex_double> work(lwork);
         
         zgetri_(&n, a_ptr, &n, ipiv.data(), work.data(), &lwork, &info);
 

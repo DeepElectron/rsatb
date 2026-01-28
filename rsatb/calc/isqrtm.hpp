@@ -9,8 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <set>
-#include "submf.hpp"
-#include "graphmf.hpp"
+#include "vbcsr/core/graphmf.hpp"
 
 #if defined(RSATB_USE_OPENBLAS) || defined(VBCSR_USE_OPENBLAS)
 extern "C" void openblas_set_num_threads(int num_threads);
