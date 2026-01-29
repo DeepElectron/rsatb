@@ -27,7 +27,6 @@
 class Op2c
 {
 private:
-    TwoCenterBundle tcbd;
     std::vector<Atom_pseudo> psds;
     container::Tensor orb_map{container::DataType::DT_INT, container::TensorShape({0})};
     container::Tensor beta_map{container::DataType::DT_INT, container::TensorShape({0})};
@@ -37,6 +36,7 @@ private:
     bool lspinorb;
     
 public:
+    TwoCenterBundle tcbd;
     Op2c(
         size_t ntype, int nspin, bool lspinorb,
         const std::string& orb_dir, const std::vector<std::string> orb_name, const std::string& psd_dir, const std::vector<std::string> psd_name,
