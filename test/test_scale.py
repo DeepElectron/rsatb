@@ -14,12 +14,12 @@ rsatb.setup(
     Hfile="./data/diamond/H_diamond_sc888.h5", kpoints=kpoints, orb_names=["C_gga_7au_100Ry_2s2p1d.orb"], 
     orb_dirs="./data/diamond/", psd_names=["C_ONCV_PBE-1.0.upf"], psd_dirs="./data/diamond/", 
     tol=1e-7, sptol=1e-5,
-    precond="S", nsamples=1)
+    precond="H", nsamples=1)
 
-dos, omega = rsatb.compute_dos(1)
+ac_out, omega_out, properties = rsatb.compute_ac(1000, 1000, 300.0, 16.225300864, axis="abc")
+properties["ac"] = ac_out
+properties["omega"] = omega_out
 
 if rank == 0:
-    import matplotlib.pyplot as plt
-    plt.imshow(dos.reshape(len(kpoints), -1), aspect='auto', cmap="bwr", vmax=1, vmin=-1)
-    plt.colorbar()
-    plt.savefig("dos.png")
+    import numpy as np
+    np.savez("./ac.npz", **properties)

@@ -186,7 +186,7 @@ public:
                 Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
                 
                 esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, P->get_type());
-                esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type());
+                esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type()); // eigensolver will automatically switch type according to Sk and P's value.
                 
                 if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
                 if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
@@ -329,6 +329,21 @@ public:
         for(int i=0; i<=nt; ++i) {
              omega[i] = i * scale / (nt + 1);
         }
+
+        //check if orthogonal, if not
+            // get three-body graph
+        DistGraph* graphv;
+        if (S_images_) {
+            int ntype = atomic_data_->n_type();
+            std::vector<double> orbrmax(ntype, 0.0), psdrmax(ntype, 0.0);
+            for(int i=0; i<ntype; ++i) {
+                orbrmax[i] = op_construction_->op2c_->tcbd.orb_->rcut_max(i);
+                psdrmax[i] = op_construction_->op2c_->tcbd.beta_->rcut_max(i);
+            }
+            graphv = atomic_data_->get_graph3b(orbrmax, psdrmax);
+        } else {
+            graphv = atomic_data_->get_graph();
+        }
         
         for (const auto& kp : my_kpoints_) {
             int k_idx = kp.first;
@@ -338,11 +353,18 @@ public:
             Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
             Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
             
-            auto Vx = std::make_unique<Matrix>(atomic_data_->get_graph());
-            auto Vy = std::make_unique<Matrix>(atomic_data_->get_graph());
-            auto Vz = std::make_unique<Matrix>(atomic_data_->get_graph());
+            auto Vx = std::make_unique<Matrix>(graphv);
+            auto Vy = std::make_unique<Matrix>(graphv);
+            auto Vz = std::make_unique<Matrix>(graphv);
             
-            auto img_V = op_construction_->build_overlap_velocity(Vx.get(), Vy.get(), Vz.get(), *atomic_data_, K[0], K[1], K[2]);
+            if (S_images_) {
+                auto img_V = op_construction_->build_overlap_velocity(Vx.get(), Vy.get(), Vz.get(), *atomic_data_, K[0], K[1], K[2]);
+            } else {
+                if (world_rank_ == 0) {
+                    std::cout << "Orthogonal Velocity Matrix is not supported yet, but will be done very soon. Since it is easy.";
+                }
+            }
+
             Vx->assemble();
             Vy->assemble();
             Vz->assemble();
@@ -455,8 +477,8 @@ private:
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<OperatorConstruction> op_construction_;
     
-    std::unique_ptr<ImageContainer<double>> H_images_;
-    std::unique_ptr<ImageContainer<double>> S_images_;
+    std::unique_ptr<ImageContainer<double>> H_images_ = nullptr;
+    std::unique_ptr<ImageContainer<double>> S_images_ = nullptr;
     
     std::vector<std::pair<int, std::vector<double>>> my_kpoints_;
     
