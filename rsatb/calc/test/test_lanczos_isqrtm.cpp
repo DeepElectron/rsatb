@@ -1,4 +1,4 @@
-#include "../submf.hpp"
+#include "../../extern/vbcsr/core/submf.hpp"
 #include "../isqrtm.hpp"
 #include <iostream>
 #include <cassert>
@@ -52,13 +52,13 @@ void direct_diagonalization_benchmark(int n_global, int n_cols, double shift) {
     
     // Eigendecomposition
     std::vector<double> w(n_global);
-    rsatb_lapack_int n = n_global;
-    rsatb_lapack_int lwork = -1;
-    rsatb_lapack_int info;
+    vbcsr_lapack_int n = n_global;
+    vbcsr_lapack_int lwork = -1;
+    vbcsr_lapack_int info;
     double wkopt;
     
     dsyev_("V", "U", &n, S.data(), &n, w.data(), &wkopt, &lwork, &info);
-    lwork = (rsatb_lapack_int)wkopt;
+    lwork = (vbcsr_lapack_int)wkopt;
     std::vector<double> work(lwork);
     dsyev_("V", "U", &n, S.data(), &n, w.data(), work.data(), &lwork, &info);
     
@@ -230,20 +230,20 @@ int main(int argc, char** argv) {
         double start_time = MPI_Wtime();
         
         std::vector<double> w(n_global);
-        rsatb_lapack_int n = n_global;
-        rsatb_lapack_int lwork = -1;
-        rsatb_lapack_int info;
+        vbcsr_lapack_int n = n_global;
+        vbcsr_lapack_int lwork = -1;
+        vbcsr_lapack_int info;
         double wkopt;
-        rsatb_lapack_int iwkopt;
+        vbcsr_lapack_int iwkopt;
         
         // Copy S_global because dsyev destroys it
         std::vector<double> S_copy = S_global;
         
         dsyevd_("V", "U", &n, S_copy.data(), &n, w.data(), &wkopt, &lwork, &iwkopt, &lwork, &info);
-        lwork = (rsatb_lapack_int)wkopt;
-        rsatb_lapack_int liwork = iwkopt;
+        lwork = (vbcsr_lapack_int)wkopt;
+        vbcsr_lapack_int liwork = iwkopt;
         std::vector<double> work(lwork);
-        std::vector<rsatb_lapack_int> iwork(liwork);
+        std::vector<vbcsr_lapack_int> iwork(liwork);
         dsyevd_("V", "U", &n, S_copy.data(), &n, w.data(), work.data(), &lwork, iwork.data(), &liwork, &info);
         
         double end_time = MPI_Wtime();
