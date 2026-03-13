@@ -44,16 +44,32 @@ endif()
 
 # BLAS/LAPACK
 if(BLAS_BACKEND STREQUAL "MKL")
+    # Use mkl_rt (Single Dynamic Library) to avoid threading layer conflicts.
+    # Individual MKL libs (mkl_gf_lp64 + mkl_gnu_thread) lock in GNU OpenMP,
+    # which conflicts if any consumer uses Intel OpenMP (mkl_intel_thread).
+    # mkl_rt provides a single entry point with runtime-configurable threading.
+    find_library(MKL_RT_LIB NAMES mkl_rt mkl_rt.2 mkl_rt.1
+                 HINTS $ENV{MKLROOT}/lib $ENV{MKLROOT}/lib/intel64 $ENV{CONDA_PREFIX}/lib)
+    if(NOT MKL_RT_LIB)
+        message(FATAL_ERROR "BLAS_BACKEND=MKL but libmkl_rt not found. "
+                "Set BLAS_BACKEND=Generic, or install MKL.")
+    endif()
+    message(STATUS "Using MKL SDL: ${MKL_RT_LIB}")
+
+    # Create BLAS/LAPACK targets pointing to mkl_rt
+    add_library(BLAS::BLAS INTERFACE IMPORTED)
+    set_target_properties(BLAS::BLAS PROPERTIES INTERFACE_LINK_LIBRARIES "${MKL_RT_LIB}")
+    add_library(LAPACK::LAPACK INTERFACE IMPORTED)
+    set_target_properties(LAPACK::LAPACK PROPERTIES INTERFACE_LINK_LIBRARIES "${MKL_RT_LIB}")
+    set(BLAS_LIBRARIES ${MKL_RT_LIB})
+    set(BLAS_FOUND TRUE)
+
     if(USE_ILP64)
-        set(BLA_VENDOR "Intel10_64ilp")
-        add_compile_definitions(MKL_ILP64) # For MKL headers
+        add_compile_definitions(MKL_ILP64)
         set(RSATB_USE_ILP64 ON)
     else()
-        set(BLA_VENDOR "Intel10_64lp")
         set(RSATB_USE_ILP64 OFF)
     endif()
-    find_package(BLAS REQUIRED)
-    find_package(LAPACK REQUIRED)
     add_compile_definitions(__MKL RSATB_USE_MKL VBCSR_USE_MKL)
     if(DEFINED ENV{MKLROOT})
         include_directories($ENV{MKLROOT}/include)
@@ -306,6 +322,13 @@ target_link_libraries(test_rsatb PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
 # Python Module: _rsatb
 pybind11_add_module(_rsatb pybind_rsatb.cpp)
+# Prevent MKL threading symbols from leaking into the shared object.
+# This avoids conflicts when numpy or other packages bring their own MKL.
+if(UNIX AND NOT APPLE)
+    target_link_options(_rsatb PRIVATE
+        "-Wl,--exclude-libs,libmkl_intel_thread.so"
+        "-Wl,--exclude-libs,libiomp5.so")
+endif()
 target_include_directories(_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
 target_link_libraries(_rsatb PRIVATE ${RSATB_LINK_LIBS})
 
