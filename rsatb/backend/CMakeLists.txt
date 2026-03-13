@@ -21,7 +21,7 @@ if (PROJECT_IS_TOP_LEVEL)
     
     # Add dependencies
     add_subdirectory(../io io_build)
-    add_subdirectory(../extern/nao-abacus nao_abacus_build)
+    add_subdirectory(../extern/op2c op2c_build)
 endif()
 
 add_library(backend OBJECT operator_construction.hpp)
@@ -34,20 +34,16 @@ if(USE_OPENMP)
     target_link_libraries(backend PUBLIC OpenMP::OpenMP_CXX)
 endif()
 target_include_directories(backend PUBLIC 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus/source_base/module_container
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/vbcsr/
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/vbcsr/vbcsr/
 )
 
-add_executable(test_atomic_data test/test_atomic_data.cpp $<TARGET_OBJECTS:backend>)
-target_link_libraries(test_atomic_data PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB})
-
-add_executable(test_image_container test/test_image_container.cpp $<TARGET_OBJECTS:backend>)
-target_link_libraries(test_image_container PUBLIC backend MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB})
 
 add_executable(test_operator_construction test/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
 target_include_directories(test_operator_construction PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/nao-abacus/source_base/module_container
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
 )
-target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io base numerical_atomic_orbitals estate LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)

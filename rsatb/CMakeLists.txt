@@ -230,12 +230,29 @@ else()
     FetchContent_MakeAvailable(vbcsr)
 endif()
 
+# 5. Op2c (Use existing sources in extern/, or fetch if missing)
+set(OP2C_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/op2c")
+
+if(EXISTS "${OP2C_SOURCE_DIR}/CMakeLists.txt")
+    message(STATUS "Op2c sources found in extern/op2c, using existing sources")
+else()
+    message(STATUS "Op2c not found, fetching from GitHub...")
+    FetchContent_Declare(
+        op2c
+        GIT_REPOSITORY https://github.com/floatingCatty/op2c.git
+        GIT_TAG        main
+        SOURCE_DIR     "${OP2C_SOURCE_DIR}"
+        BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/op2c"
+    )
+    FetchContent_MakeAvailable(op2c)
+endif()
+
 list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
 
 # --- Subdirectories ---
 add_subdirectory(backend)
 add_subdirectory(io)
-add_subdirectory(extern/nao-abacus)
+add_subdirectory(extern/op2c)
 
 # --- Targets ---
 
@@ -243,9 +260,11 @@ add_subdirectory(extern/nao-abacus)
 set(RSATB_LINK_LIBS
     vbcsr
     io
-    base
-    numerical_atomic_orbitals
-    estate
+    nao_int2c
+    nao_pseudo
+    nao_core
+    nao_math
+    nao_utils
     MPI::MPI_CXX
     # DBCSR::dbcsr_c
     HDF5::HDF5
@@ -266,9 +285,10 @@ set(RSATB_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
     backend
     extern
-    extern/nao-abacus
-    extern/nao-abacus/source_base/module_container
+    extern/op2c/src
+    extern/op2c/src/utils/container
     extern/vbcsr
+    extern/vbcsr/vbcsr
 )
 
 if(DEFINED RSATB_DEPS_DIR)

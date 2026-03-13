@@ -41,7 +41,7 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("orb_names") = std::vector<std::string>{}, py::arg("orb_dirs") = "",
              py::arg("psd_names") = std::vector<std::string>{}, py::arg("psd_dirs") = "",
              py::arg("tol") = 1e-7, py::arg("sptol") = 1e-5, py::arg("maxiter")=20, py::arg("method")="graph",
-             py::arg("precond") = "H/S", py::arg("nsamples") = 1)
+             py::arg("precond") = "H/S", py::arg("nsamples") = 1, py::arg("compute_bounds") = true)
          .def("test_solve", &rsatb::RSATB::test_solve)
         .def("compute_dos", [](rsatb::RSATB& self, int nt) {
              std::vector<double> dos_out;

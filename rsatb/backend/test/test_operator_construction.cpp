@@ -1,5 +1,5 @@
 #include "../operator_construction.hpp"
-#include "../atomic_data.hpp"
+#include "vbcsr/core/atomic/atomic_data.hpp"
 #include <gtest/gtest.h>
 #include <complex>
 #include <vector>

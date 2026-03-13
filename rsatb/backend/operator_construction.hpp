@@ -1,14 +1,15 @@
 #ifndef RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
 #define RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
 
-#include "atomic_data.hpp"
-#include "image_container.hpp"
+#include "vbcsr/core/atomic/atomic_data.hpp"
+#include "vbcsr/core/atomic/image_container.hpp"
 #include "vbcsr/core/block_csr.hpp"
 #include "../io/hdf5.hpp"
-#include "../extern/nao-abacus/source_estate/op2c.hpp"
+#include "../extern/op2c/src/int2c/op2c.hpp"
 #include <memory>
 
 using namespace vbcsr;
+using namespace vbcsr::atomic;
 
 namespace rsatb {
 namespace backend {

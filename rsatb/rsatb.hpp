@@ -1,12 +1,12 @@
 #ifndef RSATB_CORE_RSATB_HPP
 #define RSATB_CORE_RSATB_HPP
 
-#include "backend/atomic_data.hpp"
+#include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
 #include "backend/operator_construction.hpp"
-#include "backend/image_container.hpp"
+#include "vbcsr/core/atomic/image_container.hpp"
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
 #include "calc/ac.hpp"
@@ -27,6 +27,7 @@
 #include <mpi.h>
 
 using namespace vbcsr;
+using namespace vbcsr::atomic;
 
 namespace rsatb {
 
@@ -109,7 +110,7 @@ public:
                const std::vector<std::string>& orb_names, const std::string& orb_dirs,
                const std::vector<std::string>& psd_names, const std::string& psd_dirs,
                double tol=1e-7, double sptol=1e-5, int maxiter=20, const std::string& method="graph",
-               const std::string& precond = "H/S", int nsamples = 1) {
+               const std::string& precond = "H/S", int nsamples = 1, bool compute_bounds = true) {
         
         nsamples_ = nsamples;
         global_nk_ = kpoints.size();
@@ -166,8 +167,15 @@ public:
                 
                 double factor = 1.0 / std::sqrt(max_eig + 0.1);
                 
-                auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, maxiter, tol, sptol, method, factor, verbose_);
-                precond_map_[k_idx] = std::move(P);
+                if (precond == "H" || precond == "S"){
+                    auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, maxiter, tol, sptol, method, factor, verbose_);
+                    precond_map_[k_idx] = std::move(P);
+                } else {
+                    // assert precond is None
+                    if (precond != "None") {
+                        throw std::runtime_error("Preconditioner support H, S or None");
+                    }
+                }
                 
                 if (precond == "H") {
                     S_k_map_.erase(k_idx);
@@ -176,7 +184,7 @@ public:
             }
             
             // Compute eigenvalues of H
-            if (!Hfile.empty()) {
+            if (!Hfile.empty() && compute_bounds) {
                 
                 PrimmeEigenSolver<Scalar> esolver;
                 std::vector<double> evals_min, evals_max;
@@ -194,7 +202,7 @@ public:
             }
         }
         
-        if (!Hfile.empty()) {
+        if (!Hfile.empty() && compute_bounds) {
             // 4. Global Reduction for emin/emax
             double global_emin = local_emin;
             double global_emax = local_emax;
@@ -241,8 +249,17 @@ public:
         }
     }
 
+    void band_pardiso(double mu, int nband, std::vector<double>& band_out) {
+        // use shift invert method to compute the band structure  around some preset energy mu.
+        
+    }
+
     void compute_dos(int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
         // Output size: global_nk * 2*nt
+        if (emin_ > emax_) {
+            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
+        }
+
         std::vector<double> local_dos(global_nk_ * 2 * nt, 0.0);
         
         std::complex<double> imI(0.0, 1.0);
@@ -316,6 +333,10 @@ public:
 
     void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
         // Output size: global_nk * (nt+1) * 6
+        if (emin_ > emax_) {
+            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
+        }
+        
         std::vector<double> local_ac(global_nk_ * (nt + 1) * 6, 0.0);
         
         double scale = (emax_ - emin_) / 2.0;
