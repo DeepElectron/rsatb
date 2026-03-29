@@ -12,7 +12,6 @@ namespace rsatb {
 namespace calc {
 
 using namespace vbcsr;
-using namespace rsatb::backend;
 
 // Linear Solver class
 // Currently implements Conjugate Gradient (CG) for SPD matrices

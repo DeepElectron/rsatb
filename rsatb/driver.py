@@ -182,6 +182,63 @@ class RSATB:
 
         return ac_out, omega_out, properties
 
+    def compute_dc_spectrum(self, n_moments, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0):
+        """
+        Compute the zero-temperature DC conductivity spectrum on the Chebyshev energy grid.
+
+        This is the direct Python entry point to the FFTCheb transport module.
+        The returned spectrum is resolved on the native Chebyshev nodes used by
+        the recurrence, so it is a good debugging/analysis surface when working
+        on new transport features.
+
+        Args:
+            n_moments (int): Number of Chebyshev moments / energy grid points.
+            formulation (str, optional): "greenwood" or "bastin".
+            axis (str, optional): Axis selector for volume calculation.
+            partition_sections (int, optional): Explicit row-partition count.
+            max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
+
+        Returns:
+            tuple: (sigma_out, energy_out) with sigma_out shaped (n_k, n_moments, 6)
+                   in S/m and energy_out in eV.
+                   Tensor-component order is (xx, xy, xz, yy, yz, zz).
+        """
+        sigma_out, energy_out = self._cpp_obj.compute_dc_spectrum(
+            n_moments, formulation, axis, partition_sections, max_workspace_mb
+        )
+        sigma_out = np.array(sigma_out, dtype=np.float64).reshape(-1, n_moments, 6)
+        sigma_out = sigma_out * 2.4341348 * 1e6
+        energy_out = np.array(energy_out, dtype=np.float64)
+        return sigma_out, energy_out
+
+    def compute_dc(self, n_moments, mu, temp, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0):
+        """
+        Evaluate the DC conductivity tensor at a target chemical potential and temperature.
+
+        Internally this reuses `compute_dc_spectrum(...)` and performs the
+        thermal convolution on the same Chebyshev energy grid, so it is mainly
+        a convenience wrapper rather than a separate transport algorithm.
+
+        Args:
+            n_moments (int): Number of Chebyshev moments / energy grid points.
+            mu (float): Chemical potential in eV.
+            temp (float): Temperature in K.
+            formulation (str, optional): "greenwood" or "bastin".
+            axis (str, optional): Axis selector for volume calculation.
+            partition_sections (int, optional): Explicit row-partition count.
+            max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
+
+        Returns:
+            ndarray: Conductivity tensor shaped (n_k, 6) in S/m with component
+                     order (xx, xy, xz, yy, yz, zz).
+        """
+        sigma_out = self._cpp_obj.compute_dc(
+            n_moments, mu, temp, formulation, axis, partition_sections, max_workspace_mb
+        )
+        sigma_out = np.array(sigma_out, dtype=np.float64).reshape(-1, 6)
+        sigma_out = sigma_out * 2.4341348 * 1e6
+        return sigma_out
+
     def get_kernel_info(self):
         """
         Get information about the computational kernel.

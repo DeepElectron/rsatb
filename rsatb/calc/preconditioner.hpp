@@ -17,7 +17,6 @@
 namespace rsatb {
 namespace calc {
 
-using namespace rsatb::backend;
 using namespace vbcsr;
 
 enum class PreconditionerType { Left, Right, Symmetric };

@@ -17,8 +17,6 @@ using namespace vbcsr;
 namespace rsatb {
 namespace calc {
 
-using namespace rsatb::backend;
-
 enum class ChebyMode { NORMAL, ADJOINT, CONJUGATE };
 
 // Helper to generate time propagation coefficients

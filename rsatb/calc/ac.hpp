@@ -106,6 +106,7 @@ void current_adjoint(Chebyshev<T, Kernel>& cheby,
     
     // J_Psi = V * tmp
     // J_Psi = V * tmp
+    // here we assume the velocity is strictly hermitian, so to use mult instead of mult_adjoint.
     if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
         Vx.mult_dense(tmp, J_Psi[0]);
         Vy.mult_dense(tmp, J_Psi[1]);

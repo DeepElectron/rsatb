@@ -16,7 +16,10 @@ print("RSATB docstring:", RSATB.__doc__)
 
 # Basic instantiation check (requires no args or dummy args if possible)
 # Since we don't have a small test file handy, we just check if the class exists and has methods.
-if hasattr(RSATB, 'setup'):
-    print("Verification successful: RSATB class has 'setup' method.")
+required_methods = ['setup', 'compute_dc', 'compute_dc_spectrum']
+missing = [name for name in required_methods if not hasattr(RSATB, name)]
+
+if not missing:
+    print("Verification successful: RSATB class exposes the FFTCheb DC APIs.")
 else:
-    print("Verification failed: RSATB class missing 'setup' method.")
+    print(f"Verification failed: RSATB class missing methods: {missing}")

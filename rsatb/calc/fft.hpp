@@ -4,7 +4,10 @@
 #include <stdlib.h>
 #include <math.h>
 #include <fftw3.h>
+#include <algorithm>
+#include <cassert>
 #include <complex>
+#include <vector>
 
 namespace rsatb {
 namespace calc {
@@ -72,6 +75,147 @@ inline void bfft_1d(int n, int nb, cd* in, cd* out) {
     fftw_execute(p);
     fftw_destroy_plan(p);
 }
+
+class RowFFTWorkspace {
+public:
+    explicit RowFFTWorkspace(int n, int batch = 1)
+        : n_(n),
+          batch_(std::max(1, batch)),
+          fft_n_(2 * n),
+          dct_in_(static_cast<size_t>(batch_) * static_cast<size_t>(n_)),
+          dct_out_(static_cast<size_t>(batch_) * static_cast<size_t>(n_)),
+          fft_in_(static_cast<size_t>(batch_) * static_cast<size_t>(fft_n_)),
+          fft_out_(static_cast<size_t>(batch_) * static_cast<size_t>(fft_n_)) {
+        int dct_size[1] = {n_};
+        fftw_r2r_kind dct_kind[1] = {FFTW_REDFT01};
+        dct_plan_ = fftw_plan_many_r2r(
+            1,
+            dct_size,
+            batch_,
+            dct_in_.data(),
+            nullptr,
+            1,
+            n_,
+            dct_out_.data(),
+            nullptr,
+            1,
+            n_,
+            dct_kind,
+            FFTW_ESTIMATE
+        );
+
+        int fft_size[1] = {fft_n_};
+        ifft_plan_ = fftw_plan_dft_1d(
+            fft_n_,
+            reinterpret_cast<fftw_complex*>(fft_in_.data()),
+            reinterpret_cast<fftw_complex*>(fft_out_.data()),
+            FFTW_BACKWARD,
+            FFTW_ESTIMATE
+        );
+        if (batch_ > 1) {
+            fftw_destroy_plan(ifft_plan_);
+            ifft_plan_ = fftw_plan_many_dft(
+                1,
+                fft_size,
+                batch_,
+                reinterpret_cast<fftw_complex*>(fft_in_.data()),
+                nullptr,
+                1,
+                fft_n_,
+                reinterpret_cast<fftw_complex*>(fft_out_.data()),
+                nullptr,
+                1,
+                fft_n_,
+                FFTW_BACKWARD,
+                FFTW_ESTIMATE
+            );
+        }
+    }
+
+    ~RowFFTWorkspace() {
+        if (dct_plan_) {
+            fftw_destroy_plan(dct_plan_);
+        }
+        if (ifft_plan_) {
+            fftw_destroy_plan(ifft_plan_);
+        }
+    }
+
+    int batch_size() const {
+        return batch_;
+    }
+
+    void dct_type3_batch(const cd* in, cd* out) {
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            for (int i = 0; i < n_; ++i) {
+                dct_in_[base + static_cast<size_t>(i)] = in[base + static_cast<size_t>(i)].real();
+            }
+        }
+        fftw_execute(dct_plan_);
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            for (int i = 0; i < n_; ++i) {
+                out[base + static_cast<size_t>(i)].real(dct_out_[base + static_cast<size_t>(i)]);
+            }
+        }
+
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            for (int i = 0; i < n_; ++i) {
+                dct_in_[base + static_cast<size_t>(i)] = in[base + static_cast<size_t>(i)].imag();
+            }
+        }
+        fftw_execute(dct_plan_);
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            for (int i = 0; i < n_; ++i) {
+                out[base + static_cast<size_t>(i)].imag(dct_out_[base + static_cast<size_t>(i)]);
+            }
+        }
+    }
+
+    void zero_padded_ifft_batch(const cd* in, int non_zero_count, cd* out, int copy_count) {
+        std::fill(fft_in_.begin(), fft_in_.end(), cd(0.0, 0.0));
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t in_base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            const size_t fft_base = static_cast<size_t>(batch_idx) * static_cast<size_t>(fft_n_);
+            for (int i = 0; i < non_zero_count; ++i) {
+                fft_in_[fft_base + static_cast<size_t>(i)] = in[in_base + static_cast<size_t>(i)];
+            }
+        }
+
+        fftw_execute(ifft_plan_);
+        for (int batch_idx = 0; batch_idx < batch_; ++batch_idx) {
+            const size_t out_base = static_cast<size_t>(batch_idx) * static_cast<size_t>(n_);
+            const size_t fft_base = static_cast<size_t>(batch_idx) * static_cast<size_t>(fft_n_);
+            for (int i = 0; i < copy_count; ++i) {
+                out[out_base + static_cast<size_t>(i)] = fft_out_[fft_base + static_cast<size_t>(i)];
+            }
+        }
+    }
+
+    void dct_type3(const cd* in, cd* out) {
+        assert(batch_ == 1);
+        dct_type3_batch(in, out);
+    }
+
+    void zero_padded_ifft(const cd* in, int non_zero_count, cd* out, int copy_count) {
+        assert(batch_ == 1);
+        zero_padded_ifft_batch(in, non_zero_count, out, copy_count);
+    }
+
+private:
+    int n_;
+    int batch_;
+    int fft_n_;
+    std::vector<double> dct_in_;
+    std::vector<double> dct_out_;
+    std::vector<cd> fft_in_;
+    std::vector<cd> fft_out_;
+    fftw_plan dct_plan_ = nullptr;
+    fftw_plan ifft_plan_ = nullptr;
+};
 
 } // namespace calc
 } // namespace rsatb

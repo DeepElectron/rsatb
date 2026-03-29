@@ -320,6 +320,16 @@ add_executable(test_rsatb test_rsatb.cpp $<TARGET_OBJECTS:backend>)
 target_include_directories(test_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
 target_link_libraries(test_rsatb PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+# Executable: test_fftcheb_transport
+add_executable(test_fftcheb_transport calc/test/test_fftcheb_transport.cpp $<TARGET_OBJECTS:backend>)
+target_include_directories(test_fftcheb_transport PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_fftcheb_transport PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+# Executable: test_hdf5_io
+add_executable(test_hdf5_io io/test.cpp)
+target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
 # Python Module: _rsatb
 pybind11_add_module(_rsatb pybind_rsatb.cpp)
 # Prevent MKL threading symbols from leaking into the shared object.
@@ -350,4 +360,3 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/calc/config.hpp" DESTINATION include/
 # add_executable(test_lapack_query calc/test/test_lapack_query.cpp)
 # target_include_directories(test_lapack_query PRIVATE ${RSATB_INCLUDE_DIRS})
 # target_link_libraries(test_lapack_query PRIVATE ${RSATB_LINK_LIBS})
-

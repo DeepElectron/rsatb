@@ -10,6 +10,7 @@
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
 #include "calc/ac.hpp"
+#include "calc/fftcheb_transport.hpp"
 #include "calc/fermi_dirac.hpp"
 #include "calc/isqrtm.hpp"
 #include "calc/preconditioner.hpp"
@@ -438,8 +439,142 @@ public:
         omega_out = omega;
     }
 
+    // Compute the full zero-temperature transport spectrum on the native
+    // Chebyshev energy grid for every k-point handled by this RSATB instance.
+    //
+    // Output layout:
+    // - `sigma_out` has shape [global_nk_, n_moments, 6] flattened in row-major
+    //   order with tensor components stored as (xx, xy, xz, yy, yz, zz).
+    // - `energy_out` has length `n_moments` and is shared by all k-points.
+    //
+    // `formulation="greenwood"` fills the diagonal components from the
+    // longitudinal DC spectrum.
+    // `formulation="bastin"` fills the full upper-triangular tensor and
+    // includes Hall-type responses for complex Hamiltonians.
+    void compute_dc_spectrum(
+        int n_moments,
+        std::vector<double>& sigma_out,
+        std::vector<double>& energy_out,
+        std::string formulation = "greenwood",
+        std::string axis = "abc",
+        int partition_sections = 0,
+        size_t max_workspace_mb = 0
+    ) {
+        if (emin_ > emax_) {
+            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
+        }
+        if (!S_images_) {
+            throw std::runtime_error("compute_dc_spectrum currently requires overlap/velocity construction support.");
+        }
+
+        const auto dc_formulation = parse_dc_formulation(formulation);
+        const double trace_prefactor = static_cast<double>(atomic_data_->norb()) / atomic_data_->volume(axis);
+        const double transport_prefactor =
+            (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
+
+        std::vector<double> local_sigma(global_nk_ * n_moments * 6, 0.0);
+        std::vector<double> local_energy;
+
+        int ntype = atomic_data_->n_type();
+        std::vector<double> orbrmax(ntype, 0.0), psdrmax(ntype, 0.0);
+        for (int i = 0; i < ntype; ++i) {
+            orbrmax[i] = op_construction_->op2c_->tcbd.orb_->rcut_max(i);
+            psdrmax[i] = op_construction_->op2c_->tcbd.beta_->rcut_max(i);
+        }
+        DistGraph* graphv = atomic_data_->get_graph3b(orbrmax, psdrmax);
+
+        for (const auto& kp : my_kpoints_) {
+            int k_idx = kp.first;
+            const std::vector<double>& K = kp.second;
+
+            Matrix* Hk = H_k_map_[k_idx].get();
+            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
+            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
+
+            auto Vx = std::make_unique<Matrix>(graphv);
+            auto Vy = std::make_unique<Matrix>(graphv);
+            auto Vz = std::make_unique<Matrix>(graphv);
+            op_construction_->build_overlap_velocity(Vx.get(), Vy.get(), Vz.get(), *atomic_data_, K[0], K[1], K[2]);
+            Vx->assemble();
+            Vy->assemble();
+            Vz->assemble();
+
+            std::unique_ptr<Chebyshev<Scalar>> cheby;
+            if (Sk && P) {
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
+            } else if (Sk) {
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
+            } else if (P) {
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
+            } else {
+                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
+            }
+
+            MultiVector sample_mv(atomic_data_->get_graph(), nsamples_ == 1 ? 1 : nsamples_);
+            if (nsamples_ == 1) {
+                sample_mv.set_col(0, *sample_vec_);
+            } else {
+                sample_mv.copy_from(*sample_multi_vec_);
+            }
+
+            std::vector<double> sigma_k;
+            std::vector<double> energy_k;
+            rsatb::calc::dc_spectrum_fftcheb(
+                *cheby, *Vx, *Vy, *Vz, sample_mv, n_moments, dc_formulation,
+                transport_prefactor, partition_sections, max_workspace_mb,
+                sigma_k, energy_k, verbose_
+            );
+
+            if (local_energy.empty()) {
+                local_energy = energy_k;
+            }
+
+            const size_t offset = static_cast<size_t>(k_idx) * static_cast<size_t>(n_moments) * 6;
+            std::copy(sigma_k.begin(), sigma_k.end(), local_sigma.begin() + offset);
+        }
+
+        sigma_out.assign(local_sigma.size(), 0.0);
+        if (master_comm_ != MPI_COMM_NULL) {
+            MPI_Allreduce(local_sigma.data(), sigma_out.data(), static_cast<int>(local_sigma.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
+        }
+        MPI_Bcast(sigma_out.data(), static_cast<int>(sigma_out.size()), MPI_DOUBLE, 0, sub_comm_);
+
+        energy_out.resize(n_moments, 0.0);
+        if (master_comm_ != MPI_COMM_NULL && !local_energy.empty()) {
+            energy_out = local_energy;
+        }
+        MPI_Bcast(energy_out.data(), n_moments, MPI_DOUBLE, 0, sub_comm_);
+    }
+
+    // Convenience wrapper over `compute_dc_spectrum(...)`.
+    // It evaluates the finite-temperature conductivity tensor by integrating
+    // the zero-temperature spectrum against -df/dE at the target (mu, T).
+    void compute_dc(
+        int n_moments,
+        double mu,
+        double temp,
+        std::vector<double>& dc_out,
+        std::string formulation = "greenwood",
+        std::string axis = "abc",
+        int partition_sections = 0,
+        size_t max_workspace_mb = 0
+    ) {
+        std::vector<double> sigma_spectrum;
+        std::vector<double> energy_out;
+        compute_dc_spectrum(n_moments, sigma_spectrum, energy_out, formulation, axis, partition_sections, max_workspace_mb);
+
+        dc_out.assign(global_nk_ * 6, 0.0);
+        for (int k_idx = 0; k_idx < global_nk_; ++k_idx) {
+            std::vector<double> sigma_k(sigma_spectrum.begin() + static_cast<size_t>(k_idx) * static_cast<size_t>(n_moments) * 6,
+                                        sigma_spectrum.begin() + static_cast<size_t>(k_idx + 1) * static_cast<size_t>(n_moments) * 6);
+            std::vector<double> dc_k;
+            rsatb::calc::integrate_dc_spectrum(sigma_k, energy_out, mu, temp, dc_k);
+            std::copy(dc_k.begin(), dc_k.end(), dc_out.begin() + static_cast<size_t>(k_idx) * 6);
+        }
+    }
+
     // Test Helpers
-    void set_H_images(std::unique_ptr<ImageContainer<double>> img) {
+    void set_H_images(std::unique_ptr<ImageContainer<Scalar>> img) {
         H_images_ = std::move(img);
     }
     
@@ -498,7 +633,7 @@ private:
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<OperatorConstruction> op_construction_;
     
-    std::unique_ptr<ImageContainer<double>> H_images_ = nullptr;
+    std::unique_ptr<ImageContainer<Scalar>> H_images_ = nullptr;
     std::unique_ptr<ImageContainer<double>> S_images_ = nullptr;
     
     std::vector<std::pair<int, std::vector<double>>> my_kpoints_;

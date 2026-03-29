@@ -38,8 +38,8 @@ public:
     // Reads blocks from HDF5 and fills BlockSpMat
     // Build matrix from HDF5
     // Reads blocks from HDF5 and fills ImageContainer
-    std::unique_ptr<ImageContainer<double>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
-        auto img = std::make_unique<ImageContainer<double>>(&ad);
+    std::unique_ptr<ImageContainer<std::complex<double>>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
+        auto img = std::make_unique<ImageContainer<std::complex<double>>>(&ad);
         
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
@@ -56,12 +56,13 @@ public:
             ad.get_atom_id(i, &atom_idx); // Original index
             
             // Read On-site
-            double* v=nullptr;
-            h5.read_from_ijR_dense(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
+            std::complex<double>* v = nullptr;
+            h5.read_from_ijR_dense_complex(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
             if (found) {
                 int global_i = ad.get_global_index(i);
                 std::vector<int> R = {0, 0, 0};
                 img->add_block(R, global_i, global_i, v, inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+                delete[] v;
             }
         }
         
@@ -87,10 +88,10 @@ public:
                 ad.get_atom_id(j, &atom_j);
                 
                 int m, n;
-                double* buffer = nullptr;
+                std::complex<double>* buffer = nullptr;
                 bool found = false;
                 
-                h5.read_from_ijR_dense(atom_i, atom_j, Rx, Ry, Rz, &m, &n, &buffer, &found);
+                h5.read_from_ijR_dense_complex(atom_i, atom_j, Rx, Ry, Rz, &m, &n, &buffer, &found);
                 
                 if (found) {
                     if (m != inorb || n != jnorb) {

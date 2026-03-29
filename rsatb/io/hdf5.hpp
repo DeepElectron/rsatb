@@ -4,142 +4,182 @@
 /* Everything become so hard in c++. */
 
 #include <H5Cpp.h>
+
+#include <cmath>
+#include <complex>
 #include <iostream>
+#include <stdexcept>
+#include <string>
+#include <type_traits>
+#include <vector>
 
-namespace rsatb::io{
+namespace rsatb::io {
 
-class HDF5Handler
-{
-    private:
-        H5::H5File file;
-        std::string FILE_NAME;
-        H5::Group group;
-    public:
-        explicit HDF5Handler(const std::string &FILE_NAME): FILE_NAME(FILE_NAME), file(FILE_NAME, H5F_ACC_RDONLY), group(file.openGroup("0"))
-        {}
+class HDF5Handler {
+private:
+    H5::H5File file;
+    std::string FILE_NAME;
+    H5::Group group;
 
-        int read_from_ijR_dense(
-            int i, int j, int Rx, int Ry, int Rz,
-            // output
-            int *m, // rowdim
-            int *n, // col dim
-            double **v, // value
-            bool *found
-        ) // handling the ijR format of the h5 file.
-        {   
-            bool Transpose = false;
-            *found = true;
-            std::string result = std::to_string(i) + "_" + 
-                         std::to_string(j) + "_" + 
-                         std::to_string(Rx) + "_" + 
-                         std::to_string(Ry) + "_" + 
-                         std::to_string(Rz);
+    bool open_dataset_with_fallback(
+        int i, int j, int Rx, int Ry, int Rz,
+        H5::DataSet& dataset,
+        bool& transpose
+    ) {
+        transpose = false;
 
-            H5::DataSet dataset;
-            H5std_string DATASET_NAME(result);
-            bool exist = group.exists(DATASET_NAME);
-            try
-            {
-                if(exist){
-                    dataset = group.openDataSet(DATASET_NAME);
-                }else{
-                    result = std::to_string(j) + "_" + 
-                            std::to_string(i) + "_" + 
-                            std::to_string(-Rx) + "_" + 
-                            std::to_string(-Ry) + "_" + 
-                            std::to_string(-Rz);
-                            
-                    H5std_string DATASET_NAME_T(result);
-                    bool exist_T = group.exists(DATASET_NAME_T);
-                    if(!exist_T) {
-                        *found = false;
-                        return 0;
+        std::string result = std::to_string(i) + "_" +
+                             std::to_string(j) + "_" +
+                             std::to_string(Rx) + "_" +
+                             std::to_string(Ry) + "_" +
+                             std::to_string(Rz);
+
+        if (group.exists(result)) {
+            dataset = group.openDataSet(result);
+            return true;
+        }
+
+        result = std::to_string(j) + "_" +
+                 std::to_string(i) + "_" +
+                 std::to_string(-Rx) + "_" +
+                 std::to_string(-Ry) + "_" +
+                 std::to_string(-Rz);
+
+        if (!group.exists(result)) {
+            return false;
+        }
+
+        dataset = group.openDataSet(result);
+        transpose = true;
+        return true;
+    }
+
+    template <typename ScalarT>
+    int read_from_ijR_dense_impl(
+        int i, int j, int Rx, int Ry, int Rz,
+        int* m,
+        int* n,
+        ScalarT** v,
+        bool* found
+    ) {
+        *found = true;
+        bool transpose = false;
+        H5::DataSet dataset;
+
+        try {
+            if (!open_dataset_with_fallback(i, j, Rx, Ry, Rz, dataset, transpose)) {
+                *found = false;
+                return 0;
+            }
+
+            H5::DataSpace dataspace = dataset.getSpace();
+            const int rank = dataspace.getSimpleExtentNdims();
+            if (rank != 2 && rank != 3) {
+                throw std::runtime_error("Unsupported ijR dataset rank");
+            }
+
+            hsize_t dims[3] = {0, 0, 0};
+            dataspace.getSimpleExtentDims(dims, nullptr);
+
+            const bool is_complex_dataset = (rank == 3);
+            if (is_complex_dataset && dims[2] != 2) {
+                throw std::runtime_error("Complex ijR datasets must use shape [m, n, 2]");
+            }
+
+            *m = transpose ? static_cast<int>(dims[1]) : static_cast<int>(dims[0]);
+            *n = transpose ? static_cast<int>(dims[0]) : static_cast<int>(dims[1]);
+            *v = new ScalarT[static_cast<size_t>(*m) * static_cast<size_t>(*n)];
+
+            if (!is_complex_dataset) {
+                std::vector<double> raw(static_cast<size_t>(dims[0]) * static_cast<size_t>(dims[1]));
+                dataset.read(raw.data(), H5::PredType::NATIVE_DOUBLE);
+
+                for (int row = 0; row < *m; ++row) {
+                    for (int col = 0; col < *n; ++col) {
+                        const int src_row = transpose ? col : row;
+                        const int src_col = transpose ? row : col;
+                        const double value = raw[static_cast<size_t>(src_row) * static_cast<size_t>(dims[1]) +
+                                                 static_cast<size_t>(src_col)];
+
+                        if constexpr (std::is_same_v<ScalarT, std::complex<double>>) {
+                            (*v)[static_cast<size_t>(row) * static_cast<size_t>(*n) + static_cast<size_t>(col)] =
+                                std::complex<double>(value, 0.0);
+                        } else {
+                            (*v)[static_cast<size_t>(row) * static_cast<size_t>(*n) + static_cast<size_t>(col)] = value;
+                        }
                     }
-                    dataset = group.openDataSet(DATASET_NAME_T);
                 }
+                return 0;
+            }
 
-                H5T_class_t type_class = dataset.getTypeClass();
+            std::vector<double> raw(static_cast<size_t>(dims[0]) * static_cast<size_t>(dims[1]) * 2);
+            dataset.read(raw.data(), H5::PredType::NATIVE_DOUBLE);
 
-                H5::DataSpace dataspace = dataset.getSpace();
-                int rank = dataspace.getSimpleExtentNdims();
-                if (rank != 2) {
-                    throw std::runtime_error("The data structure is not supported !");
-                }
-                hsize_t dims[2];
-                dataspace.getSimpleExtentDims(dims, NULL);
-                /* rank is the number of dim, dims is the size of each axis */
-                if(exist){
-                    *m = static_cast<int>(dims[0]);
-                    *n = static_cast<int>(dims[1]);
-                } else {
-                    *m = static_cast<int>(dims[1]);
-                    *n = static_cast<int>(dims[0]);
-                }
-                
-                // float data_out[*m][*n];
+            for (int row = 0; row < *m; ++row) {
+                for (int col = 0; col < *n; ++col) {
+                    const int src_row = transpose ? col : row;
+                    const int src_col = transpose ? row : col;
+                    const size_t idx = (static_cast<size_t>(src_row) * static_cast<size_t>(dims[1]) +
+                                        static_cast<size_t>(src_col)) * 2;
+                    const std::complex<double> value(raw[idx], raw[idx + 1]);
 
-                // for (j = 0; j < *m; j++)
-                // {
-                //     for (i = 0; i < *n; i++)
-                //     {
-                //         data_out[j][i] = 0;
-                //     }
-                // }
-                *v = new double[(*m)*(*n)];
-                if(exist){
-                    H5::DataSpace memspace(2, dims);
-                    dataset.read(*v, H5::PredType::NATIVE_DOUBLE, memspace, dataspace);
-
-                }else{
-                    hsize_t start[2]  = {0,0};
-                    hsize_t count[2]  = {dims[0],1};
-                    H5::DataSpace memspace(2, count);
-
-                    for(int ncol=0; ncol<dims[1]; ncol++){
-                        start[1] = ncol;
-                        dataspace.selectHyperslab(H5S_SELECT_SET, count, start, NULL, NULL);
-                        // mem_space.selectHyperslab(H5S_SELECT_SET, );
-                        dataset.read(*v+ncol*dims[0], H5::PredType::NATIVE_DOUBLE, memspace, dataspace);
+                    if constexpr (std::is_same_v<ScalarT, std::complex<double>>) {
+                        (*v)[static_cast<size_t>(row) * static_cast<size_t>(*n) + static_cast<size_t>(col)] = value;
+                    } else {
+                        if (std::abs(value.imag()) > 1e-12) {
+                            throw std::runtime_error("Complex ijR dataset requested through the real-valued reader");
+                        }
+                        (*v)[static_cast<size_t>(row) * static_cast<size_t>(*n) + static_cast<size_t>(col)] = value.real();
                     }
                 }
-                // *v = data_out
             }
-            catch(H5::FileIException error)
-            {
-                error.printErrorStack();
-                return -1;
-            }
-            // catch failure caused by the DataSet operations
-            catch(H5::DataSetIException error)
-            {
-                error.printErrorStack();
-                return -1;
-            }
-            // catch failure caused by the DataSpace operations
-            catch(H5::DataSpaceIException error)
-            {
-                error.printErrorStack();
-                return -1;
-            }
-            // catch failure caused by the DataSpace operations
-            catch(H5::DataTypeIException error)
-            {
-                error.printErrorStack();
-                return -1;
-            }
+        }
+        catch (H5::Exception& error) {
+            error.printErrorStack();
+            return -1;
+        }
+        catch (std::exception& error) {
+            std::cerr << "HDF5Handler error: " << error.what() << std::endl;
+            return -1;
+        }
 
-            return 0;
-        };
+        return 0;
+    }
 
-        // void read_from_R_csr(
-        //     int Rx, int Ry, int Rz,
-        //     // output
-        //     int *n, // nxn mat size
-        //     int *indices,
-        //     int *intptr,
-        //     double *data
-        //     );      
+public:
+    explicit HDF5Handler(const std::string& FILE_NAME)
+        : FILE_NAME(FILE_NAME), file(FILE_NAME, H5F_ACC_RDONLY), group(file.openGroup("0")) {}
+
+    int read_from_ijR_dense(
+        int i, int j, int Rx, int Ry, int Rz,
+        int* m,
+        int* n,
+        double** v,
+        bool* found
+    ) {
+        return read_from_ijR_dense_impl<double>(i, j, Rx, Ry, Rz, m, n, v, found);
+    }
+
+    int read_from_ijR_dense_complex(
+        int i, int j, int Rx, int Ry, int Rz,
+        int* m,
+        int* n,
+        std::complex<double>** v,
+        bool* found
+    ) {
+        return read_from_ijR_dense_impl<std::complex<double>>(i, j, Rx, Ry, Rz, m, n, v, found);
+    }
+
+    // void read_from_R_csr(
+    //     int Rx, int Ry, int Rz,
+    //     // output
+    //     int *n, // nxn mat size
+    //     int *indices,
+    //     int *intptr,
+    //     double *data
+    //     );
 };
-}
+
+} // namespace rsatb::io
 
 #endif

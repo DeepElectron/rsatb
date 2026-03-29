@@ -55,6 +55,29 @@ PYBIND11_MODULE(_rsatb, m) {
              self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
              return std::make_pair(ac_out, omega_out);
          }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"), py::arg("axis") = "abc")
+        .def("compute_dc_spectrum", [](rsatb::RSATB& self, int n_moments, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb) {
+             std::vector<double> sigma_out;
+             std::vector<double> energy_out;
+             self.compute_dc_spectrum(n_moments, sigma_out, energy_out, formulation, axis, partition_sections, max_workspace_mb);
+             return std::make_pair(sigma_out, energy_out);
+         },
+         py::arg("n_moments"),
+         py::arg("formulation") = "greenwood",
+         py::arg("axis") = "abc",
+         py::arg("partition_sections") = 0,
+         py::arg("max_workspace_mb") = 0)
+        .def("compute_dc", [](rsatb::RSATB& self, int n_moments, double mu, double temp, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb) {
+             std::vector<double> dc_out;
+             self.compute_dc(n_moments, mu, temp, dc_out, formulation, axis, partition_sections, max_workspace_mb);
+             return dc_out;
+         },
+         py::arg("n_moments"),
+         py::arg("mu"),
+         py::arg("temp"),
+         py::arg("formulation") = "greenwood",
+         py::arg("axis") = "abc",
+         py::arg("partition_sections") = 0,
+         py::arg("max_workspace_mb") = 0)
         .def("get_operator_construction", &rsatb::RSATB::get_operator_construction, py::return_value_policy::reference)
         .def("atomic_data", &rsatb::RSATB::atomic_data, py::return_value_policy::reference);
 }
