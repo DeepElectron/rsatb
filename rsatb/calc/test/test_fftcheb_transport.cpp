@@ -418,6 +418,23 @@ void expect_close(const std::vector<double>& lhs, const std::vector<double>& rhs
     }
 }
 
+std::vector<Scalar> explicit_dct_type3(const std::vector<Scalar>& input, int n, int batch) {
+    std::vector<Scalar> out(static_cast<size_t>(n) * static_cast<size_t>(batch), Scalar(0.0, 0.0));
+    for (int b = 0; b < batch; ++b) {
+        const size_t base = static_cast<size_t>(b) * static_cast<size_t>(n);
+        for (int k = 0; k < n; ++k) {
+            Scalar value = input[base];
+            for (int m = 1; m < n; ++m) {
+                const double theta =
+                    M_PI * static_cast<double>(m) * (static_cast<double>(k) + 0.5) / static_cast<double>(n);
+                value += 2.0 * input[base + static_cast<size_t>(m)] * std::cos(theta);
+            }
+            out[base + static_cast<size_t>(k)] = value;
+        }
+    }
+    return out;
+}
+
 void require_single_rank() {
     int size = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -446,6 +463,30 @@ TEST(FFTChebTransportTest, GreenwoodMatchesMomentReferenceOrthogonal) {
     const auto reference = run_reference(problem, n_moments, DCFormulation::Greenwood, problem.sample_a);
 
     expect_close(fftcheb, reference, 1e-8);
+}
+
+TEST(FFTChebTransportTest, RowDctType3MatchesExplicitCosineSum) {
+    require_single_rank();
+    const int n = 8;
+    const int batch = 2;
+    std::vector<Scalar> input(static_cast<size_t>(n) * static_cast<size_t>(batch), Scalar(0.0, 0.0));
+    for (int b = 0; b < batch; ++b) {
+        const size_t base = static_cast<size_t>(b) * static_cast<size_t>(n);
+        for (int m = 0; m < n; ++m) {
+            input[base + static_cast<size_t>(m)] =
+                Scalar(0.1 * (1 + b) * (m + 1), -0.05 * (2 + b) * (m + 1));
+        }
+    }
+
+    RowFFTWorkspace workspace(n, batch);
+    std::vector<Scalar> actual(static_cast<size_t>(n) * static_cast<size_t>(batch), Scalar(0.0, 0.0));
+    workspace.dct_type3_batch(input.data(), actual.data());
+    const auto expected = explicit_dct_type3(input, n, batch);
+
+    for (size_t i = 0; i < actual.size(); ++i) {
+        EXPECT_NEAR(actual[i].real(), expected[i].real(), 1e-12) << "real mismatch at index " << i;
+        EXPECT_NEAR(actual[i].imag(), expected[i].imag(), 1e-12) << "imag mismatch at index " << i;
+    }
 }
 
 TEST(FFTChebTransportTest, BastinMatchesMomentReferenceOrthogonal) {

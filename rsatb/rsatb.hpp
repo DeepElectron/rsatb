@@ -5,12 +5,13 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
-#include "backend/operator_construction.hpp"
+#include "backend/operator_set.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
 #include "calc/ac.hpp"
 #include "calc/fftcheb_transport.hpp"
+#include "calc/msd.hpp"
 #include "calc/fermi_dirac.hpp"
 #include "calc/isqrtm.hpp"
 #include "calc/preconditioner.hpp"
@@ -20,9 +21,11 @@
 #include "calc/fft.hpp"
 
 #include <memory>
+#include <array>
 #include <string>
 #include <vector>
 #include <complex>
+#include <limits>
 #include <iostream>
 #include <map>
 #include <mpi.h>
@@ -89,14 +92,8 @@ public:
     
     ~RSATB() {
         // Destroy components that might hold DBCSR objects before finalization
-        H_images_.reset();
-        S_images_.reset();
-        H_k_map_.clear();
-        S_k_map_.clear();
-        precond_map_.clear();
-        sample_vec_.reset();
-        sample_multi_vec_.reset();
-        op_construction_.reset();
+        sampling_.reset();
+        operators_.reset();
         atomic_data_.reset();
         
         // c_dbcsr_finalize_lib();
@@ -107,142 +104,55 @@ public:
 
 
     // Setup Function
+    void setup(const backend::OperatorSetupConfig& config, int nsamples = 1) {
+        backend::OperatorRuntimeContext runtime;
+        runtime.npar = npar_;
+        runtime.world_rank = world_rank_;
+        runtime.world_size = world_size_;
+        runtime.master_comm = master_comm_;
+
+        operators_ = backend::build_operator_set(*atomic_data_, sub_comm_, verbose_, config, runtime);
+        sampling_.initialize(*atomic_data_, nsamples);
+    }
+
     void setup(const std::string& Hfile, const std::vector<std::vector<double>>& kpoints,
                const std::vector<std::string>& orb_names, const std::string& orb_dirs,
                const std::vector<std::string>& psd_names, const std::string& psd_dirs,
                double tol=1e-7, double sptol=1e-5, int maxiter=20, const std::string& method="graph",
                const std::string& precond = "H/S", int nsamples = 1, bool compute_bounds = true) {
-        
-        nsamples_ = nsamples;
-        global_nk_ = kpoints.size();
 
-        // 1. Setup H/S Images
-        if (!Hfile.empty()) {
-            rsatb::io::HDF5Handler h5(Hfile);
-            H_images_ = op_construction_->build_from_hdf5(*atomic_data_, h5);
-        }
-        
-        if (!orb_names.empty() && !orb_dirs.empty()) {
-             int ntype = atomic_data_->n_type();
-             op_construction_->init(ntype, 1, false, orb_dirs, orb_names, psd_dirs, psd_names, "op2c.log");
-             S_images_ = op_construction_->build_overlap(*atomic_data_);
-        }
-
-        // 2. K-point Partition
-        int my_color = (world_rank_ * npar_) / world_size_;
-        my_kpoints_.clear();
-        for (size_t i = 0; i < kpoints.size(); ++i) {
-            if (i % npar_ == my_color) {
-                my_kpoints_.push_back({static_cast<int>(i), kpoints[i]});
-            }
-        }
-        
-        // 3. Loop K-points
-        double local_emin = 1e30, local_emax = -1e30;
-        
-        for (const auto& kp : my_kpoints_) {
-            int k_idx = kp.first;
-            const std::vector<double>& K = kp.second;
-            
-            if (H_images_) {
-                H_k_map_[k_idx] = std::unique_ptr<Matrix>(H_images_->sample_k(K, PhaseConvention::R_ONLY));
-            }
-            
-            Matrix* Sk = nullptr;
-            if (S_images_) {
-                S_k_map_[k_idx] = std::unique_ptr<Matrix>(S_images_->sample_k(K, PhaseConvention::R_ONLY));
-                Sk = S_k_map_[k_idx].get();
-            }
-            
-            // Compute Preconditioner
-            if (Sk) {
-                PrimmeEigenSolver<Scalar, Matrix::KernelType> esolver;
-                std::vector<double> evals;
-                std::vector<Vector> evecs;
-                
-                // esolver.solve_smallest(*Sk, nullptr, nullptr, 1, 1e-3, evals, evecs, false);
-                double max_eig = 1;
-                // std::cout << "max_eig = " << max_eig << std::endl;
-                esolver.solve_largest(*Sk, nullptr, nullptr, 1, 1e-3, evals, evecs, verbose_);
-                max_eig = evals[0];
-                
-                double factor = 1.0 / std::sqrt(max_eig + 0.1);
-                
-                if (precond == "H" || precond == "S"){
-                    auto P = std::make_unique<ISQRTMPreconditioner<Scalar>>(*Sk, maxiter, tol, sptol, method, factor, verbose_);
-                    precond_map_[k_idx] = std::move(P);
-                } else {
-                    // assert precond is None
-                    if (precond != "None") {
-                        throw std::runtime_error("Preconditioner support H, S or None");
-                    }
-                }
-                
-                if (precond == "H") {
-                    S_k_map_.erase(k_idx);
-                    Sk = nullptr;
-                }
-            }
-            
-            // Compute eigenvalues of H
-            if (!Hfile.empty() && compute_bounds) {
-                
-                PrimmeEigenSolver<Scalar> esolver;
-                std::vector<double> evals_min, evals_max;
-                std::vector<Vector> evecs;
-                
-                Matrix* Hk = H_k_map_[k_idx].get();
-                Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
-                
-                esolver.solve(*Hk, Sk, P, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, P->get_type());
-                esolver.solve(*Hk, Sk, P, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, P->get_type()); // eigensolver will automatically switch type according to Sk and P's value.
-                
-                if (!evals_min.empty()) local_emin = std::min(local_emin, evals_min[0]);
-                if (!evals_max.empty()) local_emax = std::max(local_emax, evals_max[0]);
-
-            }
-        }
-        
-        if (!Hfile.empty() && compute_bounds) {
-            // 4. Global Reduction for emin/emax
-            double global_emin = local_emin;
-            double global_emax = local_emax;
-            
-            if (master_comm_ != MPI_COMM_NULL) {
-                MPI_Allreduce(&local_emin, &global_emin, 1, MPI_DOUBLE, MPI_MIN, master_comm_);
-                MPI_Allreduce(&local_emax, &global_emax, 1, MPI_DOUBLE, MPI_MAX, master_comm_);
-            }
-            
-            MPI_Bcast(&global_emin, 1, MPI_DOUBLE, 0, sub_comm_);
-            MPI_Bcast(&global_emax, 1, MPI_DOUBLE, 0, sub_comm_);
-
-            emin_ = global_emin - 0.5; // Buffer
-            emax_ = global_emax + 0.5;
-        }
-            
-        // 5. Initialize Random Samples
-        if (nsamples_ == 1) {
-            sample_vec_ = std::make_unique<Vector>(atomic_data_->get_graph());
-            sample_vec_->set_random_normal(true);
-
-            sample_multi_vec_ = nullptr;
-        } else {
-            sample_multi_vec_ = std::make_unique<MultiVector>(atomic_data_->get_graph(), nsamples_);
-            sample_multi_vec_->set_random_normal(true);
-            sample_vec_ = nullptr;
-        }
+        backend::OperatorSetupConfig config;
+        config.kpoints = kpoints;
+        config.sources.hdf5.filename = Hfile;
+        config.sources.op2c.orb_names = orb_names;
+        config.sources.op2c.orb_dir = orb_dirs;
+        config.sources.op2c.psd_names = psd_names;
+        config.sources.op2c.psd_dir = psd_dirs;
+        config.sources.op2c.log_file = "op2c.log";
+        config.preconditioner.mode = precond;
+        config.preconditioner.tol = tol;
+        config.preconditioner.sptol = sptol;
+        config.preconditioner.maxiter = maxiter;
+        config.preconditioner.method = method;
+        config.compute_bounds = compute_bounds;
+        setup(config, nsamples);
     }
 
     void test_solve() {
         LinearSolver<Scalar, Matrix::KernelType> solver(1e-8, 1000, verbose_);
-        for (const auto& kp : my_kpoints_) {
+        auto& ops = require_operators();
+        for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;
-            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
-            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
-            if (nsamples_ == 1) {
-                Vector y = sample_vec_->duplicate();
+            auto& state = ops.kpoint_state(k_idx);
+            auto* P = state.preconditioner.get();
+            auto* Sk = state.overlap.get();
+            if (!P || !Sk || !sampling_.sample_vec) {
+                continue;
+            }
+            if (sampling_.nsamples == 1) {
+                Vector y = sampling_.sample_vec->duplicate();
                 solver.solve(
-                    *Sk, *sample_vec_, y, *P, P->get_type()
+                    *Sk, *sampling_.sample_vec, y, *P, P->get_type()
                 );
             } else {
                 continue;
@@ -257,41 +167,31 @@ public:
 
     void compute_dos(int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
         // Output size: global_nk * 2*nt
-        if (emin_ > emax_) {
+        auto& ops = require_operators();
+        if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
 
-        std::vector<double> local_dos(global_nk_ * 2 * nt, 0.0);
+        std::vector<double> local_dos(ops.global_nk() * 2 * nt, 0.0);
         
         std::complex<double> imI(0.0, 1.0);
-        double scale = (emax_ - emin_) / 2.0;
-        double shift = (emax_ + emin_) / 2.0;
+        double scale = (ops.emax() - ops.emin()) / 2.0;
+        double shift = (ops.emax() + ops.emin()) / 2.0;
         
-        for (const auto& kp : my_kpoints_) {
+        for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;
-            Matrix* Hk = H_k_map_[k_idx].get();
-            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
-            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
+            const auto& state = ops.kpoint_state(k_idx);
             
-            std::unique_ptr<Chebyshev<Scalar>> cheby;
-            if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
-            } else if (Sk) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
-            } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
-            } else {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
-            }
+            auto cheby = make_chebyshev(state);
             
             std::vector<std::complex<double>> cdos;
             const Vector* null_vec = nullptr;
             std::vector<std::complex<double>>* null_res = nullptr;
             
-            if (nsamples_ == 1) {
-                rsatb::calc::corr_dos(*cheby, *sample_vec_, nt, cdos, null_vec, null_res, verbose_);
+            if (sampling_.nsamples == 1) {
+                rsatb::calc::corr_dos(*cheby, *sampling_.sample_vec, nt, cdos, null_vec, null_res, verbose_);
             } else {
-                rsatb::calc::corr_dos(*cheby, *sample_multi_vec_, nt, cdos, null_vec, null_res, verbose_);
+                rsatb::calc::corr_dos(*cheby, *sampling_.sample_multi_vec, nt, cdos, null_vec, null_res, verbose_);
             }
             
             // Transform per K-point
@@ -318,7 +218,7 @@ public:
         }
         
         // Gather all K-points results
-        dos_out.assign(global_nk_ * 2 * nt, 0.0);
+        dos_out.assign(ops.global_nk() * 2 * nt, 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_dos.data(), dos_out.data(), local_dos.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
         }
@@ -334,15 +234,19 @@ public:
 
     void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
         // Output size: global_nk * (nt+1) * 6
-        if (emin_ > emax_) {
+        auto& ops = require_operators();
+        if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
+        if (!ops.has_velocity()) {
+            throw std::runtime_error("compute_ac requires a velocity-capable operator provider.");
+        }
         
-        std::vector<double> local_ac(global_nk_ * (nt + 1) * 6, 0.0);
+        std::vector<double> local_ac(ops.global_nk() * (nt + 1) * 6, 0.0);
         
-        double scale = (emax_ - emin_) / 2.0;
-        double shift = (emax_ + emin_) / 2.0;
-        double beta = 1.0 / (temp * 8.617333262e-5);
+        double scale = (ops.emax() - ops.emin()) / 2.0;
+        double shift = (ops.emax() + ops.emin()) / 2.0;
+        double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
         double ac_prefactor = (double)atomic_data_->norb() / atomic_data_->volume(axis);
         double t_step = M_PI / scale;
         
@@ -352,62 +256,18 @@ public:
              omega[i] = i * scale / (nt + 1);
         }
 
-        //check if orthogonal, if not
-            // get three-body graph
-        DistGraph* graphv;
-        if (S_images_) {
-            int ntype = atomic_data_->n_type();
-            std::vector<double> orbrmax(ntype, 0.0), psdrmax(ntype, 0.0);
-            for(int i=0; i<ntype; ++i) {
-                orbrmax[i] = op_construction_->op2c_->tcbd.orb_->rcut_max(i);
-                psdrmax[i] = op_construction_->op2c_->tcbd.beta_->rcut_max(i);
-            }
-            graphv = atomic_data_->get_graph3b(orbrmax, psdrmax);
-        } else {
-            graphv = atomic_data_->get_graph();
-        }
-        
-        for (const auto& kp : my_kpoints_) {
+        for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;
-            const std::vector<double>& K = kp.second;
-            
-            Matrix* Hk = H_k_map_[k_idx].get();
-            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
-            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
-            
-            auto Vx = std::make_unique<Matrix>(graphv);
-            auto Vy = std::make_unique<Matrix>(graphv);
-            auto Vz = std::make_unique<Matrix>(graphv);
-            
-            if (S_images_) {
-                auto img_V = op_construction_->build_overlap_velocity(Vx.get(), Vy.get(), Vz.get(), *atomic_data_, K[0], K[1], K[2]);
-            } else {
-                if (world_rank_ == 0) {
-                    std::cout << "Orthogonal Velocity Matrix is not supported yet, but will be done very soon. Since it is easy.";
-                }
-            }
-
-            Vx->assemble();
-            Vy->assemble();
-            Vz->assemble();
-            
-            std::unique_ptr<Chebyshev<Scalar>> cheby;
-            if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
-            } else if (Sk) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
-            } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
-            } else {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
-            }
+            const auto& state = ops.kpoint_state(k_idx);
+            const auto& velocity = ops.velocity_state(k_idx);
+            auto cheby = make_chebyshev(state);
             
             std::vector<std::complex<double>> cac;
             
-            if (nsamples_ == 1) {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
+            if (sampling_.nsamples == 1) {
+                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *sampling_.sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
             } else {
-                rsatb::calc::corr_ac(*cheby, *Vx, *Vy, *Vz, *sample_multi_vec_, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
+                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *sampling_.sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
             }
 
             
@@ -422,7 +282,9 @@ public:
                         for( int it=0; it<=nt; ++it ){
                             val += 2.0 * std::sin(omega[iw]*it*t_step) * std::exp(-2.0*std::pow((double)(it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
                         }
-                        val = ac_prefactor * t_step * val * (std::exp(-beta * omega[iw]) - 1) / omega[iw];
+                        const double thermal_factor =
+                            (temp > 0.0) ? (std::exp(-beta * omega[iw]) - 1.0) : -1.0;
+                        val = ac_prefactor * t_step * val * thermal_factor / omega[iw];
                     }
                     local_ac[idx] = val;
                 }
@@ -430,7 +292,7 @@ public:
         }
         
         // Gather
-        ac_out.assign(global_nk_ * (nt + 1) * 6, 0.0);
+        ac_out.assign(ops.global_nk() * (nt + 1) * 6, 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_ac.data(), ac_out.data(), local_ac.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
         }
@@ -460,11 +322,12 @@ public:
         int partition_sections = 0,
         size_t max_workspace_mb = 0
     ) {
-        if (emin_ > emax_) {
+        auto& ops = require_operators();
+        if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
-        if (!S_images_) {
-            throw std::runtime_error("compute_dc_spectrum currently requires overlap/velocity construction support.");
+        if (!ops.has_velocity()) {
+            throw std::runtime_error("compute_dc_spectrum requires a velocity-capable operator provider.");
         }
 
         const auto dc_formulation = parse_dc_formulation(formulation);
@@ -472,55 +335,26 @@ public:
         const double transport_prefactor =
             (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
 
-        std::vector<double> local_sigma(global_nk_ * n_moments * 6, 0.0);
+        std::vector<double> local_sigma(ops.global_nk() * n_moments * 6, 0.0);
         std::vector<double> local_energy;
 
-        int ntype = atomic_data_->n_type();
-        std::vector<double> orbrmax(ntype, 0.0), psdrmax(ntype, 0.0);
-        for (int i = 0; i < ntype; ++i) {
-            orbrmax[i] = op_construction_->op2c_->tcbd.orb_->rcut_max(i);
-            psdrmax[i] = op_construction_->op2c_->tcbd.beta_->rcut_max(i);
-        }
-        DistGraph* graphv = atomic_data_->get_graph3b(orbrmax, psdrmax);
-
-        for (const auto& kp : my_kpoints_) {
+        for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;
-            const std::vector<double>& K = kp.second;
+            const auto& state = ops.kpoint_state(k_idx);
+            const auto& velocity = ops.velocity_state(k_idx);
+            auto cheby = make_chebyshev(state);
 
-            Matrix* Hk = H_k_map_[k_idx].get();
-            Matrix* Sk = (S_k_map_.count(k_idx)) ? S_k_map_[k_idx].get() : nullptr;
-            Preconditioner<Scalar>* P = (precond_map_.count(k_idx)) ? precond_map_[k_idx].get() : nullptr;
-
-            auto Vx = std::make_unique<Matrix>(graphv);
-            auto Vy = std::make_unique<Matrix>(graphv);
-            auto Vz = std::make_unique<Matrix>(graphv);
-            op_construction_->build_overlap_velocity(Vx.get(), Vy.get(), Vz.get(), *atomic_data_, K[0], K[1], K[2]);
-            Vx->assemble();
-            Vy->assemble();
-            Vz->assemble();
-
-            std::unique_ptr<Chebyshev<Scalar>> cheby;
-            if (Sk && P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), emin_, emax_, verbose_);
-            } else if (Sk) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, emin_, emax_, verbose_);
-            } else if (P) {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), emin_, emax_, verbose_);
+            MultiVector sample_mv(atomic_data_->get_graph(), sampling_.nsamples == 1 ? 1 : sampling_.nsamples);
+            if (sampling_.nsamples == 1) {
+                sample_mv.set_col(0, *sampling_.sample_vec);
             } else {
-                cheby = std::make_unique<Chebyshev<Scalar>>(*Hk, emin_, emax_, verbose_);
-            }
-
-            MultiVector sample_mv(atomic_data_->get_graph(), nsamples_ == 1 ? 1 : nsamples_);
-            if (nsamples_ == 1) {
-                sample_mv.set_col(0, *sample_vec_);
-            } else {
-                sample_mv.copy_from(*sample_multi_vec_);
+                sample_mv.copy_from(*sampling_.sample_multi_vec);
             }
 
             std::vector<double> sigma_k;
             std::vector<double> energy_k;
             rsatb::calc::dc_spectrum_fftcheb(
-                *cheby, *Vx, *Vy, *Vz, sample_mv, n_moments, dc_formulation,
+                *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
                 transport_prefactor, partition_sections, max_workspace_mb,
                 sigma_k, energy_k, verbose_
             );
@@ -563,8 +397,9 @@ public:
         std::vector<double> energy_out;
         compute_dc_spectrum(n_moments, sigma_spectrum, energy_out, formulation, axis, partition_sections, max_workspace_mb);
 
-        dc_out.assign(global_nk_ * 6, 0.0);
-        for (int k_idx = 0; k_idx < global_nk_; ++k_idx) {
+        auto& ops = require_operators();
+        dc_out.assign(ops.global_nk() * 6, 0.0);
+        for (int k_idx = 0; k_idx < ops.global_nk(); ++k_idx) {
             std::vector<double> sigma_k(sigma_spectrum.begin() + static_cast<size_t>(k_idx) * static_cast<size_t>(n_moments) * 6,
                                         sigma_spectrum.begin() + static_cast<size_t>(k_idx + 1) * static_cast<size_t>(n_moments) * 6);
             std::vector<double> dc_k;
@@ -573,22 +408,151 @@ public:
         }
     }
 
-    // Test Helpers
-    void set_H_images(std::unique_ptr<ImageContainer<Scalar>> img) {
-        H_images_ = std::move(img);
-    }
-    
-    void set_S_images(std::unique_ptr<ImageContainer<double>> img) {
-        S_images_ = std::move(img);
-    }
-    
-    Matrix* get_H_k(int k_idx) {
-        if (H_k_map_.count(k_idx)) return H_k_map_[k_idx].get();
-        return nullptr;
+    void compute_msd_spectrum(
+        int n_steps,
+        double dt_fs,
+        int n_kpm,
+        std::vector<double>& msd_out,
+        std::vector<double>& energy_out,
+        std::vector<double>& time_out,
+        std::string axis = "x"
+    ) {
+        auto& ops = require_operators();
+        if (!ops.has_bounds()) {
+            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
+        }
+        if (!ops.has_position()) {
+            throw std::runtime_error("compute_msd_spectrum requires a position-capable operator provider.");
+        }
+
+        const size_t per_k_size = static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm);
+        std::vector<double> local_msd(static_cast<size_t>(ops.global_nk()) * per_k_size, 0.0);
+        std::vector<double> local_energy;
+
+        for (const auto& kp : ops.local_kpoints()) {
+            int k_idx = kp.first;
+            const auto& state = ops.kpoint_state(k_idx);
+            const auto& position = ops.position_state(k_idx);
+            auto cheby = make_chebyshev(state);
+
+            std::vector<double> msd_k;
+            std::vector<double> energy_k;
+            if (sampling_.nsamples == 1) {
+                auto* op = select_axis_matrix(position, axis);
+                rsatb::calc::corr_msd(*cheby, *op, *sampling_.sample_vec, n_steps, dt_fs, n_kpm, msd_k, energy_k, verbose_);
+            } else {
+                auto* op = select_axis_matrix(position, axis);
+                rsatb::calc::corr_msd(*cheby, *op, *sampling_.sample_multi_vec, n_steps, dt_fs, n_kpm, msd_k, energy_k, verbose_);
+            }
+
+            if (local_energy.empty()) {
+                local_energy = energy_k;
+            }
+
+            const size_t offset = static_cast<size_t>(k_idx) * per_k_size;
+            std::copy(msd_k.begin(), msd_k.end(), local_msd.begin() + offset);
+        }
+
+        msd_out.assign(local_msd.size(), 0.0);
+        if (master_comm_ != MPI_COMM_NULL) {
+            MPI_Allreduce(local_msd.data(), msd_out.data(), static_cast<int>(local_msd.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
+        }
+        MPI_Bcast(msd_out.data(), static_cast<int>(msd_out.size()), MPI_DOUBLE, 0, sub_comm_);
+
+        energy_out.resize(n_kpm, 0.0);
+        if (master_comm_ != MPI_COMM_NULL && !local_energy.empty()) {
+            energy_out = local_energy;
+        }
+        MPI_Bcast(energy_out.data(), n_kpm, MPI_DOUBLE, 0, sub_comm_);
+
+        time_out.resize(static_cast<size_t>(n_steps + 1), 0.0);
+        for (int step = 0; step <= n_steps; ++step) {
+            time_out[static_cast<size_t>(step)] = dt_fs * static_cast<double>(step);
+        }
     }
 
-    OperatorConstruction* get_operator_construction() {
-        return op_construction_.get();
+    void compute_quantum_metric(
+        int nt,
+        int n_kpm,
+        double temp,
+        double mu,
+        std::vector<double>& gxx_out,
+        std::vector<double>& sigma_xx_out,
+        std::vector<double>& omega_out,
+        std::string axis = "abc",
+        double omega_min_ev = 0.0
+    ) {
+        std::vector<double> ac_out;
+        compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
+
+        auto& ops = require_operators();
+        const int nk = ops.global_nk();
+        const size_t n_omega = static_cast<size_t>(nt + 1);
+
+        constexpr double sigma_au_to_si = 2.4341348e6;
+        constexpr double hbar_ev_s = 6.582119569e-16;
+        constexpr double h_si = 6.62607015e-34;
+        constexpr double e_si = 1.602176634e-19;
+
+        sigma_xx_out.assign(static_cast<size_t>(nk) * n_omega, 0.0);
+        gxx_out.assign(static_cast<size_t>(nk), 0.0);
+
+        std::vector<double> omega_rad_s(n_omega, 0.0);
+        std::vector<int> mask_indices;
+        mask_indices.reserve(n_omega);
+        for (size_t iw = 0; iw < n_omega; ++iw) {
+            omega_rad_s[iw] = omega_out[iw] / hbar_ev_s;
+            if (omega_out[iw] > std::max(omega_min_ev, 1e-12)) {
+                mask_indices.push_back(static_cast<int>(iw));
+            }
+        }
+
+        for (int k_idx = 0; k_idx < nk; ++k_idx) {
+            const size_t k_offset_ac = static_cast<size_t>(k_idx) * n_omega * 6;
+            const size_t k_offset_sigma = static_cast<size_t>(k_idx) * n_omega;
+            for (size_t iw = 0; iw < n_omega; ++iw) {
+                sigma_xx_out[k_offset_sigma + iw] = ac_out[k_offset_ac + iw * 6] * sigma_au_to_si;
+            }
+
+        }
+
+        if (mask_indices.size() < 2) {
+            return;
+        }
+
+        const double prefactor = h_si / (M_PI * e_si * e_si);
+        for (int k_idx = 0; k_idx < nk; ++k_idx) {
+            const size_t k_offset_sigma = static_cast<size_t>(k_idx) * n_omega;
+            double integral = 0.0;
+            for (size_t idx = 1; idx < mask_indices.size(); ++idx) {
+                const int left = mask_indices[idx - 1];
+                const int right = mask_indices[idx];
+                const double w0 = omega_rad_s[static_cast<size_t>(left)];
+                const double w1 = omega_rad_s[static_cast<size_t>(right)];
+                if (w0 <= 0.0 || w1 <= 0.0) {
+                    continue;
+                }
+
+                const double f0 = sigma_xx_out[k_offset_sigma + static_cast<size_t>(left)] / w0;
+                const double f1 = sigma_xx_out[k_offset_sigma + static_cast<size_t>(right)] / w1;
+                integral += 0.5 * (f0 + f1) * (w1 - w0);
+            }
+            gxx_out[static_cast<size_t>(k_idx)] = prefactor * integral;
+        }
+    }
+
+
+    // Test Helpers
+    Matrix* get_H_k(int k_idx) {
+        return operators_ ? operators_->hamiltonian_k(k_idx) : nullptr;
+    }
+
+    backend::OperatorSet* operators() {
+        return operators_.get();
+    }
+
+    const backend::OperatorSet* operators() const {
+        return operators_.get();
     }
     
     AtomicData* atomic_data() {
@@ -596,6 +560,31 @@ public:
     }
 
 private:
+    struct SamplingState {
+        int nsamples = 1;
+        std::unique_ptr<Vector> sample_vec;
+        std::unique_ptr<MultiVector> sample_multi_vec;
+
+        void reset() {
+            sample_vec.reset();
+            sample_multi_vec.reset();
+            nsamples = 1;
+        }
+
+        void initialize(AtomicData& atomic_data, int requested_nsamples) {
+            reset();
+            nsamples = requested_nsamples;
+            if (nsamples == 1) {
+                sample_vec = std::make_unique<Vector>(atomic_data.get_graph());
+                sample_vec->set_random_normal(true);
+                return;
+            }
+
+            sample_multi_vec = std::make_unique<MultiVector>(atomic_data.get_graph(), nsamples);
+            sample_multi_vec->set_random_normal(true);
+        }
+    };
+
     void init_comms() {
         MPI_Comm_rank(world_comm_, &world_rank_);
         MPI_Comm_size(world_comm_, &world_size_);
@@ -615,11 +604,54 @@ private:
     }
 
     void init_components() {
-        op_construction_ = std::make_unique<OperatorConstruction>(sub_comm_);
+        operators_.reset();
         
         // int color = (world_rank_ * npar_) / world_size_;
         // int io_unit = (sub_rank_ == 0 && color == 0) ? 6 : 0; 
         // c_dbcsr_init_lib(sub_comm_, &io_unit);
+    }
+
+    backend::OperatorSet& require_operators() {
+        if (!operators_) {
+            throw std::runtime_error("RSATB is not set up yet. Call setup(...) before computing properties.");
+        }
+        return *operators_;
+    }
+
+    const backend::OperatorSet& require_operators() const {
+        if (!operators_) {
+            throw std::runtime_error("RSATB is not set up yet. Call setup(...) before computing properties.");
+        }
+        return *operators_;
+    }
+
+    std::unique_ptr<Chebyshev<Scalar>> make_chebyshev(const backend::OperatorSet::KPointOperatorState& state) const {
+        Matrix* Hk = state.hamiltonian.get();
+        Matrix* Sk = state.overlap.get();
+        auto* P = state.preconditioner.get();
+        const auto& ops = require_operators();
+
+        if (!Hk) {
+            throw std::runtime_error("Hamiltonian is not available for the requested k-point.");
+        }
+
+        if (Sk && P) {
+            return std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), ops.emin(), ops.emax(), verbose_);
+        }
+        if (Sk) {
+            return std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, ops.emin(), ops.emax(), verbose_);
+        }
+        if (P) {
+            return std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), ops.emin(), ops.emax(), verbose_);
+        }
+        return std::make_unique<Chebyshev<Scalar>>(*Hk, ops.emin(), ops.emax(), verbose_);
+    }
+
+    static Matrix* select_axis_matrix(const backend::PositionTriplet& position, const std::string& axis) {
+        if (axis == "x") return position.x.get();
+        if (axis == "y") return position.y.get();
+        if (axis == "z") return position.z.get();
+        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
     }
 
     MPI_Comm world_comm_;
@@ -631,24 +663,8 @@ private:
     bool verbose_;
     
     std::unique_ptr<AtomicData> atomic_data_;
-    std::unique_ptr<OperatorConstruction> op_construction_;
-    
-    std::unique_ptr<ImageContainer<Scalar>> H_images_ = nullptr;
-    std::unique_ptr<ImageContainer<double>> S_images_ = nullptr;
-    
-    std::vector<std::pair<int, std::vector<double>>> my_kpoints_;
-    
-    std::map<int, std::unique_ptr<Matrix>> H_k_map_;
-    std::map<int, std::unique_ptr<Matrix>> S_k_map_;
-    std::map<int, std::unique_ptr<Preconditioner<Scalar>>> precond_map_;
-    
-    double emin_ = -1.0;
-    double emax_ = 1.0;
-    
-    int nsamples_ = 1;
-    int global_nk_ = 0;
-    std::unique_ptr<Vector> sample_vec_;
-    std::unique_ptr<MultiVector> sample_multi_vec_;
+    std::unique_ptr<backend::OperatorSet> operators_;
+    SamplingState sampling_;
 };
 
 } // namespace rsatb

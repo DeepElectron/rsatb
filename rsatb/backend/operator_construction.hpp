@@ -7,6 +7,7 @@
 #include "../io/hdf5.hpp"
 #include "../extern/op2c/src/int2c/op2c.hpp"
 #include <memory>
+#include <stdexcept>
 
 using namespace vbcsr;
 using namespace vbcsr::atomic;
@@ -31,6 +32,49 @@ public:
         op2c_ = std::unique_ptr<Op2c>(new Op2c(ntype, nspin, lspinorb, orb_dir, orb_name, psd_dir, psd_name, comm, log_file));
     }
 
+    bool initialized() const {
+        return static_cast<bool>(op2c_);
+    }
+
+    bool has_beta_projectors() const {
+        return op2c_ && op2c_->tcbd.beta_;
+    }
+
+    std::vector<double> orbital_cutoffs(const AtomicData& ad) const {
+        if (!op2c_) {
+            throw std::runtime_error("OperatorConstruction is not initialized");
+        }
+
+        const int ntype = ad.n_type();
+        std::vector<double> cutoffs(ntype, 0.0);
+        for (int i = 0; i < ntype; ++i) {
+            cutoffs[i] = op2c_->get_orb_rcut_max(i);
+        }
+        return cutoffs;
+    }
+
+    std::vector<double> projector_cutoffs(const AtomicData& ad) const {
+        if (!op2c_) {
+            throw std::runtime_error("OperatorConstruction is not initialized");
+        }
+        if (!has_beta_projectors()) {
+            throw std::runtime_error("Velocity construction requires beta projectors");
+        }
+
+        const int ntype = ad.n_type();
+        std::vector<double> cutoffs(ntype, 0.0);
+        for (int i = 0; i < ntype; ++i) {
+            cutoffs[i] = op2c_->get_beta_rcut_max(i);
+        }
+        return cutoffs;
+    }
+
+    DistGraph* velocity_graph(AtomicData& ad) const {
+        auto orbrmax = orbital_cutoffs(ad);
+        auto psdrmax = projector_cutoffs(ad);
+        return ad.get_graph3b(orbrmax, psdrmax);
+    }
+
     // Wrappers for Op2c setup (if needed, or access op2c_ directly)
     // Op2c constructor handles setup.
 
@@ -38,8 +82,8 @@ public:
     // Reads blocks from HDF5 and fills BlockSpMat
     // Build matrix from HDF5
     // Reads blocks from HDF5 and fills ImageContainer
-    std::unique_ptr<ImageContainer<std::complex<double>>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
-        auto img = std::make_unique<ImageContainer<std::complex<double>>>(&ad);
+    std::unique_ptr<ImageContainer<double>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
+        auto img = std::make_unique<ImageContainer<double>>(&ad);
         
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
@@ -56,8 +100,8 @@ public:
             ad.get_atom_id(i, &atom_idx); // Original index
             
             // Read On-site
-            std::complex<double>* v = nullptr;
-            h5.read_from_ijR_dense_complex(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
+            double* v = nullptr;
+            h5.read_from_ijR_dense(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
             if (found) {
                 int global_i = ad.get_global_index(i);
                 std::vector<int> R = {0, 0, 0};
@@ -88,10 +132,10 @@ public:
                 ad.get_atom_id(j, &atom_j);
                 
                 int m, n;
-                std::complex<double>* buffer = nullptr;
+                double* buffer = nullptr;
                 bool found = false;
                 
-                h5.read_from_ijR_dense_complex(atom_i, atom_j, Rx, Ry, Rz, &m, &n, &buffer, &found);
+                h5.read_from_ijR_dense(atom_i, atom_j, Rx, Ry, Rz, &m, &n, &buffer, &found);
                 
                 if (found) {
                     if (m != inorb || n != jnorb) {
@@ -190,6 +234,92 @@ public:
     }
 
     template <typename MatrixType>
+    void build_position(
+        MatrixType* X,
+        MatrixType* Y,
+        MatrixType* Z,
+        AtomicData& ad,
+        double Kx,
+        double Ky,
+        double Kz
+    ) {
+        if (!X && !Y && !Z) {
+            return;
+        }
+
+        constexpr double bohr_per_angstrom = 1.8897259886;
+        constexpr double angstrom_per_bohr = 1.0 / bohr_per_angstrom;
+
+        int nstart = 0;
+        int nend = 0;
+        ad.get_vertex_range_local(&nstart, &nend);
+
+        for (int i = nstart; i < nend; ++i) {
+            if (ad.atom_is_ghost(i)) {
+                continue;
+            }
+
+            int inorb = 0;
+            int itype = 0;
+            ad.get_atom_norb(i, &inorb);
+            ad.get_atom_type(i, &itype);
+
+            double xi = 0.0;
+            double yi = 0.0;
+            double zi = 0.0;
+            ad.get_pos(i, &xi, &yi, &zi);
+            ModuleBase::Vector3<double> Ri(xi * bohr_per_angstrom, yi * bohr_per_angstrom, zi * bohr_per_angstrom);
+
+            std::vector<double> vS(inorb * inorb), vX, vY, vZ;
+            if (X) vX.resize(inorb * inorb);
+            if (Y) vY.resize(inorb * inorb);
+            if (Z) vZ.resize(inorb * inorb);
+
+            op2c_->overlap_position(itype, itype, Ri, Ri, false, vS, vX, vY, vZ);
+
+            if (X) set_local_block(*X, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
+            if (Y) set_local_block(*Y, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
+            if (Z) set_local_block(*Z, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+
+            const auto& edges = ad.get_atom_edges(i);
+            for (int ie : edges) {
+                int j = ad.get_edge_dst(ie);
+                int jnorb = 0;
+                int jtype = 0;
+                ad.get_atom_norb(j, &jnorb);
+                ad.get_atom_type(j, &jtype);
+
+                double rx = 0.0;
+                double ry = 0.0;
+                double rz = 0.0;
+                ad.get_edge_vec(ie, &rx, &ry, &rz);
+                ModuleBase::Vector3<double> Rj(
+                    (xi + rx) * bohr_per_angstrom,
+                    (yi + ry) * bohr_per_angstrom,
+                    (zi + rz) * bohr_per_angstrom);
+                
+                double frx = rx, fry = ry, frz = rz;
+                ad.invert_cell(&frx, &fry, &frz);
+
+                vS.assign(inorb * jnorb, 0.0);
+                if (X) vX.assign(inorb * jnorb, 0.0);
+                if (Y) vY.assign(inorb * jnorb, 0.0);
+                if (Z) vZ.assign(inorb * jnorb, 0.0);
+
+                op2c_->overlap_position(itype, jtype, Ri, Rj, false, vS, vX, vY, vZ);
+
+                if (X) set_local_block(*X, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
+                if (Y) set_local_block(*Y, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
+                if (Z) set_local_block(*Z, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+            }
+        }
+
+        if (X) X->assemble();
+        if (Y) Y->assemble();
+        if (Z) Z->assemble();
+    }
+
+    template <typename MatrixType>
     std::unique_ptr<ImageContainer<double>> build_overlap_velocity(MatrixType* Vx, MatrixType* Vy, MatrixType* Vz,
                        AtomicData& ad,
                        double Kx, double Ky, double Kz) {
@@ -270,7 +400,7 @@ public:
                 int global_j = ad.get_global_index(j);
                 std::vector<int> R_vec = {Rx_, Ry_, Rz_};
                 img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb);
-                
+
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);
                 

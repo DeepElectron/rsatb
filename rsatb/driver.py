@@ -96,6 +96,15 @@ class RSATB:
         if psd_names is None: psd_names = []
         self._cpp_obj.setup(Hfile, kpoints, orb_names, orb_dirs, psd_names, psd_dirs, tol, sptol, maxiter, method, precond, nsamples)
 
+    def setup_config(self, config):
+        """
+        Structured setup entry point for backend/operator options.
+
+        Expected top-level keys include:
+            kpoints, nsamples, compute_bounds, sources, preconditioner, disorder
+        """
+        self._cpp_obj.setup_config(config)
+
     def test_solve(self):
         self._cpp_obj.test_solve()
 
@@ -239,6 +248,91 @@ class RSATB:
         sigma_out = sigma_out * 2.4341348 * 1e6
         return sigma_out
 
+    def compute_msd_spectrum(self, n_steps, dt_fs, n_kpm, axis="x"):
+        """
+        Compute the mean-square displacement spectrum DeltaX^2(E, t).
+
+        Returns:
+            tuple: (msd, energy, time)
+                msd.shape == (n_k, n_steps + 1, n_kpm)
+                energy.shape == (n_kpm,)
+                time.shape == (n_steps + 1,)
+        """
+        msd_out, energy_out, time_out = self._cpp_obj.compute_msd_spectrum(n_steps, dt_fs, n_kpm, axis)
+        msd_out = np.array(msd_out, dtype=np.float64).reshape(-1, n_steps + 1, n_kpm)
+        energy_out = np.array(energy_out, dtype=np.float64)
+        time_out = np.array(time_out, dtype=np.float64)
+        return msd_out, energy_out, time_out
+
+    def compute_diffusion_spectrum(self, n_steps, dt_fs, n_kpm, axis="x"):
+        """
+        Compute DeltaX^2(E, t) and D(E, t) = 0.5 d_t DeltaX^2(E, t).
+        """
+        msd, energy, time = self.compute_msd_spectrum(n_steps, dt_fs, n_kpm, axis=axis)
+        diffusion = 0.5 * np.gradient(msd, time, axis=1, edge_order=1)
+        return msd, diffusion, energy, time
+
+    def fit_ballistic_velocity(self, diffusion, time, fit_window):
+        """
+        Fit D(E, t) ~ v(E)^2 t in a clean-system ballistic window.
+
+        Args:
+            diffusion: array shaped (n_k, n_t, n_energy)
+            time: array shaped (n_t,)
+            fit_window: (t_min, t_max)
+
+        Returns:
+            ndarray shaped (n_k, n_energy) in length / time units of the input geometry/time grid.
+        """
+        mask = (time >= fit_window[0]) & (time <= fit_window[1])
+        if np.count_nonzero(mask) < 2:
+            raise ValueError("fit_window must contain at least two time samples")
+
+        t = time[mask]
+        t_centered = t - np.mean(t)
+        denom = np.sum(t_centered ** 2)
+        if denom <= 0.0:
+            raise ValueError("fit_window produces a singular linear fit")
+
+        y = diffusion[:, mask, :]
+        y_centered = y - np.mean(y, axis=1, keepdims=True)
+        slopes = np.tensordot(t_centered, y_centered, axes=(0, 1)) / denom
+        return np.sqrt(np.clip(slopes, 0.0, None))
+
+    def extract_mean_free_path(self, diffusion, time, energy, clean_velocity, plateau_window):
+        """
+        Extract l(E) = 2 Dmax(E) / v_clean(E) from a long-time plateau window.
+
+        Returns:
+            tuple: (mfp, dmax) with both shaped like clean_velocity.
+        """
+        mask = (time >= plateau_window[0]) & (time <= plateau_window[1])
+        if np.count_nonzero(mask) < 1:
+            raise ValueError("plateau_window must contain at least one time sample")
+
+        dmax = np.mean(diffusion[:, mask, :], axis=1)
+        safe_velocity = np.where(np.abs(clean_velocity) > 1e-12, clean_velocity, np.nan)
+        mfp = 2.0 * dmax / safe_velocity
+        return mfp, dmax
+
+    def compute_quantum_metric(self, nt, n_kpm, temp, mu, axis="abc", omega_min_ev=0.0):
+        """
+        Compute the longitudinal quantum metric Gxx from the existing AC conductivity.
+
+        Returns:
+            tuple: (gxx, sigma_xx, omega_ev)
+                gxx.shape == (n_k,)
+                sigma_xx.shape == (n_k, nt + 1)
+                omega_ev.shape == (nt + 1,)
+        """
+        gxx, sigma_xx, omega_ev = self._cpp_obj.compute_quantum_metric(
+            nt, n_kpm, temp, mu, axis, omega_min_ev
+        )
+        gxx = np.array(gxx, dtype=np.float64)
+        sigma_xx = np.array(sigma_xx, dtype=np.float64).reshape(-1, nt + 1)
+        omega_ev = np.array(omega_ev, dtype=np.float64)
+        return gxx, sigma_xx, omega_ev
+
     def get_kernel_info(self):
         """
         Get information about the computational kernel.
@@ -250,9 +344,12 @@ class RSATB:
 
     def get_operator_construction(self):
         """
-        Get the operator construction object.
+        Deprecated compatibility shim. The new backend exposes an OperatorSet
+        in C++, but that object is not yet bound into Python.
         """
-        return self._cpp_obj.get_operator_construction()
+        raise AttributeError(
+            "OperatorConstruction is deprecated. The new OperatorSet accessor is currently only available in C++."
+        )
 
     def atomic_data(self):
         """

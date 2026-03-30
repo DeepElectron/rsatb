@@ -3,7 +3,6 @@
 
 #include "cheby.hpp"
 #include "kpm.hpp"
-#include "fft.hpp"
 #include <vector>
 #include <cmath>
 #include <complex>
@@ -23,6 +22,16 @@ inline void fermi_dirac_func(double E, double beta, double mu, double *out){
         tmp = std::exp(beta * (E - mu));
         *out = 1.0 / (1.0 + tmp);
     }
+}
+
+inline double occupation_projector_func(double E, double beta, double mu) {
+    if (!std::isfinite(beta) || beta <= 0.0) {
+        return E <= mu ? 1.0 : 0.0;
+    }
+
+    double out = 0.0;
+    fermi_dirac_func(E, beta, mu, &out);
+    return out;
 }
 
 // Reimplementation of fermi_dirac_kpm using new backend
@@ -62,63 +71,26 @@ void fermi_dirac_kpm(Chebyshev<T, Kernel>& cheby,
     // Effective mu' = (mu - center) / scale
     
     double kb = 8.617333262e-5; // eV/K
-    double beta = 1.0 / (temp * kb);
+    double beta = (temp > 0.0) ? (1.0 / (temp * kb)) : 0.0;
     
     double beta_re = beta * scale;
     double mu_re = (mu - center) / scale;
     
-    // Compute coefficients using FFT
-    double dE = M_PI / n_kpm;
-    std::vector<std::complex<double>> tmp_coeff(2 * n_kpm);
-    double fermi_tmp;
-    
-    for (int i = 0; i < 2 * n_kpm; ++i) {
-        // x_k = cos(theta_k)
-        // We sample at Chebyshev nodes?
-        // Original code: fermi_dirac(std::cos(dE*i), beta_re, mu_re, &fermi_tmp);
-        // This samples f(cos(theta)) at uniform theta.
-        fermi_dirac_func(std::cos(dE * i), beta_re, mu_re, &fermi_tmp);
-        tmp_coeff[i] = fermi_tmp;
-    }
-
-    std::vector<double> kernel(n_kpm);
-    jackson_kernel(n_kpm, kernel.data());
-
-    fft_1d(2 * n_kpm, tmp_coeff.data(), tmp_coeff.data()); 
-    
-    // Keep first n_kpm moments and apply kernel
-    for (int i = 0; i < n_kpm; ++i) {
-        tmp_coeff[i] = tmp_coeff[i].real() * kernel[i] / n_kpm;
-    }
-
-    tmp_coeff[0] *= 0.5;
-
-    // Truncate
-    int n_kpm_ = n_kpm;
-    for (int i = 0; i < n_kpm - 1; ++i) {
-        if ((std::abs(tmp_coeff[i]) <= eps) && (std::abs(tmp_coeff[i + 1]) <= eps)) {
-            n_kpm_ = i;
-            break; 
-        }
-    }
-    
-    // Ensure n_kpm_ is at least 1
-    if (n_kpm_ < 1) n_kpm_ = 1;
+    const auto tmp_coeff = chebyshev_coefficients_from_function(
+        n_kpm,
+        [&](double x) -> double {
+            return occupation_projector_func(x, beta_re, mu_re);
+        },
+        true,
+        eps
+    );
 
     if (verbose){
         if (rank == 0){
-            std::cout << "fermi-dirac calculation: #KPM moments - " << n_kpm_ << "\n";
+            std::cout << "fermi-dirac calculation: #KPM moments - " << tmp_coeff.size() << "\n";
         }
     }
 
-    // Propagate
-    // y = sum c_n T_n(H) x
-    // cheby.propagate expects coefficients for T_n.
-    // tmp_coeff holds exactly that.
-    
-    // Resize tmp_coeff to actual used size
-    tmp_coeff.resize(n_kpm_);
-    
     cheby.propagate(Psi_in, Psi_out, tmp_coeff, mode);
 }
 

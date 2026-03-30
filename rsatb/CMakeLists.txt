@@ -325,6 +325,21 @@ add_executable(test_fftcheb_transport calc/test/test_fftcheb_transport.cpp $<TAR
 target_include_directories(test_fftcheb_transport PRIVATE ${RSATB_INCLUDE_DIRS})
 target_link_libraries(test_fftcheb_transport PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+# Executable: test_kpm_extensions
+add_executable(test_kpm_extensions calc/test/test_kpm_extensions.cpp)
+target_include_directories(test_kpm_extensions PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_kpm_extensions PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+# Executable: test_msd
+add_executable(test_msd calc/test/test_msd.cpp)
+target_include_directories(test_msd PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_msd PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+# Executable: test_operator_api
+add_executable(test_operator_api test_operator_api.cpp $<TARGET_OBJECTS:backend>)
+target_include_directories(test_operator_api PRIVATE ${RSATB_INCLUDE_DIRS})
+target_link_libraries(test_operator_api PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
 # Executable: test_hdf5_io
 add_executable(test_hdf5_io io/test.cpp)
 target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
