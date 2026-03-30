@@ -534,7 +534,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
     }
 
     template <typename MatrixType>
@@ -555,7 +555,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
     }
 
     template <typename MatrixType>
@@ -576,7 +576,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
     }
 
     template <typename MatrixType>
@@ -597,7 +597,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
+        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
     }
 
     template <typename MatrixType>
@@ -616,7 +616,7 @@ private:
             v_complex[k] = v[k] * phase;
         }
         
-        mat.add_block(i_gid, j_gid, v_complex.data(), inorb, jnorb, AssemblyMode::ADD);
+        mat.add_block(i_gid, j_gid, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
     }
 };
 
