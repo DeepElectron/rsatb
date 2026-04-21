@@ -64,12 +64,17 @@ public:
                PreconditionerType pc_type = PreconditionerType::Left) {
         
         DistGraph* graph = H.graph;
+        const bool mpi_ready = comm_is_usable(graph->comm);
         int n_local = 0;
         for(int i=0; i<graph->owned_global_indices.size(); ++i) n_local += graph->block_sizes[i];
         
         long long n_global_long = 0;
         long long n_local_long = n_local;
-        MPI_Allreduce(&n_local_long, &n_global_long, 1, MPI_LONG_LONG, MPI_SUM, graph->comm);
+        if (mpi_ready && graph->size > 1) {
+            MPI_Allreduce(&n_local_long, &n_global_long, 1, MPI_LONG_LONG, MPI_SUM, graph->comm);
+        } else {
+            n_global_long = n_local_long;
+        }
         int n_global = static_cast<int>(n_global_long);
         
         primme_params primme;
@@ -82,9 +87,12 @@ public:
         primme.eps = tol;
         primme.printLevel = verbose ? 3 : 0;
         
-        int numProcs, procID;
-        MPI_Comm_size(graph->comm, &numProcs);
-        MPI_Comm_rank(graph->comm, &procID);
+        int numProcs = 1;
+        int procID = 0;
+        if (mpi_ready && graph->size > 1) {
+            MPI_Comm_size(graph->comm, &numProcs);
+            MPI_Comm_rank(graph->comm, &procID);
+        }
         primme.numProcs = numProcs;
         primme.procID = procID;
         
@@ -124,8 +132,10 @@ public:
         }
         
         // Set global sum callback
-        primme.globalSumReal = global_sum_real_wrapper;
-        primme.commInfo = &graph->comm;
+        if (mpi_ready && graph->size > 1) {
+            primme.globalSumReal = global_sum_real_wrapper;
+            primme.commInfo = &graph->comm;
+        }
 
         // Allocate result arrays
         std::vector<T> evecs_buf(n_local * num_eigenvalues);
@@ -209,6 +219,12 @@ public:
     }
 
 private:
+    static bool comm_is_usable(MPI_Comm comm) {
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        return initialized && comm != MPI_COMM_NULL;
+    }
+
     // Helper to copy data between PRIMME buffer and DistMultiVector
     static void copy_in(Context* ctx, void* buffer, int blockSize, std::unique_ptr<DistMultiVector<T>>& mv) {
         if (!mv || mv->num_vectors != blockSize) {
@@ -343,7 +359,11 @@ private:
         MPI_Comm comm = *(static_cast<MPI_Comm*>(primme->commInfo));
         // PRIMME uses Real type for global sums (e.g. dot products)
         MPI_Datatype type = (sizeof(Real) == 8) ? MPI_DOUBLE : MPI_FLOAT;
-        if (sendBuf == recvBuf) {
+        if (!comm_is_usable(comm)) {
+            if (sendBuf != recvBuf) {
+                std::memcpy(recvBuf, sendBuf, static_cast<size_t>(*count) * sizeof(Real));
+            }
+        } else if (sendBuf == recvBuf) {
             MPI_Allreduce(MPI_IN_PLACE, recvBuf, *count, type, MPI_SUM, comm);
         } else {
             MPI_Allreduce(sendBuf, recvBuf, *count, type, MPI_SUM, comm);

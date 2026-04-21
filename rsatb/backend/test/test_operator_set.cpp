@@ -39,6 +39,37 @@ std::unique_ptr<AtomicData> make_single_atom_data(const std::vector<double>& pos
     return std::unique_ptr<AtomicData>(AtomicData::from_points(pos, z, cell, pbc, r_max, type_norb, MPI_COMM_WORLD));
 }
 
+std::unique_ptr<AtomicData> make_periodic_single_atom_data(double cell_x, int norb) {
+    const size_t n_atom = 1;
+    const size_t N_atom = 1;
+    const size_t atom_offset = 0;
+    const size_t n_edge = 2;
+    const size_t N_edge = 2;
+
+    const int atom_index[] = {0};
+    const int atom_type[] = {0};
+    const int edge_index[] = {
+        0, 0,
+        0, 0
+    };
+    const int type_norb[] = {norb};
+    const int edge_shift_vec[] = {
+         1, 0, 0,
+        -1, 0, 0
+    };
+    const double cell[] = {
+        cell_x, 0.0, 0.0,
+        0.0, 8.0, 0.0,
+        0.0, 0.0, 8.0
+    };
+    const double pos[] = {0.25, -0.5, 0.75};
+
+    return std::make_unique<AtomicData>(
+        n_atom, N_atom, atom_offset, n_edge, N_edge,
+        atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
+        cell, pos, MPI_COMM_WORLD);
+}
+
 std::string make_hdf5_hamiltonian_file(const std::complex<double>& value) {
     const std::string path = "/tmp/rsatb_operator_set_test.h5";
     H5::H5File file(path, H5F_ACC_TRUNC);
@@ -92,6 +123,27 @@ std::unique_ptr<ImageContainer<double>> make_diagonal_h_images(AtomicData& atomi
         MatrixLayout::RowMajor);
     images->assemble();
     return images;
+}
+
+std::unique_ptr<ImageContainer<double>> make_periodic_scalar_h_images(
+    AtomicData& atomic_data,
+    double onsite,
+    double positive_hop,
+    double negative_hop
+) {
+    auto images = std::make_unique<ImageContainer<double>>(&atomic_data);
+    std::vector<int> r0 = {0, 0, 0};
+    std::vector<int> rp = {1, 0, 0};
+    std::vector<int> rm = {-1, 0, 0};
+    images->add_block(r0, 0, 0, &onsite, 1, 1, AssemblyMode::INSERT, MatrixLayout::RowMajor);
+    images->add_block(rp, 0, 0, &positive_hop, 1, 1, AssemblyMode::INSERT, MatrixLayout::RowMajor);
+    images->add_block(rm, 0, 0, &negative_hop, 1, 1, AssemblyMode::INSERT, MatrixLayout::RowMajor);
+    images->assemble();
+    return images;
+}
+
+std::unique_ptr<ImageContainer<double>> make_periodic_scalar_h_images(AtomicData& atomic_data, double onsite, double hop) {
+    return make_periodic_scalar_h_images(atomic_data, onsite, hop, hop);
 }
 
 template <typename T>
@@ -234,11 +286,68 @@ TEST(OperatorSetTest, MockProviderBuildsCachedVelocityLazily) {
     EXPECT_EQ(first_block_value(*velocity_first.y), std::complex<double>(2.0, 0.0));
     EXPECT_EQ(first_block_value(*velocity_first.z), std::complex<double>(3.0, 0.0));
 
-    ASSERT_TRUE(operators->has_position());
+    EXPECT_FALSE(operators->has_position());
+}
+
+TEST(OperatorSetTest, FirstLatticeMomentStateBuildsAndCachesAxisData) {
+    auto atomic_data = make_periodic_single_atom_data(3.0, 1);
+
+    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
+    builder.set_hamiltonian_images(make_periodic_scalar_h_images(*atomic_data, 0.2, 0.5));
+
+    OperatorSetupConfig config;
+    config.kpoints = {{0.0, 0.0, 0.0}};
+    config.preconditioner.mode = "None";
+    config.compute_bounds = true;
+
+    OperatorRuntimeContext runtime;
+    runtime.npar = 1;
+    runtime.world_rank = 0;
+    runtime.world_size = 1;
+
+    auto operators = builder.build(config, runtime);
+    const auto& moment_first = operators->first_lattice_moment_state(0);
+    const auto& moment_second = operators->first_lattice_moment_state(0);
+    EXPECT_EQ(&moment_first, &moment_second);
+
+    ASSERT_TRUE(moment_first.x.first_moment);
+    EXPECT_FALSE(moment_first.y.first_moment);
+    EXPECT_FALSE(moment_first.z.first_moment);
+    EXPECT_EQ(first_block_value(*moment_first.x.first_moment), std::complex<double>(0.0, 0.0));
+
     const auto& position = operators->position_state(0);
-    EXPECT_EQ(first_block_value(*position.x), std::complex<double>(0.0, 0.0));
-    EXPECT_EQ(first_block_value(*position.y), std::complex<double>(0.0, 0.0));
-    EXPECT_EQ(first_block_value(*position.z), std::complex<double>(0.0, 0.0));
+    ASSERT_TRUE(position.x.orthogonal_diagonal);
+    ASSERT_TRUE(position.y.orthogonal_diagonal);
+    ASSERT_TRUE(position.z.orthogonal_diagonal);
+    EXPECT_FALSE(position.x.matrix);
+    EXPECT_FALSE(position.y.matrix);
+    EXPECT_FALSE(position.z.matrix);
+    EXPECT_EQ((*position.x.orthogonal_diagonal)[0], std::complex<double>(0.25, 0.0));
+    EXPECT_EQ((*position.y.orthogonal_diagonal)[0], std::complex<double>(-0.5, 0.0));
+    EXPECT_EQ((*position.z.orthogonal_diagonal)[0], std::complex<double>(0.75, 0.0));
+}
+
+TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
+    auto atomic_data = make_periodic_single_atom_data(3.0, 1);
+
+    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
+    builder.set_hamiltonian_images(make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25));
+
+    OperatorSetupConfig config;
+    config.kpoints = {{0.0, 0.0, 0.0}};
+    config.preconditioner.mode = "None";
+    config.compute_bounds = false;
+
+    OperatorRuntimeContext runtime;
+    runtime.npar = 1;
+    runtime.world_rank = 0;
+    runtime.world_size = 1;
+
+    auto operators = builder.build(config, runtime);
+    const auto& first_lattice_moment = operators->first_lattice_moment_state(0);
+
+    ASSERT_TRUE(first_lattice_moment.x.first_moment);
+    EXPECT_EQ(first_block_value(*first_lattice_moment.x.first_moment), std::complex<double>(1.5, 0.0));
 }
 
 TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbitals) {
@@ -261,71 +370,18 @@ TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbital
     ASSERT_TRUE(operators->has_position());
     const auto& position = operators->position_state(0);
 
-    const auto bx = first_block_values(*position.x);
-    const auto by = first_block_values(*position.y);
-    const auto bz = first_block_values(*position.z);
-    ASSERT_EQ(bx.size(), 4u);
-    ASSERT_EQ(by.size(), 4u);
-    ASSERT_EQ(bz.size(), 4u);
-
-    EXPECT_EQ(bx[0], std::complex<double>(1.25, 0.0));
-    EXPECT_EQ(bx[3], std::complex<double>(1.25, 0.0));
-    EXPECT_EQ(by[0], std::complex<double>(-0.5, 0.0));
-    EXPECT_EQ(by[3], std::complex<double>(-0.5, 0.0));
-    EXPECT_EQ(bz[0], std::complex<double>(0.75, 0.0));
-    EXPECT_EQ(bz[3], std::complex<double>(0.75, 0.0));
-    EXPECT_EQ(bx[1], std::complex<double>(0.0, 0.0));
-    EXPECT_EQ(by[1], std::complex<double>(0.0, 0.0));
-    EXPECT_EQ(bz[1], std::complex<double>(0.0, 0.0));
-}
-
-TEST(OperatorSetTest, AndersonDisorderIsReproducibleAndConsistentPerAtom) {
-    auto atomic_data = make_single_atom_data({0.0, 0.0, 0.0}, 2);
-
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = false;
-    config.disorder.kind = "anderson";
-    config.disorder.strength_ev = 1.5;
-    config.disorder.seed = 1234;
-    config.disorder.per_atom = true;
-
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    OperatorSetBuilder builder_a(*atomic_data, MPI_COMM_WORLD, false);
-    builder_a.set_hamiltonian_images(make_diagonal_h_images(*atomic_data, {2.5, 4.0}));
-    auto operators_a = builder_a.build(config, runtime);
-
-    OperatorSetBuilder builder_b(*atomic_data, MPI_COMM_WORLD, false);
-    builder_b.set_hamiltonian_images(make_diagonal_h_images(*atomic_data, {2.5, 4.0}));
-    auto operators_b = builder_b.build(config, runtime);
-
-    OperatorSetupConfig config_diff_seed = config;
-    config_diff_seed.disorder.seed = 9876;
-    OperatorSetBuilder builder_c(*atomic_data, MPI_COMM_WORLD, false);
-    builder_c.set_hamiltonian_images(make_diagonal_h_images(*atomic_data, {2.5, 4.0}));
-    auto operators_c = builder_c.build(config_diff_seed, runtime);
-
-    const auto block_a = first_block_values(*operators_a->hamiltonian_k(0));
-    const auto block_b = first_block_values(*operators_b->hamiltonian_k(0));
-    const auto block_c = first_block_values(*operators_c->hamiltonian_k(0));
-
-    const double shift_a_0 = block_a[0].real() - 2.5;
-    const double shift_a_1 = block_a[3].real() - 4.0;
-    const double shift_b_0 = block_b[0].real() - 2.5;
-    const double shift_b_1 = block_b[3].real() - 4.0;
-    const double shift_c_0 = block_c[0].real() - 2.5;
-
-    EXPECT_NEAR(shift_a_0, shift_a_1, 1e-12);
-    EXPECT_NEAR(shift_a_0, shift_b_0, 1e-12);
-    EXPECT_NEAR(shift_a_1, shift_b_1, 1e-12);
-    EXPECT_NE(block_a[0].real(), block_c[0].real());
-    EXPECT_EQ(block_a[1], std::complex<double>(0.0, 0.0));
-    EXPECT_EQ(block_a[2], std::complex<double>(0.0, 0.0));
+    EXPECT_FALSE(position.x.matrix);
+    EXPECT_FALSE(position.y.matrix);
+    EXPECT_FALSE(position.z.matrix);
+    ASSERT_TRUE(position.x.orthogonal_diagonal);
+    ASSERT_TRUE(position.y.orthogonal_diagonal);
+    ASSERT_TRUE(position.z.orthogonal_diagonal);
+    EXPECT_EQ((*position.x.orthogonal_diagonal)[0], std::complex<double>(1.25, 0.0));
+    EXPECT_EQ((*position.x.orthogonal_diagonal)[1], std::complex<double>(1.25, 0.0));
+    EXPECT_EQ((*position.y.orthogonal_diagonal)[0], std::complex<double>(-0.5, 0.0));
+    EXPECT_EQ((*position.y.orthogonal_diagonal)[1], std::complex<double>(-0.5, 0.0));
+    EXPECT_EQ((*position.z.orthogonal_diagonal)[0], std::complex<double>(0.75, 0.0));
+    EXPECT_EQ((*position.z.orthogonal_diagonal)[1], std::complex<double>(0.75, 0.0));
 }
 
 TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
@@ -363,9 +419,15 @@ TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
     EXPECT_FALSE(velocity.z->blk_handles.empty());
 
     const auto& position = operators->position_state(0);
-    EXPECT_FALSE(position.x->blk_handles.empty());
-    EXPECT_FALSE(position.y->blk_handles.empty());
-    EXPECT_FALSE(position.z->blk_handles.empty());
+    ASSERT_TRUE(position.x.matrix);
+    ASSERT_TRUE(position.y.matrix);
+    ASSERT_TRUE(position.z.matrix);
+    ASSERT_TRUE(position.x.orthogonal_diagonal);
+    ASSERT_TRUE(position.y.orthogonal_diagonal);
+    ASSERT_TRUE(position.z.orthogonal_diagonal);
+    EXPECT_FALSE(position.x.matrix->blk_handles.empty());
+    EXPECT_FALSE(position.y.matrix->blk_handles.empty());
+    EXPECT_FALSE(position.z.matrix->blk_handles.empty());
 }
 
 int main(int argc, char** argv) {

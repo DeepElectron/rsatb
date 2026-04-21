@@ -7,7 +7,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstdint>
 #include <limits>
 #include <map>
 #include <memory>
@@ -18,6 +17,143 @@
 
 namespace rsatb {
 namespace backend {
+
+/*
+Layer map for this file
+=======================
+
+This file assembles "where operators come from" and "how they are exposed"
+without mixing those concerns into the numerical kernels themselves.
+
+The mental model is:
+
+    AtomicData + source config
+              |
+              v
+    +-------------------------+
+    | IOperatorProvider       |
+    | "I know how to obtain   |
+    |  one family of data."   |
+    +-------------------------+
+          |            |
+          | populate() | declares capabilities()
+          v            v
+    +-------------------------+
+    | OperatorSetBuilder      |
+    | "Collect contributions  |
+    |  from all providers and |
+    |  assemble one runtime   |
+    |  operator package."     |
+    +-------------------------+
+              |
+              | build()
+              v
+    +-------------------------+
+    | OperatorSet             |
+    | "Own sampled k-space    |
+    |  operators and lazily   |
+    |  build derived ones."   |
+    +-------------------------+
+              |
+              +--> hamiltonian_k(k)
+              +--> overlap_k(k)
+              +--> velocity_state(k)          lazy
+              +--> position_state(k)          lazy
+              +--> first_lattice_moment(k)    lazy
+              +--> preconditioner / bounds
+
+
+1. Provider layer: "Where data comes from"
+------------------------------------------
+`IOperatorProvider` adapts an external source into this backend vocabulary.
+
+- `Hdf5HamiltonianProvider` supplies Hamiltonian image data.
+- `Op2cIntegralProvider` supplies overlap images and, when available, builders
+  for velocity and explicit position operators.
+
+A provider does not return a finished `OperatorSet`. It only tells the builder:
+"I can supply these capabilities, and here are the images/builders needed to
+materialize them."
+
+
+2. Builder layer: "Assemble one consistent package"
+---------------------------------------------------
+`OperatorSetBuilder` is the assembly stage. It gathers contributions from
+multiple providers and enforces one-time registration of each backend object:
+
+- image containers for eager k-sampling (`hamiltonian_images_`, `overlap_images_`)
+- builder objects for lazy construction (`velocity_builder_`, `position_builder_`)
+
+This is the place where cross-provider policy lives. For example, if no overlap
+exists and no explicit position builder is registered, the builder installs the
+orthogonal-basis diagonal-position fallback. That fallback is a representation
+choice, not a provider-specific physics rule.
+
+
+3. OperatorSet layer: "Runtime cache for one calculation"
+---------------------------------------------------------
+`OperatorSet` is the runtime object used by later calculations.
+
+It owns:
+- the shared source objects moved in from the builder
+- one `KPointOperatorState` per locally owned k-point
+- eager objects sampled during initialization
+- lazy objects created only when first requested
+
+The picture is:
+
+    OperatorSet
+      |
+      +-- shared source state
+      |     |- hamiltonian_images_
+      |     |- overlap_images_
+      |     |- velocity_builder_
+      |     `- position_builder_
+      |
+      `-- kpoint_states_[k_idx]
+            |- hamiltonian        eager
+            |- overlap            eager
+            |- preconditioner     eager if overlap exists and enabled
+            |- velocity           lazy cache
+            |- position           lazy cache
+            `- first_lattice_moment lazy cache
+
+So `OperatorSet` is not a provider and not a kernel implementation. It is the
+runtime cache/object graph that later physics modules query.
+
+
+4. Construction timing: eager vs lazy
+-------------------------------------
+Initialization only performs the work that every run is expected to need:
+
+- sample Hamiltonian and overlap at each owned k-point
+- optionally build the overlap-based preconditioner
+- optionally estimate energy bounds
+
+More specialized operators are deferred:
+
+- `velocity_state(k)` calls the registered `IVelocityBuilder` on demand
+- `position_state(k)` calls the registered `IPositionBuilder` on demand, then
+  always attaches the orthogonal-basis diagonal coordinates
+- `first_lattice_moment_state(k)` is derived on demand from Hamiltonian images
+
+This keeps the setup path light while still exposing a uniform runtime API.
+
+
+Why these abstractions exist
+----------------------------
+The file separates three kinds of responsibility that would become tangled if
+they lived in one class:
+
+- provider logic: read/build operator ingredients from a concrete source
+- assembly logic: merge available ingredients into a coherent runtime package
+- runtime logic: cache sampled operators and lazily build derived ones
+
+That separation also clarifies what does *not* belong here. Post-processing on
+already initialized operators, such as future disorder application pipelines,
+should happen after `OperatorSet` construction rather than being hidden inside
+provider registration or initialization.
+*/
 
 struct ProviderCapabilities {
     bool hamiltonian = false;
@@ -82,22 +218,10 @@ struct OperatorSourceConfig {
     Op2cIntegralSourceConfig op2c;
 };
 
-struct DisorderConfig {
-    std::string kind = "none";
-    double strength_ev = 0.0;
-    std::uint64_t seed = 0;
-    bool per_atom = true;
-
-    bool enabled() const {
-        return kind != "none" && std::abs(strength_ev) > 0.0;
-    }
-};
-
 struct OperatorSetupConfig {
     std::vector<std::vector<double>> kpoints;
     OperatorSourceConfig sources;
     PreconditionerConfig preconditioner;
-    DisorderConfig disorder;
     bool compute_bounds = true;
 };
 
@@ -109,7 +233,7 @@ struct OperatorRuntimeContext {
 };
 
 class OperatorSetBuilder;
-class DiagonalPositionBuilder;
+class OrthogonalDiagonalPositionBuilder;
 
 class IOperatorProvider {
 public:
@@ -137,13 +261,23 @@ public:
     ) const = 0;
 };
 
-struct PositionTriplet {
+struct PositionAxisData {
     using Scalar = std::complex<double>;
     using Matrix = BlockSpMat<Scalar>;
+    using DiagonalVector = DistVector<Scalar>;
 
-    std::unique_ptr<Matrix> x;
-    std::unique_ptr<Matrix> y;
-    std::unique_ptr<Matrix> z;
+    std::unique_ptr<Matrix> matrix;
+    std::unique_ptr<DiagonalVector> orthogonal_diagonal;
+};
+
+struct PositionTriplet {
+    using Scalar = PositionAxisData::Scalar;
+    using Matrix = PositionAxisData::Matrix;
+    using DiagonalVector = PositionAxisData::DiagonalVector;
+
+    PositionAxisData x;
+    PositionAxisData y;
+    PositionAxisData z;
 };
 
 class IPositionBuilder {
@@ -169,6 +303,7 @@ public:
         std::unique_ptr<Preconditioner> preconditioner;
         std::unique_ptr<VelocityTriplet> velocity;
         std::unique_ptr<PositionTriplet> position;
+        std::unique_ptr<FirstLatticeMomentTriplet> first_lattice_moment;
     };
 
     const std::vector<std::pair<int, std::vector<double>>>& local_kpoints() const {
@@ -276,7 +411,21 @@ public:
             }
             state.position = position_builder_->build(*atomic_data_, state.kpoint);
         }
+        attach_orthogonal_diagonal_position(*state.position);
         return *state.position;
+    }
+
+    const FirstLatticeMomentTriplet& first_lattice_moment_state(int k_idx) {
+        auto& state = kpoint_state(k_idx);
+        if (!state.first_lattice_moment) {
+            if (!hamiltonian_images_) {
+                throw std::runtime_error(
+                    "No Hamiltonian image data is configured for first-lattice-moment construction.");
+            }
+            state.first_lattice_moment =
+                build_first_lattice_moment_triplet(*atomic_data_, *hamiltonian_images_);
+        }
+        return *state.first_lattice_moment;
     }
 
 private:
@@ -311,9 +460,6 @@ private:
             }
             if (overlap_images_) {
                 state.overlap.reset(overlap_images_->sample_k(state.kpoint, PhaseConvention::R_AND_POSITION));
-            }
-            if (state.hamiltonian) {
-                apply_disorder_if_requested(state, config.disorder);
             }
             if (state.overlap) {
                 build_preconditioner(state, config.preconditioner);
@@ -359,53 +505,18 @@ private:
         }
     }
 
-    static std::uint64_t splitmix64(std::uint64_t value) {
-        value += 0x9e3779b97f4a7c15ULL;
-        value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
-        value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
-        return value ^ (value >> 31);
-    }
-
-    static double uniform_from_hash(std::uint64_t value) {
-        const std::uint64_t mantissa = splitmix64(value) >> 11;
-        return static_cast<double>(mantissa) * (1.0 / 9007199254740992.0);
-    }
-
-    void apply_disorder_if_requested(KPointOperatorState& state, const DisorderConfig& config) {
-        if (!config.enabled() || !state.hamiltonian) {
-            return;
+    void attach_orthogonal_diagonal_position(PositionTriplet& position) const {
+        if (!position.x.orthogonal_diagonal) {
+            position.x.orthogonal_diagonal = std::make_unique<PositionTriplet::DiagonalVector>(
+                detail::make_orthogonal_diagonal_coordinate_vector(*atomic_data_, 0));
         }
-        if (config.kind != "anderson") {
-            throw std::runtime_error("Unsupported disorder kind: " + config.kind);
+        if (!position.y.orthogonal_diagonal) {
+            position.y.orthogonal_diagonal = std::make_unique<PositionTriplet::DiagonalVector>(
+                detail::make_orthogonal_diagonal_coordinate_vector(*atomic_data_, 1));
         }
-
-        int start = 0;
-        int end = 0;
-        atomic_data_->get_vertex_range_local(&start, &end);
-        for (int atom = start; atom < end; ++atom) {
-            if (atomic_data_->atom_is_ghost(atom)) {
-                continue;
-            }
-
-            const int global_atom = atomic_data_->get_global_index(atom);
-            auto row_it = state.hamiltonian->graph->global_to_local.find(global_atom);
-            if (row_it == state.hamiltonian->graph->global_to_local.end()) {
-                continue;
-            }
-            const int local_row = row_it->second;
-            const int norb = state.hamiltonian->graph->block_sizes[local_row];
-            std::vector<Scalar> block(static_cast<size_t>(norb) * static_cast<size_t>(norb), Scalar(0.0, 0.0));
-
-            for (int orb = 0; orb < norb; ++orb) {
-                const std::uint64_t orbital_key = config.per_atom ? 0ULL : static_cast<std::uint64_t>(orb + 1);
-                const double disorder =
-                    config.strength_ev *
-                    (uniform_from_hash(config.seed ^ (static_cast<std::uint64_t>(global_atom + 1) << 32) ^ orbital_key) - 0.5);
-                block[static_cast<size_t>(orb) * static_cast<size_t>(norb) + static_cast<size_t>(orb)] = Scalar(disorder, 0.0);
-            }
-
-            state.hamiltonian->update_local_block(
-                local_row, local_row, block.data(), norb, norb, AssemblyMode::ADD, MatrixLayout::ColMajor);
+        if (!position.z.orthogonal_diagonal) {
+            position.z.orthogonal_diagonal = std::make_unique<PositionTriplet::DiagonalVector>(
+                detail::make_orthogonal_diagonal_coordinate_vector(*atomic_data_, 2));
         }
     }
 
@@ -603,12 +714,12 @@ public:
         }
 
         auto triplet = std::make_unique<PositionTriplet>();
-        triplet->x = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
-        triplet->y = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
-        triplet->z = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
+        triplet->x.matrix = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
+        triplet->y.matrix = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
+        triplet->z.matrix = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
 
         construction_->build_position(
-            triplet->x.get(), triplet->y.get(), triplet->z.get(),
+            triplet->x.matrix.get(), triplet->y.matrix.get(), triplet->z.matrix.get(),
             atomic_data, kpoint[0], kpoint[1], kpoint[2]);
 
         return triplet;
@@ -618,52 +729,14 @@ private:
     std::shared_ptr<OperatorConstruction> construction_;
 };
 
-class DiagonalPositionBuilder : public IPositionBuilder {
+class OrthogonalDiagonalPositionBuilder : public IPositionBuilder {
 public:
     std::unique_ptr<PositionTriplet> build(
         AtomicData& atomic_data,
         const std::vector<double>&
     ) const override {
-        auto triplet = std::make_unique<PositionTriplet>();
-        triplet->x = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
-        triplet->y = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
-        triplet->z = std::make_unique<PositionTriplet::Matrix>(atomic_data.get_graph());
-
-        int start = 0;
-        int end = 0;
-        atomic_data.get_vertex_range_local(&start, &end);
-        for (int atom = start; atom < end; ++atom) {
-            if (atomic_data.atom_is_ghost(atom)) {
-                continue;
-            }
-
-            int norb = 0;
-            atomic_data.get_atom_norb(atom, &norb);
-            const int global_atom = atomic_data.get_global_index(atom);
-
-            double rx = 0.0;
-            double ry = 0.0;
-            double rz = 0.0;
-            atomic_data.get_pos(atom, &rx, &ry, &rz);
-
-            std::vector<std::complex<double>> bx(static_cast<size_t>(norb) * static_cast<size_t>(norb), std::complex<double>(0.0, 0.0));
-            std::vector<std::complex<double>> by(static_cast<size_t>(norb) * static_cast<size_t>(norb), std::complex<double>(0.0, 0.0));
-            std::vector<std::complex<double>> bz(static_cast<size_t>(norb) * static_cast<size_t>(norb), std::complex<double>(0.0, 0.0));
-            for (int orb = 0; orb < norb; ++orb) {
-                bx[static_cast<size_t>(orb) * static_cast<size_t>(norb) + static_cast<size_t>(orb)] = std::complex<double>(rx, 0.0);
-                by[static_cast<size_t>(orb) * static_cast<size_t>(norb) + static_cast<size_t>(orb)] = std::complex<double>(ry, 0.0);
-                bz[static_cast<size_t>(orb) * static_cast<size_t>(norb) + static_cast<size_t>(orb)] = std::complex<double>(rz, 0.0);
-            }
-
-            triplet->x->add_block(global_atom, global_atom, bx.data(), norb, norb, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-            triplet->y->add_block(global_atom, global_atom, by.data(), norb, norb, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-            triplet->z->add_block(global_atom, global_atom, bz.data(), norb, norb, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-        }
-
-        triplet->x->assemble();
-        triplet->y->assemble();
-        triplet->z->assemble();
-        return triplet;
+        (void)atomic_data;
+        return std::make_unique<PositionTriplet>();
     }
 };
 
@@ -671,8 +744,8 @@ inline std::unique_ptr<OperatorSet> OperatorSetBuilder::build(
     const OperatorSetupConfig& config,
     const OperatorRuntimeContext& runtime
 ) {
-    if (!position_builder_) {
-        position_builder_ = std::make_unique<DiagonalPositionBuilder>();
+    if (!position_builder_ && !overlap_images_) {
+        position_builder_ = std::make_unique<OrthogonalDiagonalPositionBuilder>();
         capabilities_.position = true;
     }
     auto set = std::unique_ptr<OperatorSet>(new OperatorSet(atomic_data_, comm_, verbose_));

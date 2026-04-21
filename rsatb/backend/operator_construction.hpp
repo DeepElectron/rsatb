@@ -15,6 +15,133 @@ using namespace vbcsr::atomic;
 namespace rsatb {
 namespace backend {
 
+/*
+ * For periodic operator algebra we often need the first lattice moment of a
+ * real-space image decomposition:
+ *
+ *   M_alpha = sum_R R_alpha A(R),
+ *
+ * where A(R) is the operator image associated with lattice translation R and
+ * R_alpha is its Cartesian component along axis alpha.
+ *
+ * This object stores that first moment independently from any position
+ * representation. The diagonal orthogonal-basis position term
+ *
+ *   d_alpha(i, mu) = r_i,alpha
+ *
+ * belongs to the position state and is built separately.
+ */
+struct FirstLatticeMomentAxisData {
+    using Scalar = std::complex<double>;
+    using Matrix = BlockSpMat<Scalar>;
+
+    std::unique_ptr<Matrix> first_moment;
+};
+
+struct FirstLatticeMomentTriplet {
+    FirstLatticeMomentAxisData x;
+    FirstLatticeMomentAxisData y;
+    FirstLatticeMomentAxisData z;
+};
+
+namespace detail {
+
+// Convert the integer image label R = (n1, n2, n3) to its Cartesian component
+// along the selected axis:
+//
+//   R_alpha = n1 * a1_alpha + n2 * a2_alpha + n3 * a3_alpha.
+inline double cell_shift_component(const AtomicData& ad, const std::vector<int>& shift, int axis_idx) {
+    const auto& cell = ad.cell;
+    return static_cast<double>(shift[0]) * cell[axis_idx]
+         + static_cast<double>(shift[1]) * cell[axis_idx + 3]
+         + static_cast<double>(shift[2]) * cell[axis_idx + 6];
+}
+
+// Build the first image moment along axis alpha:
+//
+//   M_alpha = sum_R R_alpha A(R),
+//
+// where each real-space image matrix A(R) is weighted by the Cartesian shift of
+// that image. In the present backend A(R) is the Hamiltonian image container.
+inline std::unique_ptr<FirstLatticeMomentAxisData::Matrix> make_first_moment_matrix(
+    AtomicData& ad,
+    ImageContainer<double>& images,
+    int axis_idx
+) {
+    auto* graph = ad.graph;
+    auto result = std::unique_ptr<FirstLatticeMomentAxisData::Matrix>(
+        images.accumulate_weighted_images<FirstLatticeMomentAxisData::Scalar>(
+            graph,
+            [&](const std::vector<int>& shift) {
+                return cell_shift_component(ad, shift, axis_idx);
+            }));
+    result->assemble();
+    return result;
+}
+
+// Build the orthogonal-basis diagonal position vector by replicating the atomic
+// coordinate of each owned atom over all of its orbitals:
+//
+//   d_alpha(i, mu) = r_i,alpha.
+inline DistVector<std::complex<double>> make_orthogonal_diagonal_coordinate_vector(
+    AtomicData& ad,
+    int axis_idx
+) {
+    auto* graph = ad.graph;
+    DistVector<std::complex<double>> diagonal(graph);
+    diagonal.set_constant(std::complex<double>(0.0, 0.0));
+
+    const int n_local_blocks = static_cast<int>(graph->block_sizes.size());
+    for (int local_block = 0; local_block < n_local_blocks; ++local_block) {
+        double x = 0.0;
+        double y = 0.0;
+        double z = 0.0;
+        ad.get_pos(local_block, &x, &y, &z);
+        const double coord = (axis_idx == 0) ? x : ((axis_idx == 1) ? y : z);
+        const int norb = graph->block_sizes[local_block];
+        const int offset = graph->block_offsets[local_block];
+        for (int orb = 0; orb < norb; ++orb) {
+            diagonal[offset + orb] = std::complex<double>(coord, 0.0);
+        }
+    }
+
+    return diagonal;
+}
+
+} // namespace detail
+
+// Build the first lattice moment along x/y/z. An axis is active iff at least
+// one image carries a nonzero lattice translation along that axis.
+inline std::unique_ptr<FirstLatticeMomentTriplet> build_first_lattice_moment_triplet(
+    AtomicData& atomic_data,
+    ImageContainer<double>& hamiltonian_images
+) {
+    if (hamiltonian_images.atom_data != &atomic_data || hamiltonian_images.base_graph != atomic_data.graph) {
+        throw std::runtime_error(
+            "First-lattice-moment construction requires Hamiltonian images built from the same AtomicData graph.");
+    }
+
+    auto triplet = std::make_unique<FirstLatticeMomentTriplet>();
+    FirstLatticeMomentAxisData* axes[3] = {&triplet->x, &triplet->y, &triplet->z};
+
+    for (int axis_idx = 0; axis_idx < 3; ++axis_idx) {
+        bool has_lattice_shift = false;
+        for (const auto& entry : hamiltonian_images.image_blocks) {
+            if (std::abs(detail::cell_shift_component(atomic_data, entry.first, axis_idx)) > 1e-12) {
+                has_lattice_shift = true;
+                break;
+            }
+        }
+
+        if (has_lattice_shift) {
+            axes[axis_idx]->first_moment =
+                detail::make_first_moment_matrix(atomic_data, hamiltonian_images, axis_idx);
+        }
+    }
+
+    return triplet;
+}
+
 class OperatorConstruction {
 public:
     std::unique_ptr<Op2c> op2c_;
