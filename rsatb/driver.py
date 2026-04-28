@@ -31,15 +31,21 @@ class SetupOptions:
     kpoints: list = field(default_factory=lambda: [[0.0, 0.0, 0.0]])
     nsamples: int = 1
     compute_bounds: bool = True
+    energy_bounds: tuple = None
+    bounds_zero_tol: float = 1e-12
+    bounds_max_matvecs: int = 10000
     preconditioner: PreconditionerOptions = field(default_factory=PreconditionerOptions)
 
     def to_dict(self):
-        return {
+        return _drop_none_values({
             "kpoints": self.kpoints,
             "nsamples": self.nsamples,
             "compute_bounds": self.compute_bounds,
+            "energy_bounds": self.energy_bounds,
+            "bounds_zero_tol": self.bounds_zero_tol,
+            "bounds_max_matvecs": self.bounds_max_matvecs,
             "preconditioner": self.preconditioner.to_dict(),
-        }
+        })
 
 
 @dataclass

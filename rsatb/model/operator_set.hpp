@@ -9,9 +9,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <limits>
 #include <map>
 #include <memory>
+#include <sstream>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -269,7 +271,7 @@ private:
             kpoint_states_.emplace(state.k_idx, std::move(state));
         }
 
-        compute_bounds_if_requested(options.compute_bounds, runtime.master_comm);
+        compute_bounds_if_requested(options, runtime.master_comm);
     }
 
     void build_preconditioner(
@@ -320,9 +322,40 @@ private:
         }
     }
 
-    void compute_bounds_if_requested(bool compute_bounds, MPI_Comm master_comm) {
-        if (!compute_bounds || !has_hamiltonian()) {
+    static std::string kpoint_to_string(const std::vector<double>& kpoint) {
+        std::ostringstream out;
+        out << "[";
+        for (size_t i = 0; i < kpoint.size(); ++i) {
+            if (i > 0) out << ", ";
+            out << kpoint[i];
+        }
+        out << "]";
+        return out.str();
+    }
+
+    void set_explicit_energy_bounds(const std::pair<double, double>& bounds) {
+        if (!std::isfinite(bounds.first) || !std::isfinite(bounds.second) || !(bounds.first < bounds.second)) {
+            throw std::runtime_error("setup energy_bounds must be finite and satisfy emin < emax.");
+        }
+        emin_ = bounds.first;
+        emax_ = bounds.second;
+        bounds_ready_ = true;
+    }
+
+    void compute_bounds_if_requested(const rsatb::model::SetupOptions& options, MPI_Comm master_comm) {
+        if (options.energy_bounds.has_value()) {
+            set_explicit_energy_bounds(*options.energy_bounds);
             return;
+        }
+
+        if (!options.compute_bounds || !has_hamiltonian()) {
+            return;
+        }
+        if (options.bounds_zero_tol < 0.0) {
+            throw std::runtime_error("setup bounds_zero_tol must be non-negative.");
+        }
+        if (options.bounds_max_matvecs < 0) {
+            throw std::runtime_error("setup bounds_max_matvecs must be non-negative.");
         }
 
         double local_emin = std::numeric_limits<double>::max();
@@ -331,6 +364,18 @@ private:
         for (const auto& entry : kpoint_states_) {
             const KPointOperatorState& state = entry.second;
             if (!state.hamiltonian) {
+                continue;
+            }
+
+            const double h_max_abs = state.hamiltonian->maxabs();
+            if (!std::isfinite(h_max_abs)) {
+                throw std::runtime_error(
+                    "Automatic bounds estimation found a non-finite Hamiltonian entry at k-point " +
+                    kpoint_to_string(state.kpoint) + ".");
+            }
+            if (h_max_abs <= options.bounds_zero_tol) {
+                local_emin = std::min(local_emin, 0.0);
+                local_emax = std::max(local_emax, 0.0);
                 continue;
             }
 
@@ -343,8 +388,56 @@ private:
             Preconditioner* preconditioner = state.preconditioner.get();
             const auto pc_type = preconditioner ? preconditioner->get_type() : rsatb::calc::PreconditionerType::Left;
 
-            esolver.solve(*state.hamiltonian, overlap, preconditioner, 1, primme_smallest, 1e-3, evals_min, evecs, verbose_, pc_type);
-            esolver.solve(*state.hamiltonian, overlap, preconditioner, 1, primme_largest, 1e-3, evals_max, evecs, verbose_, pc_type);
+            try {
+                esolver.solve(
+                    *state.hamiltonian,
+                    overlap,
+                    preconditioner,
+                    1,
+                    primme_smallest,
+                    1e-3,
+                    evals_min,
+                    evecs,
+                    verbose_,
+                    pc_type,
+                    options.bounds_max_matvecs);
+                esolver.solve(
+                    *state.hamiltonian,
+                    overlap,
+                    preconditioner,
+                    1,
+                    primme_largest,
+                    1e-3,
+                    evals_max,
+                    evecs,
+                    verbose_,
+                    pc_type,
+                    options.bounds_max_matvecs);
+            } catch (const std::exception& error) {
+                if (overlap == nullptr && preconditioner == nullptr) {
+                    const double fallback_bound = state.hamiltonian->frobenius_norm();
+                    if (!std::isfinite(fallback_bound)) {
+                        throw std::runtime_error(
+                            "Automatic bounds fallback found a non-finite Hamiltonian norm at k-point " +
+                            kpoint_to_string(state.kpoint) + ".");
+                    }
+                    local_emin = std::min(local_emin, -fallback_bound);
+                    local_emax = std::max(local_emax, fallback_bound);
+                    if (verbose_ && state.hamiltonian->graph != nullptr && state.hamiltonian->graph->rank == 0) {
+                        std::cerr
+                            << "Warning: PRIMME bounds solve failed at k-point "
+                            << kpoint_to_string(state.kpoint)
+                            << "; using conservative Frobenius norm bound. Underlying error: "
+                            << error.what() << std::endl;
+                    }
+                    continue;
+                }
+
+                throw std::runtime_error(
+                    "Automatic bounds estimation failed at k-point " + kpoint_to_string(state.kpoint) +
+                    ". Provide SetupOptions.energy_bounds or increase bounds_max_matvecs. Underlying error: " +
+                    error.what());
+            }
 
             if (!evals_min.empty()) {
                 local_emin = std::min(local_emin, evals_min[0]);
@@ -365,6 +458,10 @@ private:
         if (comm_ != MPI_COMM_NULL) {
             MPI_Bcast(&global_emin, 1, MPI_DOUBLE, 0, comm_);
             MPI_Bcast(&global_emax, 1, MPI_DOUBLE, 0, comm_);
+        }
+
+        if (!std::isfinite(global_emin) || !std::isfinite(global_emax) || global_emin > global_emax) {
+            throw std::runtime_error("Automatic bounds estimation did not produce finite energy bounds.");
         }
 
         emin_ = global_emin - 0.5;

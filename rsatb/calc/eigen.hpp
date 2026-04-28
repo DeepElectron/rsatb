@@ -61,7 +61,8 @@ public:
                std::vector<Real>& evalues = {}, 
                std::vector<DistVector<T>>& evectors = {},
                bool verbose = false,
-               PreconditionerType pc_type = PreconditionerType::Left) {
+               PreconditionerType pc_type = PreconditionerType::Left,
+               int max_matvecs = 0) {
         
         DistGraph* graph = H.graph;
         const bool mpi_ready = comm_is_usable(graph->comm);
@@ -86,6 +87,9 @@ public:
         primme.target = target;
         primme.eps = tol;
         primme.printLevel = verbose ? 3 : 0;
+        if (max_matvecs > 0) {
+            primme.maxMatvecs = max_matvecs;
+        }
         
         int numProcs = 1;
         int procID = 0;
@@ -152,6 +156,7 @@ public:
         }
 
         if (ret != 0) {
+            primme_free(&primme);
             throw std::runtime_error("PRIMME failed with error code: " + std::to_string(ret));
         }
 
@@ -180,8 +185,9 @@ public:
                        std::vector<Real>& evals, 
                        std::vector<DistVector<T>>& evecs, 
                        bool verbose=false,
-                       PreconditionerType pc_type = PreconditionerType::Left) {
-        solve(H, S, M, num, primme_largest, tol, evals, evecs, verbose, pc_type);
+                       PreconditionerType pc_type = PreconditionerType::Left,
+                       int max_matvecs = 0) {
+        solve(H, S, M, num, primme_largest, tol, evals, evecs, verbose, pc_type, max_matvecs);
     }
 
     void solve_smallest(BlockSpMat<T, Kernel>& H, 
@@ -192,8 +198,9 @@ public:
                         std::vector<Real>& evals, 
                         std::vector<DistVector<T>>& evecs, 
                        bool verbose=false,
-                       PreconditionerType pc_type = PreconditionerType::Left) {
-        solve(H, S, M, num, primme_smallest, tol, evals, evecs, verbose, pc_type);
+                       PreconditionerType pc_type = PreconditionerType::Left,
+                       int max_matvecs = 0) {
+        solve(H, S, M, num, primme_smallest, tol, evals, evecs, verbose, pc_type, max_matvecs);
     }
 
     // Helper to find extremal eigenvalues (min and max) of H
@@ -204,17 +211,18 @@ public:
                         Real& emin, 
                         Real& emax, 
                         bool verbose=false,
-                        PreconditionerType pc_type = PreconditionerType::Left) {
+                        PreconditionerType pc_type = PreconditionerType::Left,
+                        int max_matvecs = 0) {
         
         std::vector<Real> evals;
         std::vector<DistVector<T>> evecs;
         
         // Smallest
-        solve(H, S, M, 1, primme_smallest, tol, evals, evecs, verbose, pc_type);
+        solve(H, S, M, 1, primme_smallest, tol, evals, evecs, verbose, pc_type, max_matvecs);
         emin = evals[0];
         
         // Largest
-        solve(H, S, M, 1, primme_largest, tol, evals, evecs, verbose, pc_type);
+        solve(H, S, M, 1, primme_largest, tol, evals, evecs, verbose, pc_type, max_matvecs);
         emax = evals[0];
     }
 

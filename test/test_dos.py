@@ -27,7 +27,7 @@ kpoints = [
     [0.5 , 0.  , 0.5 ]
     ]
 
-model_runner = RSATB.from_file(npar=5, filename="./data/diamond/diamond_sc111.vasp", r_max_per_type=[3.7], type_norb=[13])
+model_runner = RSATB.from_file(npar=5, filename="./data/diamond/diamond_sc111.vasp", r_max_per_type=[3.7], type_norb=[13], verbose=True)
 
 model_runner.setup_lcao(
     LCAOModel.hdf5(

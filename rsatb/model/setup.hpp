@@ -31,6 +31,9 @@ struct SetupOptions {
     std::vector<std::vector<double>> kpoints = {{0.0, 0.0, 0.0}};
     int nsamples = 1;
     bool compute_bounds = true;
+    std::optional<std::pair<double, double>> energy_bounds;
+    double bounds_zero_tol = 1e-12;
+    int bounds_max_matvecs = 10000;
     PreconditionerOptions preconditioner;
 };
 

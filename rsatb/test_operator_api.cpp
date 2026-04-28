@@ -7,6 +7,7 @@
 #include <complex>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -258,6 +259,51 @@ TEST(RSATBOperatorApiTest, ComputeQuantumMetricUsesOrthogonalVelocityFallbackFor
     ASSERT_FALSE(gxx.empty());
     ASSERT_FALSE(sigma_xx.empty());
     ASSERT_FALSE(omega.empty());
+
+    std::remove(path.c_str());
+}
+
+TEST(RSATBOperatorApiTest, AutomaticBoundsSkipsZeroHamiltonian) {
+    const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(0.0, 0.0));
+    auto rsatb_inst = make_single_atom_rsatb(path);
+
+    ASSERT_NE(rsatb_inst->operators(), nullptr);
+    const auto bounds = rsatb_inst->operators()->bounds();
+    EXPECT_NEAR(bounds.first, -0.5, 1e-12);
+    EXPECT_NEAR(bounds.second, 0.5, 1e-12);
+
+    std::remove(path.c_str());
+}
+
+TEST(RSATBOperatorApiTest, SetupUsesExplicitEnergyBounds) {
+    const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(2.0, 0.0));
+    const std::vector<int> z = {1};
+    const std::vector<double> pos = {0.0, 0.0, 0.0};
+    const std::vector<double> cell = {
+        10.0, 0.0, 0.0,
+        0.0, 10.0, 0.0,
+        0.0, 0.0, 10.0
+    };
+    const std::vector<bool> pbc = {false, false, false};
+    const std::vector<double> r_max = {1.0};
+    const std::vector<int> type_norb = {1};
+
+    rsatb::RSATB rsatb_inst(1, pos, z, cell, pbc, r_max, type_norb, false, MPI_COMM_WORLD);
+
+    rsatb::model::LCAOModelConfig model;
+    model.input = rsatb::model::Hdf5Input{};
+    model.input->filename = path;
+
+    rsatb::model::SetupOptions options;
+    options.kpoints = {{0.0, 0.0, 0.0}};
+    options.energy_bounds = std::make_pair(-3.0, 4.0);
+    options.preconditioner.mode = "None";
+    rsatb_inst.setup(model, options);
+
+    ASSERT_NE(rsatb_inst.operators(), nullptr);
+    const auto bounds = rsatb_inst.operators()->bounds();
+    EXPECT_DOUBLE_EQ(bounds.first, -3.0);
+    EXPECT_DOUBLE_EQ(bounds.second, 4.0);
 
     std::remove(path.c_str());
 }

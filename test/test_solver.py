@@ -2,7 +2,7 @@ from rsatb import LCAOIntegralInput, LCAOModel, PreconditionerOptions, RSATB, Se
 
 kpoints = [
     [0. , 0. , 0. ]
-    ]
+]
 
 model_runner = RSATB.from_file(npar=1, filename="./data/diamond/diamond_sc111.vasp", r_max_per_type=[3.7], type_norb=[13], verbose=True)
 

@@ -5,6 +5,9 @@
 
 #include "rsatb.hpp"
 
+#include <stdexcept>
+#include <utility>
+
 namespace py = pybind11;
 
 namespace {
@@ -152,6 +155,19 @@ rsatb::model::SetupOptions parse_setup_options(py::handle handle) {
     }
     if (cfg.contains("compute_bounds")) {
         options.compute_bounds = py::cast<bool>(cfg["compute_bounds"]);
+    }
+    if (cfg.contains("energy_bounds") && !cfg["energy_bounds"].is_none()) {
+        const auto bounds = py::cast<std::vector<double>>(cfg["energy_bounds"]);
+        if (bounds.size() != 2) {
+            throw std::runtime_error("setup energy_bounds must contain exactly two values: [emin, emax].");
+        }
+        options.energy_bounds = std::make_pair(bounds[0], bounds[1]);
+    }
+    if (cfg.contains("bounds_zero_tol")) {
+        options.bounds_zero_tol = py::cast<double>(cfg["bounds_zero_tol"]);
+    }
+    if (cfg.contains("bounds_max_matvecs")) {
+        options.bounds_max_matvecs = py::cast<int>(cfg["bounds_max_matvecs"]);
     }
     if (cfg.contains("preconditioner")) {
         py::dict pre = py::cast<py::dict>(cfg["preconditioner"]);
