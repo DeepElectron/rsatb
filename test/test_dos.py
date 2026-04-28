@@ -1,6 +1,5 @@
 from mpi4py import MPI
-import rsatb
-from rsatb import RSATB
+from rsatb import LCAOIntegralInput, LCAOModel, PreconditionerOptions, RSATB, SetupOptions
 
 rank = MPI.COMM_WORLD.Get_rank()
 
@@ -28,11 +27,26 @@ kpoints = [
     [0.5 , 0.  , 0.5 ]
     ]
 
-rsatb = RSATB.from_file(npar=5, filename="./data/diamond/diamond_sc111.vasp", r_max_per_type=[3.7], type_norb=[13])
+model_runner = RSATB.from_file(npar=5, filename="./data/diamond/diamond_sc111.vasp", r_max_per_type=[3.7], type_norb=[13])
 
-rsatb.setup(Hfile="./data/diamond/C2.0/hamiltonians.h5", kpoints=kpoints, orb_names=["C_gga_7au_100Ry_2s2p1d.orb"], orb_dirs="./data/diamond/", psd_names=["C_ONCV_PBE-1.0.upf"], psd_dirs="./data/diamond/", precond="H", nsamples=500)
+model_runner.setup_lcao(
+    LCAOModel.hdf5(
+        "./data/diamond/C2.0/hamiltonians.h5",
+        integrals=LCAOIntegralInput(
+            orb_names=["C_gga_7au_100Ry_2s2p1d.orb"],
+            orb_dir="./data/diamond/",
+            psd_names=["C_ONCV_PBE-1.0.upf"],
+            psd_dir="./data/diamond/",
+        ),
+    ),
+    SetupOptions(
+        kpoints=kpoints,
+        nsamples=500,
+        preconditioner=PreconditionerOptions(mode="H"),
+    ),
+)
 
-dos, omega = rsatb.compute_dos(200)
+dos, omega = model_runner.compute_dos(200)
 
 if rank == 0:
     import matplotlib.pyplot as plt

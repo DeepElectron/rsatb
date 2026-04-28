@@ -7,6 +7,7 @@
 #include <map>
 #include <cmath>
 #include <algorithm>
+#include <stdexcept>
 
 namespace rsatb {
 namespace backend {
@@ -188,6 +189,27 @@ inline StructureData read_xyz(const std::string& filename) {
     }
     
     return data;
+}
+
+inline StructureData read_structure(const std::string& filename, const std::string& format = "") {
+    std::string fmt = format;
+    if (fmt.empty()) {
+        if (filename.find(".vasp") != std::string::npos || filename.find("POSCAR") != std::string::npos) {
+            fmt = "POSCAR";
+        } else if (filename.find(".xyz") != std::string::npos) {
+            fmt = "XYZ";
+        } else {
+            throw std::runtime_error("Unknown structure format for file: " + filename);
+        }
+    }
+
+    if (fmt == "POSCAR") {
+        return read_poscar(filename);
+    }
+    if (fmt == "XYZ") {
+        return read_xyz(filename);
+    }
+    throw std::runtime_error("Unsupported structure format: " + fmt);
 }
 
 } // namespace io

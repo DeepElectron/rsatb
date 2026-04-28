@@ -4,6 +4,7 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
+#include "vbcsr/core/detail/kernels/lapack_api.hpp"
 #include "isqrtm.hpp"
 #include <vector>
 #include <cmath>
@@ -49,20 +50,22 @@ public:
 
     void compute(BlockSpMat<T, Kernel>& A) {
         // Iterate local blocks of A
-        int n_rows = A.row_ptr.size() - 1;
+        const auto& row_ptr = A.row_ptr();
+        const auto& col_ind = A.col_ind();
+        int n_rows = static_cast<int>(row_ptr.size()) - 1;
         
         for (int i = 0; i < n_rows; ++i) {
-            int start = A.row_ptr[i];
-            int end = A.row_ptr[i+1];
+            int start = row_ptr[i];
+            int end = row_ptr[i+1];
             int global_row = A.graph->get_global_index(i);
             
             for (int k = start; k < end; ++k) {
-                int local_col = A.col_ind[k];
+                int local_col = col_ind[k];
                 int global_col = A.graph->get_global_index(local_col);
                 
                 if (global_row == global_col) {
                     // Found diagonal block
-                    T* data = A.arena.get_ptr(A.blk_handles[k]);
+                    const T* data = A.block_data(k);
                     int rows = A.graph->block_sizes[i];
                     int cols = A.graph->block_sizes[local_col];
                     

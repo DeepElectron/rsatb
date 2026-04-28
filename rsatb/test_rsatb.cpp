@@ -68,8 +68,20 @@ TEST(RSATBTest, TestSetupAndCompute) {
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
 
     std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
-    
-    rsatb_inst->setup(Hpath, kpoints, orb_names, orb_dir, psd_names, psd_dir, 1e-7, 1e-5, 20, "graph", "H", 1);
+
+    model::SetupOptions setup_options;
+    setup_options.kpoints = kpoints;
+    setup_options.preconditioner.mode = "H";
+
+    model::LCAOModelConfig model_config;
+    model_config.input = model::Hdf5Input{};
+    model_config.input->filename = Hpath;
+    model_config.integrals.orb_names = orb_names;
+    model_config.integrals.orb_dir = orb_dir;
+    model_config.integrals.psd_names = psd_names;
+    model_config.integrals.psd_dir = psd_dir;
+
+    rsatb_inst->setup(model_config, setup_options);
     
     // 5. Verify Setup
     // Check if H(k) is created

@@ -107,6 +107,11 @@ include_directories(${FFTW_INCLUDE_DIRS})
 # Python & Pybind11
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 execute_process(
+  COMMAND ${Python3_EXECUTABLE} -c "import sys, sysconfig; print(f'{sys.prefix}/include/python{sysconfig.get_python_version()}')"
+  OUTPUT_VARIABLE PYTHON_ENV_INCLUDE_DIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import mpi4py, sys; sys.stdout.write(mpi4py.get_include())"
   OUTPUT_VARIABLE MPI4PY_INCLUDE_DIR
   OUTPUT_STRIP_TRAILING_WHITESPACE
@@ -266,7 +271,7 @@ endif()
 list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
 
 # --- Subdirectories ---
-add_subdirectory(backend)
+add_subdirectory(model)
 add_subdirectory(io)
 add_subdirectory(extern/op2c)
 
@@ -299,7 +304,8 @@ endif()
 set(RSATB_INCLUDE_DIRS
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    backend
+    model
+    model/sktb
     extern
     extern/op2c/src
     extern/op2c/src/utils/container
@@ -354,7 +360,8 @@ if(UNIX AND NOT APPLE)
         "-Wl,--exclude-libs,libmkl_intel_thread.so"
         "-Wl,--exclude-libs,libiomp5.so")
 endif()
-target_include_directories(_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
+target_include_directories(_rsatb BEFORE PRIVATE ${PYTHON_ENV_INCLUDE_DIR})
+target_include_directories(_rsatb PRIVATE ${RSATB_INCLUDE_DIRS} ${Python3_INCLUDE_DIRS} ${MPI4PY_INCLUDE_DIR})
 target_link_libraries(_rsatb PRIVATE ${RSATB_LINK_LIBS})
 
 # Install

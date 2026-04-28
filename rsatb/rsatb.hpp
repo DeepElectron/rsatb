@@ -5,7 +5,8 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
-#include "backend/operator_set.hpp"
+#include "model/operator_set.hpp"
+#include "model/io.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
@@ -21,6 +22,7 @@
 #include "calc/fft.hpp"
 
 #include <memory>
+#include <algorithm>
 #include <array>
 #include <string>
 #include <vector>
@@ -28,6 +30,7 @@
 #include <limits>
 #include <iostream>
 #include <map>
+#include <type_traits>
 #include <mpi.h>
 
 using namespace vbcsr;
@@ -47,24 +50,23 @@ public:
     using Vector = DistVector<Scalar>;
     using MultiVector = DistMultiVector<Scalar>;
 
-    // Constructors
     RSATB(int npar,
           const size_t n_atom, const size_t N_atom, const size_t atom_offset, const size_t n_edge, const size_t N_edge,
-          const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb, const int *edge_shift_vec,
+          const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb,
+          const std::vector<std::string>& type_symbols,
+          const int *edge_shift_vec,
           const double *cell, const double *pos,
           bool verbose = false,
-          MPI_Comm comm = MPI_COMM_WORLD) 
+          MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
-        
-        // Initialize threading for BLAS kernels
-        Matrix::KernelType::init_threading();
-
         init_comms();
         atomic_data_ = std::make_unique<AtomicData>(
             n_atom, N_atom, atom_offset, n_edge, N_edge,
             atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
             cell, pos, sub_comm_
         );
+        r_max_per_type_.clear();
+        type_symbols_ = type_symbols;
         init_components();
     }
 
@@ -72,11 +74,15 @@ public:
         return Matrix::KernelType::name();
     }
 
+    // constructor defines the npar and the atomic structure.
+
     RSATB(int npar, const std::string& filename, const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
-        Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_file(filename, r_max_per_type, type_norb, sub_comm_));
+        r_max_per_type_ = r_max_per_type;
+        type_symbols_ = backend::unique_type_symbols_from_atomic_numbers(
+            backend::io::read_structure(filename).z);
         init_components();
     }
 
@@ -84,9 +90,10 @@ public:
           const std::vector<double>& cell, const std::vector<bool>& pbc, 
           const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
-        Matrix::KernelType::init_threading();
         init_comms();
         atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(pos, z, cell, pbc, r_max_per_type, type_norb, sub_comm_));
+        r_max_per_type_ = r_max_per_type;
+        type_symbols_ = backend::unique_type_symbols_from_atomic_numbers(z);
         init_components();
     }
     
@@ -95,47 +102,38 @@ public:
         sampling_.reset();
         operators_.reset();
         atomic_data_.reset();
-        
+
         // c_dbcsr_finalize_lib();
         if (sub_comm_ != MPI_COMM_NULL) MPI_Comm_free(&sub_comm_);
         if (master_comm_ != MPI_COMM_NULL) MPI_Comm_free(&master_comm_);
     }
 
 
-
-    // Setup Function
-    void setup(const backend::OperatorSetupConfig& config, int nsamples = 1) {
-        backend::OperatorRuntimeContext runtime;
-        runtime.npar = npar_;
-        runtime.world_rank = world_rank_;
-        runtime.world_size = world_size_;
-        runtime.master_comm = master_comm_;
-
-        operators_ = backend::build_operator_set(*atomic_data_, sub_comm_, verbose_, config, runtime);
-        sampling_.initialize(*atomic_data_, nsamples);
+    // Setup Function defines the operators of one of the supported models (LCAO, SKTB, DFTB) and the associated capabilities.
+    void setup(const model::AnyModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
+        validate_model_setup(model_config);
+        const auto normalized_options = normalize_setup_options(options);
+        operators_ = backend::build_operator_set(
+            *atomic_data_,
+            sub_comm_,
+            verbose_,
+            model_config,
+            normalized_options,
+            type_symbols_,
+            make_operator_runtime_context());
+        sampling_.initialize(*atomic_data_, normalized_options.nsamples);
     }
 
-    void setup(const std::string& Hfile, const std::vector<std::vector<double>>& kpoints,
-               const std::vector<std::string>& orb_names, const std::string& orb_dirs,
-               const std::vector<std::string>& psd_names, const std::string& psd_dirs,
-               double tol=1e-7, double sptol=1e-5, int maxiter=20, const std::string& method="graph",
-               const std::string& precond = "H/S", int nsamples = 1, bool compute_bounds = true) {
+    void setup(const model::LCAOModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
+        setup(model::AnyModelConfig(model_config), options);
+    }
 
-        backend::OperatorSetupConfig config;
-        config.kpoints = kpoints;
-        config.sources.hdf5.filename = Hfile;
-        config.sources.op2c.orb_names = orb_names;
-        config.sources.op2c.orb_dir = orb_dirs;
-        config.sources.op2c.psd_names = psd_names;
-        config.sources.op2c.psd_dir = psd_dirs;
-        config.sources.op2c.log_file = "op2c.log";
-        config.preconditioner.mode = precond;
-        config.preconditioner.tol = tol;
-        config.preconditioner.sptol = sptol;
-        config.preconditioner.maxiter = maxiter;
-        config.preconditioner.method = method;
-        config.compute_bounds = compute_bounds;
-        setup(config, nsamples);
+    void setup(const model::SKTBModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
+        setup(model::AnyModelConfig(model_config), options);
+    }
+
+    void setup(const model::DFTBModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
+        setup(model::AnyModelConfig(model_config), options);
     }
 
     void test_solve() {
@@ -221,8 +219,12 @@ public:
         dos_out.assign(ops.global_nk() * 2 * nt, 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_dos.data(), dos_out.data(), local_dos.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
+        } else {
+            dos_out = local_dos;
         }
-        MPI_Bcast(dos_out.data(), dos_out.size(), MPI_DOUBLE, 0, sub_comm_);
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(dos_out.data(), dos_out.size(), MPI_DOUBLE, 0, sub_comm_);
+        }
         
         // Omega is same for all K-points
         omega_out.resize(2 * nt);
@@ -239,7 +241,7 @@ public:
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
         if (!ops.has_velocity()) {
-            throw std::runtime_error("compute_ac requires a velocity-capable operator provider.");
+            throw std::runtime_error("compute_ac requires a velocity-capable model/operator setup.");
         }
         
         std::vector<double> local_ac(ops.global_nk() * (nt + 1) * 6, 0.0);
@@ -295,8 +297,12 @@ public:
         ac_out.assign(ops.global_nk() * (nt + 1) * 6, 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_ac.data(), ac_out.data(), local_ac.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
+        } else {
+            ac_out = local_ac;
         }
-        MPI_Bcast(ac_out.data(), ac_out.size(), MPI_DOUBLE, 0, sub_comm_);
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(ac_out.data(), ac_out.size(), MPI_DOUBLE, 0, sub_comm_);
+        }
         
         omega_out = omega;
     }
@@ -327,7 +333,7 @@ public:
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
         if (!ops.has_velocity()) {
-            throw std::runtime_error("compute_dc_spectrum requires a velocity-capable operator provider.");
+            throw std::runtime_error("compute_dc_spectrum requires a velocity-capable model/operator setup.");
         }
 
         const auto dc_formulation = parse_dc_formulation(formulation);
@@ -370,14 +376,20 @@ public:
         sigma_out.assign(local_sigma.size(), 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_sigma.data(), sigma_out.data(), static_cast<int>(local_sigma.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
+        } else {
+            sigma_out = local_sigma;
         }
-        MPI_Bcast(sigma_out.data(), static_cast<int>(sigma_out.size()), MPI_DOUBLE, 0, sub_comm_);
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(sigma_out.data(), static_cast<int>(sigma_out.size()), MPI_DOUBLE, 0, sub_comm_);
+        }
 
         energy_out.resize(n_moments, 0.0);
-        if (master_comm_ != MPI_COMM_NULL && !local_energy.empty()) {
+        if (!local_energy.empty()) {
             energy_out = local_energy;
         }
-        MPI_Bcast(energy_out.data(), n_moments, MPI_DOUBLE, 0, sub_comm_);
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(energy_out.data(), n_moments, MPI_DOUBLE, 0, sub_comm_);
+        }
     }
 
     // Convenience wrapper over `compute_dc_spectrum(...)`.
@@ -417,53 +429,140 @@ public:
         std::vector<double>& time_out,
         std::string axis = "x"
     ) {
+        // MSD always uses the configured Gamma-point state. Once that state is
+        // selected, the only remaining switch is which position representation
+        // is valid for the requested axis.
+
         auto& ops = require_operators();
         if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
-        if (!ops.has_position()) {
-            throw std::runtime_error("compute_msd_spectrum requires a position-capable operator provider.");
+        if (!ops.has_hamiltonian()) {
+            throw std::runtime_error("compute_msd_spectrum requires a Hamiltonian-capable model/operator setup.");
         }
 
         const size_t per_k_size = static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm);
-        std::vector<double> local_msd(static_cast<size_t>(ops.global_nk()) * per_k_size, 0.0);
+        std::vector<double> local_msd(per_k_size, 0.0);
         std::vector<double> local_energy;
+        const int axis_idx = axis_to_index(axis);
+        const int gamma_k_idx = select_gamma_kpoint_index(ops);
+        const auto* gamma_state = ops.try_kpoint_state(gamma_k_idx);
 
-        for (const auto& kp : ops.local_kpoints()) {
-            int k_idx = kp.first;
-            const auto& state = ops.kpoint_state(k_idx);
-            const auto& position = ops.position_state(k_idx);
-            auto cheby = make_chebyshev(state);
+        if (gamma_state != nullptr) {
+            auto cheby = make_chebyshev(*gamma_state);
+            const auto& first_lattice_moment = ops.first_lattice_moment_state(gamma_k_idx);
+            const auto& moment_axis = select_axis_data(first_lattice_moment, axis_idx);
+            const bool periodic_axis = static_cast<bool>(moment_axis.first_moment);
 
-            std::vector<double> msd_k;
-            std::vector<double> energy_k;
+            auto run_msd_for_sample = [&](const auto& sample) {
+                if (periodic_axis) {
+                    if (ops.has_overlap()) {
+                        throw std::runtime_error(
+                            "compute_msd_spectrum periodic MSD currently supports orthogonal systems only.");
+                    }
+                    const auto& position = ops.position_state(gamma_k_idx);
+                    const auto& position_axis = select_axis_data(position, axis_idx);
+                    if (!position_axis.orthogonal_diagonal) {
+                        throw std::runtime_error("Orthogonal diagonal position data is missing for affine MSD.");
+                    }
+
+                    // MSD is defined from the Gamma-point wavepacket evolution. For periodic
+                    // axes we switch to the affine route, where the first lattice moment
+                    // accounts for wrap-around contributions and the orthogonal diagonal
+                    // position provides the intra-cell coordinate.
+                    rsatb::calc::corr_msd(
+                        *cheby,
+                        *moment_axis.first_moment,
+                        *position_axis.orthogonal_diagonal,
+                        sample,
+                        n_steps,
+                        dt_fs,
+                        n_kpm,
+                        local_msd,
+                        local_energy,
+                        verbose_);
+                    return;
+                }
+
+                if (!ops.has_position()) {
+                    throw std::runtime_error("compute_msd_spectrum requires a position-capable model/operator setup.");
+                }
+                const auto& position = ops.position_state(gamma_k_idx);
+                const auto& position_axis = select_axis_data(position, axis_idx);
+                if (ops.has_overlap()) {
+                    if (!position_axis.matrix) {
+                        throw std::runtime_error("Explicit position matrix data is missing for MSD.");
+                    }
+                    // Open-boundary MSD also uses the Gamma-point Hamiltonian. With overlap the
+                    // position operator is not diagonal in the working basis, so we use the
+                    // explicit real-space matrix route.
+                    rsatb::calc::corr_msd(
+                        *cheby,
+                        *position_axis.matrix,
+                        sample,
+                        n_steps,
+                        dt_fs,
+                        n_kpm,
+                        local_msd,
+                        local_energy,
+                        verbose_);
+                    return;
+                }
+
+                if (!position_axis.orthogonal_diagonal) {
+                    throw std::runtime_error("Orthogonal diagonal position data is missing for MSD.");
+                }
+
+                // Open-boundary orthogonal MSD still runs at Gamma; the route switch here is
+                // only about how the position operator is represented, not about which k-point
+                // is used.
+                rsatb::calc::corr_msd(
+                    *cheby,
+                    *position_axis.orthogonal_diagonal,
+                    sample,
+                    n_steps,
+                    dt_fs,
+                    n_kpm,
+                    local_msd,
+                    local_energy,
+                    verbose_);
+            };
+
             if (sampling_.nsamples == 1) {
-                auto* op = select_axis_matrix(position, axis);
-                rsatb::calc::corr_msd(*cheby, *op, *sampling_.sample_vec, n_steps, dt_fs, n_kpm, msd_k, energy_k, verbose_);
+                run_msd_for_sample(*sampling_.sample_vec);
             } else {
-                auto* op = select_axis_matrix(position, axis);
-                rsatb::calc::corr_msd(*cheby, *op, *sampling_.sample_multi_vec, n_steps, dt_fs, n_kpm, msd_k, energy_k, verbose_);
+                run_msd_for_sample(*sampling_.sample_multi_vec);
             }
-
-            if (local_energy.empty()) {
-                local_energy = energy_k;
-            }
-
-            const size_t offset = static_cast<size_t>(k_idx) * per_k_size;
-            std::copy(msd_k.begin(), msd_k.end(), local_msd.begin() + offset);
         }
 
         msd_out.assign(local_msd.size(), 0.0);
         if (master_comm_ != MPI_COMM_NULL) {
             MPI_Allreduce(local_msd.data(), msd_out.data(), static_cast<int>(local_msd.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
+        } else {
+            msd_out = local_msd;
         }
-        MPI_Bcast(msd_out.data(), static_cast<int>(msd_out.size()), MPI_DOUBLE, 0, sub_comm_);
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(msd_out.data(), static_cast<int>(msd_out.size()), MPI_DOUBLE, 0, sub_comm_);
+        }
 
-        energy_out.resize(n_kpm, 0.0);
-        if (master_comm_ != MPI_COMM_NULL && !local_energy.empty()) {
+        energy_out.assign(static_cast<size_t>(n_kpm), 0.0);
+        if (!local_energy.empty()) {
             energy_out = local_energy;
         }
-        MPI_Bcast(energy_out.data(), n_kpm, MPI_DOUBLE, 0, sub_comm_);
+        if (master_comm_ != MPI_COMM_NULL) {
+            std::vector<double> reduced_energy(static_cast<size_t>(n_kpm), 0.0);
+            MPI_Allreduce(
+                energy_out.data(),
+                reduced_energy.data(),
+                n_kpm,
+                MPI_DOUBLE,
+                MPI_SUM,
+                master_comm_);
+            energy_out.swap(reduced_energy);
+        }
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(energy_out.data(), n_kpm, MPI_DOUBLE, 0, sub_comm_);
+        }
 
         time_out.resize(static_cast<size_t>(n_steps + 1), 0.0);
         for (int step = 0; step <= n_steps; ++step) {
@@ -559,6 +658,10 @@ public:
         return atomic_data_.get();
     }
 
+    const std::vector<std::string>& type_symbols() const {
+        return type_symbols_;
+    }
+
 private:
     struct SamplingState {
         int nsamples = 1;
@@ -586,18 +689,28 @@ private:
     };
 
     void init_comms() {
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        if (!initialized || world_comm_ == MPI_COMM_NULL) {
+            world_rank_ = 0;
+            world_size_ = 1;
+            sub_rank_ = 0;
+            sub_size_ = 1;
+            sub_comm_ = MPI_COMM_NULL;
+            master_comm_ = MPI_COMM_NULL;
+            return;
+        }
+
         MPI_Comm_rank(world_comm_, &world_rank_);
         MPI_Comm_size(world_comm_, &world_size_);
 
         if (npar_ > world_size_) npar_ = world_size_;
 
         int color = (world_rank_ * npar_) / world_size_;
-        std::cerr << "Rank " << world_rank_ << " init_comms: npar=" << npar_ << " size=" << world_size_ << " color=" << color << std::endl;
         MPI_Comm_split(world_comm_, color, world_rank_, &sub_comm_);
         
         MPI_Comm_rank(sub_comm_, &sub_rank_);
         MPI_Comm_size(sub_comm_, &sub_size_);
-        std::cerr << "Rank " << world_rank_ << " sub_comm size=" << sub_size_ << std::endl;
         
         int master_color = (sub_rank_ == 0) ? 0 : MPI_UNDEFINED;
         MPI_Comm_split(world_comm_, master_color, world_rank_, &master_comm_);
@@ -609,6 +722,78 @@ private:
         // int color = (world_rank_ * npar_) / world_size_;
         // int io_unit = (sub_rank_ == 0 && color == 0) ? 6 : 0; 
         // c_dbcsr_init_lib(sub_comm_, &io_unit);
+    }
+
+    backend::OperatorRuntimeContext make_operator_runtime_context() const {
+        backend::OperatorRuntimeContext runtime;
+        runtime.npar = npar_;
+        runtime.world_rank = world_rank_;
+        runtime.world_size = world_size_;
+        runtime.master_comm = master_comm_;
+        return runtime;
+    }
+
+    model::SetupOptions normalize_setup_options(model::SetupOptions options) const {
+        if (options.kpoints.empty()) {
+            options.kpoints = {{0.0, 0.0, 0.0}};
+        }
+        if (options.nsamples < 1) {
+            options.nsamples = 1;
+        }
+        return options;
+    }
+
+    void validate_pairwise_model_setup(
+        const backend::SKTBModel& sktb_model,
+        const std::string& model_name,
+        bool require_overlap = false
+    ) const {
+        if (!sktb_model.enabled()) {
+            return;
+        }
+        if (require_overlap && !sktb_model.has_overlap) {
+            throw std::runtime_error(model_name + " native setup requires overlap parameterization.");
+        }
+
+        const auto prepared = backend::prepare_sktb_atomic_data(sktb_model);
+
+        if (prepared.type_norb.size() != atomic_data_->type_norb.size()) {
+            throw std::runtime_error(model_name + " basis/type count does not match the current AtomicData.");
+        }
+        for (size_t type = 0; type < prepared.type_norb.size(); ++type) {
+            if (prepared.type_norb[type] != atomic_data_->type_norb[type]) {
+                throw std::runtime_error(
+                    model_name + " basis-derived orbital count does not match AtomicData for species " +
+                    prepared.type_symbols[type] + ".");
+            }
+        }
+
+        if (r_max_per_type_.empty()) {
+            return;
+        }
+        if (r_max_per_type_.size() != prepared.r_max_per_type.size()) {
+            throw std::runtime_error("Stored AtomicData cutoffs do not match the " + model_name + " type count.");
+        }
+        for (size_t type = 0; type < prepared.r_max_per_type.size(); ++type) {
+            if (r_max_per_type_[type] + 1e-12 < prepared.r_max_per_type[type]) {
+                throw std::runtime_error(
+                    "Current AtomicData graph cutoff is too small for " + model_name + " species " +
+                    prepared.type_symbols[type] + ".");
+            }
+        }
+    }
+
+    void validate_model_setup(const model::AnyModelConfig& model_config) const {
+        std::visit(
+            [&](const auto& cfg) {
+                using Config = std::decay_t<decltype(cfg)>;
+                if constexpr (std::is_same_v<Config, model::SKTBModelConfig>) {
+                    validate_pairwise_model_setup(cfg.native, "SKTB");
+                } else if constexpr (std::is_same_v<Config, model::DFTBModelConfig>) {
+                    validate_pairwise_model_setup(cfg.native, "DFTB", true);
+                }
+            },
+            model_config);
     }
 
     backend::OperatorSet& require_operators() {
@@ -647,11 +832,63 @@ private:
         return std::make_unique<Chebyshev<Scalar>>(*Hk, ops.emin(), ops.emax(), verbose_);
     }
 
-    static Matrix* select_axis_matrix(const backend::PositionTriplet& position, const std::string& axis) {
-        if (axis == "x") return position.x.get();
-        if (axis == "y") return position.y.get();
-        if (axis == "z") return position.z.get();
+    static const backend::PositionAxisData& select_axis_data(
+        const backend::PositionTriplet& position,
+        int axis_idx
+    ) {
+        if (axis_idx == 0) return position.x;
+        if (axis_idx == 1) return position.y;
+        if (axis_idx == 2) return position.z;
         throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
+    }
+
+    static const backend::FirstLatticeMomentAxisData& select_axis_data(
+        const backend::FirstLatticeMomentTriplet& first_lattice_moment,
+        int axis_idx
+    ) {
+        if (axis_idx == 0) return first_lattice_moment.x;
+        if (axis_idx == 1) return first_lattice_moment.y;
+        if (axis_idx == 2) return first_lattice_moment.z;
+        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
+    }
+
+    static int axis_to_index(const std::string& axis) {
+        if (axis == "x") return 0;
+        if (axis == "y") return 1;
+        if (axis == "z") return 2;
+        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
+    }
+
+    static bool is_gamma_kpoint(const std::vector<double>& kpoint, double tol = 1e-12) {
+        for (double value : kpoint) {
+            if (std::abs(value) > tol) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    int select_gamma_kpoint_index(const backend::OperatorSet& ops) const {
+        int local_gamma_k_idx = ops.global_nk();
+        for (const auto& kp : ops.local_kpoints()) {
+            if (is_gamma_kpoint(kp.second)) {
+                local_gamma_k_idx = std::min(local_gamma_k_idx, kp.first);
+            }
+        }
+
+        int global_gamma_k_idx = local_gamma_k_idx;
+        if (master_comm_ != MPI_COMM_NULL) {
+            MPI_Allreduce(&local_gamma_k_idx, &global_gamma_k_idx, 1, MPI_INT, MPI_MIN, master_comm_);
+        }
+        if (sub_comm_ != MPI_COMM_NULL) {
+            MPI_Bcast(&global_gamma_k_idx, 1, MPI_INT, 0, sub_comm_);
+        }
+
+        if (global_gamma_k_idx >= ops.global_nk()) {
+            throw std::runtime_error(
+                "compute_msd_spectrum requires a Gamma-point in setup.");
+        }
+        return global_gamma_k_idx;
     }
 
     MPI_Comm world_comm_;
@@ -665,6 +902,8 @@ private:
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<backend::OperatorSet> operators_;
     SamplingState sampling_;
+    std::vector<std::string> type_symbols_;
+    std::vector<double> r_max_per_type_;
 };
 
 } // namespace rsatb

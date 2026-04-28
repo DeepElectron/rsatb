@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
     BlockSpMat<double> S_exp(&graph_S);
     auto func = [](double x) { return std::exp(-x); };
     
-    graph_matrix_function(S, &S_exp, std::function<double(double)>(func), "dense", true);
+    vbcsr::graph_matrix_function(S, &S_exp, std::function<double(double)>(func), "dense", true);
     
     // 4. Verify: S_exp should be diag(exp(-1), exp(-2), ...)
     // Since S is diagonal, the result should be diagonal (approximately, due to numerical noise/method)
@@ -77,12 +77,12 @@ int main(int argc, char** argv) {
         
         // Find diagonal block (gid, gid)
         // We need to look into S_exp structure
-        int start = S_exp.row_ptr[i];
-        int end = S_exp.row_ptr[i+1];
+        int start = S_exp.row_ptr()[i];
+        int end = S_exp.row_ptr()[i+1];
         
         bool found = false;
         for (int k = start; k < end; ++k) {
-            int col_lid = S_exp.col_ind[k];
+            int col_lid = S_exp.col_ind()[k];
             int col_gid = graph_S.get_global_index(col_lid);
             
             if (col_gid == gid) {

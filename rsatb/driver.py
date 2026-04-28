@@ -1,6 +1,334 @@
 import _rsatb
 import numpy as np
 import scipy.signal as sp
+from dataclasses import dataclass, field
+
+
+def _drop_none_values(data):
+    return {key: value for key, value in data.items() if value is not None}
+
+
+@dataclass
+class PreconditionerOptions:
+    mode: str = "H/S"
+    tol: float = 1e-7
+    sptol: float = 1e-5
+    maxiter: int = 20
+    method: str = "graph"
+
+    def to_dict(self):
+        return {
+            "mode": self.mode,
+            "tol": self.tol,
+            "sptol": self.sptol,
+            "maxiter": self.maxiter,
+            "method": self.method,
+        }
+
+
+@dataclass
+class SetupOptions:
+    kpoints: list = field(default_factory=lambda: [[0.0, 0.0, 0.0]])
+    nsamples: int = 1
+    compute_bounds: bool = True
+    preconditioner: PreconditionerOptions = field(default_factory=PreconditionerOptions)
+
+    def to_dict(self):
+        return {
+            "kpoints": self.kpoints,
+            "nsamples": self.nsamples,
+            "compute_bounds": self.compute_bounds,
+            "preconditioner": self.preconditioner.to_dict(),
+        }
+
+
+@dataclass
+class Hdf5Input:
+    filename: str
+    lspinorb: bool = False
+    nspin: int = 1
+    noncolin: bool = False
+
+    def to_dict(self):
+        return {
+            "filename": self.filename,
+            "lspinorb": self.lspinorb,
+            "nspin": self.nspin,
+            "noncolin": self.noncolin,
+        }
+
+
+@dataclass
+class AtomicSpec:
+    type_symbols: list
+    type_norb: list
+    r_max_per_type: list
+
+
+def _pairwise_atomic_spec_from_prepared(prepared):
+    return AtomicSpec(
+        type_symbols=list(prepared["type_symbols"]),
+        type_norb=list(prepared["type_norb"]),
+        r_max_per_type=list(prepared["r_max_per_type"]),
+    )
+
+
+def _require_pairwise_native_config(kind, native):
+    if not native:
+        raise ValueError(f"{kind} atomic preparation requires a native pairwise model definition.")
+    return native
+
+
+def sk_spline(r, values, r_cut=None):
+    distances = [float(value) for value in r]
+    radial_values = [float(value) for value in values]
+    if not distances:
+        raise ValueError("sk_spline requires at least one radial distance.")
+    if len(distances) != len(radial_values):
+        raise ValueError("sk_spline requires equally sized r and values arrays.")
+    return {
+        "kind": "spline",
+        "r": distances,
+        "values": radial_values,
+        "r_cut": float(max(distances) if r_cut is None else r_cut),
+    }
+
+
+def sk_exp_poly(coeffs, r_cut, lambda_value=0.0, r_on=0.0):
+    return {
+        "kind": "exp_poly",
+        "coeffs": [float(value) for value in coeffs],
+        "lambda": float(lambda_value),
+        "r_on": float(r_on),
+        "r_cut": float(r_cut),
+    }
+
+
+def _matrix_key(value):
+    key = str(value).strip().lower()
+    if key in ("h", "hamiltonian"):
+        return "H"
+    if key in ("s", "overlap"):
+        return "S"
+    return None
+
+
+def _radial_config(value):
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    return dict(value)
+
+
+def _pair_species(value):
+    if isinstance(value, str):
+        parts = [part.strip() for part in value.replace("->", "-").split("-") if part.strip()]
+    else:
+        parts = list(value)
+    if len(parts) != 2:
+        raise ValueError("SKTB pair keys must contain exactly two species labels.")
+    return [str(parts[0]), str(parts[1])]
+
+
+def _channel_name(shell_pair, channel):
+    shell = str(shell_pair).strip().lower().replace("-", "").replace("_", "")
+    name = str(channel).strip().lower()
+    return f"{shell}_{name}"
+
+
+def _looks_like_matrix_group(data):
+    return bool(data) and all(_matrix_key(key) is not None for key in data.keys())
+
+
+def _split_onsite(onsite):
+    if onsite is None:
+        return {}, None
+    onsite = dict(onsite)
+    if _looks_like_matrix_group(onsite):
+        result = {"H": {}, "S": None}
+        for key, value in onsite.items():
+            result[_matrix_key(key)] = dict(value)
+        return result["H"], result["S"]
+    return onsite, None
+
+
+def _lower_pair_channels(shells):
+    channels = {}
+    for shell_pair, shell_channels in dict(shells).items():
+        for channel, radial in dict(shell_channels).items():
+            channels[_channel_name(shell_pair, channel)] = _radial_config(radial)
+    return channels
+
+
+def _split_pairs(pairs):
+    result = {"H": [], "S": []}
+    if pairs is None:
+        return result
+    if isinstance(pairs, list):
+        result["H"] = list(pairs)
+        return result
+
+    for species_key, pair_data in dict(pairs).items():
+        species = _pair_species(species_key)
+        pair_data = dict(pair_data)
+        matrix_groups = pair_data if _looks_like_matrix_group(pair_data) else {"H": pair_data}
+        for key, shells in matrix_groups.items():
+            matrix = _matrix_key(key)
+            if matrix is None:
+                raise ValueError(f"Unsupported SKTB pair matrix key: {key}")
+            channels = _lower_pair_channels(shells)
+            if channels:
+                result[matrix].append({"species": species, "channels": channels})
+    return result
+
+
+def _build_sktb_native_config(basis, hamiltonian=None, overlap=None, onsite=None, pairs=None):
+    if hamiltonian is not None and (onsite is not None or pairs is not None):
+        raise ValueError("Use either legacy hamiltonian/overlap input or new onsite/pairs input, not both.")
+    if hamiltonian is not None:
+        native = {"basis": basis, "hamiltonian": hamiltonian}
+        if overlap is not None:
+            native["overlap"] = overlap
+        return native
+
+    h_onsite, s_onsite = _split_onsite(onsite)
+    split_pairs = _split_pairs(pairs)
+    native = {
+        "basis": basis,
+        "hamiltonian": {
+            "onsite": h_onsite,
+            "pairs": split_pairs["H"],
+        },
+    }
+    if s_onsite is not None or split_pairs["S"]:
+        native["overlap"] = {
+            "onsite": {} if s_onsite is None else s_onsite,
+            "pairs": split_pairs["S"],
+        }
+    if overlap is not None:
+        native["overlap"] = overlap
+    return native
+
+
+@dataclass
+class LCAOIntegralInput:
+    orb_names: list = field(default_factory=list)
+    orb_dir: str = ""
+    psd_names: list = field(default_factory=list)
+    psd_dir: str = ""
+    nspin: int = 1
+    lspinorb: bool = False
+    noncolin: bool = False
+    log_file: str = "op2c.log"
+
+    def to_dict(self):
+        return {
+            "orb_names": list(self.orb_names),
+            "orb_dir": self.orb_dir,
+            "psd_names": list(self.psd_names),
+            "psd_dir": self.psd_dir,
+            "nspin": self.nspin,
+            "lspinorb": self.lspinorb,
+            "noncolin": self.noncolin,
+            "log_file": self.log_file,
+        }
+
+
+class LCAOModel:
+    def __init__(self, input=None, integrals=None):
+        self.input = input
+        self.integrals = integrals if integrals is not None else LCAOIntegralInput()
+
+    @classmethod
+    def hdf5(cls, filename, integrals=None, **kwargs):
+        return cls(input=Hdf5Input(filename, **kwargs), integrals=integrals)
+
+    def to_dict(self):
+        result = {"kind": "lcao"}
+        if self.input is not None:
+            result["input"] = self.input.to_dict()
+        if self.integrals is not None:
+            result["integrals"] = self.integrals.to_dict()
+        return result
+
+
+class SKTBModel:
+    def __init__(self, native=None, input=None):
+        self.native = {} if native is None else dict(native)
+        self.input = input
+
+    @classmethod
+    def native_model(cls, basis, hamiltonian=None, overlap=None, input=None, onsite=None, pairs=None):
+        native = _build_sktb_native_config(
+            basis=basis,
+            hamiltonian=hamiltonian,
+            overlap=overlap,
+            onsite=onsite,
+            pairs=pairs,
+        )
+        return cls(native=native, input=input)
+
+    native = native_model
+
+    @classmethod
+    def hdf5(cls, filename, native=None, **kwargs):
+        return cls(native=native, input=Hdf5Input(filename, **kwargs))
+
+    def prepare_atomic_spec_from_file(self, filename):
+        native = _require_pairwise_native_config("SKTB", self.native)
+        prepared = _rsatb._prepare_sktb_atomic_spec_from_file(filename, native)
+        return _pairwise_atomic_spec_from_prepared(prepared)
+
+    def prepare_atomic_spec_from_atomic_numbers(self, z):
+        native = _require_pairwise_native_config("SKTB", self.native)
+        prepared = _rsatb._prepare_sktb_atomic_spec_from_atomic_numbers(z, native)
+        return _pairwise_atomic_spec_from_prepared(prepared)
+
+    def to_dict(self):
+        result = {"kind": "sktb"}
+        if self.input is not None:
+            result["input"] = self.input.to_dict()
+        if self.native:
+            result["native"] = self.native
+        return result
+
+
+class DFTBModel:
+    def __init__(self, native=None, input=None):
+        self.native = {} if native is None else dict(native)
+        self.input = input
+
+    @classmethod
+    def native_model(cls, basis, hamiltonian, overlap, input=None):
+        native = {
+            "basis": basis,
+            "hamiltonian": hamiltonian,
+            "overlap": overlap,
+        }
+        return cls(native=native, input=input)
+
+    native = native_model
+
+    @classmethod
+    def hdf5(cls, filename, native=None, **kwargs):
+        return cls(native=native, input=Hdf5Input(filename, **kwargs))
+
+    def prepare_atomic_spec_from_file(self, filename):
+        native = _require_pairwise_native_config("DFTB", self.native)
+        prepared = _rsatb._prepare_sktb_atomic_spec_from_file(filename, native)
+        return _pairwise_atomic_spec_from_prepared(prepared)
+
+    def prepare_atomic_spec_from_atomic_numbers(self, z):
+        native = _require_pairwise_native_config("DFTB", self.native)
+        prepared = _rsatb._prepare_sktb_atomic_spec_from_atomic_numbers(z, native)
+        return _pairwise_atomic_spec_from_prepared(prepared)
+
+    def to_dict(self):
+        result = {"kind": "dftb"}
+        if self.input is not None:
+            result["input"] = self.input.to_dict()
+        if self.native:
+            result["native"] = self.native
+        return result
 
 class RSATB:
     """
@@ -46,7 +374,7 @@ class RSATB:
     @classmethod
     def from_raw_data(cls, npar, n_atom, N_atom, atom_offset, n_edge, N_edge, 
                       atom_index, atom_type, edge_index, type_norb, edge_shift_vec, 
-                      cell, pos, verbose=True):
+                      cell, pos, verbose=True, type_symbols=None):
         """
         Initialize RSATB from raw arrays (matching the pointer-based C++ constructor).
 
@@ -61,6 +389,8 @@ class RSATB:
             atom_type (array): Types of atoms.
             edge_index (array): Indices of edges.
             type_norb (array): Number of orbitals per type.
+            type_symbols (list of str, optional): Type-index to species-symbol mapping.
+                Provide this when the instance will later be used with SKTB setup.
             edge_shift_vec (array): Shift vectors for edges.
             cell (array): Unit cell.
             pos (array): Atomic positions.
@@ -72,36 +402,49 @@ class RSATB:
         edge_shift_vec = np.ascontiguousarray(edge_shift_vec, dtype=np.int32)
         cell = np.ascontiguousarray(cell, dtype=np.float64)
         pos = np.ascontiguousarray(pos, dtype=np.float64)
-        
+
+        resolved_type_symbols = [] if type_symbols is None else list(type_symbols)
         cpp_obj = _rsatb.RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
-                               atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
-                               cell, pos, verbose)
+                               atom_index, atom_type, edge_index, type_norb, resolved_type_symbols,
+                               edge_shift_vec, cell, pos, verbose)
         return cls(cpp_obj)
 
-    def setup(self, Hfile, kpoints, orb_names=None, orb_dirs="", psd_names=None, psd_dirs="", tol=1e-7, sptol=1e-5, maxiter=20, method="graph", precond="H/S", nsamples=1):
+    def setup_model(self, model, options=None):
         """
-        Setup the RSATB calculation.
+        Setup the RSATB calculation from typed model/options objects.
 
         Args:
-            Hfile (str): Path to the Hamiltonian file.
-            kpoints (list of list of float): K-points for the calculation.
-            orb_names (list of str, optional): Names of the orbitals.
-            orb_dirs (str, optional): Directory containing orbital files.
-            psd_names (list of str, optional): Names of the pseudopotentials.
-            psd_dirs (str, optional): Directory containing pseudopotential files.
-            precond (str, optional): Preconditioner type. Defaults to "H/S".
-            nsamples (int, optional): Number of samples for random state method. Defaults to 1.
+            model: One of `LCAOModel`, `SKTBModel`, or `DFTBModel`.
+            options (SetupOptions, optional): Shared setup options.
         """
-        if orb_names is None: orb_names = []
-        if psd_names is None: psd_names = []
-        self._cpp_obj.setup(Hfile, kpoints, orb_names, orb_dirs, psd_names, psd_dirs, tol, sptol, maxiter, method, precond, nsamples)
+        if options is None:
+            options = SetupOptions()
+        self._cpp_obj.setup_model(model.to_dict(), options.to_dict())
+
+    def setup_lcao(self, model, options=None):
+        if options is None:
+            options = SetupOptions()
+        self._cpp_obj.setup_lcao(model.to_dict(), options.to_dict())
+
+    def setup_sktb(self, model, options=None):
+        """
+        Setup the RSATB calculation using a typed SKTB model helper.
+        """
+        if options is None:
+            options = SetupOptions()
+        self._cpp_obj.setup_sktb(model.to_dict(), options.to_dict())
+
+    def setup_dftb(self, model, options=None):
+        if options is None:
+            options = SetupOptions()
+        self._cpp_obj.setup_dftb(model.to_dict(), options.to_dict())
 
     def setup_config(self, config):
         """
-        Structured setup entry point for backend/operator options.
+        Structured setup entry point for operator/model options.
 
         Expected top-level keys include:
-            kpoints, nsamples, compute_bounds, sources, preconditioner, disorder
+            model, kpoints, nsamples, compute_bounds, preconditioner
         """
         self._cpp_obj.setup_config(config)
 
@@ -252,9 +595,12 @@ class RSATB:
         """
         Compute the mean-square displacement spectrum DeltaX^2(E, t).
 
+        MSD is evaluated from the configured Gamma-point state. The returned
+        array therefore always has a singleton leading k-axis.
+
         Returns:
             tuple: (msd, energy, time)
-                msd.shape == (n_k, n_steps + 1, n_kpm)
+                msd.shape == (1, n_steps + 1, n_kpm)
                 energy.shape == (n_kpm,)
                 time.shape == (n_steps + 1,)
         """
@@ -341,15 +687,6 @@ class RSATB:
             str: Kernel information.
         """
         return self._cpp_obj.get_kernel_info()
-
-    def get_operator_construction(self):
-        """
-        Deprecated compatibility shim. The new backend exposes an OperatorSet
-        in C++, but that object is not yet bound into Python.
-        """
-        raise AttributeError(
-            "OperatorConstruction is deprecated. The new OperatorSet accessor is currently only available in C++."
-        )
 
     def atomic_data(self):
         """

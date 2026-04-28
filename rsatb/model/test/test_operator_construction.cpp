@@ -277,9 +277,10 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     // Check if matrices have non-zero elements
     // We can check local values
     double norm_x = 0.0;
-    for(int i=0;i<Vx3.blk_handles.size();i++) {
-        const std::complex<double>* data = Vx3.arena.get_ptr(Vx3.blk_handles[i]);
-        for(int j=0;j<Vx3.blk_sizes[i];j++) {
+    for (size_t i = 0; i < Vx3.local_block_nnz(); ++i) {
+        const std::complex<double>* data = Vx3.block_data(static_cast<int>(i));
+        const size_t n_elem = Vx3.block_size_elements(static_cast<int>(i));
+        for (size_t j = 0; j < n_elem; ++j) {
             norm_x += std::abs(data[j]);
         }
     }
@@ -340,9 +341,10 @@ TEST(OperatorConstructionTest, TestBuildOverlap) {
     BlockSpMat<std::complex<double>>& S = *S_ptr;
     
     double norm_s = 0.0;
-    for(int i=0;i<S.blk_handles.size();i++) {
-        const std::complex<double>* data = S.arena.get_ptr(S.blk_handles[i]);
-        for(int j=0;j<S.blk_sizes[i];j++) {
+    for (size_t i = 0; i < S.local_block_nnz(); ++i) {
+        const std::complex<double>* data = S.block_data(static_cast<int>(i));
+        const size_t n_elem = S.block_size_elements(static_cast<int>(i));
+        for (size_t j = 0; j < n_elem; ++j) {
             norm_s += std::abs(data[j]);
         }
     }

@@ -9,7 +9,7 @@
 #include <iostream>
 #include <algorithm>
 #include <set>
-#include "vbcsr/core/graphmf.hpp"
+#include "graphmf.hpp"
 
 #if defined(RSATB_USE_OPENBLAS) || defined(VBCSR_USE_OPENBLAS)
 extern "C" void openblas_set_num_threads(int num_threads);
@@ -26,7 +26,7 @@ namespace calc {
 template <typename T, typename Kernel = DefaultKernel<T>>
 void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, bool verbose = false) {
     auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
-    graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "dense", verbose);
+    vbcsr::graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "dense", verbose);
 }
 // Matrix Inverse Square Root using Newton-Schulz Iteration
 // Computes S^{-1/2}

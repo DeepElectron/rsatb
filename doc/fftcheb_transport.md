@@ -29,7 +29,7 @@ Main files:
 - `rsatb/pybind_rsatb.cpp`
 - `rsatb/driver.py`
 - `rsatb/io/hdf5.hpp`
-- `rsatb/backend/operator_construction.hpp`
+- `rsatb/model/operator_construction.hpp`
 
 Rough responsibility split:
 

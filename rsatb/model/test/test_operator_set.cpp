@@ -10,6 +10,8 @@
 
 using namespace rsatb::backend;
 
+namespace rmodel = rsatb::model;
+
 namespace {
 
 std::unique_ptr<AtomicData> make_single_atom_data() {
@@ -85,8 +87,8 @@ std::string make_hdf5_hamiltonian_file(const std::complex<double>& value) {
 
 template <typename T>
 T first_block_value(const BlockSpMat<T>& matrix) {
-    EXPECT_FALSE(matrix.blk_handles.empty());
-    return matrix.arena.get_ptr(matrix.blk_handles[0])[0];
+    EXPECT_GT(matrix.local_block_nnz(), 0u);
+    return matrix.block_data(0)[0];
 }
 
 std::unique_ptr<ImageContainer<double>> make_scalar_h_images(AtomicData& atomic_data, double value) {
@@ -146,16 +148,6 @@ std::unique_ptr<ImageContainer<double>> make_periodic_scalar_h_images(AtomicData
     return make_periodic_scalar_h_images(atomic_data, onsite, hop, hop);
 }
 
-template <typename T>
-std::vector<T> first_block_values(const BlockSpMat<T>& matrix) {
-    EXPECT_FALSE(matrix.blk_handles.empty());
-    const int local_row = 0;
-    const int local_col = 0;
-    const int norb = matrix.graph->block_sizes[local_row];
-    const T* block = matrix.arena.get_ptr(matrix.blk_handles[0]);
-    return std::vector<T>(block, block + norb * norb);
-}
-
 class CountingVelocityBuilder : public IVelocityBuilder {
 public:
     explicit CountingVelocityBuilder(int* calls) : calls_(calls) {}
@@ -186,49 +178,42 @@ private:
     int* calls_;
 };
 
-class MockProvider : public IOperatorProvider {
-public:
-    explicit MockProvider(int* velocity_calls) : velocity_calls_(velocity_calls) {}
+rmodel::SetupOptions make_options(bool compute_bounds = false) {
+    rmodel::SetupOptions options;
+    options.kpoints = {{0.0, 0.0, 0.0}};
+    options.preconditioner.mode = "None";
+    options.compute_bounds = compute_bounds;
+    return options;
+}
 
-    std::string name() const override {
-        return "MockProvider";
-    }
-
-    ProviderCapabilities capabilities() const override {
-        return ProviderCapabilities{true, true, true, false};
-    }
-
-    void populate(AtomicData& atomic_data, OperatorSetBuilder& builder) const override {
-        builder.set_hamiltonian_images(make_scalar_h_images(atomic_data, 2.5));
-        builder.set_overlap_images(make_scalar_s_images(atomic_data, 1.5));
-        builder.set_velocity_builder(std::make_unique<CountingVelocityBuilder>(velocity_calls_));
-    }
-
-private:
-    int* velocity_calls_;
-};
-
-} // namespace
-
-TEST(OperatorSetTest, Hdf5ProviderBuildsHamiltonianAndBounds) {
-    auto atomic_data = make_single_atom_data();
-    const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(4.0, 0.0));
-
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.sources.hdf5.filename = path;
-    config.preconditioner.mode = "None";
-    config.compute_bounds = true;
-
+OperatorRuntimeContext make_runtime() {
     OperatorRuntimeContext runtime;
     runtime.npar = 1;
     runtime.world_rank = 0;
     runtime.world_size = 1;
+    return runtime;
+}
 
-    auto operators = build_operator_set(*atomic_data, MPI_COMM_WORLD, false, config, runtime);
+} // namespace
+
+TEST(OperatorSetTest, Hdf5ModelBuildsHamiltonianAndBounds) {
+    auto atomic_data = make_single_atom_data();
+    const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(4.0, 0.0));
+
+    rmodel::LCAOModelConfig model;
+    model.input = rmodel::Hdf5Input{path};
+    auto operators = build_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        rmodel::AnyModelConfig(model),
+        make_options(true),
+        {},
+        make_runtime());
 
     ASSERT_TRUE(operators->has_hamiltonian());
     ASSERT_FALSE(operators->has_overlap());
+    ASSERT_TRUE(operators->has_velocity());
     ASSERT_TRUE(operators->has_bounds());
     ASSERT_EQ(operators->global_nk(), 1);
 
@@ -241,25 +226,53 @@ TEST(OperatorSetTest, Hdf5ProviderBuildsHamiltonianAndBounds) {
     std::remove(path.c_str());
 }
 
-TEST(OperatorSetTest, MockProviderBuildsCachedVelocityLazily) {
+TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacements) {
+    auto atomic_data = make_periodic_single_atom_data(3.0, 1);
+
+    ModelArtifacts artifacts;
+    artifacts.capabilities.hamiltonian = true;
+    artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
+
+    auto operators = finalize_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        std::move(artifacts),
+        make_options(false),
+        make_runtime());
+    ASSERT_TRUE(operators->has_velocity());
+
+    const auto& velocity = operators->velocity_state(0);
+    ASSERT_GT(velocity.x->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.y->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.z->local_block_nnz(), 0u);
+
+    const std::complex<double> expected_vx(0.0, 3.0 * (0.75 - 0.25) / 0.6582119569);
+    EXPECT_NEAR(first_block_value(*velocity.x).real(), expected_vx.real(), 1e-10);
+    EXPECT_NEAR(first_block_value(*velocity.x).imag(), expected_vx.imag(), 1e-10);
+    EXPECT_NEAR(std::abs(first_block_value(*velocity.y)), 0.0, 1e-12);
+    EXPECT_NEAR(std::abs(first_block_value(*velocity.z)), 0.0, 1e-12);
+}
+
+TEST(OperatorSetTest, ManualArtifactsBuildCachedVelocityLazily) {
     auto atomic_data = make_single_atom_data();
     int velocity_calls = 0;
 
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = true;
+    ModelArtifacts artifacts;
+    artifacts.capabilities.hamiltonian = true;
+    artifacts.capabilities.overlap = true;
+    artifacts.capabilities.velocity = true;
+    artifacts.hamiltonian_images = make_scalar_h_images(*atomic_data, 2.5);
+    artifacts.overlap_images = make_scalar_s_images(*atomic_data, 1.5);
+    artifacts.velocity_builder = std::make_unique<CountingVelocityBuilder>(&velocity_calls);
 
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
-    MockProvider provider(&velocity_calls);
-    builder.note_capabilities(provider.capabilities());
-    provider.populate(*atomic_data, builder);
-    auto operators = builder.build(config, runtime);
+    auto operators = finalize_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        std::move(artifacts),
+        make_options(true),
+        make_runtime());
 
     ASSERT_TRUE(operators->has_hamiltonian());
     ASSERT_TRUE(operators->has_overlap());
@@ -292,20 +305,17 @@ TEST(OperatorSetTest, MockProviderBuildsCachedVelocityLazily) {
 TEST(OperatorSetTest, FirstLatticeMomentStateBuildsAndCachesAxisData) {
     auto atomic_data = make_periodic_single_atom_data(3.0, 1);
 
-    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
-    builder.set_hamiltonian_images(make_periodic_scalar_h_images(*atomic_data, 0.2, 0.5));
+    ModelArtifacts artifacts;
+    artifacts.capabilities.hamiltonian = true;
+    artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.5);
 
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = true;
-
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    auto operators = builder.build(config, runtime);
+    auto operators = finalize_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        std::move(artifacts),
+        make_options(true),
+        make_runtime());
     const auto& moment_first = operators->first_lattice_moment_state(0);
     const auto& moment_second = operators->first_lattice_moment_state(0);
     EXPECT_EQ(&moment_first, &moment_second);
@@ -330,20 +340,17 @@ TEST(OperatorSetTest, FirstLatticeMomentStateBuildsAndCachesAxisData) {
 TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
     auto atomic_data = make_periodic_single_atom_data(3.0, 1);
 
-    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
-    builder.set_hamiltonian_images(make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25));
+    ModelArtifacts artifacts;
+    artifacts.capabilities.hamiltonian = true;
+    artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
 
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = false;
-
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    auto operators = builder.build(config, runtime);
+    auto operators = finalize_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        std::move(artifacts),
+        make_options(false),
+        make_runtime());
     const auto& first_lattice_moment = operators->first_lattice_moment_state(0);
 
     ASSERT_TRUE(first_lattice_moment.x.first_moment);
@@ -353,19 +360,17 @@ TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
 TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbitals) {
     auto atomic_data = make_single_atom_data({1.25, -0.5, 0.75}, 2);
 
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = false;
+    ModelArtifacts artifacts;
+    artifacts.capabilities.hamiltonian = true;
+    artifacts.hamiltonian_images = make_diagonal_h_images(*atomic_data, {2.0, 3.0});
 
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    OperatorSetBuilder builder(*atomic_data, MPI_COMM_WORLD, false);
-    builder.set_hamiltonian_images(make_diagonal_h_images(*atomic_data, {2.0, 3.0}));
-    auto operators = builder.build(config, runtime);
+    auto operators = finalize_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        std::move(artifacts),
+        make_options(false),
+        make_runtime());
 
     ASSERT_TRUE(operators->has_position());
     const auto& position = operators->position_state(0);
@@ -384,7 +389,7 @@ TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbital
     EXPECT_EQ((*position.z.orthogonal_diagonal)[1], std::complex<double>(0.75, 0.0));
 }
 
-TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
+TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     auto atomic_data = std::unique_ptr<AtomicData>(
         AtomicData::from_file(
             "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp",
@@ -392,21 +397,21 @@ TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
             std::vector<int>{13},
             MPI_COMM_WORLD));
 
-    OperatorSetupConfig config;
-    config.kpoints = {{0.0, 0.0, 0.0}};
-    config.sources.op2c.orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
-    config.sources.op2c.orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    config.sources.op2c.psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
-    config.sources.op2c.psd_names = {"C_ONCV_PBE-1.0.upf"};
-    config.preconditioner.mode = "None";
-    config.compute_bounds = false;
+    rmodel::LCAOModelConfig model;
+    model.input = rmodel::Hdf5Input{"/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5"};
+    model.integrals.orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    model.integrals.orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
+    model.integrals.psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    model.integrals.psd_names = {"C_ONCV_PBE-1.0.upf"};
 
-    OperatorRuntimeContext runtime;
-    runtime.npar = 1;
-    runtime.world_rank = 0;
-    runtime.world_size = 1;
-
-    auto operators = build_operator_set(*atomic_data, MPI_COMM_WORLD, false, config, runtime);
+    auto operators = build_operator_set(
+        *atomic_data,
+        MPI_COMM_WORLD,
+        false,
+        rmodel::AnyModelConfig(model),
+        make_options(false),
+        {},
+        make_runtime());
 
     ASSERT_TRUE(operators->has_overlap());
     ASSERT_TRUE(operators->has_velocity());
@@ -414,9 +419,9 @@ TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
     ASSERT_NE(operators->overlap_k(0), nullptr);
 
     const auto& velocity = operators->velocity_state(0);
-    EXPECT_FALSE(velocity.x->blk_handles.empty());
-    EXPECT_FALSE(velocity.y->blk_handles.empty());
-    EXPECT_FALSE(velocity.z->blk_handles.empty());
+    EXPECT_GT(velocity.x->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.y->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.z->local_block_nnz(), 0u);
 
     const auto& position = operators->position_state(0);
     ASSERT_TRUE(position.x.matrix);
@@ -425,9 +430,9 @@ TEST(OperatorSetTest, Op2cProviderBuildsOverlapAndVelocityCapabilities) {
     ASSERT_TRUE(position.x.orthogonal_diagonal);
     ASSERT_TRUE(position.y.orthogonal_diagonal);
     ASSERT_TRUE(position.z.orthogonal_diagonal);
-    EXPECT_FALSE(position.x.matrix->blk_handles.empty());
-    EXPECT_FALSE(position.y.matrix->blk_handles.empty());
-    EXPECT_FALSE(position.z.matrix->blk_handles.empty());
+    EXPECT_GT(position.x.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(position.y.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(position.z.matrix->local_block_nnz(), 0u);
 }
 
 int main(int argc, char** argv) {

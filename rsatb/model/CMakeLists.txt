@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.15...4.0)
-project(backend LANGUAGES CXX Fortran C)
+project(model LANGUAGES CXX Fortran C)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
@@ -24,7 +24,14 @@ if (PROJECT_IS_TOP_LEVEL)
     add_subdirectory(../extern/op2c op2c_build)
 endif()
 
-add_library(backend OBJECT operator_construction.hpp operator_set.hpp)
+add_library(
+    backend OBJECT
+    setup.hpp
+    operator_construction.hpp
+    operator_set.hpp
+    sktb/sktb.hpp
+    sktb/sktb_construction.hpp
+)
 set_target_properties(backend PROPERTIES LINKER_LANGUAGE CXX)
 target_compile_features(backend PUBLIC cxx_std_17)
 target_compile_options(backend PUBLIC -mavx2 -mfma)
@@ -37,6 +44,8 @@ if(USE_OPENMP)
     target_link_libraries(backend PUBLIC OpenMP::OpenMP_CXX)
 endif()
 target_include_directories(backend PUBLIC 
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/sktb
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/primme/include
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
@@ -62,3 +71,10 @@ target_include_directories(test_operator_set PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
 )
 target_link_libraries(test_operator_set PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+
+add_executable(test_sktb sktb/test/test_sktb.cpp $<TARGET_OBJECTS:backend>)
+target_include_directories(test_sktb PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
+    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
+)
+target_link_libraries(test_sktb PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)

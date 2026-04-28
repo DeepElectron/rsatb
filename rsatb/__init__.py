@@ -14,4 +14,16 @@ if _build_dir.is_dir() and str(_build_dir) not in sys.path:
 
 sys.setdlopenflags(os.RTLD_LAZY)
 
-from .driver import RSATB
+from .driver import (
+    AtomicSpec,
+    RSATB,
+    DFTBModel,
+    Hdf5Input,
+    LCAOIntegralInput,
+    LCAOModel,
+    PreconditionerOptions,
+    SetupOptions,
+    SKTBModel,
+    sk_exp_poly,
+    sk_spline,
+)
