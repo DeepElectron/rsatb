@@ -98,14 +98,7 @@ public:
     }
     
     ~RSATB() {
-        // Destroy components that might hold DBCSR objects before finalization
-        sampling_.reset();
-        operators_.reset();
-        atomic_data_.reset();
-
-        // c_dbcsr_finalize_lib();
-        if (sub_comm_ != MPI_COMM_NULL) MPI_Comm_free(&sub_comm_);
-        if (master_comm_ != MPI_COMM_NULL) MPI_Comm_free(&master_comm_);
+        release_resources();
     }
 
 
@@ -722,6 +715,29 @@ private:
         // int color = (world_rank_ * npar_) / world_size_;
         // int io_unit = (sub_rank_ == 0 && color == 0) ? 6 : 0; 
         // c_dbcsr_init_lib(sub_comm_, &io_unit);
+    }
+
+    void release_resources() {
+        sampling_.reset();
+        operators_.reset();
+        atomic_data_.reset();
+
+        if (mpi_runtime_active()) {
+            if (sub_comm_ != MPI_COMM_NULL) MPI_Comm_free(&sub_comm_);
+            if (master_comm_ != MPI_COMM_NULL) MPI_Comm_free(&master_comm_);
+        }
+        sub_comm_ = MPI_COMM_NULL;
+        master_comm_ = MPI_COMM_NULL;
+    }
+
+    static bool mpi_runtime_active() {
+        int initialized = 0;
+        int finalized = 0;
+        MPI_Initialized(&initialized);
+        if (initialized) {
+            MPI_Finalized(&finalized);
+        }
+        return initialized && !finalized;
     }
 
     backend::OperatorRuntimeContext make_operator_runtime_context() const {
