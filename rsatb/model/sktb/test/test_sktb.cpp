@@ -295,8 +295,24 @@ TEST(SKTBTest, BasisExpansionAndAtomicPreparation) {
     EXPECT_EQ(prepared.type_norb[0], 1);
     EXPECT_EQ(prepared.type_norb[1], 9);
     ASSERT_EQ(prepared.r_max_per_type.size(), 2u);
-    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[0], 3.7);
-    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[1], 3.7);
+    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[0], 1.85);
+    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[1], 1.85);
+}
+
+TEST(SKTBTest, AtomicPreparationConvertsBondCutoffToAtomicRadius) {
+    SKTBInput config;
+    config.basis["C"] = {"pz"};
+    config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
+
+    SKPairInput pair;
+    pair.species = {"C", "C"};
+    pair.channels["pp_pi"] = constant_spline(-2.7, 8.26);
+    pair.channels["pp_sigma"] = constant_spline(0.3675, 8.26);
+    config.hamiltonian.pairs.push_back(pair);
+
+    const auto prepared = prepare_sktb_atomic_data_from_atomic_numbers({6, 6}, config);
+    ASSERT_EQ(prepared.r_max_per_type.size(), 1u);
+    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[0], 4.13);
 }
 
 TEST(SKTBTest, DuplicateBasisLabelsAreRejected) {

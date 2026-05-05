@@ -5,8 +5,10 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
 if (PROJECT_IS_TOP_LEVEL)
     find_package(MPI REQUIRED)
-    find_package(GTest REQUIRED)
     find_package(Threads REQUIRED)
+    if(RSATB_BUILD_TESTS)
+        find_package(GTest REQUIRED)
+    endif()
     
     # ParMETIS
     find_library(PARMETIS_LIB parmetis HINTS $ENV{CONDA_PREFIX}/lib)
@@ -39,6 +41,8 @@ target_compile_options(backend PUBLIC -mavx2 -mfma)
 target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads BLAS::BLAS LAPACK::LAPACK vbcsr)
 if(TARGET primme)
     target_link_libraries(backend PUBLIC primme)
+elseif(PRIMME_LIB)
+    target_link_libraries(backend PUBLIC ${PRIMME_LIB})
 endif()
 if(USE_OPENMP)
     target_link_libraries(backend PUBLIC OpenMP::OpenMP_CXX)
@@ -58,23 +62,25 @@ if(DEFINED CONDA_PREFIX)
 endif()
 
 
-add_executable(test_operator_construction test/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_operator_construction PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
-)
-target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+if(RSATB_BUILD_TESTS)
+    add_executable(test_operator_construction test/test_operator_construction.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_operator_construction PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
+    )
+    target_link_libraries(test_operator_construction PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
 
-add_executable(test_operator_set test/test_operator_set.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_operator_set PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
-)
-target_link_libraries(test_operator_set PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    add_executable(test_operator_set test/test_operator_set.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_operator_set PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
+    )
+    target_link_libraries(test_operator_set PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
 
-add_executable(test_sktb sktb/test/test_sktb.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_sktb PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
-    ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
-)
-target_link_libraries(test_sktb PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    add_executable(test_sktb sktb/test/test_sktb.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_sktb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
+    )
+    target_link_libraries(test_sktb PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+endif()

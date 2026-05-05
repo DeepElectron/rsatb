@@ -18,6 +18,7 @@ option(USE_OPENMP "Use OpenMP" ON)
 set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
 set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
 option(USE_ILP64 "Use 64-bit integers for BLAS/LAPACK" OFF)
+option(RSATB_BUILD_TESTS "Build rsatb C++ test executables" ON)
 
 # --- Dependencies ---
 include(FetchContent)
@@ -124,20 +125,22 @@ find_package(pybind11 CONFIG REQUIRED)
 # --- Local / Fetched Dependencies ---
 
 # GTest (FetchContent)
-find_package(GTest)
-if(NOT GTest_FOUND)
-  message(STATUS "GTest not found, fetching from source...")
-  FetchContent_Declare(
-    googletest
-    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
-  )
-  set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-  FetchContent_MakeAvailable(googletest)
-  if(TARGET gtest AND NOT TARGET GTest::gtest)
-      add_library(GTest::gtest ALIAS gtest)
-  endif()
-  if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
-      add_library(GTest::gtest_main ALIAS gtest_main)
+if(RSATB_BUILD_TESTS)
+  find_package(GTest)
+  if(NOT GTest_FOUND)
+    message(STATUS "GTest not found, fetching from source...")
+    FetchContent_Declare(
+      googletest
+      URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+    if(TARGET gtest AND NOT TARGET GTest::gtest)
+        add_library(GTest::gtest ALIAS gtest)
+    endif()
+    if(TARGET gtest_main AND NOT TARGET GTest::gtest_main)
+        add_library(GTest::gtest_main ALIAS gtest_main)
+    endif()
   endif()
 endif()
 
@@ -256,6 +259,7 @@ set(OP2C_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/op2c")
 
 if(EXISTS "${OP2C_SOURCE_DIR}/CMakeLists.txt")
     message(STATUS "Op2c sources found in extern/op2c, using existing sources")
+    add_subdirectory(${OP2C_SOURCE_DIR} ${CMAKE_BINARY_DIR}/extern/op2c)
 else()
     message(STATUS "Op2c not found, fetching from GitHub...")
     FetchContent_Declare(
@@ -273,7 +277,6 @@ list(APPEND math_libs FFTW::FFTW LAPACK::LAPACK BLAS::BLAS)
 # --- Subdirectories ---
 add_subdirectory(model)
 add_subdirectory(io)
-add_subdirectory(extern/op2c)
 
 # --- Targets ---
 
@@ -321,35 +324,37 @@ if(DEFINED CONDA_PREFIX)
 endif()
 
 
-# Executable: test_rsatb
-add_executable(test_rsatb test_rsatb.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_rsatb PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+if(RSATB_BUILD_TESTS)
+    # Executable: test_rsatb
+    add_executable(test_rsatb test_rsatb.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_rsatb PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_rsatb PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
-# Executable: test_fftcheb_transport
-add_executable(test_fftcheb_transport calc/test/test_fftcheb_transport.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_fftcheb_transport PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_fftcheb_transport PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+    # Executable: test_fftcheb_transport
+    add_executable(test_fftcheb_transport calc/test/test_fftcheb_transport.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_fftcheb_transport PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_fftcheb_transport PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
-# Executable: test_kpm_extensions
-add_executable(test_kpm_extensions calc/test/test_kpm_extensions.cpp)
-target_include_directories(test_kpm_extensions PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_kpm_extensions PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+    # Executable: test_kpm_extensions
+    add_executable(test_kpm_extensions calc/test/test_kpm_extensions.cpp)
+    target_include_directories(test_kpm_extensions PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_kpm_extensions PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
-# Executable: test_msd
-add_executable(test_msd calc/test/test_msd.cpp)
-target_include_directories(test_msd PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_msd PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+    # Executable: test_msd
+    add_executable(test_msd calc/test/test_msd.cpp)
+    target_include_directories(test_msd PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_msd PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
-# Executable: test_operator_api
-add_executable(test_operator_api test_operator_api.cpp $<TARGET_OBJECTS:backend>)
-target_include_directories(test_operator_api PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_operator_api PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+    # Executable: test_operator_api
+    add_executable(test_operator_api test_operator_api.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_operator_api PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_operator_api PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
-# Executable: test_hdf5_io
-add_executable(test_hdf5_io io/test.cpp)
-target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
-target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+    # Executable: test_hdf5_io
+    add_executable(test_hdf5_io io/test.cpp)
+    target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+endif()
 
 # Python Module: _rsatb
 pybind11_add_module(_rsatb pybind_rsatb.cpp)

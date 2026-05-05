@@ -790,11 +790,20 @@ private:
         if (r_max_per_type_.size() != prepared.r_max_per_type.size()) {
             throw std::runtime_error("Stored AtomicData cutoffs do not match the " + model_name + " type count.");
         }
-        for (size_t type = 0; type < prepared.r_max_per_type.size(); ++type) {
-            if (r_max_per_type_[type] + 1e-12 < prepared.r_max_per_type[type]) {
+
+        for (const auto& pair : sktb_model.atom_pairs) {
+            const double required_pair_cutoff = pair.max_cutoff();
+            if (required_pair_cutoff <= 0.0) {
+                continue;
+            }
+            const size_t row_type = static_cast<size_t>(pair.row_type);
+            const size_t col_type = static_cast<size_t>(pair.col_type);
+            const double available_pair_cutoff =
+                r_max_per_type_[row_type] + r_max_per_type_[col_type];
+            if (available_pair_cutoff + 1e-12 < required_pair_cutoff) {
                 throw std::runtime_error(
-                    "Current AtomicData graph cutoff is too small for " + model_name + " species " +
-                    prepared.type_symbols[type] + ".");
+                    "Current AtomicData graph cutoff is too small for " + model_name + " pair (" +
+                    prepared.type_symbols[row_type] + ", " + prepared.type_symbols[col_type] + ").");
             }
         }
     }

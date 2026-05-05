@@ -572,6 +572,23 @@ struct SKTBAtomicPreparation {
     std::vector<double> r_max_per_type;
 };
 
+/// Converts pair/bond cutoffs into AtomicData atom-wise cutoff radii.
+///
+/// AtomicData builds a graph edge for atom types `(i, j)` when
+/// `distance <= r_i + r_j`, while SKTB radial functions carry a direct bond
+/// cutoff.  The radius below is half of the largest bond cutoff touching each
+/// type, which is tight for single-species models and guarantees every SKTB
+/// pair cutoff is covered.
+inline std::vector<double> derive_atomwise_cutoff_radii(const SKTBModel& model) {
+    std::vector<double> radii(model.atom_types.size(), 0.0);
+    for (const auto& pair : model.atom_pairs) {
+        const double radius = 0.5 * pair.max_cutoff();
+        radii[pair.row_type] = std::max(radii[pair.row_type], radius);
+        radii[pair.col_type] = std::max(radii[pair.col_type], radius);
+    }
+    return radii;
+}
+
 /// Expands shell aliases such as `p` and `d` into an atom-type basis.
 inline SKAtomType build_atom_type_basis(const std::vector<std::string>& raw_labels, const std::string& species_symbol) {
     SKAtomType atom_type;
@@ -817,13 +834,7 @@ inline SKTBAtomicPreparation prepare_sktb_atomic_data(const SKTBModel& model) {
         prepared.type_norb.push_back(static_cast<int>(atom_type.orbitals.size()));
     }
 
-    prepared.r_max_per_type.assign(model.atom_types.size(), 0.0);
-    for (const auto& pair : model.atom_pairs) {
-        prepared.r_max_per_type[pair.row_type] =
-            std::max(prepared.r_max_per_type[pair.row_type], pair.max_cutoff());
-        prepared.r_max_per_type[pair.col_type] =
-            std::max(prepared.r_max_per_type[pair.col_type], pair.max_cutoff());
-    }
+    prepared.r_max_per_type = derive_atomwise_cutoff_radii(model);
 
     return prepared;
 }
