@@ -1,4 +1,5 @@
 #include "rsatb.hpp"
+#include "test_data_path.hpp"
 #include <gtest/gtest.h>
 #include <vector>
 #include <string>
@@ -46,7 +47,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // 1. Instantiate RSATB
     std::unique_ptr<RSATB> rsatb_inst;
 
-    const std::string vasp_file = "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp";
+    const std::string vasp_file = rsatb::test::data_path("diamond/diamond_sc111.vasp");
     const std::vector<double> r_max_per_type = {3.7};
     const std::vector<int> type_norb = {13};
     
@@ -62,12 +63,12 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // Buffers for merged data (must persist until RSATB is destroyed or at least constructed)
     
     // 2. Initialize Basis (needed for build_overlap)
-    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string psd_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
 
-    std::string Hpath = "/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5";
+    std::string Hpath = rsatb::test::data_path("diamond/C2.0/hamiltonians.h5");
 
     model::SetupOptions setup_options;
     setup_options.kpoints = kpoints;

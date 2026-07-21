@@ -36,10 +36,10 @@ inline double uniform_from_hash(std::uint64_t value) {
     return static_cast<double>(mantissa) * (1.0 / 9007199254740992.0);
 }
 
-template <typename T, typename Kernel = vbcsr::DefaultKernel<T>>
+template <typename T>
 void apply_anderson_disorder(
     vbcsr::atomic::AtomicData& atomic_data,
-    vbcsr::BlockSpMat<T, Kernel>& hamiltonian,
+    vbcsr::BlockSpMat<T>& hamiltonian,
     const DisorderConfig& config
 ) {
     int start = 0;
@@ -68,15 +68,18 @@ void apply_anderson_disorder(
                 static_cast<T>(disorder);
         }
 
+        // Diagonal-only block, so the layout tag is currently an identity either way;
+        // declare the canonical row-major so it stays correct if it ever gains
+        // off-diagonal entries.
         hamiltonian.update_local_block(
-            local_row, local_row, block.data(), norb, norb, vbcsr::AssemblyMode::ADD, vbcsr::MatrixLayout::ColMajor);
+            local_row, local_row, block.data(), norb, norb, vbcsr::AssemblyMode::ADD, vbcsr::MatrixLayout::RowMajor);
     }
 }
 
-template <typename T, typename Kernel = vbcsr::DefaultKernel<T>>
+template <typename T>
 void apply_disorder(
     vbcsr::atomic::AtomicData& atomic_data,
-    vbcsr::BlockSpMat<T, Kernel>& hamiltonian,
+    vbcsr::BlockSpMat<T>& hamiltonian,
     const DisorderConfig& config
 ) {
     if (!config.enabled()) {

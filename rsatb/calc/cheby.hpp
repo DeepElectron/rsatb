@@ -46,36 +46,36 @@ inline void timeprop_coeff(double time_step, double precision, bool forward,
 // Chebyshev Recurrence
 // Computes T_n(H_scaled) * v
 // H_scaled = (H - center) / half_width
-template <typename T, typename Kernel = DefaultKernel<T>>
+template <typename T>
 class Chebyshev {
 public:
-    BlockSpMat<T, Kernel>& H;
-    BlockSpMat<T, Kernel>* S = nullptr;
-    Preconditioner<T, Kernel>* M = nullptr;
+    BlockSpMat<T>& H;
+    BlockSpMat<T>* S = nullptr;
+    Preconditioner<T>* M = nullptr;
     rsatb::calc::PreconditionerType ptype = rsatb::calc::PreconditionerType::Left;
-    LinearSolver<T, Kernel> solver;
+    LinearSolver<T> solver;
     double center;
     double half_width;
 
-    Chebyshev(BlockSpMat<T, Kernel>& ham, double emin, double emax, bool verbose = false) 
+    Chebyshev(BlockSpMat<T>& ham, double emin, double emax, bool verbose = false) 
         : H(ham), S(nullptr), M(nullptr), solver(1e-8, 1000, verbose) {
         center = (emax + emin) / 2.0;
         half_width = (emax - emin) / 2.0;
     }
 
-    Chebyshev(BlockSpMat<T, Kernel>& ham, Preconditioner<T, Kernel>& pre, rsatb::calc::PreconditionerType type, double emin, double emax, bool verbose = false)
+    Chebyshev(BlockSpMat<T>& ham, Preconditioner<T>& pre, rsatb::calc::PreconditionerType type, double emin, double emax, bool verbose = false)
         : H(ham), S(nullptr), M(&pre), ptype(type), solver(1e-8, 1000, verbose) {
         center = (emax + emin) / 2.0;
         half_width = (emax - emin) / 2.0;
     }
 
-    Chebyshev(BlockSpMat<T, Kernel>& ham, BlockSpMat<T, Kernel>& ovp, double emin, double emax, bool verbose = false) 
+    Chebyshev(BlockSpMat<T>& ham, BlockSpMat<T>& ovp, double emin, double emax, bool verbose = false) 
         : H(ham), S(&ovp), M(nullptr), solver(1e-8, 1000, verbose) {
         center = (emax + emin) / 2.0;
         half_width = (emax - emin) / 2.0;
     }
 
-    Chebyshev(BlockSpMat<T, Kernel>& ham, BlockSpMat<T, Kernel>& ovp, Preconditioner<T, Kernel>& pre, rsatb::calc::PreconditionerType type, double emin, double emax, bool verbose = false) 
+    Chebyshev(BlockSpMat<T>& ham, BlockSpMat<T>& ovp, Preconditioner<T>& pre, rsatb::calc::PreconditionerType type, double emin, double emax, bool verbose = false) 
         : H(ham), S(&ovp), M(&pre), ptype(type), solver(1e-8, 1000, verbose) {
         center = (emax + emin) / 2.0;
         half_width = (emax - emin) / 2.0;

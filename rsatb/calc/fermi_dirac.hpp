@@ -35,8 +35,8 @@ inline double occupation_projector_func(double E, double beta, double mu) {
 }
 
 // Reimplementation of fermi_dirac_kpm using new backend
-template<typename T, typename Kernel, typename VectorType>
-void fermi_dirac_kpm(Chebyshev<T, Kernel>& cheby, 
+template<typename T, typename VectorType>
+void fermi_dirac_kpm(Chebyshev<T>& cheby, 
                      const VectorType& Psi_in, 
                      VectorType& Psi_out, 
                      double temp, 

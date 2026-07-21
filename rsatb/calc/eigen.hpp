@@ -20,17 +20,17 @@ namespace calc {
 
 using namespace rsatb::backend;
 
-template <typename T, typename Kernel = DefaultKernel<T>>
+template <typename T>
 class PrimmeEigenSolver {
 public:
     using Real = typename ScalarTraits<T>::real_type;
 
     // Context to pass to PRIMME callbacks
     struct Context {
-        BlockSpMat<T, Kernel>* H = nullptr;
-        BlockSpMat<T, Kernel>* S = nullptr;
-        Preconditioner<T, Kernel>* M = nullptr;
-        LinearSolver<T, Kernel>* solver = nullptr; // For S inversion
+        BlockSpMat<T>* H = nullptr;
+        BlockSpMat<T>* S = nullptr;
+        Preconditioner<T>* M = nullptr;
+        LinearSolver<T>* solver = nullptr; // For S inversion
         PreconditionerType pc_type = PreconditionerType::Left; // For composed operator
         
         // Multivector buffers for block operations
@@ -52,9 +52,9 @@ public:
     //    - Left: M H x = lambda x
     //    - Right: H M x = lambda x
     //    - Symmetric: M H M x = lambda x
-    void solve(BlockSpMat<T, Kernel>& H, 
-               BlockSpMat<T, Kernel>* S = nullptr, 
-               Preconditioner<T, Kernel>* M = nullptr, 
+    void solve(BlockSpMat<T>& H, 
+               BlockSpMat<T>* S = nullptr, 
+               Preconditioner<T>* M = nullptr, 
                int num_eigenvalues = 1, 
                primme_target target = primme_largest, 
                double tol = 1e-6, 
@@ -109,7 +109,7 @@ public:
         ctx.pc_type = pc_type;
         
         // Instantiate LinearSolver for S inversion if needed
-        LinearSolver<T, Kernel> linear_solver(tol * 0.1, 1000, false); 
+        LinearSolver<T> linear_solver(tol * 0.1, 1000, false); 
         if (S) {
             ctx.solver = &linear_solver;
         }
@@ -177,9 +177,9 @@ public:
     }
 
     // Helper to find largest eigenvalues
-    void solve_largest(BlockSpMat<T, Kernel>& H, 
-                       BlockSpMat<T, Kernel>* S, 
-                       Preconditioner<T, Kernel>* M,
+    void solve_largest(BlockSpMat<T>& H, 
+                       BlockSpMat<T>* S, 
+                       Preconditioner<T>* M,
                        int num, 
                        double tol, 
                        std::vector<Real>& evals, 
@@ -190,9 +190,9 @@ public:
         solve(H, S, M, num, primme_largest, tol, evals, evecs, verbose, pc_type, max_matvecs);
     }
 
-    void solve_smallest(BlockSpMat<T, Kernel>& H, 
-                        BlockSpMat<T, Kernel>* S, 
-                        Preconditioner<T, Kernel>* M,
+    void solve_smallest(BlockSpMat<T>& H, 
+                        BlockSpMat<T>* S, 
+                        Preconditioner<T>* M,
                         int num, 
                         double tol, 
                         std::vector<Real>& evals, 
@@ -204,9 +204,9 @@ public:
     }
 
     // Helper to find extremal eigenvalues (min and max) of H
-    void solve_extremal(BlockSpMat<T, Kernel>& H, 
-                        BlockSpMat<T, Kernel>* S, 
-                        Preconditioner<T, Kernel>* M,
+    void solve_extremal(BlockSpMat<T>& H, 
+                        BlockSpMat<T>* S, 
+                        Preconditioner<T>* M,
                         double tol, 
                         Real& emin, 
                         Real& emax, 
@@ -242,11 +242,14 @@ private:
         T* buf = static_cast<T*>(buffer);
         int n_local = mv->local_rows; // Assuming owned rows match nLocal
         
+        // PRIMME's buffer is column-major (n_local x blockSize); DistMultiVector is
+        // row-major, so this is a transposing copy rather than a per-column memcpy.
         #pragma omp parallel for
-        for (int c = 0; c < blockSize; ++c) {
-            T* dst = mv->col_data(c);
-            const T* src = buf + c * n_local;
-            std::memcpy(dst, src, n_local * sizeof(T));
+        for (int i = 0; i < n_local; ++i) {
+            T* dst = mv->row_data(i);
+            for (int c = 0; c < blockSize; ++c) {
+                dst[c] = buf[static_cast<size_t>(c) * n_local + i];
+            }
         }
     }
 
@@ -255,10 +258,11 @@ private:
         int n_local = mv->local_rows;
         
         #pragma omp parallel for
-        for (int c = 0; c < blockSize; ++c) {
-            T* dst = buf + c * n_local;
-            const T* src = mv->col_data(c);
-            std::memcpy(dst, src, n_local * sizeof(T));
+        for (int i = 0; i < n_local; ++i) {
+            const T* src = mv->row_data(i);
+            for (int c = 0; c < blockSize; ++c) {
+                buf[static_cast<size_t>(c) * n_local + i] = src[c];
+            }
         }
     }
 

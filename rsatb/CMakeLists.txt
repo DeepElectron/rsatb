@@ -20,6 +20,12 @@ set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
 option(USE_ILP64 "Use 64-bit integers for BLAS/LAPACK" OFF)
 option(RSATB_BUILD_TESTS "Build rsatb C++ test executables" ON)
 
+# Location of the test data tree, baked into the test binaries (see
+# test_data_path.hpp). Overridable at runtime with the same-named env var.
+set(RSATB_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../test/data"
+    CACHE PATH "Directory containing the rsatb test data tree")
+add_compile_definitions(RSATB_TEST_DATA_DIR="${RSATB_TEST_DATA_DIR}")
+
 # --- Dependencies ---
 include(FetchContent)
 
@@ -255,6 +261,23 @@ else()
 endif()
 
 # 5. Op2c (Use existing sources in extern/, or fetch if missing)
+#
+# Op2c hard-requires libmatio for its rescumat *_AtomicData.mat reader. rsatb
+# never reads that format, but op2c compiles io/rescumat_mat.cpp into nao_core
+# unconditionally and links MATIO::MATIO PUBLIC, so it is a build dependency of
+# rsatb too. Check it here: op2c's own FATAL_ERROR points users at the rescupp
+# environment, which is misleading in an rsatb build.
+find_path(RSATB_MATIO_INCLUDE_DIR NAMES matio.h HINTS ${CONDA_PREFIX}/include)
+find_library(RSATB_MATIO_LIBRARY NAMES matio HINTS ${CONDA_PREFIX}/lib)
+if(NOT RSATB_MATIO_INCLUDE_DIR OR NOT RSATB_MATIO_LIBRARY)
+    message(FATAL_ERROR
+        "libmatio not found, but it is required to build the bundled op2c.\n"
+        "  conda:           conda install -c conda-forge libmatio\n"
+        "  Compute Canada:  module load matio   (or build it into your venv)\n"
+        "Searched CONDA_PREFIX=${CONDA_PREFIX}.")
+endif()
+message(STATUS "Found libmatio (required by op2c): ${RSATB_MATIO_LIBRARY}")
+
 set(OP2C_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/op2c")
 
 if(EXISTS "${OP2C_SOURCE_DIR}/CMakeLists.txt")
@@ -354,6 +377,19 @@ if(RSATB_BUILD_TESTS)
     add_executable(test_hdf5_io io/test.cpp)
     target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+    # Executable: test_preconditioner
+    add_executable(test_preconditioner calc/test/test_preconditioner.cpp)
+    target_include_directories(test_preconditioner PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_preconditioner PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+    # Standalone MPI test drivers (own main(), not GTest). Registered so they
+    # are compiled by the normal build and cannot silently bit-rot again.
+    foreach(_driver test_graphmf test_solver test_dos)
+        add_executable(${_driver} calc/test/${_driver}.cpp)
+        target_include_directories(${_driver} PRIVATE ${RSATB_INCLUDE_DIRS})
+        target_link_libraries(${_driver} PRIVATE ${RSATB_LINK_LIBS})
+    endforeach()
 endif()
 
 # Python Module: _rsatb

@@ -70,8 +70,18 @@ public:
         init_components();
     }
 
+    // vbcsr no longer selects a kernel at compile time (BlockSpMat::KernelType is
+    // gone); the vendor backend is chosen per matrix at runtime, so report it from
+    // a live operator when one exists.
     std::string get_kernel_info() const {
-        return Matrix::KernelType::name();
+        if (operators_) {
+            for (const auto& kp : operators_->local_kpoints()) {
+                if (const auto* h = operators_->hamiltonian_k(kp.first)) {
+                    return h->vendor_backend_name();
+                }
+            }
+        }
+        return "uninitialized";
     }
 
     // constructor defines the npar and the atomic structure.
@@ -130,7 +140,7 @@ public:
     }
 
     void test_solve() {
-        LinearSolver<Scalar, Matrix::KernelType> solver(1e-8, 1000, verbose_);
+        LinearSolver<Scalar> solver(1e-8, 1000, verbose_);
         auto& ops = require_operators();
         for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;

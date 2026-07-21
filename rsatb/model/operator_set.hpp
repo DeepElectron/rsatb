@@ -292,7 +292,7 @@ private:
             throw std::runtime_error("Preconditioner supports H, S, H/S or None");
         }
 
-        rsatb::calc::PrimmeEigenSolver<Scalar, typename Matrix::KernelType> esolver;
+        rsatb::calc::PrimmeEigenSolver<Scalar> esolver;
         std::vector<double> evals;
         std::vector<DistVector<Scalar>> evecs;
         esolver.solve_largest(*overlap, nullptr, nullptr, 1, 1e-3, evals, evecs, verbose_);
@@ -686,6 +686,8 @@ public:
                             block[static_cast<size_t>(idx)] =
                                 static_cast<std::complex<double>>(block_data[idx]) * factor;
                         }
+                        // Elementwise scaling of block_data() above preserves its layout,
+                        // which is the canonical row-major.
                         matrix.update_local_block(
                             local_row,
                             local_col_ref,
@@ -693,7 +695,7 @@ public:
                             row_dim,
                             col_dim,
                             AssemblyMode::ADD,
-                            MatrixLayout::ColMajor);
+                            MatrixLayout::RowMajor);
                     };
 
                     add_axis_block(*triplet->x, displacement_x);

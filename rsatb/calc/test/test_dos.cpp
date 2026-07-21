@@ -5,7 +5,6 @@
 #include <random>
 #include <complex>
 
-using namespace rsatb::backend;
 using namespace rsatb::calc;
 
 int main(int argc, char** argv) {
@@ -46,9 +45,13 @@ int main(int argc, char** argv) {
     std::mt19937 gen(seed);
     std::uniform_int_distribution<> dis(0, 1);
     
+    // Production samples are unit norm (set_random_normal(true)) and corr_dos
+    // scales the projected channel by the global dimension to recover a trace.
+    // Match that convention here: entries are +-1/sqrt(N).
+    const double inv_sqrt_n = 1.0 / std::sqrt(static_cast<double>(graph.global_scalar_rows()));
     std::complex<double>* data = psi_in.local_data();
     for (int i = 0; i < psi_in.local_size; ++i) {
-        data[i] = (dis(gen) == 0) ? 1.0 : -1.0;
+        data[i] = ((dis(gen) == 0) ? 1.0 : -1.0) * inv_sqrt_n;
     }
 
     // 5. Setup Mask for PDOS (Even indices -> 0.5)
@@ -79,13 +82,15 @@ int main(int argc, char** argv) {
         for (int it = 0; it <= nt; ++it) {
             double t = it * dt;
             
-            // Expected DOS
-            std::complex<double> exp_dos = static_cast<double>(n_blocks) * std::cos(0.5 * t);
+            // With unit-norm samples cdos is the normalised correlation
+            // <psi|psi(t)> = cos(0.5 t), i.e. O(1) and carrying no factor of N.
+            std::complex<double> exp_dos = std::cos(0.5 * t);
             
-            // Expected PDOS
+            // pcdos carries the trace prefactor, so it is an absolute count: half
+            // the states are selected by the mask.
             std::complex<double> exp_pdos = (static_cast<double>(n_blocks) / 2.0) * std::exp(std::complex<double>(0, -0.5 * t));
             
-            double err_dos = std::abs(cdos[it] - exp_dos) / n_blocks;
+            double err_dos = std::abs(cdos[it] - exp_dos);
             double err_pdos = std::abs(pcdos[it] - exp_pdos) / n_blocks;
             
             std::cout << "  t=" << t << ": DOS=" << cdos[it] << " (Exp: " << exp_dos << ") Err=" << err_dos << std::endl;
@@ -111,10 +116,10 @@ int main(int argc, char** argv) {
     DistMultiVector<std::complex<double>> psi_mv(&graph, num_vecs);
     
     // Fill with random data
-    for (int v = 0; v < num_vecs; ++v) {
-        std::complex<double>* col_data = psi_mv.col_data(v);
-        for (int i = 0; i < psi_mv.local_rows; ++i) {
-            col_data[i] = (dis(gen) == 0) ? 1.0 : -1.0;
+    for (int i = 0; i < psi_mv.local_rows; ++i) {
+        std::complex<double>* row_data = psi_mv.row_data(i);
+        for (int v = 0; v < num_vecs; ++v) {
+            row_data[v] = ((dis(gen) == 0) ? 1.0 : -1.0) * inv_sqrt_n;
         }
     }
     
@@ -130,10 +135,12 @@ int main(int argc, char** argv) {
         for (int it = 0; it <= nt; ++it) {
             double t = it * dt;
             
-            std::complex<double> exp_dos = static_cast<double>(n_blocks) * std::cos(0.5 * t);
+            // Same convention as the single-vector case above: cdos is the
+            // per-vector-averaged normalised correlation, pcdos an absolute count.
+            std::complex<double> exp_dos = std::cos(0.5 * t);
             std::complex<double> exp_pdos = (static_cast<double>(n_blocks) / 2.0) * std::exp(std::complex<double>(0, -0.5 * t));
             
-            double err_dos = std::abs(cdos_mv[it] - exp_dos) / n_blocks;
+            double err_dos = std::abs(cdos_mv[it] - exp_dos);
             double err_pdos = std::abs(pcdos_mv[it] - exp_pdos) / n_blocks;
             
             std::cout << "  t=" << t << ": DOS=" << cdos_mv[it] << " (Exp: " << exp_dos << ") Err=" << err_dos << std::endl;

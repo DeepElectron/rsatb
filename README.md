@@ -8,6 +8,17 @@
 - CMake >= 3.15
 - C++ Compiler (GCC/Clang/Intel)
 
+Native libraries (conda-forge names):
+
+```bash
+conda install -c conda-forge \
+    parmetis metis fftw hdf5 libmatio pybind11 mpi4py
+```
+
+`libmatio` is required by the bundled `op2c` (it links its rescumat `.mat`
+reader into `nao_core` unconditionally, even though rsatb does not use that
+format). Configuration fails with an explicit message if it is missing.
+
 ### Compute Canada Instructions
 1. Load required modules:
    ```bash

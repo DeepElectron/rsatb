@@ -1,4 +1,5 @@
 #include "../operator_set.hpp"
+#include "../../test_data_path.hpp"
 
 #include <gtest/gtest.h>
 #include <H5Cpp.h>
@@ -392,16 +393,16 @@ TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbital
 TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     auto atomic_data = std::unique_ptr<AtomicData>(
         AtomicData::from_file(
-            "/home/zhanghao/softwares/rsatb/test/data/diamond/diamond_sc111.vasp",
+            rsatb::test::data_path("diamond/diamond_sc111.vasp"),
             std::vector<double>{3.7},
             std::vector<int>{13},
             MPI_COMM_WORLD));
 
     rmodel::LCAOModelConfig model;
-    model.input = rmodel::Hdf5Input{"/home/zhanghao/softwares/rsatb/test/data/diamond/C2.0/hamiltonians.h5"};
-    model.integrals.orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    model.input = rmodel::Hdf5Input{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    model.integrals.orb_dir = rsatb::test::data_path("diamond/");
     model.integrals.orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    model.integrals.psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    model.integrals.psd_dir = rsatb::test::data_path("diamond/");
     model.integrals.psd_names = {"C_ONCV_PBE-1.0.upf"};
 
     auto operators = build_operator_set(

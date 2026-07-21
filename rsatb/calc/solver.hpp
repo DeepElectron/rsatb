@@ -15,7 +15,7 @@ using namespace vbcsr;
 
 // Linear Solver class
 // Currently implements Conjugate Gradient (CG) for SPD matrices
-template <typename T, typename Kernel = DefaultKernel<T>>
+template <typename T>
 class LinearSolver {
 public:
     double tol;
@@ -95,11 +95,11 @@ public:
     // Overload for Preconditioned Solve
     // P should approximate A^-1 for Left/Right, or A^-1/2 for Symmetric
     template <typename MatrixType>
-    void solve(MatrixType& A, const DistVector<T>& b, DistVector<T>& x, Preconditioner<T, Kernel>& P, PreconditionerType type) {
+    void solve(MatrixType& A, const DistVector<T>& b, DistVector<T>& x, Preconditioner<T>& P, PreconditionerType type) {
         if (type == PreconditionerType::Symmetric) {
             // Explicit Symmetric Preconditioning: P * A * P * y = P * b, x = P * y
             // Requires P approx A^-1/2
-            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PHAP(A, P);
+            SymPrecondMat<MatrixType, Preconditioner<T>, T> PHAP(A, P);
             DistVector<T> PHb = b.duplicate();
             P.apply_adjoint(b, PHb);
             DistVector<T> y = x.duplicate();
@@ -219,21 +219,23 @@ public:
             // DistMultiVector doesn't support column-specific scaling easily in one call unless we add it.
             // But we can do it manually on local data.
             
+            // DistMultiVector is row-major (a row holds all vectors), so walk rows
+            // outer and vectors inner.
+            std::vector<T> alpha(num_vecs);
+            for (int c = 0; c < num_vecs; ++c) alpha[c] = R_norm_sq[c] / P_AP[c];
+
             #pragma omp parallel for
-            for (int c = 0; c < num_vecs; ++c) {
-                T alpha = R_norm_sq[c] / P_AP[c];
-                
+            for (int i = 0; i < X.local_rows; ++i) {
                 // X_c = X_c + alpha * P_c
                 // R_c = R_c - alpha * AP_c
-                
-                T* X_ptr = X.col_data(c);
-                const T* P_ptr = P.col_data(c);
-                T* R_ptr = R.col_data(c);
-                const T* AP_ptr = AP.col_data(c);
-                
-                for (int i = 0; i < X.local_rows; ++i) {
-                    X_ptr[i] += alpha * P_ptr[i];
-                    R_ptr[i] -= alpha * AP_ptr[i];
+                T* X_ptr = X.row_data(i);
+                const T* P_ptr = P.row_data(i);
+                T* R_ptr = R.row_data(i);
+                const T* AP_ptr = AP.row_data(i);
+
+                for (int c = 0; c < num_vecs; ++c) {
+                    X_ptr[c] += alpha[c] * P_ptr[c];
+                    R_ptr[c] -= alpha[c] * AP_ptr[c];
                 }
             }
             
@@ -254,16 +256,17 @@ public:
             }
             
             // Update P
+            std::vector<T> beta(num_vecs);
+            for (int c = 0; c < num_vecs; ++c) beta[c] = R_new_norm_sq[c] / R_norm_sq[c];
+
             #pragma omp parallel for
-            for (int c = 0; c < num_vecs; ++c) {
-                T beta = R_new_norm_sq[c] / R_norm_sq[c];
-                
+            for (int i = 0; i < P.local_rows; ++i) {
                 // P_c = R_c + beta * P_c
-                T* P_ptr = P.col_data(c);
-                const T* R_ptr = R.col_data(c);
-                
-                for (int i = 0; i < P.local_rows; ++i) {
-                    P_ptr[i] = R_ptr[i] + beta * P_ptr[i];
+                T* P_ptr = P.row_data(i);
+                const T* R_ptr = R.row_data(i);
+
+                for (int c = 0; c < num_vecs; ++c) {
+                    P_ptr[c] = R_ptr[c] + beta[c] * P_ptr[c];
                 }
             }
             
@@ -274,10 +277,10 @@ public:
     // Overload for Preconditioned Batched Solve
     // Overload for Preconditioned Batched Solve
     template <typename MatrixType>
-    void solve(MatrixType& A, const DistMultiVector<T>& B, DistMultiVector<T>& X, Preconditioner<T, Kernel>& P, PreconditionerType type) {
+    void solve(MatrixType& A, const DistMultiVector<T>& B, DistMultiVector<T>& X, Preconditioner<T>& P, PreconditionerType type) {
         if (type == PreconditionerType::Symmetric) {
             // Explicit Symmetric Preconditioning: PH * A * P * Y = PH * B, X = P * Y
-            SymPrecondMat<MatrixType, Preconditioner<T, Kernel>, T> PHAP(A, P);
+            SymPrecondMat<MatrixType, Preconditioner<T>, T> PHAP(A, P);
             DistMultiVector<T> PHb = B;
             P.apply_adjoint(B, PHb);
             DistMultiVector<T> Y = X;
@@ -328,18 +331,19 @@ public:
                 P_vec.dot(AP, P_AP);
                 
                 // Update X, R
+                std::vector<T> alpha(num_vecs);
+                for (int c = 0; c < num_vecs; ++c) alpha[c] = Rho[c] / P_AP[c];
+
                 #pragma omp parallel for
-                for (int c = 0; c < num_vecs; ++c) {
-                    T alpha = Rho[c] / P_AP[c];
-                    
-                    T* X_ptr = X.col_data(c);
-                    const T* P_ptr = P_vec.col_data(c);
-                    T* R_ptr = R.col_data(c);
-                    const T* AP_ptr = AP.col_data(c);
-                    
-                    for (int i = 0; i < X.local_rows; ++i) {
-                        X_ptr[i] += alpha * P_ptr[i];
-                        R_ptr[i] -= alpha * AP_ptr[i];
+                for (int i = 0; i < X.local_rows; ++i) {
+                    T* X_ptr = X.row_data(i);
+                    const T* P_ptr = P_vec.row_data(i);
+                    T* R_ptr = R.row_data(i);
+                    const T* AP_ptr = AP.row_data(i);
+
+                    for (int c = 0; c < num_vecs; ++c) {
+                        X_ptr[c] += alpha[c] * P_ptr[c];
+                        R_ptr[c] -= alpha[c] * AP_ptr[c];
                     }
                 }
                 
@@ -364,15 +368,16 @@ public:
                 R.dot(Z, Rho_new);
                 
                 // Update P
+                std::vector<T> beta(num_vecs);
+                for (int c = 0; c < num_vecs; ++c) beta[c] = Rho_new[c] / Rho[c];
+
                 #pragma omp parallel for
-                for (int c = 0; c < num_vecs; ++c) {
-                    T beta = Rho_new[c] / Rho[c];
-                    
-                    T* P_ptr = P_vec.col_data(c);
-                    const T* Z_ptr = Z.col_data(c);
-                    
-                    for (int i = 0; i < P_vec.local_rows; ++i) {
-                        P_ptr[i] = Z_ptr[i] + beta * P_ptr[i];
+                for (int i = 0; i < P_vec.local_rows; ++i) {
+                    T* P_ptr = P_vec.row_data(i);
+                    const T* Z_ptr = Z.row_data(i);
+
+                    for (int c = 0; c < num_vecs; ++c) {
+                        P_ptr[c] = Z_ptr[c] + beta[c] * P_ptr[c];
                     }
                 }
                 

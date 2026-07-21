@@ -275,12 +275,12 @@ inline void store_axis_rows(
  * products are accumulated into `kernel_accum`, so no explicit M x M moment
  * tensor is ever stored.
  */
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void accumulate_fftcheb_block(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& Vx,
-    BlockSpMat<T, Kernel>& Vy,
-    BlockSpMat<T, Kernel>& Vz,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& Vx,
+    BlockSpMat<T>& Vy,
+    BlockSpMat<T>& Vz,
     const VectorType& samples,
     int n_moments,
     DCFormulation formulation,
@@ -541,12 +541,12 @@ void accumulate_fftcheb_block(
  * over the dimensionless energy variable, so the returned quantity is the
  * zero-temperature conductivity as a function of Fermi energy.
  */
-template <typename T, typename Kernel>
+template <typename T>
 void dc_spectrum_fftcheb(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& Vx,
-    BlockSpMat<T, Kernel>& Vy,
-    BlockSpMat<T, Kernel>& Vz,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& Vx,
+    BlockSpMat<T>& Vy,
+    BlockSpMat<T>& Vz,
     DistMultiVector<T>& psi_samples, // we should not assert the input is a multivector
     int n_moments,
     DCFormulation formulation,

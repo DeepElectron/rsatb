@@ -1,4 +1,5 @@
 #include "rsatb.hpp"
+#include "test_data_path.hpp"
 
 #include <gtest/gtest.h>
 #include <H5Cpp.h>
@@ -366,7 +367,7 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyWithoutGammaKPoint) {
 
 TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForPeriodicOverlapSystems) {
     const std::string path = make_periodic_hdf5_hamiltonian_file(13, std::complex<double>(0.0, 0.0), std::complex<double>(0.05, 0.0));
-    const std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    const std::string orb_dir = rsatb::test::data_path("diamond/");
     const std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     auto rsatb_inst = make_periodic_single_atom_rsatb(path, 13, {{0.0, 0.0, 0.0}}, orb_names, orb_dir);
 

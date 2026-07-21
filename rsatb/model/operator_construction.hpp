@@ -6,8 +6,10 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "../io/hdf5.hpp"
 #include "../extern/op2c/src/int2c/op2c.hpp"
+#include <fstream>
 #include <memory>
 #include <stdexcept>
+#include <string>
 
 using namespace vbcsr;
 using namespace vbcsr::atomic;
@@ -152,11 +154,65 @@ public:
         MPI_Comm_rank(comm, &rank);
     }
     
+    // op2c joins directory and filename with a bare concatenation and, for
+    // orbital files only, reports a failed open on stdout without throwing --
+    // the unbuilt object is then dereferenced downstream and the process
+    // segfaults. Normalise the separator and fail loudly here instead.
+    static std::string join_path(const std::string& dir, const std::string& name) {
+        if (dir.empty() || dir.back() == '/') {
+            return dir + name;
+        }
+        return dir + "/" + name;
+    }
+
+    static void require_readable(const std::string& path, const char* what) {
+        std::ifstream probe(path);
+        if (!probe.is_open()) {
+            throw std::runtime_error(
+                std::string("OperatorConstruction::init: cannot open ") + what + " file: " + path);
+        }
+    }
+
     void init(size_t ntype, int nspin, bool lspinorb,
-              const std::string& orb_dir, const std::vector<std::string>& orb_name, 
+              const std::string& orb_dir, const std::vector<std::string>& orb_name,
               const std::string& psd_dir, const std::vector<std::string>& psd_name,
               const std::string& log_file) {
-        op2c_ = std::unique_ptr<Op2c>(new Op2c(ntype, nspin, lspinorb, orb_dir, orb_name, psd_dir, psd_name, comm, log_file));
+        // Every rank checks the same shared filesystem, so a missing file throws
+        // collectively rather than deadlocking a subset of ranks.
+        std::string orb_root = orb_dir;
+        if (!orb_root.empty() && orb_root.back() != '/') {
+            orb_root.push_back('/');
+        }
+        std::string psd_root = psd_dir;
+        if (!psd_root.empty() && psd_root.back() != '/') {
+            psd_root.push_back('/');
+        }
+
+        for (const auto& name : orb_name) {
+            if (!name.empty()) {
+                require_readable(join_path(orb_root, name), "orbital");
+            }
+        }
+        for (const auto& name : psd_name) {
+            if (!name.empty()) {
+                require_readable(join_path(psd_root, name), "pseudopotential");
+            }
+        }
+
+        // Two-center table construction can also throw from op2c (e.g. the radial
+        // aliasing guard); surface which inputs were involved.
+        //
+        // overlap_only=true: rsatb never calls Op2c::kinetic, so skip tabulating
+        // the kinetic table (roughly a third of the two-center table memory and
+        // build time). pm_build/orb_kcut keep their defaults.
+        try {
+            op2c_ = std::unique_ptr<Op2c>(new Op2c(ntype, nspin, lspinorb, orb_root, orb_name, psd_root, psd_name, comm, log_file,
+                                                   /*pm_build=*/true, /*orb_kcut=*/0.0, /*overlap_only=*/true));
+        } catch (const std::exception& e) {
+            throw std::runtime_error(
+                "OperatorConstruction::init: failed to build op2c two-center tables from orb_dir='"
+                + orb_root + "', psd_dir='" + psd_root + "': " + e.what());
+        }
     }
 
     bool initialized() const {
@@ -450,9 +506,19 @@ public:
     std::unique_ptr<ImageContainer<double>> build_overlap_velocity(MatrixType* Vx, MatrixType* Vy, MatrixType* Vz,
                        AtomicData& ad,
                        double Kx, double Ky, double Kz) {
-        
+
+        // The 3-body term below goes through orb_r_beta/ncomm_IKJ, which need the
+        // beta projectors. Without pseudopotentials op2c only prints a message and
+        // returns, which would silently drop the non-local commutator and yield a
+        // velocity operator that is wrong rather than absent.
+        if (!has_beta_projectors()) {
+            throw std::runtime_error(
+                "build_overlap_velocity requires beta projectors (pseudopotentials); "
+                "none are loaded, so the non-local commutator term cannot be built.");
+        }
+
         auto img_S = std::make_unique<ImageContainer<double>>(&ad);
-        
+
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
         
@@ -489,7 +555,10 @@ public:
             
             int global_i = ad.get_global_index(i);
             std::vector<int> R = {0, 0, 0};
-            img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb);
+            // op2c emits row-major; state it explicitly rather than relying on the
+            // library's default layout argument.
+            img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb,
+                             AssemblyMode::ADD, MatrixLayout::RowMajor);
             
             if(Vx) set_local_block(*Vx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
             if(Vy) set_local_block(*Vy, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
@@ -526,7 +595,8 @@ public:
                 
                 int global_j = ad.get_global_index(j);
                 std::vector<int> R_vec = {Rx_, Ry_, Rz_};
-                img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb);
+                img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb,
+                                 AssemblyMode::ADD, MatrixLayout::RowMajor);
 
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);

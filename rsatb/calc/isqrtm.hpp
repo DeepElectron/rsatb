@@ -23,15 +23,17 @@ namespace rsatb {
 namespace calc {
 
 
-template <typename T, typename Kernel = DefaultKernel<T>>
-void isqrtm_init(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, bool verbose = false) {
+template <typename T>
+void isqrtm_init(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt, bool verbose = false) {
     auto func = [](double x) { return (x > 1e-12) ? std::pow(x, -0.5) : 0.0; };
-    vbcsr::graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), "dense", verbose);
+    // vbcsr dropped the method selector; the implementation is always the
+    // subgraph dense diagonalization that "dense" used to request.
+    vbcsr::graph_matrix_function(S_mat, S_inv_sqrt, std::function<T(double)>(func), verbose);
 }
 // Matrix Inverse Square Root using Newton-Schulz Iteration
 // Computes S^{-1/2}
-template <typename T, typename Kernel = DefaultKernel<T>>
-void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt, 
+template <typename T>
+void isqrtm(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt, 
             double tol = 1e-7, double sptol = 1e-6, int maxit = 20, std::string init_method = "graph", double factor = 1.0,
             bool verbose = false) {
     
@@ -54,8 +56,8 @@ void isqrtm(BlockSpMat<T, Kernel>& S_mat, BlockSpMat<T, Kernel>* S_inv_sqrt,
     // ZSZ = (1-0.5D)(1+D)(1-0.5D)=(1+0.5D-0.5D^2)(1-0.5D)=1-0.75D^2+0.25D^3
 
     // 2. Newton-Schulz Iteration
-    // BlockSpMat<T, Kernel> Z = S_inv_sqrt.duplicate(); // Working copy
-    BlockSpMat<T, Kernel> tmp1(graph), tmp2(graph);
+    // BlockSpMat<T> Z = S_inv_sqrt.duplicate(); // Working copy
+    BlockSpMat<T> tmp1(graph), tmp2(graph);
     
     // Initial Check
     // tmp2 = Z^H * S

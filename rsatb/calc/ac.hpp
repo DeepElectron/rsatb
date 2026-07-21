@@ -15,10 +15,10 @@ using namespace vbcsr;
 namespace rsatb {
 namespace calc {
 
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void apply_operator_dual(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& op,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& op,
     const VectorType& psi_in,
     VectorType& psi_out,
     ChebyMode mode = ChebyMode::NORMAL,
@@ -79,11 +79,11 @@ void apply_operator_dual(
 // Compute Current: J = -i S^{-1} [H, R] = -S^{-1} V (if V = -i[H,R])
 // We assume Vx, Vy, Vz are the velocity operators V.
 // J = - S^{-1} V Psi
-template <typename T, typename Kernel, typename VectorType>
-void current(Chebyshev<T, Kernel>& cheby, 
-             BlockSpMat<T, Kernel>& Vx, 
-             BlockSpMat<T, Kernel>& Vy, 
-             BlockSpMat<T, Kernel>& Vz, 
+template <typename T, typename VectorType>
+void current(Chebyshev<T>& cheby, 
+             BlockSpMat<T>& Vx, 
+             BlockSpMat<T>& Vy, 
+             BlockSpMat<T>& Vz, 
              const VectorType& Psi_in, 
              VectorType* J_Psi, // Array of 3
              double scale = 1.0) {
@@ -93,11 +93,11 @@ void current(Chebyshev<T, Kernel>& cheby,
 }
 
 // Compute Adjoint Current: J = - V S^{-1} Psi
-template <typename T, typename Kernel, typename VectorType>
-void current_adjoint(Chebyshev<T, Kernel>& cheby, 
-                     BlockSpMat<T, Kernel>& Vx, 
-                     BlockSpMat<T, Kernel>& Vy, 
-                     BlockSpMat<T, Kernel>& Vz, 
+template <typename T, typename VectorType>
+void current_adjoint(Chebyshev<T>& cheby, 
+                     BlockSpMat<T>& Vx, 
+                     BlockSpMat<T>& Vy, 
+                     BlockSpMat<T>& Vz, 
                      const VectorType& Psi_in, 
                      VectorType* J_Psi, // Array of 3
                      double scale = 1.0) {
@@ -107,11 +107,11 @@ void current_adjoint(Chebyshev<T, Kernel>& cheby,
 }
 
 // AC Conductivity Correlation
-template <typename T, typename Kernel, typename VectorType>
-void corr_ac(Chebyshev<T, Kernel>& cheby, 
-             BlockSpMat<T, Kernel>& Vx, 
-             BlockSpMat<T, Kernel>& Vy, 
-             BlockSpMat<T, Kernel>& Vz, 
+template <typename T, typename VectorType>
+void corr_ac(Chebyshev<T>& cheby, 
+             BlockSpMat<T>& Vx, 
+             BlockSpMat<T>& Vy, 
+             BlockSpMat<T>& Vz, 
              const VectorType& Psi_in, 
              int nt, 
              double temp, 

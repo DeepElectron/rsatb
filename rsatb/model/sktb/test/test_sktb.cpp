@@ -206,20 +206,6 @@ std::vector<double> transpose_block(const std::vector<double>& block, size_t nro
     return result;
 }
 
-std::vector<double> block_storage_from_row_major(
-    const std::vector<double>& row_major,
-    size_t nrow,
-    size_t ncol
-) {
-    std::vector<double> result(nrow * ncol, 0.0);
-    for (size_t row = 0; row < nrow; ++row) {
-        for (size_t col = 0; col < ncol; ++col) {
-            result[col * nrow + row] = row_major[row * ncol + col];
-        }
-    }
-    return result;
-}
-
 void expect_real_block(
     const std::vector<std::complex<double>>& block,
     const std::vector<double>& expected,
@@ -566,9 +552,11 @@ TEST(SKTBTest, PDEvaluatorBuildsAlignedZBlockInMagneticOrder) {
     ASSERT_EQ(block.size(), 15u);
     for (size_t i = 0; i < block.size(); ++i) {
         double expected = 0.0;
-        if (i == 3) expected = 4.0;       // py-dzx in the directed edge frame
-        if (i == 7) expected = 6.0;       // pz-dz2
-        if (i == 11) expected = 4.0;      // px-dyz in the directed edge frame
+        // Row-major 3x5 (p rows in m order py,pz,px; d cols dxy,dyz,dz2,dzx,dx2y2),
+        // so element (r,c) is at r*5 + c.
+        if (i == 1) expected = 4.0;       // py-dyz  (pd-pi)
+        if (i == 7) expected = 6.0;       // pz-dz2  (pd-sigma)
+        if (i == 13) expected = 4.0;      // px-dzx  (pd-pi)
         EXPECT_NEAR(block[i].real(), expected, 1e-12) << "flat index " << i;
         EXPECT_NEAR(block[i].imag(), 0.0, 1e-12) << "flat index " << i;
     }
@@ -598,7 +586,7 @@ TEST(SKTBTest, PDSigmaRotationMatchesOuterProductForSkewBond) {
     const auto n = normalized_direction(displacement);
     const auto expected = outer_product(p_sigma_coefficients(n), d_sigma_coefficients(n), sigma);
     const auto block = block_values(*gamma, 0, 1);
-    expect_real_block(block, block_storage_from_row_major(expected, 3, 5), 1e-12);
+    expect_real_block(block, expected, 1e-12);
 }
 
 TEST(SKTBTest, ReverseLookupTransposesPDSkewBondBlock) {
@@ -626,8 +614,8 @@ TEST(SKTBTest, ReverseLookupTransposesPDSkewBondBlock) {
     const auto n = normalized_direction(displacement);
     const auto direct_expected = outer_product(p_sigma_coefficients(n), d_sigma_coefficients(n), sigma);
     const auto reverse_expected = transpose_block(direct_expected, 3, 5);
-    expect_real_block(block_values(*gamma, 0, 1), block_storage_from_row_major(direct_expected, 3, 5), 1e-12);
-    expect_real_block(block_values(*gamma, 1, 0), block_storage_from_row_major(reverse_expected, 5, 3), 1e-12);
+    expect_real_block(block_values(*gamma, 0, 1), direct_expected, 1e-12);
+    expect_real_block(block_values(*gamma, 1, 0), reverse_expected, 1e-12);
 }
 
 TEST(SKTBTest, AlignedPDBlockUsesMagneticMOrderBeforeRotation) {

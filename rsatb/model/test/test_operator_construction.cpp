@@ -1,4 +1,5 @@
 #include "../operator_construction.hpp"
+#include "../../test_data_path.hpp"
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include <gtest/gtest.h>
 #include <complex>
@@ -248,9 +249,9 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     // 2. Setup OperatorConstruction
     OperatorConstruction op_const(MPI_COMM_WORLD);
     
-    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string psd_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf", "C_ONCV_PBE-1.0.upf"};
     
     op_const.init(2, 1, false, orb_dir, orb_names, psd_dir, psd_names, "op_const.log");
@@ -323,9 +324,9 @@ TEST(OperatorConstructionTest, TestBuildOverlap) {
     
     OperatorConstruction op_const(MPI_COMM_WORLD);
     
-    std::string orb_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = "/home/zhanghao/softwares/rsatb/test/data/diamond/";
+    std::string psd_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf", "C_ONCV_PBE-1.0.upf"};
     
     op_const.init(2, 1, false, orb_dir, orb_names, psd_dir, psd_names, "op_const_overlap.log");

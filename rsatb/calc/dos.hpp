@@ -15,8 +15,8 @@ namespace calc {
 // Compute Time Correlation Function (for DOS)
 // cdos(t) = <psi(0) | psi(t)>
 // Propagates psi(t) = e^{-i H t} psi(0) step-by-step.
-template <typename T, typename Kernel = DefaultKernel<T>>
-void corr_dos(Chebyshev<T, Kernel>& cheby, 
+template <typename T>
+void corr_dos(Chebyshev<T>& cheby, 
               const DistVector<T>& psi_in, 
               int nt, 
               std::vector<std::complex<double>>& cdos, 
@@ -26,7 +26,10 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
     
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
-    int n = graph->block_offsets[-1];
+    // Trace prefactor for the random-state estimator: sample vectors are unit
+    // norm (set_random_normal(true)), so <psi|P|psi> ~ Tr(P) / n. Same convention
+    // as the norb() prefactor used by compute_ac/compute_dc_spectrum.
+    const double n = static_cast<double>(graph->global_scalar_rows());
     double dt = M_PI;
 
     // 1. Generate Time Propagation Coefficients for dt
@@ -66,7 +69,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         v_tmp.copy_from(psi_in);
         v_tmp.pointwise_mult(*proj_mask);
         overlap = psi_curr.dot(v_tmp);
-        (*pcdos)[0] = overlap * static_cast<double>(n);
+        (*pcdos)[0] = overlap * n;
     }
 
     // 3. Time Propagation Loop
@@ -105,7 +108,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
             v_tmp.copy_from(psi_in);
             v_tmp.pointwise_mult(*proj_mask);
             overlap = v_tmp.dot(psi_out); // <P psi_in | psi_out> = <psi_in | P psi_out>
-            (*pcdos)[it + 1] = overlap * static_cast<double>(n);
+            (*pcdos)[it + 1] = overlap * n;
         }
 
         // Update for next step
@@ -114,8 +117,8 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
 }
 
 // Multivector Version
-template <typename T, typename Kernel = DefaultKernel<T>>
-void corr_dos(Chebyshev<T, Kernel>& cheby, 
+template <typename T>
+void corr_dos(Chebyshev<T>& cheby, 
               const DistMultiVector<T>& psi_in, 
               int nt, 
               std::vector<std::complex<double>>& cdos, 
@@ -126,7 +129,10 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
     int num_vecs = psi_in.num_vectors;
-    int n = graph->block_offsets[-1];
+    // Trace prefactor for the random-state estimator: sample vectors are unit
+    // norm (set_random_normal(true)), so <psi|P|psi> ~ Tr(P) / n. Same convention
+    // as the norb() prefactor used by compute_ac/compute_dc_spectrum.
+    const double n = static_cast<double>(graph->global_scalar_rows());
     double dt = M_PI;
 
     std::vector<std::complex<double>> coeffs;
@@ -157,7 +163,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
         v_tmp.dot(psi_curr, dots);
         sum_overlap = 0;
         for(auto d : dots) sum_overlap += d;
-        (*pcdos)[0] = sum_overlap / static_cast<double>(num_vecs) * static_cast<double>(n);
+        (*pcdos)[0] = sum_overlap / static_cast<double>(num_vecs) * n;
     }
 
     for (int it = 0; it < nt; ++it) {
@@ -182,7 +188,7 @@ void corr_dos(Chebyshev<T, Kernel>& cheby,
             v_tmp.dot(psi_out, dots);
             sum_overlap = 0;
             for(auto d : dots) sum_overlap += d;
-            (*pcdos)[it + 1] = sum_overlap / static_cast<double>(num_vecs) * static_cast<double>(n);
+            (*pcdos)[it + 1] = sum_overlap / static_cast<double>(num_vecs) * n;
         }
 
         psi_curr.copy_from(psi_out);

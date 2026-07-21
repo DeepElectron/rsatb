@@ -4,7 +4,6 @@
 #include <cmath>
 #include <random>
 
-using namespace rsatb::backend;
 using namespace rsatb::calc;
 
 // Helper to fill vector with random numbers
@@ -135,7 +134,7 @@ void test_laplacian_solver(int rank, int size) {
     }
 }
 
-#include "preconditioner.hpp"
+#include "../preconditioner.hpp"
 
 // Manual preconditioners removed in favor of rsatb::calc::BlockJacobianPreconditioner
 // and rsatb::calc::ISQRTMPreconditioner
@@ -180,7 +179,7 @@ void test_preconditioned_solver(int rank, int size) {
     
     // 4. Setup Preconditioner (ISQRTM -> P = A^-1/2)
     // Scale factor 0.5 for stability
-    ISQRTMPreconditioner<double> P(A, 50, 1e-5, 0.2, true);
+    ISQRTMPreconditioner<double> P(A, 50, 1e-5, 0.2, "graph", 1.0, /*verbose=*/true);
     
     // 5. Solve P A P y = P b, x = P y
     DistVector<double> x(&graph);
@@ -311,7 +310,12 @@ void test_batched_preconditioned_solver(int rank, int size) {
     DistMultiVector<double> B(&graph, num_vecs);
     std::mt19937 gen(rank + 400);
     std::uniform_real_distribution<> dis(-1.0, 1.0);
-    for(size_t i=0; i<B.data.size(); ++i) B.data[i] = dis(gen);
+    // Fill only the num_vectors lanes of each row: the row-major buffer has
+    // ld >= num_vectors and the trailing padding lanes must stay zero.
+    for (int i = 0; i < B.local_rows + B.ghost_rows; ++i) {
+        double* row = B.row_data(i);
+        for (int v = 0; v < num_vecs; ++v) row[v] = dis(gen);
+    }
     
     // 4. Setup Preconditioner (Block Jacobian -> P = D^-1)
     BlockJacobianPreconditioner<double> P(A);

@@ -4,6 +4,11 @@ project(model LANGUAGES CXX Fortran C)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
 
 if (PROJECT_IS_TOP_LEVEL)
+    # Standalone build: the parent rsatb/CMakeLists.txt normally supplies this.
+    set(RSATB_TEST_DATA_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../test/data"
+        CACHE PATH "Directory containing the rsatb test data tree")
+    add_compile_definitions(RSATB_TEST_DATA_DIR="${RSATB_TEST_DATA_DIR}")
+
     find_package(MPI REQUIRED)
     find_package(Threads REQUIRED)
     if(RSATB_BUILD_TESTS)

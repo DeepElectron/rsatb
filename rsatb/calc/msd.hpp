@@ -37,9 +37,9 @@ struct GammaAffineState {
     VectorType periodic;
 };
 
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 std::vector<cd> compute_density_moments(
-    Chebyshev<T, Kernel>& cheby,
+    Chebyshev<T>& cheby,
     const VectorType& psi_in,
     int n_kpm
 ) {
@@ -90,10 +90,10 @@ inline void write_msd_row(
     }
 }
 
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void propagate_affine(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& H1,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& H1,
     const GammaAffineState<VectorType>& in,
     GammaAffineState<VectorType>& out,
     const std::vector<std::complex<double>>& coeffs
@@ -159,9 +159,9 @@ void propagate_affine(
     }
 }
 
-template <typename T, typename Kernel, typename PositionOp, typename VectorType>
+template <typename T, typename PositionOp, typename VectorType>
 void run_explicit_position_msd(
-    Chebyshev<T, Kernel>& cheby,
+    Chebyshev<T>& cheby,
     PositionOp& position,
     const VectorType& psi_in,
     int n_steps,
@@ -231,10 +231,10 @@ void run_explicit_position_msd(
     }
 }
 
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void run_gamma_affine_msd(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& H1,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& H1,
     DistVector<T>& diagonal_position,
     const VectorType& psi_in,
     int n_steps,
@@ -305,10 +305,10 @@ void run_gamma_affine_msd(
 
 
 // open-boundary condition MSD with an explicit position operator, for general systems (orthogonal or non-orthogonal).
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void corr_msd(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& X,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& X,
     const VectorType& psi_in,
     int n_steps,
     double dt_fs,
@@ -340,9 +340,9 @@ void corr_msd(
 }
 
 // open-boundary condition MSD with an explicit position operator, for orthogonal systems where only the diagonal of X is needed.
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void corr_msd(
-    Chebyshev<T, Kernel>& cheby,
+    Chebyshev<T>& cheby,
     DistVector<T>& diagonal_position,
     const VectorType& psi_in,
     int n_steps,
@@ -375,10 +375,10 @@ void corr_msd(
 }
 
 // periodic boundary condition MSD for Gamma-point calculations on orthogonal systems, using the affine translation-covariant representation.
-template <typename T, typename Kernel, typename VectorType>
+template <typename T, typename VectorType>
 void corr_msd(
-    Chebyshev<T, Kernel>& cheby,
-    BlockSpMat<T, Kernel>& H1,
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& H1,
     DistVector<T>& diagonal_position,
     const VectorType& psi_in,
     int n_steps,

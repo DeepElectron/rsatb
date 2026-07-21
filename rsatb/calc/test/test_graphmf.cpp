@@ -4,7 +4,8 @@
 #include <cmath>
 #include <random>
 
-using namespace rsatb::calc;
+// graphmf.hpp is a compat shim over vbcsr's graph_function.hpp; it declares no
+// rsatb::calc entities of its own, so only the vbcsr namespace is pulled in.
 using namespace vbcsr;
 
 int main(int argc, char** argv) {
@@ -44,7 +45,7 @@ int main(int argc, char** argv) {
     BlockSpMat<double> S_exp(&graph_S);
     auto func = [](double x) { return std::exp(-x); };
     
-    vbcsr::graph_matrix_function(S, &S_exp, std::function<double(double)>(func), "dense", true);
+    vbcsr::graph_matrix_function(S, &S_exp, std::function<double(double)>(func), true);
     
     // 4. Verify: S_exp should be diag(exp(-1), exp(-2), ...)
     // Since S is diagonal, the result should be diagonal (approximately, due to numerical noise/method)

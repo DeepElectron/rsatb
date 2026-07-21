@@ -23,7 +23,7 @@ using namespace vbcsr;
 enum class PreconditionerType { Left, Right, Symmetric };
 
 // Base class for Preconditioners
-template <typename T, typename Kernel = DefaultKernel<T>>
+template <typename T>
 class Preconditioner {
 public:
     virtual ~Preconditioner() = default;
@@ -37,18 +37,18 @@ public:
 // Block Jacobian Preconditioner
 // Approximates A^-1 by inverting diagonal blocks.
 // Stores the inverse diagonal blocks in a BlockSpMat P.
-template <typename T, typename Kernel = DefaultKernel<T>>
-class BlockJacobianPreconditioner : public Preconditioner<T, Kernel> {
+template <typename T>
+class BlockJacobianPreconditioner : public Preconditioner<T> {
 public:
-    BlockSpMat<T, Kernel> P; // Stores block diagonal inverse
+    BlockSpMat<T> P; // Stores block diagonal inverse
 
-    BlockJacobianPreconditioner(BlockSpMat<T, Kernel>& A) : P(A.graph) {
+    BlockJacobianPreconditioner(BlockSpMat<T>& A) : P(A.graph) {
         compute(A);
     }
 
     PreconditionerType get_type() const override { return PreconditionerType::Left; }
 
-    void compute(BlockSpMat<T, Kernel>& A) {
+    void compute(BlockSpMat<T>& A) {
         // Iterate local blocks of A
         const auto& row_ptr = A.row_ptr();
         const auto& col_ind = A.col_ind();
@@ -80,8 +80,10 @@ public:
                     // Invert block
                     invert_block(block.data(), rows);
                     
-                    // Add to P
-                    P.add_block(global_row, global_col, block.data(), rows, cols, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+                    // Add to P. invert_block() (LAPACK getrf/getri) reads and writes the
+                    // same convention, so the inverse comes back in the convention it was
+                    // given -- i.e. the canonical row-major of block_data() above.
+                    P.add_block(global_row, global_col, block.data(), rows, cols, AssemblyMode::INSERT, MatrixLayout::RowMajor);
                 }
             }
         }
@@ -148,19 +150,19 @@ private:
 // ISQRTM Preconditioner
 // Approximates A^-1/2 using Newton-Schulz iteration.
 // Useful for Symmetric Preconditioning.
-template <typename T, typename Kernel = DefaultKernel<T>>
-class ISQRTMPreconditioner : public Preconditioner<T, Kernel> {
+template <typename T>
+class ISQRTMPreconditioner : public Preconditioner<T> {
 public:
-    BlockSpMat<T, Kernel> P; // Stores S^-1/2
+    BlockSpMat<T> P; // Stores S^-1/2
 
-    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& S, int max_iter = 10, double tol = 1e-5, double sptol=1e-5, std::string init_method = "graph", double factor = 1.0, bool verbose = false) : P(S.graph) {
+    ISQRTMPreconditioner(BlockSpMat<T>& S, int max_iter = 10, double tol = 1e-5, double sptol=1e-5, std::string init_method = "graph", double factor = 1.0, bool verbose = false) : P(S.graph) {
         // Compute P = S^-1/2
         isqrtm(S, &P, tol, sptol, max_iter, init_method, factor, verbose);
     }
 
     PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }
 
-    ISQRTMPreconditioner(BlockSpMat<T, Kernel>& P) : P(P) {}
+    ISQRTMPreconditioner(BlockSpMat<T>& P) : P(P) {}
 
     void apply(const DistVector<T>& src, DistVector<T>& dst) override {
         P.mult_optimized(const_cast<DistVector<T>&>(src), dst);

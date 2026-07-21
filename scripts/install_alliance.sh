@@ -23,7 +23,7 @@ if ! command -v module >/dev/null 2>&1; then
     exit 1
 fi
 
-RSATB_MODULES="${RSATB_MODULES:-StdEnv/2023 gcc/12.3 openmpi/4.1.5 cmake/3.31.0 imkl/2025.2.0 hdf5-mpi/1.14.6 fftw-mpi/3.3.10 metis/5.1.0 parmetis/4.0.3 primme/3.2}"
+RSATB_MODULES="${RSATB_MODULES:-StdEnv/2023 gcc/12.3 openmpi/4.1.5 cmake/3.31.0 imkl/2025.2.0 hdf5-mpi/1.14.6 fftw-mpi/3.3.10 metis/5.1.0 parmetis/4.0.3 primme/3.2 matio/1.5.23}"
 read -r -a MODULES <<< "${RSATB_MODULES}"
 
 echo "Loading Alliance modules..."
@@ -85,6 +85,8 @@ require_env EBROOTFFTW
 require_env EBROOTMETIS
 require_env EBROOTPARMETIS
 require_env EBROOTPRIMME
+# libmatio is a hard build dependency of the bundled op2c (rescumat .mat reader).
+require_env EBROOTMATIO
 
 MKL_RT="$(find_one "${MKLROOT}" "libmkl_rt.so")"
 HDF5_LIB="$(find_one "${EBROOTHDF5}" "libhdf5.so")"
@@ -92,13 +94,15 @@ FFTW_LIB="$(find_one "${EBROOTFFTW}" "libfftw3.so")"
 METIS_LIB="$(find_one "${EBROOTMETIS}" "libmetis.so")"
 PARMETIS_LIB="$(find_one "${EBROOTPARMETIS}" "libparmetis.so")"
 PRIMME_LIB="$(find_one "${EBROOTPRIMME}" "libprimme.so")"
+MATIO_LIB="$(find_one "${EBROOTMATIO}" "libmatio.so")"
 
 for header in \
     "${EBROOTHDF5}/include/H5Cpp.h" \
     "${EBROOTFFTW}/include/fftw3.h" \
     "${EBROOTMETIS}/include/metis.h" \
     "${EBROOTPARMETIS}/include/parmetis.h" \
-    "${EBROOTPRIMME}/include/primme.h"; do
+    "${EBROOTPRIMME}/include/primme.h" \
+    "${EBROOTMATIO}/include/matio.h"; do
     if [[ ! -f "${header}" ]]; then
         echo "Could not find required header: ${header}" >&2
         exit 1
