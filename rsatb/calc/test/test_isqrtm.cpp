@@ -4,7 +4,7 @@
 #include <cmath>
 #include <random>
 
-using namespace rsatb::calc;
+using namespace vbcsr;
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
@@ -61,8 +61,12 @@ int main(int argc, char** argv) {
     // The new duplicate() method handles this automatically
     BlockSpMat<double> S_inv_sqrt = S.duplicate(true);
     
-    // isqrtm(S, S_inv_sqrt, tol, sptol, maxit, init_method, factor, verbose)
-    isqrtm(S, &S_inv_sqrt, 1e-7, 1e-8, 50, "graph", factor, true);
+    rsatb::calc::InverseSqrtOptions options;
+    options.tol = 1e-7;
+    options.sptol = 1e-8;
+    options.maxit = 50;
+    options.factor = factor;
+    rsatb::calc::inverse_sqrt(S, &S_inv_sqrt, options, /*verbose=*/true);
     
     // 4. Verify: S_inv_sqrt * S * S_inv_sqrt * v should be v
     double max_err = 0.0;

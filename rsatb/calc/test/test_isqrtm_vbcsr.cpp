@@ -60,7 +60,7 @@ int main(int argc, char** argv) {
     BlockSpMat<double> S_inv_sqrt = S.duplicate(true);
     
     // isqrtm_vbcsr(S, S_inv_sqrt, tol, sptol, maxit, factor, verbose)
-    isqrtm(S, &S_inv_sqrt, 1e-7, 1e-7, 50, true);
+    rsatb::calc::inverse_sqrt(S, &S_inv_sqrt, {1e-7, 1e-7, 50}, true);
     // 4. Verify: S_inv_sqrt * S * S_inv_sqrt * v should be v
     double max_err = 0.0;
     int n_tests = 5;

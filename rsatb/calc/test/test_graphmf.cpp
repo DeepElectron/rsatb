@@ -1,10 +1,10 @@
-#include "../graphmf.hpp"
+#include "vbcsr/core/detail/ops/spmf/graph_function.hpp"
 #include <iostream>
 #include <cassert>
 #include <cmath>
 #include <random>
 
-// graphmf.hpp is a compat shim over vbcsr's graph_function.hpp; it declares no
+// The graph matrix function is vbcsr's (detail/ops/spmf/graph_function.hpp); it declares no
 // rsatb::calc entities of its own, so only the vbcsr namespace is pulled in.
 using namespace vbcsr;
 

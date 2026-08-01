@@ -57,7 +57,10 @@ int main(int argc, char** argv) {
     double shift = 0.0;
     int n_kpm = 500; // Moments
     
-    fermi_dirac_kpm(cheby, psi_in, psi_out, temp, mu, n_kpm);
+    FermiExpansionOptions opt;
+    opt.n_fixed = n_kpm;
+    opt.summation = KpmKernel::Jackson;
+    fermi_dirac_kpm(cheby, psi_in, psi_out, temp, mu, opt);
     
     // 6. Verify Results
     // y_i = f(E_i) * x_i = f(E_i) * 1

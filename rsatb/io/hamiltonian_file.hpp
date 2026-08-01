@@ -9,7 +9,7 @@
 // HamiltonianReader and registering it in OpenHamiltonianFile, with no change
 // anywhere else.
 
-#include "periodic_table.hpp"
+#include "vbcsr/core/atomic/periodic_table.hpp"
 
 #include <array>
 #include <memory>
@@ -41,7 +41,7 @@ inline std::string ToString(HamiltonianFormat format) {
 /// Args:
 ///   raw_name: Case-insensitive tag, e.g. "deeptb".
 inline HamiltonianFormat ParseHamiltonianFormat(const std::string& raw_name) {
-    const std::string name = LowerCopy(TrimCopy(raw_name));
+    const std::string name = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(raw_name));
     if (name == "deeptb" || name == "deeptb_hdf5") {
         return HamiltonianFormat::kDeeptbHdf5;
     }
