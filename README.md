@@ -1,5 +1,48 @@
 # RSATB: Random State Ab-initio Tight-Binding
 
+## Running a calculation
+
+A calculation is one JSON file and one command:
+
+```bash
+rsatb template sktb -o graphene.json   # a working input to start from
+rsatb check graphene.json              # validate it before queueing it
+rsatb run graphene.json                # compute
+mpirun -n 64 rsatb run graphene.json   # the same input, in parallel
+```
+
+```json
+{
+  "structure": {"file": "graphene.vasp"},
+  "model": {
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {"C-C": {"pp_pi": {"kind": "constant", "value": -2.7, "r_cut": 1.6}}}
+    }
+  },
+  "tasks": [{"type": "dos", "nt": 200}]
+}
+```
+
+Four sections, and they answer four separate questions: where the atoms are,
+what the Hamiltonian is, how the calculation is carried out, and which
+observables to compute. Nothing is written twice — the model reports the basis
+it works in, so orbital counts and graph cutoffs are derived, not declared —
+and an unknown key is an error rather than a silent default.
+
+`rsatb doc` explains the whole format, one topic at a time, and is generated
+from the same declaration the validator uses. `rsatb check` needs neither MPI
+nor the compiled solver, so an input can be written and validated anywhere and
+only then queued; it reports malformed fields, missing files, and sections that
+disagree — a task asking for the velocity operator from a model that cannot
+build one, say.
+
+- Reference: [`doc/json_input.md`](doc/json_input.md)
+- Example inputs: [`examples/`](examples/)
+- The Python API underneath: [`doc/python_api.md`](doc/python_api.md)
+
 ## Installation
 
 ### Prerequisites

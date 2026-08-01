@@ -43,6 +43,21 @@ inline void timeprop_coeff(double time_step, double precision, bool forward,
     delete[] bes_vec;
 }
 
+// Chebyshev coefficients are carried as complex (time propagation needs
+// i^n factors). A real-scalar operator takes their real part: the cast
+// std::complex<double> -> double does not exist, which silently made
+// propagate() complex-only.
+template <typename T>
+struct CoeffCast {
+    static T apply(const std::complex<double>& c) { return static_cast<T>(c.real()); }
+};
+template <typename R>
+struct CoeffCast<std::complex<R>> {
+    static std::complex<R> apply(const std::complex<double>& c) {
+        return static_cast<std::complex<R>>(c);
+    }
+};
+
 // Chebyshev Recurrence
 // Computes T_n(H_scaled) * v
 // H_scaled = (H - center) / half_width
@@ -237,18 +252,18 @@ public:
         
         // v_out = c0 * T0
         v_out.copy_from(*v_t0);
-        v_out.scale(static_cast<T>(coeffs[0]));
+        v_out.scale(CoeffCast<T>::apply(coeffs[0]));
 
         if (N > 1) {
             apply_op(*v_t0, *v_t1, mode); // t1 = T1
-            v_out.axpy(static_cast<T>(coeffs[1]), *v_t1);
+            v_out.axpy(CoeffCast<T>::apply(coeffs[1]), *v_t1);
         }
 
         for (int n = 2; n < N; ++n) {
             apply_op(*v_t1, *v_t2, mode);
             v_t2->axpby(-1.0, *v_t0, 2.0); // t2 = 2*Op*t1 - t0 = Tn
             
-            v_out.axpy(static_cast<T>(coeffs[n]), *v_t2);
+            v_out.axpy(CoeffCast<T>::apply(coeffs[n]), *v_t2);
             
             v_t0->swap(*v_t1);
             v_t1->swap(*v_t2);
@@ -274,18 +289,18 @@ public:
         
         // V_out = c0 * T0
         V_out.copy_from(*mv_t0);
-        V_out.scale(static_cast<T>(coeffs[0]));
+        V_out.scale(CoeffCast<T>::apply(coeffs[0]));
 
         if (N > 1) {
             apply_op(*mv_t0, *mv_t1, mode); // T1 = T1
-            V_out.axpy(static_cast<T>(coeffs[1]), *mv_t1);
+            V_out.axpy(CoeffCast<T>::apply(coeffs[1]), *mv_t1);
         }
 
         for (int n = 2; n < N; ++n) {
             apply_op(*mv_t1, *mv_t2, mode);
             mv_t2->axpby(-1.0, *mv_t0, 2.0); // T2 = 2*Op*T1 - T0 = Tn
             
-            V_out.axpy(static_cast<T>(coeffs[n]), *mv_t2);
+            V_out.axpy(CoeffCast<T>::apply(coeffs[n]), *mv_t2);
             
             mv_t0->swap(*mv_t1);
             mv_t1->swap(*mv_t2);

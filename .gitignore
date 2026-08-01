@@ -21,6 +21,7 @@ rsatb/test/**/*h5
 test/py2c/PP_ORB/
 examples/_*
 *.dat
+benchmarks/*
 *log
 *.mtx
 *CMakeFiles/
@@ -187,3 +188,7 @@ deps/
 _deps/
 .venv_test/
 build.log
+
+# The data the JSON examples read. Small, generated, and part of the example --
+# without it `rsatb run examples/*.json` does not run as written.
+!examples/data/**

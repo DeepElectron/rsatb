@@ -107,24 +107,46 @@ void current_adjoint(Chebyshev<T>& cheby,
 }
 
 // AC Conductivity Correlation
+//
+// Fermi-operator degree selection:
+//   n_kpm > 0  — legacy fixed-degree Jackson expansion (needs n_kpm ~
+//                pi*W/kT at low temperature to be pointwise converged).
+//   n_kpm <= 0 — adaptive tapered ACE-FD expansion (fermi_options); the
+//                degree is chosen per vector from its own spectral measure
+//                and is essentially temperature independent on extended
+//                systems. Valid here because f(H) enters the Kubo correlator
+//                linearly and sigma(omega) carries the time-window
+//                broadening; see benchmarks/fermi_dirac/METHOD.md.
 template <typename T, typename VectorType>
-void corr_ac(Chebyshev<T>& cheby, 
-             BlockSpMat<T>& Vx, 
-             BlockSpMat<T>& Vy, 
-             BlockSpMat<T>& Vz, 
-             const VectorType& Psi_in, 
-             int nt, 
-             double temp, 
-             double mu, 
+void corr_ac(Chebyshev<T>& cheby,
+             BlockSpMat<T>& Vx,
+             BlockSpMat<T>& Vy,
+             BlockSpMat<T>& Vz,
+             const VectorType& Psi_in,
+             int nt,
+             double temp,
+             double mu,
              double scale, // Unused, relying on cheby
              double shift, // Unused, relying on cheby
-             int n_kpm, 
-             double eps = 1e-14, 
-             std::vector<std::complex<double>>* cac = nullptr, 
-             bool verbose = true) {
-    
+             int n_kpm,
+             double eps = 1e-14,
+             std::vector<std::complex<double>>* cac = nullptr,
+             bool verbose = true,
+             FermiExpansionOptions fermi_options = {}) {
+
     DistGraph* graph = Psi_in.graph;
     int rank = graph->rank;
+
+    fermi_options.verbose = fermi_options.verbose || verbose;
+    if (n_kpm > 0) {
+        // Legacy call style: a positive n_kpm pins the degree and asks for
+        // the classic Jackson expansion.
+        fermi_options.n_fixed = n_kpm;
+        fermi_options.summation = KpmKernel::Jackson;
+    }
+    auto apply_fermi = [&](const VectorType& in, VectorType& out, ChebyMode fd_mode) {
+        fermi_dirac_kpm(cheby, in, out, temp, mu, fermi_options, fd_mode);
+    };
     
     // 1. Generate Time Propagation Coefficients
     double dt = M_PI; // Fixed in original code?
@@ -201,7 +223,7 @@ void corr_ac(Chebyshev<T>& cheby,
     // Psi_in_copy.copy_from(Psi_in);
     
     // Psi_in_copy.conjugate();
-    fermi_dirac_kpm(cheby, Psi_in, Psi0, temp, mu, n_kpm, eps, ChebyMode::ADJOINT, verbose);
+    apply_fermi(Psi_in, Psi0, ChebyMode::ADJOINT);
     // Psi_in_copy.conjugate(); // Restore (though we use copy)
 
     // 3. Compute J_Psi = current(Psi_in)
@@ -210,7 +232,7 @@ void corr_ac(Chebyshev<T>& cheby,
     // 4. Apply (1-f) to J_Psi
     // (1-f) J Psi = J Psi - f(J Psi)
     for (int i = 0; i < 3; ++i) {
-        fermi_dirac_kpm(cheby, J_Psi[i], buff, temp, mu, n_kpm, eps, ChebyMode::NORMAL, verbose);
+        apply_fermi(J_Psi[i], buff, ChebyMode::NORMAL);
         J_Psi[i].axpy(-1.0, buff);
     }
 

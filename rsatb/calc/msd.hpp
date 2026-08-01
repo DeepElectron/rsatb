@@ -17,15 +17,7 @@ namespace calc {
 
 namespace detail {
 
-template <typename T>
-DistVector<T> make_like(const DistVector<T>& ref) {
-    return DistVector<T>(ref.graph);
-}
-
-template <typename T>
-DistMultiVector<T> make_like(const DistMultiVector<T>& ref) {
-    return DistMultiVector<T>(ref.graph, ref.num_vectors);
-}
+// ZeroLike(...) and RealDot(...) come from calc/vector_utils.hpp.
 
 template <typename VectorType>
 struct GammaAffineState {
@@ -103,10 +95,10 @@ void propagate_affine(
         return;
     }
 
-    GammaAffineState<VectorType> t0{make_like(in.affine), make_like(in.affine)};
-    GammaAffineState<VectorType> t1{make_like(in.affine), make_like(in.affine)};
-    GammaAffineState<VectorType> t2{make_like(in.affine), make_like(in.affine)};
-    VectorType h1_periodic = make_like(in.affine);
+    GammaAffineState<VectorType> t0{ZeroLike(in.affine), ZeroLike(in.affine)};
+    GammaAffineState<VectorType> t1{ZeroLike(in.affine), ZeroLike(in.affine)};
+    GammaAffineState<VectorType> t2{ZeroLike(in.affine), ZeroLike(in.affine)};
+    VectorType h1_periodic = ZeroLike(in.affine);
 
     auto apply_scaled_op = [&](const GammaAffineState<VectorType>& state_in, GammaAffineState<VectorType>& state_out) {
         // The affine Gamma-point generator is block-upper-triangular:
@@ -195,13 +187,13 @@ void run_explicit_position_msd(
         }
     };
 
-    VectorType psi_curr = make_like(psi_in);
-    VectorType psi_next = make_like(psi_in);
-    VectorType xpsi_curr = make_like(psi_in);
-    VectorType xpsi0 = make_like(psi_in);
-    VectorType xpsi0_prop = make_like(psi_in);
-    VectorType xpsi0_prop_next = make_like(psi_in);
-    VectorType comm_state = make_like(psi_in);
+    VectorType psi_curr = ZeroLike(psi_in);
+    VectorType psi_next = ZeroLike(psi_in);
+    VectorType xpsi_curr = ZeroLike(psi_in);
+    VectorType xpsi0 = ZeroLike(psi_in);
+    VectorType xpsi0_prop = ZeroLike(psi_in);
+    VectorType xpsi0_prop_next = ZeroLike(psi_in);
+    VectorType comm_state = ZeroLike(psi_in);
 
     psi_curr.copy_from(psi_in);
     apply_position(psi_in, xpsi0);
@@ -259,10 +251,10 @@ void run_gamma_affine_msd(
 
     msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm), 0.0);
 
-    GammaAffineState<VectorType> state_curr{make_like(psi_in), make_like(psi_in)};
-    GammaAffineState<VectorType> state_next{make_like(psi_in), make_like(psi_in)};
-    VectorType xpsi_curr = make_like(psi_in);
-    VectorType comm_state = make_like(psi_in);
+    GammaAffineState<VectorType> state_curr{ZeroLike(psi_in), ZeroLike(psi_in)};
+    GammaAffineState<VectorType> state_next{ZeroLike(psi_in), ZeroLike(psi_in)};
+    VectorType xpsi_curr = ZeroLike(psi_in);
+    VectorType comm_state = ZeroLike(psi_in);
 
     state_curr.periodic.copy_from(psi_in);
     state_curr.affine.copy_from(psi_in);

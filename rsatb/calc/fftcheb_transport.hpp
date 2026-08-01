@@ -286,6 +286,7 @@ void accumulate_fftcheb_block(
     DCFormulation formulation,
     int resolved_sections,
     bool verbose,
+    KpmKernel kernel,
     std::vector<cd>& kernel_accum
 ) {
     DistGraph* graph = samples.graph;
@@ -293,7 +294,10 @@ void accumulate_fftcheb_block(
     const int local_rows = graph->block_offsets[graph->owned_global_indices.size()];
     const int sample_block_size = vector_block_width(samples);
     const int n_sections = std::max(1, resolved_sections);
-    const std::vector<double> jackson = jackson_kernel(n_moments);
+    // Summation weights: Jackson for a pointwise-clean sigma(eps) spectrum;
+    // CosTaper for integrated sigma(mu, T) where the weak-form bias decay is
+    // higher order (see kpm.hpp / benchmarks/fermi_dirac/METHOD.md).
+    const std::vector<double> jackson = kpm_kernel_weights(kernel, n_moments);
 
     std::vector<double> phi3_weight(n_moments, 0.0);
     std::vector<double> eps_grid(n_moments, 0.0);
@@ -555,7 +559,8 @@ void dc_spectrum_fftcheb(
     size_t max_workspace_mb,
     std::vector<double>& sigma_out,
     std::vector<double>& energy_out,
-    bool verbose = false
+    bool verbose = false,
+    KpmKernel kernel = KpmKernel::Jackson
 ) {
     if (n_moments <= 0) {
         throw std::runtime_error("n_moments must be positive");
@@ -583,12 +588,12 @@ void dc_spectrum_fftcheb(
         if (block_width == 1) {
             DistVector<T> sample = psi_samples.get_col(sample_begin);
             accumulate_fftcheb_block(
-                cheby, Vx, Vy, Vz, sample, n_moments, formulation, resolved_sections, verbose, local_kernel
+                cheby, Vx, Vy, Vz, sample, n_moments, formulation, resolved_sections, verbose, kernel, local_kernel
             ); // there should be another switch when block_width == n_samples so we do not need to extract.
         } else {
             DistMultiVector<T> sample_block = extract_sample_block(psi_samples, sample_begin, block_width);
             accumulate_fftcheb_block(
-                cheby, Vx, Vy, Vz, sample_block, n_moments, formulation, resolved_sections, verbose, local_kernel
+                cheby, Vx, Vy, Vz, sample_block, n_moments, formulation, resolved_sections, verbose, kernel, local_kernel
             );
         }
     }

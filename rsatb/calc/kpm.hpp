@@ -6,6 +6,7 @@
 #include <cmath>
 #include <complex>
 #include <stdexcept>
+#include <string>
 #include <type_traits>
 #include <vector>
 
@@ -29,6 +30,84 @@ inline std::vector<double> jackson_kernel(int n) {
     std::vector<double> out(n);
     jackson_kernel(n, out.data());
     return out;
+}
+// TODO: style here is not unified, the jackson kernel is left outside the switched kernel function?
+
+// Summation rules ("kernels") for truncated Chebyshev expansions.
+//
+// Jackson turns the truncated series into a positive smearing of width
+// sigma ~ pi*half_width/N. That is the right tool for reconstructing a
+// spectral function pointwise (no negative DOS, no Gibbs ringing), but for
+// spectrally *integrated* observables its bias is one-signed and decays only
+// like 1/N^2. The tapers leave the first half of the series untouched (they
+// reproduce polynomials up to degree N/2 exactly) and roll off only the
+// tail, which preserves the self-cancellation of the oscillatory truncation
+// residual against a smooth (local) density of states; on such spectra the
+// degree needed for a target observable accuracy is set by the spectral
+// regularity near mu, not by beta*W. Background, benchmarks, and the
+// validity conditions live in benchmarks/fermi_dirac/METHOD.md.
+enum class KpmKernel { None, Jackson, CosTaper, VpTaper };
+
+// Weights g_n, n = 0..n-1, for summing n Chebyshev coefficients.
+inline std::vector<double> kpm_kernel_weights(KpmKernel kernel, int n) {
+    if (n <= 0) {
+        throw std::runtime_error("kpm_kernel_weights: n must be positive");
+    }
+    std::vector<double> g(static_cast<size_t>(n), 1.0);
+    switch (kernel) {
+    case KpmKernel::None:
+        break;
+    case KpmKernel::Jackson:
+        jackson_kernel(n, g.data());
+        break;
+    case KpmKernel::CosTaper: {
+        // Raised-cosine (Hann) roll-off over the trailing half: C^1 in n, so
+        // the far-from-mu ringing of the effective kernel decays two orders
+        // faster than for a bare truncation.
+        const int n0 = n / 2;
+        for (int i = n0; i < n; ++i) {
+            const double s = static_cast<double>(i - n0) / static_cast<double>(n - n0);
+            g[static_cast<size_t>(i)] = 0.5 * (1.0 + std::cos(M_PI * s));
+        }
+        break;
+    }
+    case KpmKernel::VpTaper: {
+        // de la Vallee Poussin style linear roll-off; nearly identical to
+        // CosTaper in practice, kept for cross-checks.
+        const int n0 = n / 2;
+        for (int i = n0; i < n; ++i) {
+            g[static_cast<size_t>(i)] = static_cast<double>(n - i) / static_cast<double>(n - n0);
+        }
+        break;
+    }
+    }
+    return g;
+}
+
+// q_g(N) = sum_{n<N} g_n(N) c_n mu_n: the expansion summed in observable
+// space against precomputed moments mu_n = <psi|T_n(Op)|psi>, rather than
+// applied to a state. The adaptive drivers compare this at several N to
+// decide a degree without touching the operator again.
+inline double kpm_weighted_sum(const std::vector<cd>& coeffs,
+                               const std::vector<double>& moments,
+                               int n, KpmKernel kernel) {
+    const std::vector<double> g = kpm_kernel_weights(kernel, n);
+    double q = 0.0;
+    for (int i = 0; i < n; ++i) {
+        q += g[static_cast<size_t>(i)] * coeffs[static_cast<size_t>(i)].real() *
+             moments[static_cast<size_t>(i)];
+    }
+    return q;
+}
+
+// Maps the user-facing kernel names onto the enum (API boundaries).
+inline KpmKernel parse_kpm_kernel(const std::string& name) {
+    if (name == "jackson") return KpmKernel::Jackson;
+    if (name == "costaper") return KpmKernel::CosTaper;
+    if (name == "vptaper") return KpmKernel::VpTaper;
+    if (name == "none") return KpmKernel::None;
+    throw std::runtime_error(
+        "Unknown KPM kernel '" + name + "' (expected jackson, costaper, vptaper, or none)");
 }
 
 inline std::vector<double> chebyshev_node_grid(int n, bool ascending = false) {
@@ -66,39 +145,52 @@ inline void truncate_chebyshev_coefficients(std::vector<cd>& coeffs, double eps 
     coeffs.resize(keep);
 }
 
+// Chebyshev coefficients of `func` on [-1, 1] under a summation rule:
+//   f(x) ~ sum_{n<n_moments} g_n c_n T_n(x)
+// with c_n the exact coefficients and g_n the kernel weights (use
+// KpmKernel::None for a bare truncation).
+//
+// The angular grid is oversampled. A bare 2n-point grid is exact only once
+// the coefficients beyond n have decayed -- true for Jackson-length Fermi
+// expansions, false for the short tapered ones whose tail still carries
+// O(1/n) weight, where aliasing folds that tail back onto the kept
+// coefficients. The grid is a power of two >= oversample*n with a 4096 floor;
+// the FFT cost is negligible next to a single distributed matvec.
 template <typename Func>
 std::vector<cd> chebyshev_coefficients_from_function(
     int n_moments,
     Func&& func,
-    bool apply_jackson_kernel = true,
-    double trunc_eps = 1e-14
+    KpmKernel kernel,
+    double trunc_eps = 1e-14,
+    int oversample = 8
 ) {
     if (n_moments <= 0) {
         throw std::runtime_error("n_moments must be positive");
     }
 
-    const double dtheta = M_PI / static_cast<double>(n_moments);
-    std::vector<cd> coeffs(2 * static_cast<size_t>(n_moments), cd(0.0, 0.0));
-    for (int i = 0; i < 2 * n_moments; ++i) {
+    int m = 4096;
+    while (m < n_moments * std::max(2, oversample)) {
+        m <<= 1;
+    }
+
+    const double dtheta = M_PI / static_cast<double>(m);
+    std::vector<cd> samples(2 * static_cast<size_t>(m), cd(0.0, 0.0));
+    for (int i = 0; i < 2 * m; ++i) {
         const double x = std::cos(dtheta * static_cast<double>(i));
-        coeffs[static_cast<size_t>(i)] = static_cast<cd>(func(x));
+        samples[static_cast<size_t>(i)] = static_cast<cd>(func(x));
     }
+    fft_1d(2 * m, samples.data(), samples.data());
 
-    fft_1d(2 * n_moments, coeffs.data(), coeffs.data());
-
-    std::vector<double> kernel;
-    if (apply_jackson_kernel) {
-        kernel = jackson_kernel(n_moments);
-    }
-
-    coeffs.resize(static_cast<size_t>(n_moments));
+    const std::vector<double> g = kpm_kernel_weights(kernel, n_moments);
+    std::vector<cd> coeffs(static_cast<size_t>(n_moments));
     for (int i = 0; i < n_moments; ++i) {
-        const double kernel_value = apply_jackson_kernel ? kernel[static_cast<size_t>(i)] : 1.0;
-        coeffs[static_cast<size_t>(i)] = (coeffs[static_cast<size_t>(i)].real() * kernel_value) /
-                                         static_cast<double>(n_moments);
+        coeffs[static_cast<size_t>(i)] =
+            samples[static_cast<size_t>(i)].real() * g[static_cast<size_t>(i)] / static_cast<double>(m);
     }
     coeffs[0] *= 0.5;
-    truncate_chebyshev_coefficients(coeffs, trunc_eps);
+    if (trunc_eps > 0.0) {
+        truncate_chebyshev_coefficients(coeffs, trunc_eps);
+    }
     return coeffs;
 }
 

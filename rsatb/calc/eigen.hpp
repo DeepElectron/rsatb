@@ -15,6 +15,10 @@
 // Include PRIMME header
 #include <primme.h>
 
+// Declared so this header compiles on its own; the using-directive below
+// previously relied on some earlier include having opened the namespace.
+namespace rsatb { namespace backend {} }
+
 namespace rsatb {
 namespace calc {
 
