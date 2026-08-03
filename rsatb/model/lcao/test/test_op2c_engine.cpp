@@ -1,5 +1,5 @@
-#include "../operator_construction.hpp"
-#include "../../test_data_path.hpp"
+#include "../../model/lcao/op2c_engine.hpp"
+#include "../../../test_data_path.hpp"
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include <gtest/gtest.h>
 #include <complex>
@@ -8,7 +8,7 @@
 #include <mpi.h>
 
 using namespace rsatb;
-using namespace rsatb::backend;
+using namespace rsatb::model::lcao;
 
 // Reusing setup from test_hr2hk.cpp
 class GlobalEnv : public ::testing::Environment {
@@ -218,7 +218,7 @@ int edge_shift_vec2[876] = {
       -1,  1,  0,  1,  0,  0,  2,  0,  0
     };
 
-TEST(OperatorConstructionTest, TestBuildVelocity) {
+TEST(Op2cEngineTest, TestBuildVelocity) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -246,8 +246,8 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
         );
     }
     
-    // 2. Setup OperatorConstruction
-    OperatorConstruction op_const(MPI_COMM_WORLD);
+    // 2. Set up the op2c engine
+    Op2cEngine op_const(MPI_COMM_WORLD);
     
     std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};
@@ -298,7 +298,7 @@ TEST(OperatorConstructionTest, TestBuildVelocity) {
     delete g3;
 }
 
-TEST(OperatorConstructionTest, TestBuildOverlap) {
+TEST(Op2cEngineTest, TestBuildOverlap) {
     int rank, size;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
@@ -322,7 +322,7 @@ TEST(OperatorConstructionTest, TestBuildOverlap) {
         );
     }
     
-    OperatorConstruction op_const(MPI_COMM_WORLD);
+    Op2cEngine op_const(MPI_COMM_WORLD);
     
     std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};

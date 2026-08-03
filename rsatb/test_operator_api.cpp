@@ -51,15 +51,8 @@ std::string make_periodic_hdf5_hamiltonian_file(int norb, const std::complex<dou
     return path;
 }
 
-void setup_lcao_hdf5(
-    rsatb::RSATB& rsatb_inst,
-    const std::string& hfile,
+rsatb::model::SetupOptions make_file_setup_options(
     const std::vector<std::vector<double>>& kpoints,
-    const std::vector<std::string>& orb_names = {},
-    const std::string& orb_dir = "",
-    const std::vector<std::string>& psd_names = {},
-    const std::string& psd_dir = "",
-    const std::string& precond = "None",
     int nsamples = 1,
     bool compute_bounds = true
 ) {
@@ -67,133 +60,132 @@ void setup_lcao_hdf5(
     options.kpoints = kpoints;
     options.nsamples = nsamples;
     options.compute_bounds = compute_bounds;
-    options.preconditioner.mode = precond;
-
-    rsatb::model::LCAOModelConfig model;
-    model.input = rsatb::model::Hdf5Input{};
-    model.input->filename = hfile;
-    model.integrals.orb_names = orb_names;
-    model.integrals.orb_dir = orb_dir;
-    model.integrals.psd_names = psd_names;
-    model.integrals.psd_dir = psd_dir;
-
-    rsatb_inst.setup(model, options);
+    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
+    return options;
 }
 
-std::unique_ptr<rsatb::RSATB> make_single_atom_rsatb(const std::string& hfile, const std::vector<double>& pos = {0.0, 0.0, 0.0}) {
-    const std::vector<int> z = {1};
-    const std::vector<double> cell = {
-        10.0, 0.0, 0.0,
-        0.0, 10.0, 0.0,
-        0.0, 0.0, 10.0
-    };
-    const std::vector<bool> pbc = {false, false, false};
-    const std::vector<double> r_max = {1.0};
-    const std::vector<int> type_norb = {1};
-
-    auto rsatb_inst = std::make_unique<rsatb::RSATB>(1, pos, z, cell, pbc, r_max, type_norb, false, MPI_COMM_WORLD);
-    setup_lcao_hdf5(*rsatb_inst, hfile, {{0.0, 0.0, 0.0}});
-    return rsatb_inst;
+/// Orthogonal tight-binding model backed by a synthetic Hamiltonian file.
+std::unique_ptr<rsatb::model::TightBindingFileModel> make_file_model(
+    const std::string& hfile,
+    int norb = 1,
+    const std::string& symbol = "H",
+    double cutoff = 1.0
+) {
+    rsatb::model::TightBindingFileConfig config;
+    config.hamiltonian = rsatb::io::HamiltonianFile{hfile};
+    config.type_symbols = {symbol};
+    config.type_norb = {norb};
+    config.cutoff_radius = {cutoff};
+    return rsatb::model::TightBindingFileModel::Create(std::move(config), MPI_COMM_WORLD);
 }
 
-std::unique_ptr<rsatb::RSATB> make_periodic_single_atom_rsatb(
+struct FileBackedRsatb {
+    std::unique_ptr<rsatb::model::TightBindingFileModel> model;
+    std::unique_ptr<rsatb::RSATB> rsatb;
+
+    rsatb::RSATB* operator->() const { return rsatb.get(); }
+    rsatb::RSATB& operator*() const { return *rsatb; }
+};
+
+FileBackedRsatb make_single_atom_rsatb(
+    const std::string& hfile,
+    const std::vector<double>& pos = {0.0, 0.0, 0.0}
+) {
+    vbcsr::atomic::Structure structure;
+    structure.n_atom = 1;
+    structure.pos = pos;
+    structure.z = {1};
+    structure.cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
+    structure.pbc = {false, false, false};
+
+    FileBackedRsatb result;
+    result.model = make_file_model(hfile);
+    result.rsatb = std::make_unique<rsatb::RSATB>(
+        structure, *result.model, make_file_setup_options({{0.0, 0.0, 0.0}}),
+        1, false, MPI_COMM_WORLD);
+    return result;
+}
+
+FileBackedRsatb make_periodic_single_atom_rsatb(
     const std::string& hfile,
     int norb,
-    const std::vector<std::vector<double>>& kpoints,
-    const std::vector<std::string>& orb_names = {},
-    const std::string& orb_dir = ""
+    const std::vector<std::vector<double>>& kpoints
 ) {
-    const size_t n_atom = 1;
-    const size_t N_atom = 1;
-    const size_t atom_offset = 0;
-    const size_t n_edge = 2;
-    const size_t N_edge = 2;
-
-    const int atom_index[] = {0};
-    const int atom_type[] = {0};
-    const int edge_index[] = {
-        0, 0,
-        0, 0
-    };
-    const int type_norb[] = {norb};
-    const int edge_shift_vec[] = {
-         1, 0, 0,
-        -1, 0, 0
-    };
-    const double cell[] = {
+    static const int atom_index[] = {0};
+    static const int atom_type[] = {0};
+    static const int edge_index[] = {0, 0, 0, 0};
+    static const int edge_shift_vec[] = {1, 0, 0, -1, 0, 0};
+    static const double cell[] = {
         1.0, 0.0, 0.0,
         0.0, 8.0, 0.0,
         0.0, 0.0, 8.0
     };
-    const double pos[] = {0.0, 0.0, 0.0};
+    static const double pos[] = {0.0, 0.0, 0.0};
 
-    auto rsatb_inst = std::make_unique<rsatb::RSATB>(
-        1,
-        n_atom, N_atom, atom_offset, n_edge, N_edge,
-        atom_index, atom_type, edge_index, type_norb, std::vector<std::string>{}, edge_shift_vec,
-        cell, pos, false, MPI_COMM_WORLD);
+    rsatb::RSATB::AtomicGraphArrays graph;
+    graph.n_atom = 1;
+    graph.N_atom = 1;
+    graph.atom_offset = 0;
+    graph.n_edge = 2;
+    graph.N_edge = 2;
+    graph.atom_index = atom_index;
+    graph.atom_type = atom_type;
+    graph.edge_index = edge_index;
+    graph.edge_shift_vec = edge_shift_vec;
+    graph.cell = cell;
+    graph.pos = pos;
 
-    setup_lcao_hdf5(*rsatb_inst, hfile, kpoints, orb_names, orb_dir);
-    return rsatb_inst;
+    FileBackedRsatb result;
+    result.model = make_file_model(hfile, norb);
+    result.rsatb = std::make_unique<rsatb::RSATB>(
+        graph, *result.model, make_file_setup_options(kpoints), 1, false, MPI_COMM_WORLD);
+    return result;
 }
 
-rsatb::backend::SKTBModel make_sktb_pz_model(bool with_overlap = false, double cutoff = 1.5) {
-    rsatb::backend::SKTBInput source;
-    source.basis["C"] = {"pz"};
-    source.hamiltonian.onsite["C"] = {{"pz", 0.0}};
+rsatb::model::SktbConfig make_sktb_pz_config(bool with_overlap = false, double cutoff = 1.5) {
+    rsatb::model::SktbConfig config;
+    config.basis["C"] = {"pz"};
+    config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
 
-    rsatb::backend::SKPairInput pair;
-    pair.species = {"C", "C"};
-    rsatb::backend::SKRadialFunction radial;
-    radial.kind = "spline";
-    radial.r = {0.0, cutoff};
-    radial.values = {0.2, 0.2};
-    radial.r_cut = cutoff;
-    radial.spline_second_derivatives = radial.build_spline_second_derivatives();
-    pair.channels["pp_pi"] = radial;
-    source.hamiltonian.pairs.push_back(pair);
-
+    const auto radial = rsatb::model::sktb::MakeSpline({0.0, cutoff}, {0.2, 0.2}, cutoff);
+    config.hamiltonian.SetPairChannel("C", "C", "pp", "pi", radial);
     if (with_overlap) {
-        source.overlap = rsatb::backend::SKMatrixInput{};
-        source.overlap->pairs.push_back(pair);
+        rsatb::model::sktb::SkParameters overlap;
+        overlap.SetPairChannel("C", "C", "pp", "pi", radial);
+        config.overlap = overlap;
     }
-
-    return rsatb::backend::build_sktb_model(source, {"C"});
+    return config;
 }
 
 rsatb::model::SetupOptions make_pairwise_setup_options(bool compute_bounds) {
     rsatb::model::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
     options.compute_bounds = compute_bounds;
-    options.preconditioner.mode = "None";
+    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
     return options;
 }
 
-std::unique_ptr<rsatb::RSATB> make_sktb_points_rsatb(
-    const rsatb::backend::SKTBModel& source,
-    bool with_overlap = false
-) {
-    const std::vector<double> pos = {
-        0.0, 0.0, 0.0,
-        1.0, 0.0, 0.0
-    };
-    const std::vector<int> z = {6, 6};
-    const std::vector<double> cell = {
-        10.0, 0.0, 0.0,
-        0.0, 10.0, 0.0,
-        0.0, 0.0, 10.0
-    };
-    const std::vector<bool> pbc = {false, false, false};
-    const auto prepared = rsatb::backend::prepare_sktb_atomic_data(source);
+struct SktbBackedRsatb {
+    std::unique_ptr<rsatb::model::SktbModel> model;
+    std::unique_ptr<rsatb::RSATB> rsatb;
 
-    auto rsatb_inst = std::make_unique<rsatb::RSATB>(
-        1, pos, z, cell, pbc, prepared.r_max_per_type, prepared.type_norb, false, MPI_COMM_WORLD);
+    rsatb::RSATB* operator->() const { return rsatb.get(); }
+    rsatb::RSATB& operator*() const { return *rsatb; }
+};
 
-    rsatb::model::SKTBModelConfig model;
-    model.native = source;
-    rsatb_inst->setup(model, make_pairwise_setup_options(true));
-    (void)with_overlap;
-    return rsatb_inst;
+SktbBackedRsatb make_sktb_points_rsatb(const rsatb::model::SktbConfig& config) {
+    vbcsr::atomic::Structure structure;
+    structure.n_atom = 2;
+    structure.pos = {0.0, 0.0, 0.0, 1.0, 0.0, 0.0};
+    structure.z = {6, 6};
+    structure.cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
+    structure.pbc = {false, false, false};
+
+    SktbBackedRsatb result;
+    result.model = rsatb::model::SktbModel::Create(config);
+    result.rsatb = std::make_unique<rsatb::RSATB>(
+        structure, *result.model, make_pairwise_setup_options(true), 1, false, MPI_COMM_WORLD);
+    return result;
 }
 
 } // namespace
@@ -278,28 +270,22 @@ TEST(RSATBOperatorApiTest, AutomaticBoundsSkipsZeroHamiltonian) {
 
 TEST(RSATBOperatorApiTest, SetupUsesExplicitEnergyBounds) {
     const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(2.0, 0.0));
-    const std::vector<int> z = {1};
-    const std::vector<double> pos = {0.0, 0.0, 0.0};
-    const std::vector<double> cell = {
-        10.0, 0.0, 0.0,
-        0.0, 10.0, 0.0,
-        0.0, 0.0, 10.0
-    };
-    const std::vector<bool> pbc = {false, false, false};
-    const std::vector<double> r_max = {1.0};
-    const std::vector<int> type_norb = {1};
 
-    rsatb::RSATB rsatb_inst(1, pos, z, cell, pbc, r_max, type_norb, false, MPI_COMM_WORLD);
+    vbcsr::atomic::Structure structure;
+    structure.n_atom = 1;
+    structure.pos = {0.0, 0.0, 0.0};
+    structure.z = {1};
+    structure.cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
+    structure.pbc = {false, false, false};
 
-    rsatb::model::LCAOModelConfig model;
-    model.input = rsatb::model::Hdf5Input{};
-    model.input->filename = path;
+    auto model = make_file_model(path);
 
     rsatb::model::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
     options.energy_bounds = std::make_pair(-3.0, 4.0);
-    options.preconditioner.mode = "None";
-    rsatb_inst.setup(model, options);
+    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
+
+    rsatb::RSATB rsatb_inst(structure, *model, options, 1, false, MPI_COMM_WORLD);
 
     ASSERT_NE(rsatb_inst.operators(), nullptr);
     const auto bounds = rsatb_inst.operators()->bounds();
@@ -359,17 +345,19 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyWithoutGammaKPoint) {
         rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "z");
         FAIL() << "compute_msd_spectrum should reject MSD when Gamma is not configured";
     } catch (const std::runtime_error& error) {
-        EXPECT_NE(std::string(error.what()).find("Gamma-point"), std::string::npos);
+        // The message is observables.hpp's: "requires a Gamma point in the
+        // setup k-point list". Asserted on the un-hyphenated spelling the
+        // code actually uses.
+        EXPECT_NE(std::string(error.what()).find("Gamma point"), std::string::npos);
     }
 
     std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForPeriodicOverlapSystems) {
-    const std::string path = make_periodic_hdf5_hamiltonian_file(13, std::complex<double>(0.0, 0.0), std::complex<double>(0.05, 0.0));
-    const std::string orb_dir = rsatb::test::data_path("diamond/");
-    const std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    auto rsatb_inst = make_periodic_single_atom_rsatb(path, 13, {{0.0, 0.0, 0.0}}, orb_names, orb_dir);
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForOverlapSystems) {
+    // An overlap-present model has no orthogonal-diagonal position, so MSD must
+    // refuse rather than silently use the wrong representation.
+    auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_config(true));
 
     std::vector<double> msd;
     std::vector<double> energy;
@@ -377,44 +365,28 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForPeriodicOverlapSyste
 
     try {
         rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "x");
-        FAIL() << "compute_msd_spectrum should reject periodic overlap-present MSD in this pass";
+        FAIL() << "compute_msd_spectrum should reject overlap-present MSD in this pass";
     } catch (const std::runtime_error& error) {
-        EXPECT_NE(std::string(error.what()).find("orthogonal systems only"), std::string::npos);
+        const std::string message = error.what();
+        EXPECT_TRUE(message.find("orthogonal") != std::string::npos ||
+                    message.find("position-capable") != std::string::npos)
+            << message;
     }
-
-    std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, SetupRejectsSKTBWhenStoredCutoffIsTooSmall) {
-    const std::vector<double> pos = {
-        0.0, 0.0, 0.0,
-        1.0, 0.0, 0.0
-    };
-    const std::vector<int> z = {6, 6};
-    const std::vector<double> cell = {
-        10.0, 0.0, 0.0,
-        0.0, 10.0, 0.0,
-        0.0, 0.0, 10.0
-    };
-    const std::vector<bool> pbc = {false, false, false};
-    const std::vector<double> r_max = {0.1};
-    const std::vector<int> type_norb = {1};
-
-    rsatb::RSATB rsatb_inst(1, pos, z, cell, pbc, r_max, type_norb, false, MPI_COMM_WORLD);
-    auto source = make_sktb_pz_model(false, 1.5);
-    rsatb::model::SKTBModelConfig model;
-    model.native = source;
-
-    try {
-        rsatb_inst.setup(model, make_pairwise_setup_options(false));
-        FAIL() << "setup should reject SKTB when the stored graph cutoff is too small";
-    } catch (const std::runtime_error& error) {
-        EXPECT_NE(std::string(error.what()).find("graph cutoff"), std::string::npos);
-    }
+TEST(RSATBOperatorApiTest, SktbGraphCutoffIsDerivedFromThePairCutoff) {
+    // This replaces SetupRejectsSKTBWhenStoredCutoffIsTooSmall. That test
+    // checked a cross-check between a caller-supplied graph cutoff and the
+    // model's pair cutoffs; the graph cutoff now comes from the model, so the
+    // two cannot disagree. What is worth asserting is the derivation itself.
+    auto model = rsatb::model::SktbModel::Create(make_sktb_pz_config(false, 1.5));
+    ASSERT_EQ(model->basis().cutoff_radius.size(), 1u);
+    EXPECT_DOUBLE_EQ(model->basis().cutoff_radius[0], 0.75);
+    EXPECT_EQ(model->basis().type_norb, std::vector<int>{1});
 }
 
 TEST(RSATBOperatorApiTest, ComputeACWorksForOrthogonalSKTBProvider) {
-    auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_model(false));
+    auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_config(false));
 
     std::vector<double> ac;
     std::vector<double> omega;
@@ -425,7 +397,7 @@ TEST(RSATBOperatorApiTest, ComputeACWorksForOrthogonalSKTBProvider) {
 }
 
 TEST(RSATBOperatorApiTest, OverlapPresentSKTBStillRejectsTransportWithoutVelocity) {
-    auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_model(true), true);
+    auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_config(true));
 
     std::vector<double> ac;
     std::vector<double> omega;
@@ -438,16 +410,9 @@ TEST(RSATBOperatorApiTest, OverlapPresentSKTBStillRejectsTransportWithoutVelocit
 }
 
 TEST(RSATBOperatorApiTest, PeriodicOrthogonalSKTBUsesGammaAffineMSDPath) {
-    const size_t n_atom = 1;
-    const size_t N_atom = 1;
-    const size_t atom_offset = 0;
-    const size_t n_edge = 2;
-    const size_t N_edge = 2;
-
     const int atom_index[] = {0};
     const int atom_type[] = {0};
     const int edge_index[] = {0, 0, 0, 0};
-    const int type_norb[] = {1};
     const int edge_shift_vec[] = {1, 0, 0, -1, 0, 0};
     const double cell[] = {
         1.0, 0.0, 0.0,
@@ -456,16 +421,22 @@ TEST(RSATBOperatorApiTest, PeriodicOrthogonalSKTBUsesGammaAffineMSDPath) {
     };
     const double pos[] = {0.0, 0.0, 0.0};
 
-    rsatb::RSATB rsatb_inst(
-        1,
-        n_atom, N_atom, atom_offset, n_edge, N_edge,
-        atom_index, atom_type, edge_index, type_norb, std::vector<std::string>{"C"}, edge_shift_vec,
-        cell, pos, false, MPI_COMM_WORLD);
+    rsatb::RSATB::AtomicGraphArrays graph;
+    graph.n_atom = 1;
+    graph.N_atom = 1;
+    graph.atom_offset = 0;
+    graph.n_edge = 2;
+    graph.N_edge = 2;
+    graph.atom_index = atom_index;
+    graph.atom_type = atom_type;
+    graph.edge_index = edge_index;
+    graph.edge_shift_vec = edge_shift_vec;
+    graph.cell = cell;
+    graph.pos = pos;
 
-    auto source = make_sktb_pz_model(false, 1.1);
-    rsatb::model::SKTBModelConfig model;
-    model.native = source;
-    rsatb_inst.setup(model, make_pairwise_setup_options(true));
+    auto model = rsatb::model::SktbModel::Create(make_sktb_pz_config(false, 1.1));
+    rsatb::RSATB rsatb_inst(
+        graph, *model, make_pairwise_setup_options(true), 1, false, MPI_COMM_WORLD);
 
     std::vector<double> msd;
     std::vector<double> energy;

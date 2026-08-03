@@ -1,31 +1,55 @@
 #ifndef RSATB_MODEL_SETUP_HPP
 #define RSATB_MODEL_SETUP_HPP
 
-#include "sktb/sktb.hpp"
+// Run options: what the calculation does, independent of which model family
+// produces the operators.
+//
+// Model-specific configuration lives with its model -- see lcao_model.hpp and
+// sktb/sktb_model.hpp. Nothing here names a model family.
+
+#include "vbcsr/core/atomic/periodic_table.hpp"
 
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <utility>
-#include <variant>
 #include <vector>
 
 namespace rsatb {
 namespace model {
 
+/// Which operator the iterative solvers are preconditioned against.
+enum class PreconditionerTarget {
+    kNone,      // no preconditioner
+    kOverlap,   // approximate S^{-1/2}
+};
+
 struct PreconditionerOptions {
-    std::string mode = "H/S";
+    PreconditionerTarget target = PreconditionerTarget::kOverlap;
+
+    /// Frees the overlap matrix once the preconditioner is built.
+    ///
+    /// The preconditioner already carries the S^{-1/2} information the solvers
+    /// need, so for a large system dropping S saves substantial memory. It
+    /// also makes any observable that needs S explicitly unavailable, which is
+    /// why this is a named option rather than a side effect of a mode string.
+    bool release_overlap_after_build = false;
+
     double tol = 1e-7;
     double sptol = 1e-5;
     int maxiter = 20;
-    std::string method = "graph";
 
-    std::string normalized_mode() const {
-        if (mode == "H/S") {
-            return "S";
-        }
-        return mode;
-    }
 };
+
+/// Parses a user-facing preconditioner target name.
+inline PreconditionerTarget ParsePreconditionerTarget(const std::string& raw_name) {
+    const std::string name = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(raw_name));
+    if (name == "none") return PreconditionerTarget::kNone;
+    if (name == "s" || name == "overlap") return PreconditionerTarget::kOverlap;
+    throw std::runtime_error(
+        "Unsupported preconditioner target '" + raw_name + "'. Supported: none, overlap. "
+        "The former \"H\" mode is now preconditioner.release_overlap_after_build.");
+}
 
 struct SetupOptions {
     std::vector<std::vector<double>> kpoints = {{0.0, 0.0, 0.0}};
@@ -36,60 +60,6 @@ struct SetupOptions {
     int bounds_max_matvecs = 10000;
     PreconditionerOptions preconditioner;
 };
-
-struct Hdf5Input {
-    std::string filename;
-    bool lspinorb = false;
-    int nspin = 1;
-    bool noncolin = false;
-
-    bool enabled() const {
-        return !filename.empty();
-    }
-};
-
-struct LCAOIntegralInput {
-    std::vector<std::string> orb_names;
-    std::string orb_dir;
-    std::vector<std::string> psd_names;
-    std::string psd_dir;
-    int nspin = 1;
-    bool lspinorb = false;
-    bool noncolin = false;
-    std::string log_file = "op2c.log";
-
-    bool has_overlap_inputs() const {
-        return !orb_names.empty() && !orb_dir.empty();
-    }
-
-    bool has_velocity_inputs() const {
-        return has_overlap_inputs() && !psd_names.empty() && !psd_dir.empty();
-    }
-
-    bool enabled() const {
-        return has_overlap_inputs();
-    }
-};
-
-using SKTBNativeInput = rsatb::backend::SKTBModel;
-using DFTBNativeInput = rsatb::backend::SKTBModel;
-
-struct LCAOModelConfig {
-    std::optional<Hdf5Input> input;
-    LCAOIntegralInput integrals;
-};
-
-struct SKTBModelConfig {
-    std::optional<Hdf5Input> input;
-    SKTBNativeInput native;
-};
-
-struct DFTBModelConfig {
-    std::optional<Hdf5Input> input;
-    DFTBNativeInput native;
-};
-
-using AnyModelConfig = std::variant<LCAOModelConfig, SKTBModelConfig, DFTBModelConfig>;
 
 } // namespace model
 } // namespace rsatb

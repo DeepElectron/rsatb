@@ -1,156 +1,53 @@
-#ifndef RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
-#define RSATB_BACKEND_OPERATOR_CONSTRUCTION_HPP
+#ifndef RSATB_MODEL_LCAO_OP2C_ENGINE_HPP
+#define RSATB_MODEL_LCAO_OP2C_ENGINE_HPP
+
+// The op2c two-centre integral engine, as LCAO uses it.
+//
+// This is LCAO's own machinery and nothing else's: it tabulates the numerical
+// atomic orbitals and the pseudopotential projectors once, and evaluates the
+// overlap, the position operator and the velocity from them. A Slater-Koster
+// model computes those from parameters instead, and a file-backed model does
+// not have them at all -- so neither includes this header, and neither pulls in
+// op2c.
+//
+// It was the op2c half of a class called OperatorConstruction that also held a
+// Hamiltonian-file reader and a bag of block-assembly helpers. Those are now
+// model/hamiltonian_images.hpp and operator/block_assembly.hpp; what is left is
+// named for what it is.
+//
+// Units: op2c works in Bohr, AtomicData in Angstrom. Every cutoff crossing that
+// boundary is converted here, at the boundary.
+
+#include "units.hpp"
+
+#include "../../operator/block_assembly.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
 #include "vbcsr/core/block_csr.hpp"
-#include "../io/hdf5.hpp"
-#include "../extern/op2c/src/int2c/op2c.hpp"
+#include "../../extern/op2c/src/int2c/op2c.hpp"
+
+#include <complex>
 #include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 using namespace vbcsr;
 using namespace vbcsr::atomic;
 
 namespace rsatb {
-namespace backend {
+namespace model {
+namespace lcao {
 
-/*
- * For periodic operator algebra we often need the first lattice moment of a
- * real-space image decomposition:
- *
- *   M_alpha = sum_R R_alpha A(R),
- *
- * where A(R) is the operator image associated with lattice translation R and
- * R_alpha is its Cartesian component along axis alpha.
- *
- * This object stores that first moment independently from any position
- * representation. The diagonal orthogonal-basis position term
- *
- *   d_alpha(i, mu) = r_i,alpha
- *
- * belongs to the position state and is built separately.
- */
-struct FirstLatticeMomentAxisData {
-    using Scalar = std::complex<double>;
-    using Matrix = BlockSpMat<Scalar>;
-
-    std::unique_ptr<Matrix> first_moment;
-};
-
-struct FirstLatticeMomentTriplet {
-    FirstLatticeMomentAxisData x;
-    FirstLatticeMomentAxisData y;
-    FirstLatticeMomentAxisData z;
-};
-
-namespace detail {
-
-// Convert the integer image label R = (n1, n2, n3) to its Cartesian component
-// along the selected axis:
-//
-//   R_alpha = n1 * a1_alpha + n2 * a2_alpha + n3 * a3_alpha.
-inline double cell_shift_component(const AtomicData& ad, const std::vector<int>& shift, int axis_idx) {
-    const auto& cell = ad.cell;
-    return static_cast<double>(shift[0]) * cell[axis_idx]
-         + static_cast<double>(shift[1]) * cell[axis_idx + 3]
-         + static_cast<double>(shift[2]) * cell[axis_idx + 6];
-}
-
-// Build the first image moment along axis alpha:
-//
-//   M_alpha = sum_R R_alpha A(R),
-//
-// where each real-space image matrix A(R) is weighted by the Cartesian shift of
-// that image. In the present backend A(R) is the Hamiltonian image container.
-inline std::unique_ptr<FirstLatticeMomentAxisData::Matrix> make_first_moment_matrix(
-    AtomicData& ad,
-    ImageContainer<double>& images,
-    int axis_idx
-) {
-    auto* graph = ad.graph;
-    auto result = std::unique_ptr<FirstLatticeMomentAxisData::Matrix>(
-        images.accumulate_weighted_images<FirstLatticeMomentAxisData::Scalar>(
-            graph,
-            [&](const std::vector<int>& shift) {
-                return cell_shift_component(ad, shift, axis_idx);
-            }));
-    result->assemble();
-    return result;
-}
-
-// Build the orthogonal-basis diagonal position vector by replicating the atomic
-// coordinate of each owned atom over all of its orbitals:
-//
-//   d_alpha(i, mu) = r_i,alpha.
-inline DistVector<std::complex<double>> make_orthogonal_diagonal_coordinate_vector(
-    AtomicData& ad,
-    int axis_idx
-) {
-    auto* graph = ad.graph;
-    DistVector<std::complex<double>> diagonal(graph);
-    diagonal.set_constant(std::complex<double>(0.0, 0.0));
-
-    const int n_local_blocks = static_cast<int>(graph->block_sizes.size());
-    for (int local_block = 0; local_block < n_local_blocks; ++local_block) {
-        double x = 0.0;
-        double y = 0.0;
-        double z = 0.0;
-        ad.get_pos(local_block, &x, &y, &z);
-        const double coord = (axis_idx == 0) ? x : ((axis_idx == 1) ? y : z);
-        const int norb = graph->block_sizes[local_block];
-        const int offset = graph->block_offsets[local_block];
-        for (int orb = 0; orb < norb; ++orb) {
-            diagonal[offset + orb] = std::complex<double>(coord, 0.0);
-        }
-    }
-
-    return diagonal;
-}
-
-} // namespace detail
-
-// Build the first lattice moment along x/y/z. An axis is active iff at least
-// one image carries a nonzero lattice translation along that axis.
-inline std::unique_ptr<FirstLatticeMomentTriplet> build_first_lattice_moment_triplet(
-    AtomicData& atomic_data,
-    ImageContainer<double>& hamiltonian_images
-) {
-    if (hamiltonian_images.atom_data != &atomic_data || hamiltonian_images.base_graph != atomic_data.graph) {
-        throw std::runtime_error(
-            "First-lattice-moment construction requires Hamiltonian images built from the same AtomicData graph.");
-    }
-
-    auto triplet = std::make_unique<FirstLatticeMomentTriplet>();
-    FirstLatticeMomentAxisData* axes[3] = {&triplet->x, &triplet->y, &triplet->z};
-
-    for (int axis_idx = 0; axis_idx < 3; ++axis_idx) {
-        bool has_lattice_shift = false;
-        for (const auto& entry : hamiltonian_images.image_blocks) {
-            if (std::abs(detail::cell_shift_component(atomic_data, entry.first, axis_idx)) > 1e-12) {
-                has_lattice_shift = true;
-                break;
-            }
-        }
-
-        if (has_lattice_shift) {
-            axes[axis_idx]->first_moment =
-                detail::make_first_moment_matrix(atomic_data, hamiltonian_images, axis_idx);
-        }
-    }
-
-    return triplet;
-}
-
-class OperatorConstruction {
+class Op2cEngine {
 public:
     std::unique_ptr<Op2c> op2c_;
     MPI_Comm comm;
     int rank;
 
-    OperatorConstruction(MPI_Comm c = MPI_COMM_WORLD) : comm(c) {
+    Op2cEngine(MPI_Comm c = MPI_COMM_WORLD) : comm(c) {
         MPI_Comm_rank(comm, &rank);
     }
     
@@ -169,7 +66,7 @@ public:
         std::ifstream probe(path);
         if (!probe.is_open()) {
             throw std::runtime_error(
-                std::string("OperatorConstruction::init: cannot open ") + what + " file: " + path);
+                std::string("Op2cEngine::init: cannot open ") + what + " file: " + path);
         }
     }
 
@@ -210,7 +107,7 @@ public:
                                                    /*pm_build=*/true, /*orb_kcut=*/0.0, /*overlap_only=*/true));
         } catch (const std::exception& e) {
             throw std::runtime_error(
-                "OperatorConstruction::init: failed to build op2c two-center tables from orb_dir='"
+                "Op2cEngine::init: failed to build op2c two-center tables from orb_dir='"
                 + orb_root + "', psd_dir='" + psd_root + "': " + e.what());
         }
     }
@@ -223,22 +120,38 @@ public:
         return op2c_ && op2c_->tcbd.beta_;
     }
 
+    /// Returns the loaded orbital basis, or nullptr before init().
+    ///
+    /// Exposed so a model can read its own basis size and cutoff radii out of
+    /// the orbital files rather than having the caller declare them.
+    const RadialCollection* orbital_radials() const {
+        return op2c_ ? op2c_->tcbd.orb_.get() : nullptr;
+    }
+
+    /// Returns per-type orbital cutoff radii in Angstrom.
+    ///
+    /// op2c stores radial grids in Bohr while AtomicData works in Angstrom, so
+    /// the conversion belongs here. Without it the three-body velocity graph
+    /// was built with cutoffs inflated by 1/kAngstromPerBohr, which produced a
+    /// strict superset of the required triples: correct results, but
+    /// substantially more work than necessary.
     std::vector<double> orbital_cutoffs(const AtomicData& ad) const {
         if (!op2c_) {
-            throw std::runtime_error("OperatorConstruction is not initialized");
+            throw std::runtime_error("Op2cEngine is not initialized");
         }
 
         const int ntype = ad.n_type();
         std::vector<double> cutoffs(ntype, 0.0);
         for (int i = 0; i < ntype; ++i) {
-            cutoffs[i] = op2c_->get_orb_rcut_max(i);
+            cutoffs[i] = op2c_->get_orb_rcut_max(i) * kAngstromPerBohr;
         }
         return cutoffs;
     }
 
+    /// Returns per-type beta-projector cutoff radii in Angstrom.
     std::vector<double> projector_cutoffs(const AtomicData& ad) const {
         if (!op2c_) {
-            throw std::runtime_error("OperatorConstruction is not initialized");
+            throw std::runtime_error("Op2cEngine is not initialized");
         }
         if (!has_beta_projectors()) {
             throw std::runtime_error("Velocity construction requires beta projectors");
@@ -247,7 +160,7 @@ public:
         const int ntype = ad.n_type();
         std::vector<double> cutoffs(ntype, 0.0);
         for (int i = 0; i < ntype; ++i) {
-            cutoffs[i] = op2c_->get_beta_rcut_max(i);
+            cutoffs[i] = op2c_->get_beta_rcut_max(i) * kAngstromPerBohr;
         }
         return cutoffs;
     }
@@ -261,83 +174,16 @@ public:
     // Wrappers for Op2c setup (if needed, or access op2c_ directly)
     // Op2c constructor handles setup.
 
-    // Build matrix from HDF5
-    // Reads blocks from HDF5 and fills BlockSpMat
-    // Build matrix from HDF5
-    // Reads blocks from HDF5 and fills ImageContainer
-    std::unique_ptr<ImageContainer<double>> build_from_hdf5(AtomicData& ad, rsatb::io::HDF5Handler& h5) {
-        auto img = std::make_unique<ImageContainer<double>>(&ad);
-        
-        int nstart, nend;
-        ad.get_vertex_range_local(&nstart, &nend);
-        bool found;
-        
-        // Loop over atoms
-        #pragma omp parallel for
-        for(int i=nstart; i<nend; ++i) {
-            if (ad.atom_is_ghost(i)) continue;
-            
-            int inorb;
-            ad.get_atom_norb(i, &inorb);
-            int atom_idx;
-            ad.get_atom_id(i, &atom_idx); // Original index
-            
-            // Read On-site
-            double* v = nullptr;
-            h5.read_from_ijR_dense(atom_idx, atom_idx, 0, 0, 0, &inorb, &inorb, &v, &found);
-            if (found) {
-                int global_i = ad.get_global_index(i);
-                std::vector<int> R = {0, 0, 0};
-                img->add_block(R, global_i, global_i, v, inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-                delete[] v;
-            }
-        }
-        
-        // Loop over edges
-        int estart, eend;
-        ad.get_edge_range_local(&estart, &eend);
-        #pragma omp parallel for
-        for(int ie=estart; ie<eend; ++ie) {
-            int i, j;
-            ad.get_connected_atoms(ie, &i, &j);
-            
-            int inorb, jnorb;
-            ad.get_atom_norb(i, &inorb);
-            ad.get_atom_norb(j, &jnorb);
-            
-            if (inorb > 0 && jnorb > 0) {
-                int Rx, Ry, Rz;
-                ad.get_edge_shift_vec(ie, &Rx, &Ry, &Rz);
-                
-                int atom_i;
-                ad.get_atom_id(i, &atom_i);
-                int atom_j;
-                ad.get_atom_id(j, &atom_j);
-                
-                int m, n;
-                double* buffer = nullptr;
-                bool found = false;
-                
-                h5.read_from_ijR_dense(atom_i, atom_j, Rx, Ry, Rz, &m, &n, &buffer, &found);
-                
-                if (found) {
-                    if (m != inorb || n != jnorb) {
-                        std::cerr << "Dimension mismatch in HDF5 read: expected " << inorb << "x" << jnorb << ", got " << m << "x" << n << std::endl;
-                    } else {
-                        int global_i = ad.get_global_index(i);
-                        int global_j = ad.get_global_index(j);
-                        std::vector<int> R = {Rx, Ry, Rz};
-                        img->add_block(R, global_i, global_j, buffer, inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-                    }
-                    if(buffer) delete[] buffer;
-                }
-            }
-        }
-        
-        img->assemble();
-        return img;
-    }
-
+    /// Builds the real-space Hamiltonian images from a precomputed file.
+    ///
+    /// The reader abstracts the on-disk layout, so this loop is identical for
+    /// every supported HamiltonianFormat. A block the file does not contain is
+    /// simply absent from the image; that is expected for pairs beyond the
+    /// producer's own cutoff, which can be shorter than the graph cutoff.
+    ///
+    /// Args:
+    ///   ad: Partitioned atomic data supplying the block structure.
+    ///   reader: Open reader for the Hamiltonian file.
     std::unique_ptr<ImageContainer<double>> build_overlap(AtomicData& ad) {
         
         auto img = std::make_unique<ImageContainer<double>>(&ad);
@@ -430,8 +276,8 @@ public:
             return;
         }
 
-        constexpr double bohr_per_angstrom = 1.8897259886;
-        constexpr double angstrom_per_bohr = 1.0 / bohr_per_angstrom;
+        constexpr double bohr_per_angstrom = kBohrPerAngstrom;
+        constexpr double angstrom_per_bohr = kAngstromPerBohr;
 
         int nstart = 0;
         int nend = 0;
@@ -460,9 +306,9 @@ public:
 
             op2c_->overlap_position(itype, itype, Ri, Ri, false, vS, vX, vY, vZ);
 
-            if (X) set_local_block(*X, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
-            if (Y) set_local_block(*Y, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
-            if (Z) set_local_block(*Z, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+            if (X) op::AddLocalBlock(*X, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
+            if (Y) op::AddLocalBlock(*Y, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
+            if (Z) op::AddLocalBlock(*Z, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
 
             const auto& edges = ad.get_atom_edges(i);
             for (int ie : edges) {
@@ -491,9 +337,9 @@ public:
 
                 op2c_->overlap_position(itype, jtype, Ri, Rj, false, vS, vX, vY, vZ);
 
-                if (X) set_local_block(*X, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
-                if (Y) set_local_block(*Y, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
-                if (Z) set_local_block(*Z, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+                if (X) op::AddLocalBlock(*X, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
+                if (Y) op::AddLocalBlock(*Y, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
+                if (Z) op::AddLocalBlock(*Z, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
             }
         }
 
@@ -560,9 +406,9 @@ public:
             img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb,
                              AssemblyMode::ADD, MatrixLayout::RowMajor);
             
-            if(Vx) set_local_block(*Vx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
-            if(Vy) set_local_block(*Vy, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
-            if(Vz) set_local_block(*Vz, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
+            if(Vx) op::AddLocalBlock(*Vx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
+            if(Vy) op::AddLocalBlock(*Vy, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
+            if(Vz) op::AddLocalBlock(*Vz, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
             
             // Edges
             const auto& edges = ad.get_atom_edges(i);
@@ -601,9 +447,9 @@ public:
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);
                 
-                if(Vx) set_local_block(*Vx, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
-                if(Vy) set_local_block(*Vy, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
-                if(Vz) set_local_block(*Vz, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
+                if(Vx) op::AddLocalBlock(*Vx, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
+                if(Vy) op::AddLocalBlock(*Vy, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
+                if(Vz) op::AddLocalBlock(*Vz, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
             }
         }
         
@@ -690,9 +536,9 @@ public:
                         int i_gid = ad.get_global_index(idx);
                         int j_gid = ad.get_global_index(jdx);
                         
-                        if(Vx) set_global_block(*Vx, ad, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vX.data(), erfactor);
-                        if(Vy) set_global_block(*Vy, ad, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vY.data(), erfactor);
-                        if(Vz) set_global_block(*Vz, ad, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vZ.data(), erfactor);
+                        if(Vx) op::AddGlobalBlock(*Vx, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vX.data(), erfactor);
+                        if(Vy) op::AddGlobalBlock(*Vy, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vY.data(), erfactor);
+                        if(Vz) op::AddGlobalBlock(*Vz, i_gid, j_gid, inorb, jnorb, drx, dry, drz, Kx, Ky, Kz, vZ.data(), erfactor);
                     }
                 }
             }
@@ -707,117 +553,11 @@ public:
         return img_S;
     }
 
-private:
-    void cal_phase(double Rx, double Ry, double Rz, double Kx, double Ky, double Kz, std::complex<double> *phase) {
-        *phase = std::complex<double>(0.0, -2.0 * M_PI * ((Rx * Kx) + (Ry * Ky) + (Rz * Kz)));
-        *phase = std::exp(*phase);
-    }
 
-    template <typename MatrixType>
-    void set_local_block(MatrixType& mat, AtomicData& ad, int i, int j, 
-                        int Rx, int Ry, int Rz, 
-                        double Kx, double Ky, double Kz, 
-                        const double* v, std::complex<double> factor = 1.0) {
-        int inorb, jnorb;
-        ad.get_atom_norb(i, &inorb);
-        ad.get_atom_norb(j, &jnorb);
-        
-        std::complex<double> phase;
-        cal_phase(Rx, Ry, Rz, Kx, Ky, Kz, &phase);
-        phase *= factor;
-        
-        std::vector<std::complex<double>> v_complex(inorb * jnorb);
-        for(int k=0; k<inorb*jnorb; ++k) {
-            v_complex[k] = v[k] * phase;
-        }
-        
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-    }
-
-    template <typename MatrixType>
-    void set_local_block(MatrixType& mat, AtomicData& ad, int i, int j, 
-                        int Rx, int Ry, int Rz, 
-                        double Kx, double Ky, double Kz, 
-                        const std::complex<double>* v, std::complex<double> factor = 1.0) {
-        int inorb, jnorb;
-        ad.get_atom_norb(i, &inorb);
-        ad.get_atom_norb(j, &jnorb);
-        
-        std::complex<double> phase;
-        cal_phase(Rx, Ry, Rz, Kx, Ky, Kz, &phase);
-        phase *= factor;
-        
-        std::vector<std::complex<double>> v_complex(inorb * jnorb);
-        for(int k=0; k<inorb*jnorb; ++k) {
-            v_complex[k] = v[k] * phase;
-        }
-        
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-    }
-
-    template <typename MatrixType>
-    void set_local_block(MatrixType& mat, AtomicData& ad, int i, int j, 
-                        double Rx, double Ry, double Rz, 
-                        double Kx, double Ky, double Kz, 
-                        const double* v, std::complex<double> factor = 1.0) {
-        int inorb, jnorb;
-        ad.get_atom_norb(i, &inorb);
-        ad.get_atom_norb(j, &jnorb);
-        
-        std::complex<double> phase;
-        cal_phase(Rx, Ry, Rz, Kx, Ky, Kz, &phase);
-        phase *= factor;
-        
-        std::vector<std::complex<double>> v_complex(inorb * jnorb);
-        for(int k=0; k<inorb*jnorb; ++k) {
-            v_complex[k] = v[k] * phase;
-        }
-        
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-    }
-
-    template <typename MatrixType>
-    void set_local_block(MatrixType& mat, AtomicData& ad, int i, int j, 
-                        double Rx, double Ry, double Rz, 
-                        double Kx, double Ky, double Kz, 
-                        const std::complex<double>* v, std::complex<double> factor = 1.0) {
-        int inorb, jnorb;
-        ad.get_atom_norb(i, &inorb);
-        ad.get_atom_norb(j, &jnorb);
-        
-        std::complex<double> phase;
-        cal_phase(Rx, Ry, Rz, Kx, Ky, Kz, &phase);
-        phase *= factor;
-        
-        std::vector<std::complex<double>> v_complex(inorb * jnorb);
-        for(int k=0; k<inorb*jnorb; ++k) {
-            v_complex[k] = v[k] * phase;
-        }
-        
-        mat.update_local_block(i, j, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-    }
-
-    template <typename MatrixType>
-    void set_global_block(MatrixType& mat, AtomicData& ad, int i_gid, int j_gid, 
-                         int inorb, int jnorb,
-                         double dx, double dy, double dz, 
-                         double Kx, double Ky, double Kz, 
-                         const std::complex<double>* v, std::complex<double> factor = 1.0) {
-        
-        std::complex<double> phase;
-        cal_phase(dx, dy, dz, Kx, Ky, Kz, &phase);
-        phase *= factor;
-        
-        std::vector<std::complex<double>> v_complex(inorb * jnorb);
-        for(int k=0; k<inorb*jnorb; ++k) {
-            v_complex[k] = v[k] * phase;
-        }
-        
-        mat.add_block(i_gid, j_gid, v_complex.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
-    }
 };
 
-} // namespace backend
-} // namespace rsatb
+}  // namespace lcao
+}  // namespace model
+}  // namespace rsatb
 
-#endif
+#endif  // RSATB_MODEL_LCAO_OP2C_ENGINE_HPP

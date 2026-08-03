@@ -48,41 +48,30 @@ TEST(RSATBTest, TestSetupAndCompute) {
     std::unique_ptr<RSATB> rsatb_inst;
 
     const std::string vasp_file = rsatb::test::data_path("diamond/diamond_sc111.vasp");
-    const std::vector<double> r_max_per_type = {3.7};
-    const std::vector<int> type_norb = {13};
-    
-    rsatb_inst = std::make_unique<RSATB>(
-        npar, vasp_file,
-        r_max_per_type, type_norb, true, MPI_COMM_WORLD
-    );
-    
-    if (rank == 0) {
-        std::cout << "Selected Kernel: " << rsatb_inst->get_kernel_info() << std::endl;
-    }
 
-    // Buffers for merged data (must persist until RSATB is destroyed or at least constructed)
-    
-    // 2. Initialize Basis (needed for build_overlap)
-    std::string orb_dir = rsatb::test::data_path("diamond/");
-    std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = rsatb::test::data_path("diamond/");
-    std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf"};
-
-    std::string Hpath = rsatb::test::data_path("diamond/C2.0/hamiltonians.h5");
+    // The basis -- orbital counts and cutoff radii -- is read from the orbital
+    // files by the model, so nothing is declared here.
+    model::LcaoConfig lcao_config;
+    lcao_config.hamiltonian = rsatb::io::HamiltonianFile{
+        rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    lcao_config.orbitals.dir = rsatb::test::data_path("diamond/");
+    lcao_config.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
+    lcao_config.pseudopotentials.dir = rsatb::test::data_path("diamond/");
+    lcao_config.pseudopotentials.names = {"C_ONCV_PBE-1.0.upf"};
+    auto lcao_model = model::LcaoModel::Create(lcao_config, MPI_COMM_WORLD);
 
     model::SetupOptions setup_options;
     setup_options.kpoints = kpoints;
-    setup_options.preconditioner.mode = "H";
+    setup_options.preconditioner.release_overlap_after_build = true;
 
-    model::LCAOModelConfig model_config;
-    model_config.input = model::Hdf5Input{};
-    model_config.input->filename = Hpath;
-    model_config.integrals.orb_names = orb_names;
-    model_config.integrals.orb_dir = orb_dir;
-    model_config.integrals.psd_names = psd_names;
-    model_config.integrals.psd_dir = psd_dir;
+    rsatb_inst = std::make_unique<RSATB>(
+        vbcsr::atomic::ReadStructure(vasp_file), *lcao_model, setup_options,
+        npar, true, MPI_COMM_WORLD
+    );
 
-    rsatb_inst->setup(model_config, setup_options);
+    if (rank == 0) {
+        std::cout << "Selected Kernel: " << rsatb_inst->get_kernel_info() << std::endl;
+    }
     
     // 5. Verify Setup
     // Check if H(k) is created

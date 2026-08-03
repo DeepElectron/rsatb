@@ -1,7 +1,7 @@
-#ifndef RSATB_BACKEND_SKTB_CONSTRUCTION_HPP
-#define RSATB_BACKEND_SKTB_CONSTRUCTION_HPP
+#ifndef RSATB_MODEL_SKTB_CONSTRUCTION_HPP
+#define RSATB_MODEL_SKTB_CONSTRUCTION_HPP
 
-#include "sktb.hpp"
+#include "sk_table.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
@@ -16,9 +16,10 @@ using namespace vbcsr;
 using namespace vbcsr::atomic;
 
 namespace rsatb {
-namespace backend {
+namespace model {
+namespace sktb {
 
-namespace sktb_detail {
+namespace detail {
 
 using Vec3 = std::array<double, 3>;
 using Mat3 = std::array<std::array<double, 3>, 3>;
@@ -269,8 +270,8 @@ inline void copy_shell_block_to_pair_block(
     const DBlock& shell_block,
     int row_l,
     int col_l,
-    const SKAtomType& row_atom,
-    const SKAtomType& col_atom,
+    const SkAtomType& row_atom,
+    const SkAtomType& col_atom,
     DBlock& pair_block
 ) {
     const size_t pair_ncol = col_atom.orbitals.size();
@@ -304,11 +305,11 @@ inline DBlock transpose_row_major(const DBlock& block, int nrow, int ncol) {
     return result;
 }
 
-} // namespace sktb_detail
+}  // namespace detail
 
-class SKTBConstruction {
+class SkTableConstruction {
 public:
-    explicit SKTBConstruction(SKTBModel resolved)
+    explicit SkTableConstruction(SkTable resolved)
         : resolved_(std::move(resolved)) {}
 
     std::unique_ptr<ImageContainer<double>> build_hamiltonian_images(AtomicData& atomic_data) const {
@@ -344,7 +345,7 @@ private:
             const auto& onsite = use_overlap
                 ? resolved_.atom_types[type].s_onsite
                 : resolved_.atom_types[type].h_onsite;
-            const auto block = sktb_detail::diagonal_block_row_major(onsite);
+            const auto block = detail::diagonal_block_row_major(onsite);
             const int gid = atomic_data.get_global_index(i);
             const std::vector<int> zero_shift = {0, 0, 0};
             images->add_block(
@@ -381,7 +382,7 @@ private:
             atomic_data.get_atom_type(j, &col_type);
 
             const auto block = evaluate_pair_block(use_overlap, row_type, col_type, {dx, dy, dz});
-            if (block.empty() || !sktb_detail::has_nonzero_entries(block)) {
+            if (block.empty() || !detail::has_nonzero_entries(block)) {
                 continue;
             }
 
@@ -425,33 +426,33 @@ private:
         }
     }
 
-    sktb_detail::DBlock evaluate_direct_pair_block(
+    detail::DBlock evaluate_direct_pair_block(
         bool use_overlap,
         int row_type,
         int col_type,
-        const sktb_detail::Vec3& displacement
+        const detail::Vec3& displacement
     ) const {
-        const auto* pair = resolved_.find_pair(row_type, col_type);
+        const auto* pair = resolved_.FindPair(row_type, col_type);
         if (pair == nullptr) {
             return {};
         }
 
-        const double distance = sktb_detail::norm(displacement);
+        const double distance = detail::norm(displacement);
         const double pair_cutoff = use_overlap ? pair->s_max_cutoff : pair->h_max_cutoff;
         if (distance <= 1e-12 || distance > pair_cutoff + 1e-12) {
             return {};
         }
 
-        const auto frame = sktb_detail::build_local_frame(displacement);
-        const std::array<sktb_detail::DBlock, 3> rotations = {
-            sktb_detail::shell_rotation(0, frame),
-            sktb_detail::shell_rotation(1, frame),
-            sktb_detail::shell_rotation(2, frame)
+        const auto frame = detail::build_local_frame(displacement);
+        const std::array<detail::DBlock, 3> rotations = {
+            detail::shell_rotation(0, frame),
+            detail::shell_rotation(1, frame),
+            detail::shell_rotation(2, frame)
         };
 
         const auto& row_atom = resolved_.atom_types[row_type];
         const auto& col_atom = resolved_.atom_types[col_type];
-        sktb_detail::DBlock block(row_atom.orbitals.size() * col_atom.orbitals.size(), 0.0);
+        detail::DBlock block(row_atom.orbitals.size() * col_atom.orbitals.size(), 0.0);
 
         for (const auto& channel : pair->channels) {
             const bool has_value = use_overlap ? channel.has_s : channel.has_h;
@@ -459,17 +460,17 @@ private:
                 continue;
             }
             const auto& radial = use_overlap ? channel.s : channel.h;
-            if (distance > radial.cutoff() + 1e-12) {
+            if (distance > radial.Cutoff() + 1e-12) {
                 continue;
             }
             const int row_l = channel.row_l;
             const int col_l = channel.col_l;
 
-            const auto aligned = sktb_detail::build_aligned_shell_block(
-                row_l, col_l, channel.channel, radial.evaluate(distance));
-            const auto rotated = sktb_detail::rotate_shell_block(
+            const auto aligned = detail::build_aligned_shell_block(
+                row_l, col_l, channel.channel, radial.Evaluate(distance));
+            const auto rotated = detail::rotate_shell_block(
                 aligned, row_l, col_l, rotations[static_cast<size_t>(row_l)], rotations[static_cast<size_t>(col_l)]);
-            sktb_detail::copy_shell_block_to_pair_block(
+            detail::copy_shell_block_to_pair_block(
                 rotated, row_l, col_l, row_atom, col_atom, block);
         }
 
@@ -485,31 +486,32 @@ private:
     ///   displacement: Vector from row atom to column atom.
     /// Returns:
     ///   Row-major block for `(row_type, col_type)`, or empty when no pair exists.
-    sktb_detail::DBlock evaluate_pair_block(
+    detail::DBlock evaluate_pair_block(
         bool use_overlap,
         int row_type,
         int col_type,
-        const sktb_detail::Vec3& displacement
+        const detail::Vec3& displacement
     ) const {
         auto direct = evaluate_direct_pair_block(use_overlap, row_type, col_type, displacement);
         if (!direct.empty()) {
             return direct;
         }
 
-        auto reverse = evaluate_direct_pair_block(use_overlap, col_type, row_type, sktb_detail::negated(displacement));
+        auto reverse = evaluate_direct_pair_block(use_overlap, col_type, row_type, detail::negated(displacement));
         if (reverse.empty()) {
             return {};
         }
 
         const int nrow = static_cast<int>(resolved_.atom_types[col_type].orbitals.size());
         const int ncol = static_cast<int>(resolved_.atom_types[row_type].orbitals.size());
-        return sktb_detail::transpose_row_major(reverse, nrow, ncol);
+        return detail::transpose_row_major(reverse, nrow, ncol);
     }
 
-    SKTBModel resolved_;
+    SkTable resolved_;
 };
 
-} // namespace backend
-} // namespace rsatb
+}  // namespace sktb
+}  // namespace model
+}  // namespace rsatb
 
-#endif // RSATB_BACKEND_SKTB_CONSTRUCTION_HPP
+#endif  // RSATB_MODEL_SKTB_CONSTRUCTION_HPP

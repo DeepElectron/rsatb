@@ -179,7 +179,7 @@ void test_preconditioned_solver(int rank, int size) {
     
     // 4. Setup Preconditioner (ISQRTM -> P = A^-1/2)
     // Scale factor 0.5 for stability
-    ISQRTMPreconditioner<double> P(A, 50, 1e-5, 0.2, "graph", 1.0, /*verbose=*/true);
+    ISQRTMPreconditioner<double> P(A, 50, 1e-5, 0.2, /*verbose=*/true);
     
     // 5. Solve P A P y = P b, x = P y
     DistVector<double> x(&graph);

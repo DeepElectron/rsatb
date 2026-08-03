@@ -76,7 +76,10 @@ TEST(KPMExtensionsTest, ZeroTemperatureProjectorMatchesHeavisideAwayFromMu) {
     Vector psi_out(&graph);
     fill_constant(psi_in, Scalar(1.0, 0.0));
 
-    fermi_dirac_kpm(cheby, psi_in, psi_out, 0.0, 0.0, 512, 1e-14, ChebyMode::NORMAL, false);
+    FermiExpansionOptions opt;
+    opt.n_fixed = 512;
+    opt.summation = KpmKernel::Jackson;
+    fermi_dirac_kpm(cheby, psi_in, psi_out, 0.0, 0.0, opt);
 
     const Scalar* out = psi_out.local_data();
     for (int local_row = 0; local_row < psi_out.local_size; ++local_row) {

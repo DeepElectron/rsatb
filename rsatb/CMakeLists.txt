@@ -383,9 +383,40 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_preconditioner PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_preconditioner PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: test_metric_sampler
+    add_executable(test_metric_sampler calc/test/test_metric_sampler.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_metric_sampler PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_metric_sampler PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+    # Executable: benchmark_isqrt_diamond - the thin inverse-square-root action
+    # timed on the real diamond sc888 subgraph problems (needs the integral
+    # engine, hence the backend objects). Single rank, OMP_NUM_THREADS=1.
+    add_executable(benchmark_isqrt_diamond calc/test/benchmark_isqrt_diamond.cpp
+                   $<TARGET_OBJECTS:backend>)
+    target_include_directories(benchmark_isqrt_diamond PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_isqrt_diamond PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: benchmark_fermi_diamond - ACE-FD on the real non-orthogonal
+    # problem (file H, integral S, Op = S^-1 H) against dense diagonalization.
+    add_executable(benchmark_fermi_diamond calc/test/benchmark_fermi_diamond.cpp
+                   $<TARGET_OBJECTS:backend>)
+    target_include_directories(benchmark_fermi_diamond PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_fermi_diamond PRIVATE ${RSATB_LINK_LIBS})
+
+    # Inverse square root (calc/isqrt_action.hpp, calc/isqrtm.hpp): the graph
+    # driver against the legacy per-subgraph diagonalization, and the synthetic
+    # sweep of the dense thin-action kernel (doc/design_isqrt_action.md).
+    # Standalone MPI drivers, no backend objects needed.
+    add_executable(test_isqrt_graph calc/test/test_isqrt_graph.cpp)
+    target_include_directories(test_isqrt_graph PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_isqrt_graph PRIVATE ${RSATB_LINK_LIBS})
+    add_executable(benchmark_isqrt_action calc/test/benchmark_isqrt_action.cpp)
+    target_include_directories(benchmark_isqrt_action PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_isqrt_action PRIVATE ${RSATB_LINK_LIBS})
+
     # Standalone MPI test drivers (own main(), not GTest). Registered so they
     # are compiled by the normal build and cannot silently bit-rot again.
-    foreach(_driver test_graphmf test_solver test_dos)
+    foreach(_driver test_graphmf test_solver test_dos test_fermi_ace)
         add_executable(${_driver} calc/test/${_driver}.cpp)
         target_include_directories(${_driver} PRIVATE ${RSATB_INCLUDE_DIRS})
         target_link_libraries(${_driver} PRIVATE ${RSATB_LINK_LIBS})

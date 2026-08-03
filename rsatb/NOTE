@@ -1,6 +1,0 @@
-HDF5_ROOT="${CONDA_PREFIX}" MPI_ROOT="${CONDA_PREFIX}" cmake -S. -Bbuild -DBLAS_BACKEND=MKL -DCMAKE_PREFIX_PATH="~/dev/rsatb/deps/install;$CONDA_PREFIX"
-
-# We need to also specify MPI_ROOT since the MPI used by mpi4py, petsc and our code does not match.
-OMP_NUM_THREADS=10 OMP_PROC_BIND=spread OMP_PLACES=cores mpirun -np 2 --map-by socket:PE=10 --bind-to core --report-bindings python ./test_binding.py
-
-rm -rf _skbuild build dist rsatb.egg-info && export PATH=/home/zhanghao/softwares/rsatb/deps/install/bin:$PATH && export PETSC_DIR=/home/zhanghao/softwares/rsatb/deps/install && export PETSC_ARCH="" && export CMAKE_PREFIX_PATH=/home/zhanghao/softwares/rsatb/deps/install:$CONDA_PREFIX && export SKBUILD_CMAKE_VERBOSE=1 && pip install .

@@ -3,9 +3,13 @@ import numpy as np
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+# Appended, not inserted: an installed rsatb must win. Inserting puts the
+# source tree first, where the compiled _rsatb extension does not live unless
+# the build happened in place.
+sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from rsatb import PreconditionerOptions, RSATB, SKTBModel, SetupOptions, sk_spline
+from rsatb import (PreconditionerOptions, RSATB, SetupOptions, SkParameters, SktbModel,
+                   sk_spline)
 
 rank = MPI.COMM_WORLD.Get_rank()
 if MPI.COMM_WORLD.Get_size() != 1:
@@ -54,20 +58,13 @@ kpoints, k_axis, k_ticks, k_labels = interpolate_k_path(
     POINTS_PER_SEGMENT,
 )
 
-graphene_pz = SKTBModel.native(
+graphene_pz = SktbModel(
     basis={"C": ["pz"]},
-    onsite={"C": {"pz": 0.0}},
-    pairs={
-        ("C", "C"): {
-            "H": {
-                "pp": {
-                    "pi": sk_spline([0.0, 1.6], [-2.7, -2.7], 1.6),
-                },
-            },
-        },
-    },
+    hamiltonian=SkParameters(
+        onsite={"C": {"pz": 0.0}},
+        pairs={("C", "C"): {"pp_pi": sk_spline([0.0, 1.6], [-2.7, -2.7], 1.6)}},
+    ),
 )
-atomic_spec = graphene_pz.prepare_atomic_spec_from_atomic_numbers([6, 6])
 
 edge_index = [0, 1, 0, 1, 0, 1, 1, 0, 1, 0, 1, 0]
 edge_shift_vec = [
@@ -76,33 +73,23 @@ edge_shift_vec = [
     for value in shift
 ]
 
-model_runner = RSATB.from_raw_data(
-    npar=1,
-    n_atom=2,
-    N_atom=2,
-    atom_offset=0,
-    n_edge=6,
-    N_edge=6,
+model_runner = RSATB.from_graph(
     atom_index=[0, 1],
     atom_type=[0, 0],
     edge_index=edge_index,
     edge_shift_vec=edge_shift_vec,
-    type_norb=atomic_spec.type_norb,
     cell=cell,
     pos=positions,
-    verbose=False,
-    type_symbols=["C"],
-)
-
-model_runner.setup_sktb(
-    graphene_pz,
-    SetupOptions(
+    model=graphene_pz,
+    options=SetupOptions(
         kpoints=kpoints,
         nsamples=1,
         compute_bounds=False,
         energy_bounds=(-8.6, 8.6),
-        preconditioner=PreconditionerOptions(mode="None"),
+        preconditioner=PreconditionerOptions(target="none"),
     ),
+    npar=1,
+    verbose=False,
 )
 
 dos, omega = model_runner.compute_dos(N_MOMENTS)

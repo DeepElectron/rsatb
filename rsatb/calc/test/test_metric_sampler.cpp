@@ -13,7 +13,7 @@
 #include "../isqrtm.hpp"
 #include "../solver.hpp"
 #include "vbcsr/core/atomic/io.hpp"
-#include "../../model/operator_construction.hpp"
+#include "../../model/lcao/op2c_engine.hpp"
 #include "../../test_data_path.hpp"
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
@@ -163,7 +163,7 @@ struct DiamondIntegralsOverlap {
             edge_shift.data(), st.cell.data(), st.pos.data(), MPI_COMM_WORLD,
             {true, true, true}));
 
-        rsatb::backend::OperatorConstruction op(MPI_COMM_WORLD);
+        rsatb::model::lcao::Op2cEngine op(MPI_COMM_WORLD);
         op.init(1, 1, false, data, {"C_gga_7au_100Ry_2s2p1d.orb"}, "", {},
                 "metric_sampler_opconst.log");
         img = op.build_overlap(*ad);

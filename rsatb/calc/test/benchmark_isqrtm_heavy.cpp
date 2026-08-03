@@ -107,7 +107,7 @@ int main(int argc, char** argv) {
     // The user asked about Z0 initialization.
     // Let's modify isqrtm to allow stopping after init? 
     // Or just run 1 iteration.
-    isqrtm(S, &S_inv_sqrt, 1e-7, 1e-7, 0, true);
+    rsatb::calc::inverse_sqrt(S, &S_inv_sqrt, {1e-7, 1e-7, 0}, true);
     
     auto end_time = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end_time - start_time;

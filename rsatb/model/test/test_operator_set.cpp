@@ -1,4 +1,6 @@
-#include "../operator_set.hpp"
+#include "../../setup/operator_assembly.hpp"
+#include "../lcao/lcao_model.hpp"
+#include "vbcsr/core/atomic/io.hpp"
 #include "../../test_data_path.hpp"
 
 #include <gtest/gtest.h>
@@ -9,7 +11,8 @@
 #include <string>
 #include <vector>
 
-using namespace rsatb::backend;
+using namespace rsatb::setup;
+using namespace rsatb::op;
 
 namespace rmodel = rsatb::model;
 
@@ -149,15 +152,11 @@ std::unique_ptr<ImageContainer<double>> make_periodic_scalar_h_images(AtomicData
     return make_periodic_scalar_h_images(atomic_data, onsite, hop, hop);
 }
 
-class CountingVelocityBuilder : public IVelocityBuilder {
-public:
-    explicit CountingVelocityBuilder(int* calls) : calls_(calls) {}
-
-    std::unique_ptr<VelocityTriplet> build(
-        AtomicData& atomic_data,
-        const std::vector<double>&
-    ) const override {
-        ++(*calls_);
+// A builder is a function, so a stub is a lambda over a counter rather than a
+// class. This is what the operator set's lazy caching is asserted against.
+rsatb::op::VelocityBuilder counting_velocity_builder(int* calls) {
+    return [calls](AtomicData& atomic_data, const rsatb::op::KPoint&) {
+        ++(*calls);
         auto triplet = std::make_unique<VelocityTriplet>();
         triplet->x = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
         triplet->y = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
@@ -173,16 +172,13 @@ public:
         triplet->y->assemble();
         triplet->z->assemble();
         return triplet;
-    }
-
-private:
-    int* calls_;
-};
+    };
+}
 
 rmodel::SetupOptions make_options(bool compute_bounds = false) {
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.mode = "None";
+    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = compute_bounds;
     return options;
 }
@@ -201,15 +197,22 @@ TEST(OperatorSetTest, Hdf5ModelBuildsHamiltonianAndBounds) {
     auto atomic_data = make_single_atom_data();
     const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(4.0, 0.0));
 
-    rmodel::LCAOModelConfig model;
-    model.input = rmodel::Hdf5Input{path};
-    auto operators = build_operator_set(
+    // A file-backed Hamiltonian with no orbital files is not an LCAO model, so
+    // this exercises the reader and the bounds path through explicit artifacts.
+    auto reader = rsatb::io::OpenHamiltonianFile(
+        rsatb::io::HamiltonianFile{path, rsatb::io::HamiltonianFormat::kDeeptbHdf5});
+
+    OperatorAssembly artifacts;
+    artifacts.hamiltonian_images = rsatb::model::BuildHamiltonianImagesFromFile(*atomic_data, *reader);
+    artifacts.velocity_builder =
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
+
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
-        rmodel::AnyModelConfig(model),
+        std::move(artifacts),
         make_options(true),
-        {},
         make_runtime());
 
     ASSERT_TRUE(operators->has_hamiltonian());
@@ -230,11 +233,12 @@ TEST(OperatorSetTest, Hdf5ModelBuildsHamiltonianAndBounds) {
 TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacements) {
     auto atomic_data = make_periodic_single_atom_data(3.0, 1);
 
-    ModelArtifacts artifacts;
-    artifacts.capabilities.hamiltonian = true;
+    OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
+    artifacts.velocity_builder =
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
 
-    auto operators = finalize_operator_set(
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
@@ -259,15 +263,12 @@ TEST(OperatorSetTest, ManualArtifactsBuildCachedVelocityLazily) {
     auto atomic_data = make_single_atom_data();
     int velocity_calls = 0;
 
-    ModelArtifacts artifacts;
-    artifacts.capabilities.hamiltonian = true;
-    artifacts.capabilities.overlap = true;
-    artifacts.capabilities.velocity = true;
+    OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_scalar_h_images(*atomic_data, 2.5);
     artifacts.overlap_images = make_scalar_s_images(*atomic_data, 1.5);
-    artifacts.velocity_builder = std::make_unique<CountingVelocityBuilder>(&velocity_calls);
+    artifacts.velocity_builder = counting_velocity_builder(&velocity_calls);
 
-    auto operators = finalize_operator_set(
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
@@ -306,11 +307,11 @@ TEST(OperatorSetTest, ManualArtifactsBuildCachedVelocityLazily) {
 TEST(OperatorSetTest, FirstLatticeMomentStateBuildsAndCachesAxisData) {
     auto atomic_data = make_periodic_single_atom_data(3.0, 1);
 
-    ModelArtifacts artifacts;
-    artifacts.capabilities.hamiltonian = true;
+    OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.5);
+    artifacts.position_builder = rsatb::op::MakeDiagonalPositionBuilder();
 
-    auto operators = finalize_operator_set(
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
@@ -341,11 +342,12 @@ TEST(OperatorSetTest, FirstLatticeMomentStateBuildsAndCachesAxisData) {
 TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
     auto atomic_data = make_periodic_single_atom_data(3.0, 1);
 
-    ModelArtifacts artifacts;
-    artifacts.capabilities.hamiltonian = true;
+    OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
+    artifacts.velocity_builder =
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
 
-    auto operators = finalize_operator_set(
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
@@ -361,11 +363,11 @@ TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
 TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbitals) {
     auto atomic_data = make_single_atom_data({1.25, -0.5, 0.75}, 2);
 
-    ModelArtifacts artifacts;
-    artifacts.capabilities.hamiltonian = true;
+    OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_diagonal_h_images(*atomic_data, {2.0, 3.0});
+    artifacts.position_builder = rsatb::op::MakeDiagonalPositionBuilder();
 
-    auto operators = finalize_operator_set(
+    auto operators = OperatorSet::FromParts(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
@@ -391,27 +393,33 @@ TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbital
 }
 
 TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
+    rmodel::LcaoConfig config;
+    config.hamiltonian = rsatb::io::HamiltonianFile{
+        rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    config.orbitals.dir = rsatb::test::data_path("diamond/");
+    config.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
+    config.pseudopotentials.dir = rsatb::test::data_path("diamond/");
+    config.pseudopotentials.names = {"C_ONCV_PBE-1.0.upf"};
+    auto model = rmodel::LcaoModel::Create(config, MPI_COMM_WORLD);
+
+    // The basis comes from the model, so the cutoff and orbital count that used
+    // to be written out here by hand are gone.
+    EXPECT_EQ(model->basis().type_norb, std::vector<int>{13});
+    EXPECT_NEAR(model->basis().cutoff_radius[0], 3.7042, 1e-3);
+
+    const auto structure = vbcsr::atomic::ReadStructure(
+        rsatb::test::data_path("diamond/diamond_sc111.vasp"));
     auto atomic_data = std::unique_ptr<AtomicData>(
-        AtomicData::from_file(
-            rsatb::test::data_path("diamond/diamond_sc111.vasp"),
-            std::vector<double>{3.7},
-            std::vector<int>{13},
-            MPI_COMM_WORLD));
+        AtomicData::from_points(structure.pos, structure.z, structure.cell, structure.pbc,
+                                model->basis().cutoff_radius, model->basis().type_norb,
+                                MPI_COMM_WORLD));
 
-    rmodel::LCAOModelConfig model;
-    model.input = rmodel::Hdf5Input{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
-    model.integrals.orb_dir = rsatb::test::data_path("diamond/");
-    model.integrals.orb_names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    model.integrals.psd_dir = rsatb::test::data_path("diamond/");
-    model.integrals.psd_names = {"C_ONCV_PBE-1.0.upf"};
-
-    auto operators = build_operator_set(
+    auto operators = BuildOperatorSet(
         *atomic_data,
         MPI_COMM_WORLD,
         false,
-        rmodel::AnyModelConfig(model),
+        *model,
         make_options(false),
-        {},
         make_runtime());
 
     ASSERT_TRUE(operators->has_overlap());
@@ -424,13 +432,19 @@ TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     EXPECT_GT(velocity.y->local_block_nnz(), 0u);
     EXPECT_GT(velocity.z->local_block_nnz(), 0u);
 
+    // Exactly one representation, which is what PositionAxisData documents.
+    // An LCAO basis is non-orthogonal, so position is the explicit matrix and
+    // the orthogonal diagonal is absent -- it would not be the position
+    // operator in this basis. The set used to attach it to every triplet
+    // regardless, which was benign only because every consumer re-derived
+    // orthogonality before reading.
     const auto& position = operators->position_state(0);
     ASSERT_TRUE(position.x.matrix);
     ASSERT_TRUE(position.y.matrix);
     ASSERT_TRUE(position.z.matrix);
-    ASSERT_TRUE(position.x.orthogonal_diagonal);
-    ASSERT_TRUE(position.y.orthogonal_diagonal);
-    ASSERT_TRUE(position.z.orthogonal_diagonal);
+    EXPECT_FALSE(position.x.orthogonal_diagonal);
+    EXPECT_FALSE(position.y.orthogonal_diagonal);
+    EXPECT_FALSE(position.z.orthogonal_diagonal);
     EXPECT_GT(position.x.matrix->local_block_nnz(), 0u);
     EXPECT_GT(position.y.matrix->local_block_nnz(), 0u);
     EXPECT_GT(position.z.matrix->local_block_nnz(), 0u);

@@ -22,6 +22,11 @@ using namespace vbcsr;
 
 enum class PreconditionerType { Left, Right, Symmetric };
 
+/// Tag selecting the borrowing constructor of ISQRTMPreconditioner, so that
+/// "wrap this factor" cannot be confused with "compute the factor of this".
+struct BorrowFactor {};
+inline constexpr BorrowFactor kBorrowFactor{};
+
 // Base class for Preconditioners
 template <typename T>
 class Preconditioner {
@@ -147,38 +152,69 @@ private:
     }
 };
 
-// ISQRTM Preconditioner
-// Approximates A^-1/2 using Newton-Schulz iteration.
-// Useful for Symmetric Preconditioning.
+// Symmetric preconditioning by a sparse factor Z: applies Z and Z^H.
+//
+// It has to be a class rather than a plain BlockSpMat& because Chebyshev and
+// SymPrecondMat take a Preconditioner<T>&, and what they need from it is the
+// four-way apply/apply_adjoint interface over both DistVector and
+// DistMultiVector -- a matrix reference alone supplies none of that. Storage
+// is not the reason: the borrowing form below holds exactly a reference.
+//
+// Two ways in, because both cases are real. Given an overlap it computes
+// S^{-1/2} and owns the result; given a factor somebody else already has --
+// a shared Z reused across samplers, a purified one from elsewhere -- it
+// borrows without copying, which matters because Z is large and BlockSpMat is
+// deliberately move-only.
 template <typename T>
 class ISQRTMPreconditioner : public Preconditioner<T> {
 public:
-    BlockSpMat<T> P; // Stores S^-1/2
-
-    ISQRTMPreconditioner(BlockSpMat<T>& S, int max_iter = 10, double tol = 1e-5, double sptol=1e-5, std::string init_method = "graph", double factor = 1.0, bool verbose = false, std::size_t init_mem_budget_bytes = 0) : P(S.graph) {
-        // Compute P = S^-1/2
-        isqrtm(S, &P, tol, sptol, max_iter, init_method, factor, verbose, init_mem_budget_bytes);
+    /// Computes and owns S^{-1/2}.
+    ISQRTMPreconditioner(BlockSpMat<T>& S, int max_iter = 10, double tol = 1e-5,
+                         double sptol = 1e-5, bool verbose = false)
+        : owned_(std::make_unique<BlockSpMat<T>>(S.graph)), factor_(owned_.get()) {
+        InverseSqrtOptions options;
+        options.tol = tol;
+        options.sptol = sptol;
+        options.maxit = max_iter;
+        inverse_sqrt(S, owned_.get(), options, verbose);
     }
+
+    /// Borrows a factor owned elsewhere, which must outlive this.
+    explicit ISQRTMPreconditioner(BlockSpMat<T>& factor, BorrowFactor)
+        : owned_(nullptr), factor_(&factor) {}
+
+    /// The factor being applied, owned or borrowed.
+    BlockSpMat<T>& factor() { return *factor_; }
+    const BlockSpMat<T>& factor() const { return *factor_; }
 
     PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }
 
-    ISQRTMPreconditioner(BlockSpMat<T>& P) : P(P) {}
-
     void apply(const DistVector<T>& src, DistVector<T>& dst) override {
-        P.mult_optimized(const_cast<DistVector<T>&>(src), dst);
+        factor_->mult_optimized(const_cast<DistVector<T>&>(src), dst);
     }
-    
+
     void apply(const DistMultiVector<T>& src, DistMultiVector<T>& dst) override {
-        P.mult_dense(const_cast<DistMultiVector<T>&>(src), dst);
+        factor_->mult_dense(const_cast<DistMultiVector<T>&>(src), dst);
     }
 
     void apply_adjoint(const DistVector<T>& src, DistVector<T>& dst) override {
-        P.mult_adjoint(const_cast<DistVector<T>&>(src), dst);
+        factor_->mult_adjoint(const_cast<DistVector<T>&>(src), dst);
     }
 
     void apply_adjoint(const DistMultiVector<T>& src, DistMultiVector<T>& dst) override {
-        P.mult_dense_adjoint(const_cast<DistMultiVector<T>&>(src), dst);
+        factor_->mult_dense_adjoint(const_cast<DistMultiVector<T>&>(src), dst);
     }
+
+private:
+    // Null when borrowing. A BlockSpMat member cannot express "no matrix":
+    // it has no default constructor, and constructing one from a graph is not
+    // a cheap placeholder -- it allocates and first-touches value pages for the
+    // graph's whole sparsity pattern, which on a large overlap is hundreds of
+    // megabytes of resident memory that the borrowing case would never read.
+    // Indirection also keeps the factor address stable if this object is moved,
+    // which a member held by value would not.
+    std::unique_ptr<BlockSpMat<T>> owned_;
+    BlockSpMat<T>* factor_;  // -> *owned_, or the caller's
 };
 
 // Wrapper for Symmetric Preconditioning: P * A * P

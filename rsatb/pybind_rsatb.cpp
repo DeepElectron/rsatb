@@ -5,318 +5,536 @@
 
 #include "rsatb.hpp"
 
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 
 namespace py = pybind11;
 
-namespace {
-
-rsatb::backend::SKRadialFunction parse_sktb_radial_function(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::backend::SKRadialFunction radial;
-    if (cfg.contains("kind")) radial.kind = py::cast<std::string>(cfg["kind"]);
-    if (cfg.contains("r")) radial.r = py::cast<std::vector<double>>(cfg["r"]);
-    if (cfg.contains("distances")) radial.r = py::cast<std::vector<double>>(cfg["distances"]);
-    if (cfg.contains("values")) radial.values = py::cast<std::vector<double>>(cfg["values"]);
-    if (cfg.contains("coeffs")) radial.coeffs = py::cast<std::vector<double>>(cfg["coeffs"]);
-    if (cfg.contains("lambda")) radial.lambda_value = py::cast<double>(cfg["lambda"]);
-    if (cfg.contains("r_on")) radial.r_on = py::cast<double>(cfg["r_on"]);
-    if (cfg.contains("r_cut")) radial.r_cut = py::cast<double>(cfg["r_cut"]);
-    return radial;
-}
-
-std::map<std::string, double> parse_sktb_onsite_map(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    std::map<std::string, double> result;
-    for (const auto& item : cfg) {
-        result.emplace(py::cast<std::string>(item.first), py::cast<double>(item.second));
-    }
-    return result;
-}
-
-rsatb::backend::SKPairInput parse_sktb_pair(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::backend::SKPairInput pair;
-    if (!cfg.contains("species")) {
-        throw std::runtime_error("SKTB pair entry requires a 'species' list.");
-    }
-    const auto species = py::cast<std::vector<std::string>>(cfg["species"]);
-    if (species.size() != 2) {
-        throw std::runtime_error("SKTB pair entry requires exactly two species labels.");
-    }
-    pair.species[0] = species[0];
-    pair.species[1] = species[1];
-
-    if (cfg.contains("channels")) {
-        py::dict channels = py::cast<py::dict>(cfg["channels"]);
-        for (const auto& item : channels) {
-            pair.channels.emplace(
-                py::cast<std::string>(item.first),
-                parse_sktb_radial_function(item.second));
-        }
-    }
-    return pair;
-}
-
-rsatb::backend::SKMatrixInput parse_sktb_matrix_input(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::backend::SKMatrixInput model;
-    if (cfg.contains("onsite")) {
-        py::dict onsite = py::cast<py::dict>(cfg["onsite"]);
-        for (const auto& item : onsite) {
-            model.onsite.emplace(
-                py::cast<std::string>(item.first),
-                parse_sktb_onsite_map(item.second));
-        }
-    }
-    if (cfg.contains("pairs")) {
-        const auto pairs = py::cast<std::vector<py::dict>>(cfg["pairs"]);
-        model.pairs.reserve(pairs.size());
-        for (const auto& pair : pairs) {
-            model.pairs.push_back(parse_sktb_pair(pair));
-        }
-    }
-    return model;
-}
-
-rsatb::backend::SKTBInput parse_sktb_input(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::backend::SKTBInput source;
-
-    if (cfg.contains("basis")) {
-        py::dict basis = py::cast<py::dict>(cfg["basis"]);
-        for (const auto& item : basis) {
-            source.basis.emplace(
-                py::cast<std::string>(item.first),
-                py::cast<std::vector<std::string>>(item.second));
-        }
-    }
-    if (cfg.contains("species_order")) {
-        throw std::runtime_error(
-            "SKTB setup no longer accepts sources.sktb.species_order. "
-            "Provide type_symbols when constructing RSATB instead.");
-    }
-    if (cfg.contains("type_symbols")) {
-        throw std::runtime_error(
-            "SKTB setup does not accept sources.sktb.type_symbols. "
-            "Provide type_symbols when constructing RSATB instead.");
-    }
-    if (cfg.contains("hamiltonian")) {
-        source.hamiltonian = parse_sktb_matrix_input(cfg["hamiltonian"]);
-    }
-    if (cfg.contains("overlap")) {
-        source.overlap = parse_sktb_matrix_input(cfg["overlap"]);
-    }
-
-    return source;
-}
-
-rsatb::backend::SKTBModel parse_sktb_model(py::handle handle, const std::vector<std::string>& type_symbols) {
-    return rsatb::backend::build_sktb_model(parse_sktb_input(handle), type_symbols);
-}
-
-rsatb::model::Hdf5Input parse_hdf5_input(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::model::Hdf5Input input;
-    if (cfg.contains("filename")) input.filename = py::cast<std::string>(cfg["filename"]);
-    if (cfg.contains("lspinorb")) input.lspinorb = py::cast<bool>(cfg["lspinorb"]);
-    if (cfg.contains("nspin")) input.nspin = py::cast<int>(cfg["nspin"]);
-    if (cfg.contains("noncolin")) input.noncolin = py::cast<bool>(cfg["noncolin"]);
-    return input;
-}
-
-rsatb::model::LCAOIntegralInput parse_lcao_integrals(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::model::LCAOIntegralInput integrals;
-    if (cfg.contains("orb_names")) integrals.orb_names = py::cast<std::vector<std::string>>(cfg["orb_names"]);
-    if (cfg.contains("orb_dir")) integrals.orb_dir = py::cast<std::string>(cfg["orb_dir"]);
-    if (cfg.contains("psd_names")) integrals.psd_names = py::cast<std::vector<std::string>>(cfg["psd_names"]);
-    if (cfg.contains("psd_dir")) integrals.psd_dir = py::cast<std::string>(cfg["psd_dir"]);
-    if (cfg.contains("nspin")) integrals.nspin = py::cast<int>(cfg["nspin"]);
-    if (cfg.contains("lspinorb")) integrals.lspinorb = py::cast<bool>(cfg["lspinorb"]);
-    if (cfg.contains("noncolin")) integrals.noncolin = py::cast<bool>(cfg["noncolin"]);
-    if (cfg.contains("log_file")) integrals.log_file = py::cast<std::string>(cfg["log_file"]);
-    return integrals;
-}
-
-rsatb::model::SetupOptions parse_setup_options(py::handle handle) {
-    rsatb::model::SetupOptions options;
-    if (handle.is_none()) {
-        return options;
-    }
-
-    py::dict cfg = py::cast<py::dict>(handle);
-    if (cfg.contains("kpoints")) {
-        options.kpoints = py::cast<std::vector<std::vector<double>>>(cfg["kpoints"]);
-    }
-    if (cfg.contains("nsamples")) {
-        options.nsamples = py::cast<int>(cfg["nsamples"]);
-    }
-    if (cfg.contains("compute_bounds")) {
-        options.compute_bounds = py::cast<bool>(cfg["compute_bounds"]);
-    }
-    if (cfg.contains("energy_bounds") && !cfg["energy_bounds"].is_none()) {
-        const auto bounds = py::cast<std::vector<double>>(cfg["energy_bounds"]);
-        if (bounds.size() != 2) {
-            throw std::runtime_error("setup energy_bounds must contain exactly two values: [emin, emax].");
-        }
-        options.energy_bounds = std::make_pair(bounds[0], bounds[1]);
-    }
-    if (cfg.contains("bounds_zero_tol")) {
-        options.bounds_zero_tol = py::cast<double>(cfg["bounds_zero_tol"]);
-    }
-    if (cfg.contains("bounds_max_matvecs")) {
-        options.bounds_max_matvecs = py::cast<int>(cfg["bounds_max_matvecs"]);
-    }
-    if (cfg.contains("preconditioner")) {
-        py::dict pre = py::cast<py::dict>(cfg["preconditioner"]);
-        if (pre.contains("mode")) options.preconditioner.mode = py::cast<std::string>(pre["mode"]);
-        if (pre.contains("tol")) options.preconditioner.tol = py::cast<double>(pre["tol"]);
-        if (pre.contains("sptol")) options.preconditioner.sptol = py::cast<double>(pre["sptol"]);
-        if (pre.contains("maxiter")) options.preconditioner.maxiter = py::cast<int>(pre["maxiter"]);
-        if (pre.contains("method")) options.preconditioner.method = py::cast<std::string>(pre["method"]);
-    }
-    return options;
-}
-
-rsatb::model::LCAOModelConfig parse_lcao_model(py::handle handle) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    rsatb::model::LCAOModelConfig model;
-    if (cfg.contains("input")) {
-        model.input = parse_hdf5_input(cfg["input"]);
-    }
-    if (cfg.contains("integrals")) {
-        model.integrals = parse_lcao_integrals(cfg["integrals"]);
-    }
-    return model;
-}
-
-template <typename ModelConfig>
-ModelConfig parse_pairwise_model(py::handle handle, const std::vector<std::string>& type_symbols) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    ModelConfig model;
-    if (cfg.contains("input")) {
-        model.input = parse_hdf5_input(cfg["input"]);
-    }
-    if (cfg.contains("native")) {
-        model.native = parse_sktb_model(cfg["native"], type_symbols);
-    } else if (cfg.contains("basis") || cfg.contains("hamiltonian") || cfg.contains("overlap")) {
-        model.native = parse_sktb_model(handle, type_symbols);
-    }
-    return model;
-}
-
-rsatb::model::AnyModelConfig parse_model_config(py::handle handle, const std::vector<std::string>& type_symbols) {
-    py::dict cfg = py::cast<py::dict>(handle);
-    if (!cfg.contains("kind")) {
-        throw std::runtime_error("setup_config requires a model.kind entry.");
-    }
-
-    const std::string kind = py::cast<std::string>(cfg["kind"]);
-    if (kind == "lcao") {
-        return rsatb::model::AnyModelConfig(parse_lcao_model(cfg));
-    }
-    if (kind == "sktb") {
-        return rsatb::model::AnyModelConfig(parse_pairwise_model<rsatb::model::SKTBModelConfig>(cfg, type_symbols));
-    }
-    if (kind == "dftb") {
-        return rsatb::model::AnyModelConfig(parse_pairwise_model<rsatb::model::DFTBModelConfig>(cfg, type_symbols));
-    }
-    throw std::runtime_error("Unsupported model.kind '" + kind + "'.");
-}
-
-py::dict pack_sktb_atomic_preparation(const rsatb::backend::SKTBAtomicPreparation& prepared) {
-    py::dict result;
-    result["type_symbols"] = prepared.type_symbols;
-    result["type_norb"] = prepared.type_norb;
-    result["r_max_per_type"] = prepared.r_max_per_type;
-    return result;
-}
-
-} // namespace
 
 PYBIND11_MODULE(_rsatb, m) {
     m.doc() = "RSATB Python Binding";
 
+    // --- io layer ---------------------------------------------------------
+
+    py::class_<vbcsr::atomic::Structure>(m, "Structure",
+        "Atomic geometry: positions, species, cell, periodicity.\n\n"
+        "Carries no orbital or cutoff information -- that comes from the model.")
+        .def(py::init<>())
+        .def_static("from_file", &vbcsr::atomic::ReadStructure,
+                    py::arg("filename"), py::arg("format") = "")
+        .def_readwrite("pos", &vbcsr::atomic::Structure::pos)
+        .def_readwrite("z", &vbcsr::atomic::Structure::z)
+        .def_readwrite("cell", &vbcsr::atomic::Structure::cell)
+        .def_readwrite("pbc", &vbcsr::atomic::Structure::pbc)
+        .def_readwrite("n_atom", &vbcsr::atomic::Structure::n_atom)
+        .def("type_symbols", &vbcsr::atomic::Structure::TypeSymbols)
+        .def_static(
+            "from_arrays",
+            [](std::vector<double> pos, std::vector<int> z, std::vector<double> cell,
+               std::vector<bool> pbc) {
+                vbcsr::atomic::Structure structure;
+                if (pos.size() != z.size() * 3) {
+                    throw std::runtime_error(
+                        "Structure.from_arrays: pos must hold three values per atom (" +
+                        std::to_string(z.size()) + " atoms, " + std::to_string(pos.size()) +
+                        " coordinates).");
+                }
+                if (cell.size() != 9) {
+                    throw std::runtime_error(
+                        "Structure.from_arrays: cell must hold nine values, row-major.");
+                }
+                if (pbc.size() != 3) {
+                    throw std::runtime_error("Structure.from_arrays: pbc must hold three flags.");
+                }
+                structure.n_atom = static_cast<int>(z.size());
+                structure.pos = std::move(pos);
+                structure.z = std::move(z);
+                structure.cell = std::move(cell);
+                structure.pbc = std::move(pbc);
+                return structure;
+            },
+            py::arg("pos"), py::arg("z"), py::arg("cell"),
+            py::arg("pbc") = std::vector<bool>{true, true, true},
+            "Build a Structure from arrays, with the shapes checked.")
+        .def("__repr__", [](const vbcsr::atomic::Structure& self) {
+            std::string species;
+            for (const auto& symbol : self.TypeSymbols()) {
+                if (!species.empty()) species += ", ";
+                species += symbol;
+            }
+            return "<Structure n_atom=" + std::to_string(self.n_atom) +
+                   " species=[" + species + "]>";
+        });
+
+    m.def("atomic_number", [](const std::string& symbol) {
+              return vbcsr::atomic::AtomicNumber(vbcsr::atomic::CanonicalSymbol(symbol));
+          },
+          py::arg("symbol"),
+          "Atomic number of a chemical symbol, e.g. 'C' -> 6. A decimal string is\n"
+          "accepted too, so '6' also resolves to carbon. Raises on anything else.");
+
+    py::class_<rsatb::io::HamiltonianFile>(m, "HamiltonianFile",
+        "A precomputed real-space Hamiltonian file and the layout it uses.")
+        .def(py::init([](std::string path, const std::string& format) {
+                 rsatb::io::HamiltonianFile file;
+                 file.path = std::move(path);
+                 file.format = rsatb::io::ParseHamiltonianFormat(format);
+                 return file;
+             }),
+             py::arg("path"), py::arg("format") = "deeptb")
+        .def_readwrite("path", &rsatb::io::HamiltonianFile::path)
+        .def_property(
+            "format",
+            [](const rsatb::io::HamiltonianFile& self) { return rsatb::io::ToString(self.format); },
+            [](rsatb::io::HamiltonianFile& self, const std::string& value) {
+                self.format = rsatb::io::ParseHamiltonianFormat(value);
+            })
+        .def("__repr__", [](const rsatb::io::HamiltonianFile& self) {
+            return "<HamiltonianFile path='" + self.path + "' format='" +
+                   rsatb::io::ToString(self.format) + "'>";
+        });
+
+    // --- model layer ------------------------------------------------------
+
+    py::class_<rsatb::model::SpinSpec>(m, "SpinSpec",
+        "How spin enters the basis: none, collinear, noncollinear, or spinorbit.")
+        .def(py::init([](const std::string& treatment) {
+                 return rsatb::model::ParseSpinSpec(treatment);
+             }),
+             py::arg("treatment") = "none")
+        .def_property(
+            "treatment",
+            [](const rsatb::model::SpinSpec& self) { return rsatb::model::ToString(self.treatment); },
+            [](rsatb::model::SpinSpec& self, const std::string& value) {
+                self = rsatb::model::ParseSpinSpec(value);
+            })
+        .def("components", &rsatb::model::SpinSpec::Components)
+        .def("channels", &rsatb::model::SpinSpec::Channels)
+        .def("__repr__", [](const rsatb::model::SpinSpec& self) {
+            return "<SpinSpec '" + rsatb::model::ToString(self.treatment) + "' components=" +
+                   std::to_string(self.Components()) + ">";
+        });
+
+    py::class_<rsatb::model::BasisSpec>(m, "BasisSpec",
+        "The basis a model works in: species, orbitals per species, and graph\n"
+        "cutoff radii. Derived by the model -- never supplied by the caller.")
+        .def_readonly("type_symbols", &rsatb::model::BasisSpec::type_symbols)
+        .def_readonly("type_norb", &rsatb::model::BasisSpec::type_norb)
+        .def_readonly("cutoff_radius", &rsatb::model::BasisSpec::cutoff_radius)
+        .def("__repr__", [](const rsatb::model::BasisSpec& self) {
+            std::string body;
+            for (size_t i = 0; i < self.type_symbols.size(); ++i) {
+                if (!body.empty()) body += ", ";
+                std::ostringstream cutoff;
+                cutoff.precision(4);
+                cutoff << std::fixed << self.cutoff_radius[i];
+                body += self.type_symbols[i] + ": " + std::to_string(self.type_norb[i]) +
+                        " orb, r<=" + cutoff.str() + " A";
+            }
+            return "<BasisSpec " + body + ">";
+        });
+
+    py::class_<rsatb::model::Capabilities>(m, "Capabilities",
+        "Which operators are available once a model is set up.")
+        .def_readonly("overlap", &rsatb::model::Capabilities::overlap)
+        .def_readonly("velocity", &rsatb::model::Capabilities::velocity)
+        .def_readonly("position", &rsatb::model::Capabilities::position)
+        .def("orthogonal", &rsatb::model::Capabilities::orthogonal)
+        .def("__repr__", [](const rsatb::model::Capabilities& self) {
+            std::string body = self.overlap ? "non-orthogonal" : "orthogonal";
+            if (self.velocity) body += ", velocity";
+            if (self.position) body += ", position";
+            return "<Capabilities " + body + ">";
+        });
+
+    py::class_<rsatb::model::OrbitalFiles>(m, "OrbitalFiles",
+        "Numerical atomic orbital files, one per species in ascending-Z order.")
+        .def(py::init([](std::vector<std::string> names, std::string dir) {
+                 return rsatb::model::OrbitalFiles{std::move(names), std::move(dir)};
+             }),
+             py::arg("names"), py::arg("dir") = "")
+        .def_readwrite("names", &rsatb::model::OrbitalFiles::names)
+        .def_readwrite("dir", &rsatb::model::OrbitalFiles::dir);
+
+    py::class_<rsatb::model::PseudopotentialFiles>(m, "PseudopotentialFiles",
+        "Pseudopotential files, in the same order as the orbital files.\n\n"
+        "Optional: supplying them enables the velocity operator.")
+        .def(py::init([](std::vector<std::string> names, std::string dir) {
+                 return rsatb::model::PseudopotentialFiles{std::move(names), std::move(dir)};
+             }),
+             py::arg("names") = std::vector<std::string>{}, py::arg("dir") = "")
+        .def_readwrite("names", &rsatb::model::PseudopotentialFiles::names)
+        .def_readwrite("dir", &rsatb::model::PseudopotentialFiles::dir);
+
+    py::class_<rsatb::model::PreconditionerOptions>(m, "PreconditionerOptions",
+        "Preconditioner settings for the iterative solvers.")
+        .def(py::init([](const std::string& target,
+                         bool release_overlap_after_build,
+                         double tol, double sptol, int maxiter) {
+                 rsatb::model::PreconditionerOptions options;
+                 options.target = rsatb::model::ParsePreconditionerTarget(target);
+                 options.release_overlap_after_build = release_overlap_after_build;
+                 options.tol = tol;
+                 options.sptol = sptol;
+                 options.maxiter = maxiter;
+                 return options;
+             }),
+             py::arg("target") = "overlap",
+             py::arg("release_overlap_after_build") = false,
+             py::arg("tol") = 1e-7,
+             py::arg("sptol") = 1e-5,
+             py::arg("maxiter") = 20)
+        .def_readwrite("release_overlap_after_build",
+                       &rsatb::model::PreconditionerOptions::release_overlap_after_build)
+        .def_readwrite("tol", &rsatb::model::PreconditionerOptions::tol)
+        .def_readwrite("sptol", &rsatb::model::PreconditionerOptions::sptol)
+        .def_readwrite("maxiter", &rsatb::model::PreconditionerOptions::maxiter)
+        .def_property(
+            "target",
+            [](const rsatb::model::PreconditionerOptions& self) {
+                return self.target == rsatb::model::PreconditionerTarget::kNone ? "none" : "overlap";
+            },
+            [](rsatb::model::PreconditionerOptions& self, const std::string& value) {
+                self.target = rsatb::model::ParsePreconditionerTarget(value);
+            })
+        .def("__repr__", [](const rsatb::model::PreconditionerOptions& self) {
+            const std::string target =
+                self.target == rsatb::model::PreconditionerTarget::kNone ? "none" : "overlap";
+            return "<PreconditionerOptions target='" + target + "'" +
+                   (self.release_overlap_after_build ? " release_overlap" : "") + ">";
+        });
+
+    py::class_<rsatb::model::SetupOptions>(m, "SetupOptions",
+        "What the calculation does: k-points, sampling, spectral bounds, and\n"
+        "preconditioning. Independent of which model family supplies operators.")
+        .def(py::init([](std::vector<std::vector<double>> kpoints,
+                         int nsamples,
+                         bool compute_bounds,
+                         py::object energy_bounds,
+                         double bounds_zero_tol,
+                         int bounds_max_matvecs,
+                         rsatb::model::PreconditionerOptions preconditioner) {
+                 rsatb::model::SetupOptions options;
+                 options.kpoints = std::move(kpoints);
+                 options.nsamples = nsamples;
+                 options.compute_bounds = compute_bounds;
+                 if (!energy_bounds.is_none()) {
+                     const auto bounds = py::cast<std::vector<double>>(energy_bounds);
+                     if (bounds.size() != 2) {
+                         throw std::runtime_error(
+                             "energy_bounds must contain exactly two values: [emin, emax].");
+                     }
+                     options.energy_bounds = std::make_pair(bounds[0], bounds[1]);
+                 }
+                 options.bounds_zero_tol = bounds_zero_tol;
+                 options.bounds_max_matvecs = bounds_max_matvecs;
+                 options.preconditioner = std::move(preconditioner);
+                 return options;
+             }),
+             py::arg("kpoints") = std::vector<std::vector<double>>{{0.0, 0.0, 0.0}},
+             py::arg("nsamples") = 1,
+             py::arg("compute_bounds") = true,
+             py::arg("energy_bounds") = py::none(),
+             py::arg("bounds_zero_tol") = 1e-12,
+             py::arg("bounds_max_matvecs") = 10000,
+             py::arg("preconditioner") = rsatb::model::PreconditionerOptions{})
+        .def_readwrite("kpoints", &rsatb::model::SetupOptions::kpoints)
+        .def_readwrite("nsamples", &rsatb::model::SetupOptions::nsamples)
+        .def_readwrite("compute_bounds", &rsatb::model::SetupOptions::compute_bounds)
+        .def_readwrite("bounds_zero_tol", &rsatb::model::SetupOptions::bounds_zero_tol)
+        .def_readwrite("bounds_max_matvecs", &rsatb::model::SetupOptions::bounds_max_matvecs)
+        .def_readwrite("preconditioner", &rsatb::model::SetupOptions::preconditioner)
+        // Constructor-only until now: you could pass energy_bounds but not read
+        // it back or change it, which is exactly the asymmetry this redesign
+        // set out to remove.
+        .def_property(
+            "energy_bounds",
+            [](const rsatb::model::SetupOptions& self) -> py::object {
+                if (!self.energy_bounds.has_value()) return py::none();
+                return py::make_tuple(self.energy_bounds->first, self.energy_bounds->second);
+            },
+            [](rsatb::model::SetupOptions& self, py::object value) {
+                if (value.is_none()) {
+                    self.energy_bounds.reset();
+                    return;
+                }
+                const auto bounds = py::cast<std::vector<double>>(value);
+                if (bounds.size() != 2) {
+                    throw std::runtime_error(
+                        "energy_bounds must contain exactly two values: [emin, emax].");
+                }
+                self.energy_bounds = std::make_pair(bounds[0], bounds[1]);
+            })
+        .def("__repr__", [](const rsatb::model::SetupOptions& self) {
+            std::string bounds = "auto";
+            if (self.energy_bounds.has_value()) {
+                std::ostringstream out;
+                out.precision(3);
+                out << "[" << self.energy_bounds->first << ", " << self.energy_bounds->second << "]";
+                bounds = out.str();
+            } else if (!self.compute_bounds) {
+                bounds = "none";
+            }
+            return "<SetupOptions nk=" + std::to_string(self.kpoints.size()) +
+                   " nsamples=" + std::to_string(self.nsamples) +
+                   " bounds=" + bounds + ">";
+        });
+
+    py::class_<rsatb::model::Model>(m, "Model",
+        "Base class of every model family. Reports the basis it works in and\n"
+        "which operators it can build.")
+        .def_property_readonly("name", &rsatb::model::Model::name)
+        .def_property_readonly("basis", &rsatb::model::Model::basis,
+                               py::return_value_policy::reference_internal)
+        .def_property_readonly("spin", &rsatb::model::Model::spin,
+                               py::return_value_policy::reference_internal)
+        .def_property_readonly("capabilities", &rsatb::model::Model::capabilities)
+        .def("__repr__", [](const rsatb::model::Model& self) {
+            const auto& basis = self.basis();
+            std::string species;
+            for (size_t i = 0; i < basis.type_symbols.size(); ++i) {
+                if (!species.empty()) species += ", ";
+                species += basis.type_symbols[i] + "(" + std::to_string(basis.type_norb[i]) + ")";
+            }
+            return "<" + self.name() + " " + species + " " +
+                   std::string(self.capabilities().orthogonal() ? "orthogonal" : "non-orthogonal") + ">";
+        });
+
+    // --- Slater-Koster parameters -----------------------------------------
+
+    py::class_<rsatb::model::sktb::SkRadialFunction>(m, "SkRadialFunction",
+        "Distance dependence of one Slater-Koster channel.\n\n"
+        "Build with sk_spline(...) or sk_exp_poly(...).")
+        .def_readwrite("kind", &rsatb::model::sktb::SkRadialFunction::kind)
+        .def_readwrite("r", &rsatb::model::sktb::SkRadialFunction::r)
+        .def_readwrite("values", &rsatb::model::sktb::SkRadialFunction::values)
+        .def_readwrite("coeffs", &rsatb::model::sktb::SkRadialFunction::coeffs)
+        .def_readwrite("lambda_value", &rsatb::model::sktb::SkRadialFunction::lambda_value)
+        .def_readwrite("r_on", &rsatb::model::sktb::SkRadialFunction::r_on)
+        .def_readwrite("r_cut", &rsatb::model::sktb::SkRadialFunction::r_cut)
+        .def("cutoff", &rsatb::model::sktb::SkRadialFunction::Cutoff)
+        .def("evaluate", &rsatb::model::sktb::SkRadialFunction::Evaluate, py::arg("distance"));
+
+    m.def("sk_spline",
+          [](std::vector<double> r, std::vector<double> values, py::object r_cut) {
+              const double cutoff = r_cut.is_none() ? 0.0 : py::cast<double>(r_cut);
+              return rsatb::model::sktb::MakeSpline(std::move(r), std::move(values), cutoff);
+          },
+          py::arg("r"), py::arg("values"), py::arg("r_cut") = py::none(),
+          "Cubic-spline radial function through tabulated values.");
+
+    m.def("sk_exp_poly",
+          [](std::vector<double> coeffs, double r_cut, double lambda_value, double r_on) {
+              return rsatb::model::sktb::MakeExpPoly(std::move(coeffs), r_cut, lambda_value, r_on);
+          },
+          py::arg("coeffs"), py::arg("r_cut"), py::arg("lambda_value") = 0.0, py::arg("r_on") = 0.0,
+          "Exponential-times-polynomial radial function with a cosine taper.");
+
+    py::class_<rsatb::model::sktb::SkParameters>(m, "SkParameters",
+        "Onsite energies and pair channels for ONE matrix, H or S.\n\n"
+        "H and S are separate objects, so there is nothing to disambiguate.")
+        .def(py::init([](py::dict onsite, py::dict pairs) {
+                 rsatb::model::sktb::SkParameters parameters;
+                 for (const auto& species_entry : onsite) {
+                     const auto species = py::cast<std::string>(species_entry.first);
+                     for (const auto& orbital_entry : py::cast<py::dict>(species_entry.second)) {
+                         parameters.SetOnsite(species,
+                                              py::cast<std::string>(orbital_entry.first),
+                                              py::cast<double>(orbital_entry.second));
+                     }
+                 }
+                 // pairs: {("C", "C"): {"pp_pi": SkRadialFunction, ...}}
+                 for (const auto& pair_entry : pairs) {
+                     const auto species = py::cast<std::vector<std::string>>(pair_entry.first);
+                     if (species.size() != 2) {
+                         throw std::runtime_error(
+                             "An SkParameters pair key must name exactly two species.");
+                     }
+                     auto& pair = parameters.Pair(species[0], species[1]);
+                     for (const auto& channel_entry : py::cast<py::dict>(pair_entry.second)) {
+                         pair.channels[py::cast<std::string>(channel_entry.first)] =
+                             py::cast<rsatb::model::sktb::SkRadialFunction>(channel_entry.second);
+                     }
+                 }
+                 return parameters;
+             }),
+             py::arg("onsite") = py::dict(),
+             py::arg("pairs") = py::dict(),
+             "Onsite energies and pair channels for one matrix (H or S).\n\n"
+             "onsite: {species: {orbital: value}}\n"
+             "pairs:  {(row_species, col_species): {channel_name: SkRadialFunction}}\n"
+             "Channel names use the shell-pair plus bond-type form, e.g. \"pp_pi\".");
+
+    py::class_<rsatb::model::SktbModel, rsatb::model::Model>(m, "SktbModel",
+        "Slater-Koster model from parameterized radial functions.\n\n"
+        "Orthogonal unless overlap parameters are given.")
+        .def(py::init([](std::map<std::string, std::vector<std::string>> basis,
+                         rsatb::model::sktb::SkParameters hamiltonian,
+                         py::object overlap,
+                         const std::string& spin) {
+                 rsatb::model::SktbConfig config;
+                 config.basis = std::move(basis);
+                 config.hamiltonian = std::move(hamiltonian);
+                 if (!overlap.is_none()) {
+                     config.overlap = py::cast<rsatb::model::sktb::SkParameters>(overlap);
+                 }
+                 config.spin = rsatb::model::ParseSpinSpec(spin);
+                 return rsatb::model::SktbModel::Create(config);
+             }),
+             py::arg("basis"),
+             py::arg("hamiltonian"),
+             py::arg("overlap") = py::none(),
+             py::arg("spin") = "none");
+
+    py::class_<rsatb::model::DftbModel, rsatb::model::Model>(m, "DftbModel",
+        "DFTB model: Slater-Koster tables, non-orthogonal by construction.\n\n"
+        "Use DftbModel.from_skf_directory(...) to read a .skf parameter set.")
+        .def(py::init([](std::map<std::string, std::vector<std::string>> basis,
+                         rsatb::model::sktb::SkParameters hamiltonian,
+                         rsatb::model::sktb::SkParameters overlap,
+                         const std::string& spin) {
+                 rsatb::model::DftbConfig config;
+                 config.basis = std::move(basis);
+                 config.hamiltonian = std::move(hamiltonian);
+                 config.overlap = std::move(overlap);
+                 config.spin = rsatb::model::ParseSpinSpec(spin);
+                 return rsatb::model::DftbModel::Create(config);
+             }),
+             py::arg("basis"),
+             py::arg("hamiltonian"),
+             py::arg("overlap"),
+             py::arg("spin") = "none")
+        .def_static(
+            "from_skf_directory",
+            [](const std::string& skf_dir,
+               std::map<std::string, std::vector<std::string>> basis,
+               const std::string& heteronuclear,
+               const std::string& spin) {
+                rsatb::model::DftbSkfConfig config;
+                config.skf_dir = skf_dir;
+                config.basis = std::move(basis);
+                const std::string policy = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(heteronuclear));
+                if (policy == "reject_ambiguous") {
+                    config.heteronuclear = rsatb::model::sktb::SkfHeteronuclearPolicy::kRejectAmbiguous;
+                } else if (policy == "assume_lower_shell_on_row_species") {
+                    config.heteronuclear =
+                        rsatb::model::sktb::SkfHeteronuclearPolicy::kAssumeLowerShellOnRowSpecies;
+                } else {
+                    throw std::runtime_error(
+                        "heteronuclear must be 'reject_ambiguous' or 'assume_lower_shell_on_row_species'.");
+                }
+                config.spin = rsatb::model::ParseSpinSpec(spin);
+                return rsatb::model::DftbModel::FromSkfDirectory(config);
+            },
+            py::arg("skf_dir"),
+            py::arg("basis"),
+            py::arg("heteronuclear") = "reject_ambiguous",
+            py::arg("spin") = "none",
+            "Build a DFTB model from a directory of Slater-Koster (.skf) files.\n\n"
+            "The basis is declared, not inferred: a .skf tabulates all ten channels up to d\n"
+            "regardless of which shells the parameterization uses.\n\n"
+            "Heteronuclear pairs work whenever the declared bases force a unique reading of\n"
+            "each mixed-shell channel, which is the usual case. A pair where both species carry\n"
+            "both shells of a channel is genuinely ambiguous in the file format and is refused.");
+
+    py::class_<rsatb::model::TightBindingFileModel, rsatb::model::Model>(m, "TightBindingFileModel",
+        "Orthogonal tight-binding model read from a Hamiltonian file.\n\n"
+        "The one model that must be told its basis: the supported file formats\n"
+        "carry no basis header.")
+        .def(py::init([](rsatb::io::HamiltonianFile hamiltonian,
+                         std::vector<std::string> type_symbols,
+                         std::vector<int> type_norb,
+                         std::vector<double> cutoff_radius,
+                         const std::string& spin) {
+                 rsatb::model::TightBindingFileConfig config;
+                 config.hamiltonian = std::move(hamiltonian);
+                 config.type_symbols = std::move(type_symbols);
+                 config.type_norb = std::move(type_norb);
+                 config.cutoff_radius = std::move(cutoff_radius);
+                 config.spin = rsatb::model::ParseSpinSpec(spin);
+                 return rsatb::model::TightBindingFileModel::Create(std::move(config), MPI_COMM_WORLD);
+             }),
+             py::arg("hamiltonian"),
+             py::arg("type_symbols"),
+             py::arg("type_norb"),
+             py::arg("cutoff_radius"),
+             py::arg("spin") = "none",
+             "Orthogonal tight-binding model read from a precomputed Hamiltonian file.\n\n"
+             "Unlike the other models the basis must be given: the supported file formats "
+             "carry no basis header, so orbital counts cannot be derived.");
+
+    py::class_<rsatb::model::LcaoModel, rsatb::model::Model>(m, "LcaoModel",
+        "LCAO model: a precomputed Hamiltonian plus numerical atomic orbitals.\n\n"
+        "Always non-orthogonal, so orbital files are required. The basis --\n"
+        "orbital counts and cutoff radii -- is read from those files.")
+        .def(py::init([](rsatb::io::HamiltonianFile hamiltonian,
+                         rsatb::model::OrbitalFiles orbitals,
+                         rsatb::model::PseudopotentialFiles pseudopotentials,
+                         const std::string& spin,
+                         std::string log_file) {
+                 rsatb::model::LcaoConfig config;
+                 config.hamiltonian = std::move(hamiltonian);
+                 config.orbitals = std::move(orbitals);
+                 config.pseudopotentials = std::move(pseudopotentials);
+                 config.spin = rsatb::model::ParseSpinSpec(spin);
+                 config.log_file = std::move(log_file);
+                 return rsatb::model::LcaoModel::Create(std::move(config), MPI_COMM_WORLD);
+             }),
+             py::arg("hamiltonian"),
+             py::arg("orbitals"),
+             py::arg("pseudopotentials") = rsatb::model::PseudopotentialFiles{},
+             py::arg("spin") = "none",
+             py::arg("log_file") = "op2c.log");
+
     py::class_<rsatb::RSATB>(m, "RSATB")
-        .def(py::init([](int npar,
-                         size_t n_atom, size_t N_atom, size_t atom_offset, size_t n_edge, size_t N_edge,
-                         py::array_t<int> atom_index, py::array_t<int> atom_type, 
-                         py::array_t<int> edge_index, py::array_t<int> type_norb, 
-                         py::array_t<int> edge_shift_vec,
-                         py::array_t<double> cell, py::array_t<double> pos, bool verbose) {
-            return new rsatb::RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
-                                    atom_index.data(), atom_type.data(), 
-                                    edge_index.data(), type_norb.data(), 
-                                    std::vector<std::string>{},
-                                    edge_shift_vec.data(),
-                                    cell.data(), pos.data(), verbose);
-        }),
-        py::arg("npar"), py::arg("n_atom"), py::arg("N_atom"), py::arg("atom_offset"), 
-        py::arg("n_edge"), py::arg("N_edge"),
-        py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"), 
-        py::arg("type_norb"), py::arg("edge_shift_vec"),
-        py::arg("cell"), py::arg("pos"), py::arg("verbose") = true)
-        .def(py::init([](int npar,
-                         size_t n_atom, size_t N_atom, size_t atom_offset, size_t n_edge, size_t N_edge,
-                         py::array_t<int> atom_index, py::array_t<int> atom_type,
-                         py::array_t<int> edge_index, py::array_t<int> type_norb,
-                         const std::vector<std::string>& type_symbols,
-                         py::array_t<int> edge_shift_vec,
-                         py::array_t<double> cell, py::array_t<double> pos, bool verbose) {
-            return new rsatb::RSATB(npar, n_atom, N_atom, atom_offset, n_edge, N_edge,
-                                    atom_index.data(), atom_type.data(),
-                                    edge_index.data(), type_norb.data(),
-                                    type_symbols,
-                                    edge_shift_vec.data(),
-                                    cell.data(), pos.data(), verbose);
-        }),
-        py::arg("npar"), py::arg("n_atom"), py::arg("N_atom"), py::arg("atom_offset"),
-        py::arg("n_edge"), py::arg("N_edge"),
-        py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"),
-        py::arg("type_norb"), py::arg("type_symbols"), py::arg("edge_shift_vec"),
-        py::arg("cell"), py::arg("pos"), py::arg("verbose") = true)
-        .def(py::init<int, const std::string&, const std::vector<double>&, const std::vector<int>&, bool>(),
-             py::arg("npar"), py::arg("filename"), py::arg("r_max_per_type"), py::arg("type_norb"), py::arg("verbose") = true)
-        .def(py::init<int, const std::vector<double>&, const std::vector<int>&, 
-                      const std::vector<double>&, const std::vector<bool>&, 
-                      const std::vector<double>&, const std::vector<int>&, bool>(),
-             py::arg("npar"), py::arg("pos"), py::arg("z"), py::arg("cell"), py::arg("pbc"),
-             py::arg("r_max_per_type"), py::arg("type_norb"), py::arg("verbose") = true)
+        // The model is kept alive by the RSATB instance because velocity and
+        // position operators are built lazily through it.
+        .def(py::init([](const vbcsr::atomic::Structure& structure,
+                         const rsatb::model::Model& model,
+                         const rsatb::model::SetupOptions& options,
+                         int npar,
+                         bool verbose) {
+                 return new rsatb::RSATB(structure, model, options, npar, verbose);
+             }),
+             py::arg("structure"),
+             py::arg("model"),
+             py::arg("options") = rsatb::model::SetupOptions{},
+             py::arg("npar") = 1,
+             py::arg("verbose") = false,
+             py::keep_alive<1, 3>())
+        // Pre-partitioned graph plus a model. type_norb is not an argument:
+        // it comes from the model's basis, so the block structure has one
+        // source of truth.
+        .def(py::init([](py::array_t<int> atom_index, py::array_t<int> atom_type,
+                         py::array_t<int> edge_index, py::array_t<int> edge_shift_vec,
+                         py::array_t<double> cell, py::array_t<double> pos,
+                         const rsatb::model::Model& model,
+                         const rsatb::model::SetupOptions& options,
+                         size_t N_atom, size_t atom_offset, size_t N_edge,
+                         int npar, bool verbose) {
+                 rsatb::RSATB::AtomicGraphArrays graph;
+                 graph.n_atom = static_cast<size_t>(atom_index.size());
+                 graph.n_edge = static_cast<size_t>(edge_index.size() / 2);
+                 graph.N_atom = (N_atom == 0) ? graph.n_atom : N_atom;
+                 graph.N_edge = (N_edge == 0) ? graph.n_edge : N_edge;
+                 graph.atom_offset = atom_offset;
+                 graph.atom_index = atom_index.data();
+                 graph.atom_type = atom_type.data();
+                 graph.edge_index = edge_index.data();
+                 graph.edge_shift_vec = edge_shift_vec.data();
+                 graph.cell = cell.data();
+                 graph.pos = pos.data();
+                 return new rsatb::RSATB(graph, model, options, npar, verbose);
+             }),
+             py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"),
+             py::arg("edge_shift_vec"), py::arg("cell"), py::arg("pos"),
+             py::arg("model"),
+             py::arg("options") = rsatb::model::SetupOptions{},
+             py::arg("N_atom") = 0, py::arg("atom_offset") = 0, py::arg("N_edge") = 0,
+             py::arg("npar") = 1, py::arg("verbose") = false,
+             py::keep_alive<1, 8>())
         .def("get_kernel_info", &rsatb::RSATB::get_kernel_info)
-        .def("setup_model", [](rsatb::RSATB& self, py::dict model_cfg, py::dict options_cfg) {
-             self.setup(parse_model_config(model_cfg, self.type_symbols()), parse_setup_options(options_cfg));
-         },
-         py::arg("model"),
-         py::arg("options") = py::dict())
-        .def("setup_lcao", [](rsatb::RSATB& self, py::dict model_cfg, py::dict options_cfg) {
-             self.setup(parse_lcao_model(model_cfg), parse_setup_options(options_cfg));
-         },
-         py::arg("model"),
-         py::arg("options") = py::dict())
-        .def("setup_sktb", [](rsatb::RSATB& self, py::dict model_cfg, py::dict options_cfg) {
-             self.setup(parse_pairwise_model<rsatb::model::SKTBModelConfig>(model_cfg, self.type_symbols()), parse_setup_options(options_cfg));
-         },
-         py::arg("model"),
-         py::arg("options") = py::dict())
-        .def("setup_dftb", [](rsatb::RSATB& self, py::dict model_cfg, py::dict options_cfg) {
-             self.setup(parse_pairwise_model<rsatb::model::DFTBModelConfig>(model_cfg, self.type_symbols()), parse_setup_options(options_cfg));
-         },
-         py::arg("model"),
-         py::arg("options") = py::dict())
-        .def("setup_config", [](rsatb::RSATB& self, py::dict cfg) {
-             if (cfg.contains("disorder")) {
-                 throw std::runtime_error(
-                     "setup_config no longer accepts 'disorder'; "
-                     "apply disorder as a later post-processing step on initialized operators."
-                 );
-             }
-             if (!cfg.contains("model")) {
-                 throw std::runtime_error("setup_config requires a top-level 'model' block.");
-             }
-             self.setup(parse_model_config(cfg["model"], self.type_symbols()), parse_setup_options(cfg));
-         }, py::arg("config"))
          .def("test_solve", &rsatb::RSATB::test_solve)
         .def("compute_dos", [](rsatb::RSATB& self, int nt) {
              std::vector<double> dos_out;
@@ -324,26 +542,29 @@ PYBIND11_MODULE(_rsatb, m) {
              self.compute_dos(nt, dos_out, omega_out);
              return std::make_pair(dos_out, omega_out);
          }, py::arg("nt"))
+        .def("cell", &rsatb::RSATB::cell)
+        .def("energy_bounds", &rsatb::RSATB::energy_bounds)
         .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;
              self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
              return std::make_pair(ac_out, omega_out);
          }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"), py::arg("axis") = "abc")
-        .def("compute_dc_spectrum", [](rsatb::RSATB& self, int n_moments, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb) {
+        .def("compute_dc_spectrum", [](rsatb::RSATB& self, int n_moments, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel) {
              std::vector<double> sigma_out;
              std::vector<double> energy_out;
-             self.compute_dc_spectrum(n_moments, sigma_out, energy_out, formulation, axis, partition_sections, max_workspace_mb);
+             self.compute_dc_spectrum(n_moments, sigma_out, energy_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
              return std::make_pair(sigma_out, energy_out);
          },
          py::arg("n_moments"),
          py::arg("formulation") = "greenwood",
          py::arg("axis") = "abc",
          py::arg("partition_sections") = 0,
-         py::arg("max_workspace_mb") = 0)
-        .def("compute_dc", [](rsatb::RSATB& self, int n_moments, double mu, double temp, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb) {
+         py::arg("max_workspace_mb") = 0,
+         py::arg("kernel") = "jackson")
+        .def("compute_dc", [](rsatb::RSATB& self, int n_moments, double mu, double temp, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel) {
              std::vector<double> dc_out;
-             self.compute_dc(n_moments, mu, temp, dc_out, formulation, axis, partition_sections, max_workspace_mb);
+             self.compute_dc(n_moments, mu, temp, dc_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
              return dc_out;
          },
          py::arg("n_moments"),
@@ -352,7 +573,39 @@ PYBIND11_MODULE(_rsatb, m) {
          py::arg("formulation") = "greenwood",
          py::arg("axis") = "abc",
          py::arg("partition_sections") = 0,
-         py::arg("max_workspace_mb") = 0)
+         py::arg("max_workspace_mb") = 0,
+         py::arg("kernel") = "jackson")
+        .def("compute_occupation", [](rsatb::RSATB& self, double mu, double temp, double indicator_threshold, int n_max) {
+             const auto r = self.compute_occupation(mu, temp, indicator_threshold, n_max);
+             py::dict d;
+             d["n_electrons"] = r.n_electrons;
+             d["band_energy"] = r.band_energy;
+             d["mu"] = r.mu;
+             d["n_moments"] = r.n_moments;
+             d["indicator"] = r.indicator;
+             d["indicator_fired"] = r.indicator_fired;
+             return d;
+         },
+         py::arg("mu"),
+         py::arg("temp"),
+         py::arg("indicator_threshold") = 1e-4,
+         py::arg("n_max") = 1 << 16)
+        .def("find_fermi_level", [](rsatb::RSATB& self, double n_electrons, double temp, double indicator_threshold, int n_max, double mu_guess) {
+             const auto r = self.find_fermi_level(n_electrons, temp, indicator_threshold, n_max, mu_guess);
+             py::dict d;
+             d["n_electrons"] = r.n_electrons;
+             d["band_energy"] = r.band_energy;
+             d["mu"] = r.mu;
+             d["n_moments"] = r.n_moments;
+             d["indicator"] = r.indicator;
+             d["indicator_fired"] = r.indicator_fired;
+             return d;
+         },
+         py::arg("n_electrons"),
+         py::arg("temp"),
+         py::arg("indicator_threshold") = 1e-4,
+         py::arg("n_max") = 1 << 16,
+         py::arg("mu_guess") = std::numeric_limits<double>::quiet_NaN())
         .def("compute_msd_spectrum", [](rsatb::RSATB& self, int n_steps, double dt_fs, int n_kpm, std::string axis) {
              std::vector<double> msd_out;
              std::vector<double> energy_out;
@@ -379,20 +632,4 @@ PYBIND11_MODULE(_rsatb, m) {
          py::arg("omega_min_ev") = 0.0)
         .def("atomic_data", &rsatb::RSATB::atomic_data, py::return_value_policy::reference);
 
-    m.def("_prepare_sktb_atomic_spec_from_file",
-          [](const std::string& filename, py::dict sktb_cfg) {
-              const auto source = parse_sktb_input(sktb_cfg);
-              const auto structure = rsatb::backend::io::read_structure(filename);
-              return pack_sktb_atomic_preparation(
-                  rsatb::backend::prepare_sktb_atomic_data_from_atomic_numbers(structure.z, source));
-          },
-          py::arg("filename"), py::arg("sktb_config"));
-
-    m.def("_prepare_sktb_atomic_spec_from_atomic_numbers",
-          [](const std::vector<int>& z, py::dict sktb_cfg) {
-              const auto source = parse_sktb_input(sktb_cfg);
-              return pack_sktb_atomic_preparation(
-                  rsatb::backend::prepare_sktb_atomic_data_from_atomic_numbers(z, source));
-          },
-          py::arg("atomic_numbers"), py::arg("sktb_config"));
 }

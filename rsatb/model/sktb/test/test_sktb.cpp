@@ -1,5 +1,5 @@
-#include "../../operator_set.hpp"
-#include "../sktb.hpp"
+#include "../../../setup/operator_assembly.hpp"
+#include "../sktb_model.hpp"
 
 #include <gtest/gtest.h>
 
@@ -9,24 +9,77 @@
 #include <memory>
 #include <vector>
 
-using namespace rsatb::backend;
+using namespace rsatb::model::sktb;
 
 namespace rmodel = rsatb::model;
 
 namespace {
 
-SKRadialFunction constant_spline(double value, double cutoff = 2.5) {
-    SKRadialFunction cfg;
+// Test-only convenience over the two-SkParameters input. The production API
+// keeps the Hamiltonian and the overlap as separate objects; this builder
+// reintroduces the "H"/"S" selector purely to keep these table-driven tests
+// compact.
+struct SkInputBuilder {
+    std::map<std::string, std::vector<std::string>> basis;
+    SkParameters hamiltonian;
+    SkParameters overlap;
+    bool has_overlap = false;
+
+    SkParameters& matrix(const std::string& label) {
+        if (label == "H") return hamiltonian;
+        if (label == "S") {
+            has_overlap = true;
+            return overlap;
+        }
+        throw std::runtime_error("Test SkInputBuilder matrix label must be 'H' or 'S'.");
+    }
+
+    void set_onsite(const std::string& label, const std::string& species,
+                    const std::string& orbital, double value) {
+        matrix(label).SetOnsite(species, orbital, value);
+    }
+
+    void set_pair_channel(const std::string& label, const std::string& row_species,
+                          const std::string& col_species, const std::string& shell_pair,
+                          const std::string& bond_type, const SkRadialFunction& radial) {
+        matrix(label).SetPairChannel(row_species, col_species, shell_pair, bond_type, radial);
+    }
+
+    SkTable Build() const {
+        return BuildSkTable(
+            basis, hamiltonian,
+            has_overlap ? std::optional<SkParameters>(overlap) : std::nullopt);
+    }
+};
+
+/// Builds an SktbModel from the test input builder.
+inline std::unique_ptr<rmodel::SktbModel> MakeSktbModel(const SkInputBuilder& input) {
+    rmodel::SktbConfig config;
+    config.basis = input.basis;
+    config.hamiltonian = input.hamiltonian;
+    if (input.has_overlap) {
+        config.overlap = input.overlap;
+    }
+    return rmodel::SktbModel::Create(config);
+}
+
+/// Returns the AtomicData requirements a table implies.
+inline rmodel::BasisSpec PreparedBasis(const SkTable& table) {
+    return DeriveBasisSpec(table, rmodel::SpinSpec{});
+}
+
+SkRadialFunction constant_spline(double value, double cutoff = 2.5) {
+    SkRadialFunction cfg;
     cfg.kind = "spline";
     cfg.r = {0.0, cutoff};
     cfg.values = {value, value};
     cfg.r_cut = cutoff;
-    cfg.spline_second_derivatives = cfg.build_spline_second_derivatives();
+    cfg.spline_second_derivatives = cfg.BuildSplineSecondDerivatives();
     return cfg;
 }
 
-SKRadialFunction exp_poly_constant(double value, double r_on, double r_cut) {
-    SKRadialFunction cfg;
+SkRadialFunction exp_poly_constant(double value, double r_on, double r_cut) {
+    SkRadialFunction cfg;
     cfg.kind = "exp_poly";
     cfg.coeffs = {value};
     cfg.lambda_value = 0.0;
@@ -38,7 +91,7 @@ SKRadialFunction exp_poly_constant(double value, double r_on, double r_cut) {
 std::unique_ptr<AtomicData> make_points_data(
     const std::vector<double>& pos,
     const std::vector<int>& z,
-    const SKTBModel& sktb
+    const SkTable& sktb
 ) {
     const std::vector<double> cell = {
         10.0, 0.0, 0.0,
@@ -46,22 +99,22 @@ std::unique_ptr<AtomicData> make_points_data(
         0.0, 0.0, 10.0
     };
     const std::vector<bool> pbc = {false, false, false};
-    const auto prepared = prepare_sktb_atomic_data(sktb);
+    const auto prepared = PreparedBasis(sktb);
     return std::unique_ptr<AtomicData>(
-        AtomicData::from_points(pos, z, cell, pbc, prepared.r_max_per_type, prepared.type_norb, MPI_COMM_WORLD));
+        AtomicData::from_points(pos, z, cell, pbc, prepared.cutoff_radius, prepared.type_norb, MPI_COMM_WORLD));
 }
 
 std::unique_ptr<AtomicData> make_points_data(
     const std::vector<double>& pos,
     const std::vector<int>& z,
-    const SKTBInput& sktb
+    const SkInputBuilder& sktb
 ) {
-    const auto model = build_sktb_model(sktb, unique_type_symbols_from_atomic_numbers(z));
+    const auto model = sktb.Build();
     return make_points_data(pos, z, model);
 }
 
-std::unique_ptr<AtomicData> make_periodic_single_atom_data(double cell_x, const SKTBModel& sktb) {
-    const auto prepared = prepare_sktb_atomic_data(sktb);
+std::unique_ptr<AtomicData> make_periodic_single_atom_data(double cell_x, const SkTable& sktb) {
+    const auto prepared = PreparedBasis(sktb);
 
     const size_t n_atom = 1;
     const size_t N_atom = 1;
@@ -94,9 +147,9 @@ std::unique_ptr<AtomicData> make_periodic_single_atom_data(double cell_x, const 
 
 std::unique_ptr<AtomicData> make_directed_two_type_data(
     const std::vector<double>& pos,
-    const SKTBModel& sktb
+    const SkTable& sktb
 ) {
-    const auto prepared = prepare_sktb_atomic_data(sktb);
+    const auto prepared = PreparedBasis(sktb);
 
     const size_t n_atom = 2;
     const size_t N_atom = 2;
@@ -135,7 +188,7 @@ std::vector<T> block_values(const BlockSpMat<T>& matrix, int local_row, int loca
     return {};
 }
 
-std::vector<std::string> orbital_labels(const SKAtomType& atom_type) {
+std::vector<std::string> orbital_labels(const SkAtomType& atom_type) {
     std::vector<std::string> labels;
     labels.reserve(atom_type.orbitals.size());
     for (const auto& orbital : atom_type.orbitals) {
@@ -233,13 +286,13 @@ void expect_real_diagonal_block(
     }
 }
 
-SKTBModel make_carbon_p_model(
+SkInputBuilder make_carbon_p_model(
     double pp_sigma,
     double pp_pi,
     bool with_overlap = false,
     double cutoff = 2.5
 ) {
-    SKTBInput source;
+    SkInputBuilder source;
     source.basis["C"] = {"p"};
     source.set_onsite("H", "C", "p", 0.0);
     source.set_pair_channel("H", "C", "C", "pp", "sigma", constant_spline(pp_sigma, cutoff));
@@ -248,24 +301,25 @@ SKTBModel make_carbon_p_model(
         source.set_pair_channel("S", "C", "C", "pp", "sigma", constant_spline(pp_sigma, cutoff));
         source.set_pair_channel("S", "C", "C", "pp", "pi", constant_spline(pp_pi, cutoff));
     }
-    return build_sktb_model(source, {"C"});
+    return source;
 }
 
 } // namespace
 
 TEST(SKTBTest, BasisExpansionAndAtomicPreparation) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"pz"};
     config.basis["Si"] = {"s", "p", "d"};
     config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
     config.hamiltonian.onsite["Si"] = {{"s", -8.0}, {"p", 0.0}, {"d", 6.0}};
 
-    SKPairInput pair;
-    pair.species = {"C", "Si"};
+    SkPair pair;
+    pair.row_species = "C";
+    pair.col_species = "Si";
     pair.channels["sp_sigma"] = constant_spline(-2.0, 3.7);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto model = build_sktb_model(config, {"C", "Si"});
+    const auto model = config.Build();
     const std::vector<std::string> expected_c_basis = {"pz"};
     const std::vector<std::string> expected_si_basis = {
         "s", "py", "pz", "px", "dxy", "dyz", "dz2", "dzx", "dx2-y2"
@@ -273,73 +327,74 @@ TEST(SKTBTest, BasisExpansionAndAtomicPreparation) {
     ASSERT_EQ(orbital_labels(model.atom_types[0]), expected_c_basis);
     ASSERT_EQ(orbital_labels(model.atom_types[1]), expected_si_basis);
 
-    const auto prepared = prepare_sktb_atomic_data_from_atomic_numbers({14, 6, 14}, config);
+    const auto prepared = PreparedBasis(config.Build());
     ASSERT_EQ(prepared.type_symbols.size(), 2u);
     EXPECT_EQ(prepared.type_symbols[0], "C");
     EXPECT_EQ(prepared.type_symbols[1], "Si");
     ASSERT_EQ(prepared.type_norb.size(), 2u);
     EXPECT_EQ(prepared.type_norb[0], 1);
     EXPECT_EQ(prepared.type_norb[1], 9);
-    ASSERT_EQ(prepared.r_max_per_type.size(), 2u);
-    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[0], 1.85);
-    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[1], 1.85);
+    ASSERT_EQ(prepared.cutoff_radius.size(), 2u);
+    EXPECT_DOUBLE_EQ(prepared.cutoff_radius[0], 1.85);
+    EXPECT_DOUBLE_EQ(prepared.cutoff_radius[1], 1.85);
 }
 
 TEST(SKTBTest, AtomicPreparationConvertsBondCutoffToAtomicRadius) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"pz"};
     config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
 
-    SKPairInput pair;
-    pair.species = {"C", "C"};
+    SkPair pair;
+    pair.row_species = "C";
+    pair.col_species = "C";
     pair.channels["pp_pi"] = constant_spline(-2.7, 8.26);
     pair.channels["pp_sigma"] = constant_spline(0.3675, 8.26);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto prepared = prepare_sktb_atomic_data_from_atomic_numbers({6, 6}, config);
-    ASSERT_EQ(prepared.r_max_per_type.size(), 1u);
-    EXPECT_DOUBLE_EQ(prepared.r_max_per_type[0], 4.13);
+    const auto prepared = PreparedBasis(config.Build());
+    ASSERT_EQ(prepared.cutoff_radius.size(), 1u);
+    EXPECT_DOUBLE_EQ(prepared.cutoff_radius[0], 4.13);
 }
 
 TEST(SKTBTest, DuplicateBasisLabelsAreRejected) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"p", "pz"};
     config.hamiltonian.onsite["C"] = {{"p", 0.0}};
 
     EXPECT_THROW(
-        prepare_sktb_atomic_data_from_atomic_numbers({6}, config),
+        PreparedBasis(config.Build()),
         std::runtime_error);
 }
 
 TEST(SKTBTest, RadialFunctionsEvaluateSplineAndExpPoly) {
     const auto spline_constant = constant_spline(2.0, 3.0);
-    EXPECT_DOUBLE_EQ(spline_constant.evaluate(0.0), 2.0);
-    EXPECT_DOUBLE_EQ(spline_constant.evaluate(1.5), 2.0);
-    EXPECT_DOUBLE_EQ(spline_constant.evaluate(3.5), 0.0);
+    EXPECT_DOUBLE_EQ(spline_constant.Evaluate(0.0), 2.0);
+    EXPECT_DOUBLE_EQ(spline_constant.Evaluate(1.5), 2.0);
+    EXPECT_DOUBLE_EQ(spline_constant.Evaluate(3.5), 0.0);
 
-    SKRadialFunction spline;
+    SkRadialFunction spline;
     spline.kind = "spline";
     spline.r = {0.0, 1.0, 2.0};
     spline.values = {0.0, 1.0, 0.0};
     spline.r_cut = 2.0;
-    spline.validate("spline");
-    spline.spline_second_derivatives = spline.build_spline_second_derivatives();
-    EXPECT_DOUBLE_EQ(spline.evaluate(0.0), 0.0);
-    EXPECT_NEAR(spline.evaluate(1.0), 1.0, 1e-12);
-    EXPECT_DOUBLE_EQ(spline.evaluate(2.5), 0.0);
+    spline.Validate("spline");
+    spline.spline_second_derivatives = spline.BuildSplineSecondDerivatives();
+    EXPECT_DOUBLE_EQ(spline.Evaluate(0.0), 0.0);
+    EXPECT_NEAR(spline.Evaluate(1.0), 1.0, 1e-12);
+    EXPECT_DOUBLE_EQ(spline.Evaluate(2.5), 0.0);
 
     const auto exp_poly = exp_poly_constant(4.0, 2.0, 4.0);
-    EXPECT_DOUBLE_EQ(exp_poly.evaluate(1.0), 4.0);
-    EXPECT_NEAR(exp_poly.evaluate(3.0), 2.0, 1e-12);
-    EXPECT_DOUBLE_EQ(exp_poly.evaluate(4.1), 0.0);
+    EXPECT_DOUBLE_EQ(exp_poly.Evaluate(1.0), 4.0);
+    EXPECT_NEAR(exp_poly.Evaluate(3.0), 2.0, 1e-12);
+    EXPECT_DOUBLE_EQ(exp_poly.Evaluate(4.1), 0.0);
 }
 
 TEST(SKTBTest, TableKindIsRejectedInFavorOfSpline) {
-    SKRadialFunction legacy = constant_spline(1.0, 2.0);
+    SkRadialFunction legacy = constant_spline(1.0, 2.0);
     legacy.kind = "table";
 
     try {
-        legacy.validate("legacy");
+        legacy.Validate("legacy");
         FAIL() << "Expected table kind to be rejected";
     } catch (const std::runtime_error& error) {
         EXPECT_NE(std::string(error.what()).find("use 'spline'"), std::string::npos);
@@ -347,14 +402,14 @@ TEST(SKTBTest, TableKindIsRejectedInFavorOfSpline) {
 }
 
 TEST(SKTBTest, PPEvaluatorBuildsExpectedBlockAlongBondDirection) {
-    auto model = make_carbon_p_model(5.0, 1.0);
+    auto model = make_carbon_p_model(5.0, 1.0).Build();
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
          1.0, 0.0, 0.0},
         {6, 6},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -364,7 +419,7 @@ TEST(SKTBTest, PPEvaluatorBuildsExpectedBlockAlongBondDirection) {
 }
 
 TEST(SKTBTest, PPEvaluatorFollowsMagneticOrderForAxisDirections) {
-    auto model = make_carbon_p_model(5.0, 1.0);
+    auto model = make_carbon_p_model(5.0, 1.0).Build();
     const std::vector<std::vector<double>> positions = {
         {0.0, 0.0, 0.0, 1.0, 0.0, 0.0},
         {0.0, 0.0, 0.0, 0.0, 1.0, 0.0},
@@ -378,7 +433,7 @@ TEST(SKTBTest, PPEvaluatorFollowsMagneticOrderForAxisDirections) {
 
     for (size_t axis = 0; axis < positions.size(); ++axis) {
         auto atomic_data = make_points_data(positions[axis], {6, 6}, model);
-        SKTBConstruction construction(model);
+        SkTableConstruction construction(model);
         auto images = construction.build_hamiltonian_images(*atomic_data);
         std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
             images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -391,7 +446,7 @@ TEST(SKTBTest, PPEvaluatorFollowsMagneticOrderForAxisDirections) {
 TEST(SKTBTest, PPRotationMatchesDirectionCosineFormulaForSkewBond) {
     const double sigma = 5.0;
     const double pi = 1.0;
-    auto model = make_carbon_p_model(sigma, pi, false, 10.0);
+    auto model = make_carbon_p_model(sigma, pi, false, 10.0).Build();
     const std::array<double, 3> displacement = {1.0, 2.0, 3.0};
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
@@ -399,7 +454,7 @@ TEST(SKTBTest, PPRotationMatchesDirectionCosineFormulaForSkewBond) {
         {6, 6},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -410,11 +465,12 @@ TEST(SKTBTest, PPRotationMatchesDirectionCosineFormulaForSkewBond) {
 }
 
 TEST(SKTBTest, DDEvaluatorBuildsExpectedDiagonalChannelsAlongZ) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
-    SKPairInput pair;
-    pair.species = {"Si", "Si"};
+    SkPair pair;
+    pair.row_species = "Si";
+    pair.col_species = "Si";
     pair.channels["dd_sigma"] = constant_spline(6.0);
     pair.channels["dd_pi"] = constant_spline(4.0);
     pair.channels["dd_delta"] = constant_spline(2.0);
@@ -426,8 +482,8 @@ TEST(SKTBTest, DDEvaluatorBuildsExpectedDiagonalChannelsAlongZ) {
         {14, 14},
         config);
 
-    const auto model = build_sktb_model(config, {"Si"}, atomic_data->type_norb);
-    SKTBConstruction construction(model);
+    const auto model = config.Build();
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -438,12 +494,12 @@ TEST(SKTBTest, DDEvaluatorBuildsExpectedDiagonalChannelsAlongZ) {
 
 TEST(SKTBTest, DDSigmaRotationMatchesQuadrupoleOuterProductForSkewBond) {
     const double sigma = 6.0;
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
     config.set_pair_channel("H", "Si", "Si", "dd", "sigma", constant_spline(sigma, 10.0));
 
-    const auto model = build_sktb_model(config, {"Si"});
+    const auto model = config.Build();
     const std::array<double, 3> displacement = {2.0, -1.0, 3.0};
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
@@ -451,7 +507,7 @@ TEST(SKTBTest, DDSigmaRotationMatchesQuadrupoleOuterProductForSkewBond) {
         {14, 14},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -463,13 +519,14 @@ TEST(SKTBTest, DDSigmaRotationMatchesQuadrupoleOuterProductForSkewBond) {
 }
 
 TEST(SKTBTest, HeteronuclearSPCouplingIsTransposeConsistent) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["H"] = {"s"};
     config.basis["C"] = {"pz"};
     config.hamiltonian.onsite["H"] = {{"s", 0.0}};
     config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
-    SKPairInput pair;
-    pair.species = {"H", "C"};
+    SkPair pair;
+    pair.row_species = "H";
+    pair.col_species = "C";
     pair.channels["sp_sigma"] = constant_spline(3.0);
     config.hamiltonian.pairs.push_back(pair);
 
@@ -479,8 +536,8 @@ TEST(SKTBTest, HeteronuclearSPCouplingIsTransposeConsistent) {
         {1, 6},
         config);
 
-    const auto model = build_sktb_model(config, {"H", "C"}, atomic_data->type_norb);
-    SKTBConstruction construction(model);
+    const auto model = config.Build();
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -494,24 +551,25 @@ TEST(SKTBTest, HeteronuclearSPCouplingIsTransposeConsistent) {
 }
 
 TEST(SKTBTest, SDEvaluatorPlacesSigmaOnDz2InMagneticOrder) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["H"] = {"s"};
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["H"] = {{"s", 0.0}};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
-    SKPairInput pair;
-    pair.species = {"H", "Si"};
+    SkPair pair;
+    pair.row_species = "H";
+    pair.col_species = "Si";
     pair.channels["sd_sigma"] = constant_spline(7.0);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto model = build_sktb_model(config, {"H", "Si"});
+    const auto model = config.Build();
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
          0.0, 0.0, 1.0},
         {1, 14},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -526,24 +584,25 @@ TEST(SKTBTest, SDEvaluatorPlacesSigmaOnDz2InMagneticOrder) {
 }
 
 TEST(SKTBTest, PDEvaluatorBuildsAlignedZBlockInMagneticOrder) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"p"};
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["C"] = {{"p", 0.0}};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
-    SKPairInput pair;
-    pair.species = {"C", "Si"};
+    SkPair pair;
+    pair.row_species = "C";
+    pair.col_species = "Si";
     pair.channels["pd_sigma"] = constant_spline(6.0);
     pair.channels["pd_pi"] = constant_spline(4.0);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto model = build_sktb_model(config, {"C", "Si"});
+    const auto model = config.Build();
     auto atomic_data = make_directed_two_type_data(
         {0.0, 0.0, 0.0,
          0.0, 0.0, 1.0},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -564,21 +623,21 @@ TEST(SKTBTest, PDEvaluatorBuildsAlignedZBlockInMagneticOrder) {
 
 TEST(SKTBTest, PDSigmaRotationMatchesOuterProductForSkewBond) {
     const double sigma = 6.0;
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"p"};
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["C"] = {{"p", 0.0}};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
     config.set_pair_channel("H", "C", "Si", "pd", "sigma", constant_spline(sigma, 10.0));
 
-    const auto model = build_sktb_model(config, {"C", "Si"});
+    const auto model = config.Build();
     const std::array<double, 3> displacement = {1.0, -2.0, 2.5};
     auto atomic_data = make_directed_two_type_data(
         {0.0, 0.0, 0.0,
          displacement[0], displacement[1], displacement[2]},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -591,14 +650,14 @@ TEST(SKTBTest, PDSigmaRotationMatchesOuterProductForSkewBond) {
 
 TEST(SKTBTest, ReverseLookupTransposesPDSkewBondBlock) {
     const double sigma = 6.0;
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"p"};
     config.basis["Si"] = {"d"};
     config.hamiltonian.onsite["C"] = {{"p", 0.0}};
     config.hamiltonian.onsite["Si"] = {{"d", 0.0}};
     config.set_pair_channel("H", "C", "Si", "pd", "sigma", constant_spline(sigma, 10.0));
 
-    const auto model = build_sktb_model(config, {"C", "Si"});
+    const auto model = config.Build();
     const std::array<double, 3> displacement = {1.0, -2.0, 2.5};
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
@@ -606,7 +665,7 @@ TEST(SKTBTest, ReverseLookupTransposesPDSkewBondBlock) {
         {6, 14},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto images = construction.build_hamiltonian_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
         images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
@@ -619,8 +678,8 @@ TEST(SKTBTest, ReverseLookupTransposesPDSkewBondBlock) {
 }
 
 TEST(SKTBTest, AlignedPDBlockUsesMagneticMOrderBeforeRotation) {
-    auto sigma_block = sktb_detail::build_aligned_shell_block(1, 2, 0, 6.0);
-    auto pi_block = sktb_detail::build_aligned_shell_block(1, 2, 1, 4.0);
+    auto sigma_block = rsatb::model::sktb::detail::build_aligned_shell_block(1, 2, 0, 6.0);
+    auto pi_block = rsatb::model::sktb::detail::build_aligned_shell_block(1, 2, 1, 4.0);
     ASSERT_EQ(sigma_block.size(), pi_block.size());
 
     std::vector<double> block(sigma_block.size(), 0.0);
@@ -638,17 +697,18 @@ TEST(SKTBTest, AlignedPDBlockUsesMagneticMOrderBeforeRotation) {
 }
 
 TEST(SKTBTest, ExplicitPzBasisSelectsMagneticMZeroChannel) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"pz"};
     config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
-    SKPairInput pair;
-    pair.species = {"C", "C"};
+    SkPair pair;
+    pair.row_species = "C";
+    pair.col_species = "C";
     pair.channels["pp_sigma"] = constant_spline(5.0);
     pair.channels["pp_pi"] = constant_spline(1.0);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto model = build_sktb_model(config, {"C"});
-    SKTBConstruction construction(model);
+    const auto model = config.Build();
+    SkTableConstruction construction(model);
 
     auto z_data = make_points_data(
         {0.0, 0.0, 0.0,
@@ -676,20 +736,20 @@ TEST(SKTBTest, ExplicitPzBasisSelectsMagneticMZeroChannel) {
 }
 
 TEST(SKTBTest, OverlapUsesSeparateRadialChannelsFromHamiltonian) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"pz"};
     config.set_onsite("H", "C", "pz", 0.0);
     config.set_pair_channel("H", "C", "C", "pp", "pi", constant_spline(0.20, 3.0));
     config.set_pair_channel("S", "C", "C", "pp", "pi", constant_spline(0.05, 3.0));
 
-    const auto model = build_sktb_model(config, {"C"});
+    const auto model = config.Build();
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
          1.0, 0.0, 0.0},
         {6, 6},
         model);
 
-    SKTBConstruction construction(model);
+    SkTableConstruction construction(model);
     auto h_images = construction.build_hamiltonian_images(*atomic_data);
     auto s_images = construction.build_overlap_images(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> h_gamma(
@@ -706,26 +766,26 @@ TEST(SKTBTest, OverlapUsesSeparateRadialChannelsFromHamiltonian) {
 }
 
 TEST(SKTBTest, OrthogonalProviderBuildsVelocityAndFallbackPosition) {
-    auto native_model = make_carbon_p_model(2.0, 0.5);
+    auto native_input = make_carbon_p_model(2.0, 0.5);
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
          1.0, 0.0, 0.0},
         {6, 6},
-        native_model);
+        native_input.Build());
 
-    rmodel::SKTBModelConfig model;
-    model.native = native_model;
+    auto model = MakeSktbModel(native_input);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.mode = "None";
+    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
-    OperatorRuntimeContext runtime;
+    rsatb::setup::OperatorRuntimeContext runtime;
     runtime.npar = 1;
     runtime.world_rank = 0;
     runtime.world_size = 1;
 
-    auto operators = build_operator_set(*atomic_data, MPI_COMM_WORLD, false, rmodel::AnyModelConfig(model), options, {"C"}, runtime);
+    auto operators = rsatb::setup::BuildOperatorSet(
+        *atomic_data, MPI_COMM_WORLD, false, *model, options, runtime);
     ASSERT_TRUE(operators->has_hamiltonian());
     ASSERT_FALSE(operators->has_overlap());
     ASSERT_TRUE(operators->has_velocity());
@@ -760,26 +820,26 @@ TEST(SKTBTest, OrthogonalProviderBuildsVelocityAndFallbackPosition) {
 }
 
 TEST(SKTBTest, OverlapPresentProviderBuildsOverlapWithoutVelocity) {
-    auto native_model = make_carbon_p_model(2.0, 0.5, true);
+    auto native_input = make_carbon_p_model(2.0, 0.5, true);
     auto atomic_data = make_points_data(
         {0.0, 0.0, 0.0,
          1.0, 0.0, 0.0},
         {6, 6},
-        native_model);
+        native_input.Build());
 
-    rmodel::SKTBModelConfig model;
-    model.native = native_model;
+    auto model = MakeSktbModel(native_input);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.mode = "None";
+    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
-    OperatorRuntimeContext runtime;
+    rsatb::setup::OperatorRuntimeContext runtime;
     runtime.npar = 1;
     runtime.world_rank = 0;
     runtime.world_size = 1;
 
-    auto operators = build_operator_set(*atomic_data, MPI_COMM_WORLD, false, rmodel::AnyModelConfig(model), options, {"C"}, runtime);
+    auto operators = rsatb::setup::BuildOperatorSet(
+        *atomic_data, MPI_COMM_WORLD, false, *model, options, runtime);
     ASSERT_TRUE(operators->has_hamiltonian());
     ASSERT_TRUE(operators->has_overlap());
     ASSERT_FALSE(operators->has_velocity());
@@ -788,30 +848,31 @@ TEST(SKTBTest, OverlapPresentProviderBuildsOverlapWithoutVelocity) {
 }
 
 TEST(SKTBTest, PeriodicOrthogonalModelBuildsFirstLatticeMoment) {
-    SKTBInput config;
+    SkInputBuilder config;
     config.basis["C"] = {"pz"};
     config.hamiltonian.onsite["C"] = {{"pz", 0.0}};
-    SKPairInput pair;
-    pair.species = {"C", "C"};
+    SkPair pair;
+    pair.row_species = "C";
+    pair.col_species = "C";
     pair.channels["pp_pi"] = constant_spline(0.2, 3.5);
     config.hamiltonian.pairs.push_back(pair);
 
-    const auto native_model = build_sktb_model(config, {"C"});
+    const auto native_model = config.Build();
     auto atomic_data = make_periodic_single_atom_data(3.0, native_model);
 
-    rmodel::SKTBModelConfig model;
-    model.native = native_model;
+    auto model = MakeSktbModel(config);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.mode = "None";
+    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
-    OperatorRuntimeContext runtime;
+    rsatb::setup::OperatorRuntimeContext runtime;
     runtime.npar = 1;
     runtime.world_rank = 0;
     runtime.world_size = 1;
 
-    auto operators = build_operator_set(*atomic_data, MPI_COMM_WORLD, false, rmodel::AnyModelConfig(model), options, {"C"}, runtime);
+    auto operators = rsatb::setup::BuildOperatorSet(
+        *atomic_data, MPI_COMM_WORLD, false, *model, options, runtime);
     const auto& first_lattice_moment = operators->first_lattice_moment_state(0);
     ASSERT_TRUE(first_lattice_moment.x.first_moment);
 }

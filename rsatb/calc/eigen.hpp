@@ -17,12 +17,13 @@
 
 // Declared so this header compiles on its own; the using-directive below
 // previously relied on some earlier include having opened the namespace.
-namespace rsatb { namespace backend {} }
+namespace rsatb { namespace setup {} }
 
 namespace rsatb {
 namespace calc {
 
-using namespace rsatb::backend;
+// The operator vocabulary this header names is the setup layer's.
+using namespace rsatb::setup;
 
 template <typename T>
 class PrimmeEigenSolver {

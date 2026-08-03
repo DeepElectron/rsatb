@@ -5,8 +5,11 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
-#include "model/operator_set.hpp"
-#include "model/io.hpp"
+#include "setup/operator_assembly.hpp"
+#include "model/lcao/lcao_model.hpp"
+#include "model/sktb/sktb_model.hpp"
+#include "model/tbfile/tb_file_model.hpp"
+#include "vbcsr/core/atomic/io.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
 #include "calc/eigen.hpp"
 #include "calc/dos.hpp"
@@ -20,6 +23,7 @@
 #include "calc/cheby.hpp"
 #include "calc/kpm.hpp"
 #include "calc/fft.hpp"
+#include "calc/observables.hpp"
 
 #include <memory>
 #include <algorithm>
@@ -38,7 +42,7 @@ using namespace vbcsr::atomic;
 
 namespace rsatb {
 
-using namespace rsatb::backend;
+using namespace rsatb::setup;
 using namespace rsatb::calc;
 
 
@@ -50,25 +54,31 @@ public:
     using Vector = DistVector<Scalar>;
     using MultiVector = DistMultiVector<Scalar>;
 
-    RSATB(int npar,
-          const size_t n_atom, const size_t N_atom, const size_t atom_offset, const size_t n_edge, const size_t N_edge,
-          const int *atom_index, const int *atom_type, const int *edge_index, const int *type_norb,
-          const std::vector<std::string>& type_symbols,
-          const int *edge_shift_vec,
-          const double *cell, const double *pos,
-          bool verbose = false,
-          MPI_Comm comm = MPI_COMM_WORLD)
-        : world_comm_(comm), npar_(npar), verbose_(verbose) {
-        init_comms();
-        atomic_data_ = std::make_unique<AtomicData>(
-            n_atom, N_atom, atom_offset, n_edge, N_edge,
-            atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
-            cell, pos, sub_comm_
-        );
-        r_max_per_type_.clear();
-        type_symbols_ = type_symbols;
-        init_components();
-    }
+    /// A pre-partitioned atomic graph supplied directly by the caller.
+    ///
+    /// Use this when the neighbour list already exists -- a hand-built model
+    /// cell, or a graph produced by another tool. `type_norb` is deliberately
+    /// absent: it comes from the model's basis, so there is one source of
+    /// truth for the block structure.
+    ///
+    /// `pos` and `edge_shift_vec` must be mutually consistent: every bond is
+    /// read as r_j + R - r_i, so a shift has to be expressed relative to the
+    /// positions given here. That is the same convention the (Structure, Model)
+    /// constructor follows when it derives the graph itself, so a graph built
+    /// either way means the same thing.
+    struct AtomicGraphArrays {
+        size_t n_atom = 0;
+        size_t N_atom = 0;
+        size_t atom_offset = 0;
+        size_t n_edge = 0;
+        size_t N_edge = 0;
+        const int* atom_index = nullptr;
+        const int* atom_type = nullptr;
+        const int* edge_index = nullptr;
+        const int* edge_shift_vec = nullptr;
+        const double* cell = nullptr;
+        const double* pos = nullptr;
+    };
 
     // vbcsr no longer selects a kernel at compile time (BlockSpMat::KernelType is
     // gone); the vendor backend is chosen per matrix at runtime, so report it from
@@ -84,59 +94,81 @@ public:
         return "uninitialized";
     }
 
-    // constructor defines the npar and the atomic structure.
-
-    RSATB(int npar, const std::string& filename, const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
+    /// Builds a ready-to-compute RSATB from a pre-partitioned graph and a model.
+    ///
+    /// `model` must outlive this RSATB.
+    RSATB(const AtomicGraphArrays& graph,
+          const model::Model& model,
+          const model::SetupOptions& options = model::SetupOptions{},
+          int npar = 1,
+          bool verbose = false,
+          MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
         init_comms();
-        atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_file(filename, r_max_per_type, type_norb, sub_comm_));
-        r_max_per_type_ = r_max_per_type;
-        type_symbols_ = backend::unique_type_symbols_from_atomic_numbers(
-            backend::io::read_structure(filename).z);
+
+        const model::BasisSpec& basis = model.basis();
+        RequireConsistentGraphPartition(graph);
+        atomic_data_ = std::make_unique<AtomicData>(
+            graph.n_atom, graph.N_atom, graph.atom_offset, graph.n_edge, graph.N_edge,
+            graph.atom_index, graph.atom_type, graph.edge_index, basis.type_norb.data(),
+            graph.edge_shift_vec, graph.cell, graph.pos, sub_comm_);
+        RequireEveryRankOwnsAtoms();
         init_components();
+
+        setup(model, options);
     }
 
-    RSATB(int npar, const std::vector<double>& pos, const std::vector<int>& z, 
-          const std::vector<double>& cell, const std::vector<bool>& pbc, 
-          const std::vector<double>& r_max_per_type, const std::vector<int>& type_norb, bool verbose = false, MPI_Comm comm = MPI_COMM_WORLD)
+    /// Builds a ready-to-compute RSATB from a structure and a model.
+    ///
+    /// The model reports the basis it works in, so the atomic graph is derived
+    /// rather than described: no orbital counts and no cutoff radii are passed
+    /// in. `model` must outlive this RSATB, because velocity and position
+    /// operators are built lazily through it.
+    ///
+    /// Args:
+    ///   structure: Atomic geometry.
+    ///   model: One of the model families; supplies the basis and operators.
+    ///   options: k-points, sampling, bounds, and preconditioner settings.
+    ///   npar: Number of k-point-parallel sub-communicators.
+    RSATB(const vbcsr::atomic::Structure& structure,
+          const model::Model& model,
+          const model::SetupOptions& options = model::SetupOptions{},
+          int npar = 1,
+          bool verbose = false,
+          MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
         init_comms();
-        atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(pos, z, cell, pbc, r_max_per_type, type_norb, sub_comm_));
-        r_max_per_type_ = r_max_per_type;
-        type_symbols_ = backend::unique_type_symbols_from_atomic_numbers(z);
+
+        const model::BasisSpec& basis = model.basis();
+        basis.RequireCovers(structure.TypeSymbols(), model.name() + " setup");
+
+        atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(
+            structure.pos, structure.z, structure.cell, structure.pbc,
+            basis.cutoff_radius, basis.type_norb, sub_comm_));
+        RequireEveryRankOwnsAtoms();
         init_components();
-    }
-    
-    ~RSATB() {
-        release_resources();
+
+        setup(model, options);
     }
 
-
-    // Setup Function defines the operators of one of the supported models (LCAO, SKTB, DFTB) and the associated capabilities.
-    void setup(const model::AnyModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
-        validate_model_setup(model_config);
+    /// Sets up the operators for a model against the existing atomic data.
+    void setup(const model::Model& model, const model::SetupOptions& options = model::SetupOptions{}) {
         const auto normalized_options = normalize_setup_options(options);
-        operators_ = backend::build_operator_set(
+        operators_ = setup::BuildOperatorSet(
             *atomic_data_,
             sub_comm_,
             verbose_,
-            model_config,
+            model,
             normalized_options,
-            type_symbols_,
             make_operator_runtime_context());
         sampling_.initialize(*atomic_data_, normalized_options.nsamples);
+        // Retained rather than re-derived: the real-space observables need the
+        // radials themselves, and the model is not kept past setup.
+        orbital_files_ = model.RealSpaceOrbitalFiles();
     }
 
-    void setup(const model::LCAOModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
-        setup(model::AnyModelConfig(model_config), options);
-    }
-
-    void setup(const model::SKTBModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
-        setup(model::AnyModelConfig(model_config), options);
-    }
-
-    void setup(const model::DFTBModelConfig& model_config, const model::SetupOptions& options = model::SetupOptions{}) {
-        setup(model::AnyModelConfig(model_config), options);
+    ~RSATB() {
+        release_resources();
     }
 
     void test_solve() {
@@ -166,494 +198,90 @@ public:
         
     }
 
+    // The observables live in calc/observables.hpp as free functions over an
+    // ObservableContext. These forwarders keep the public surface unchanged.
+
     void compute_dos(int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
-        // Output size: global_nk * 2*nt
-        auto& ops = require_operators();
-        if (!ops.has_bounds()) {
-            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
-        }
-
-        std::vector<double> local_dos(ops.global_nk() * 2 * nt, 0.0);
-        
-        std::complex<double> imI(0.0, 1.0);
-        double scale = (ops.emax() - ops.emin()) / 2.0;
-        double shift = (ops.emax() + ops.emin()) / 2.0;
-        
-        for (const auto& kp : ops.local_kpoints()) {
-            int k_idx = kp.first;
-            const auto& state = ops.kpoint_state(k_idx);
-            
-            auto cheby = make_chebyshev(state);
-            
-            std::vector<std::complex<double>> cdos;
-            const Vector* null_vec = nullptr;
-            std::vector<std::complex<double>>* null_res = nullptr;
-            
-            if (sampling_.nsamples == 1) {
-                rsatb::calc::corr_dos(*cheby, *sampling_.sample_vec, nt, cdos, null_vec, null_res, verbose_);
-            } else {
-                rsatb::calc::corr_dos(*cheby, *sampling_.sample_multi_vec, nt, cdos, null_vec, null_res, verbose_);
-            }
-            
-            // Transform per K-point
-            std::vector<std::complex<double>> cdos_full(2 * nt + 1);
-            cdos_full[0] = cdos[0];
-            
-            for(int i=1; i<=nt; ++i) {
-                // std::complex<double> poscorr = std::exp(imI * shift * M_PI * (double)i);
-                // std::complex<double> negcorr = std::exp(-imI * shift * M_PI * (double)i);
-                double factor = 0.5 * (1 + std::cos(M_PI * (i-1) / nt));
-                cdos_full[i] = cdos[i] * factor;
-                cdos_full[2*nt - i] = std::conj(cdos[i]) * factor;
-            }
-            
-            std::vector<std::complex<double>> temp_dos(2 * nt);
-            rsatb::calc::ifft_1d(2 * nt, cdos_full.data(), temp_dos.data());
-            
-            // Store in local_dos at offset k_idx * 2*nt
-            size_t offset = k_idx * 2 * nt;
-            for(int i=0; i<nt; ++i) {
-                local_dos[offset + i] = temp_dos[nt+i].real();
-                local_dos[offset + nt + i] = temp_dos[i].real();
-            }
-        }
-        
-        // Gather all K-points results
-        dos_out.assign(ops.global_nk() * 2 * nt, 0.0);
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(local_dos.data(), dos_out.data(), local_dos.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
-        } else {
-            dos_out = local_dos;
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(dos_out.data(), dos_out.size(), MPI_DOUBLE, 0, sub_comm_);
-        }
-        
-        // Omega is same for all K-points
-        omega_out.resize(2 * nt);
-        for(int i=0; i<nt; ++i) {
-            omega_out[i] = (i - nt) * scale / nt + shift;
-            omega_out[nt + i] = i * scale / nt + shift;
-        }
+        calc::ComputeDos(observable_context(), nt, dos_out, omega_out);
     }
 
-    void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
-        // Output size: global_nk * (nt+1) * 6
-        auto& ops = require_operators();
-        if (!ops.has_bounds()) {
-            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
+    /// Returns the unit cell as nine row-major values, Angstrom.
+    std::vector<double> cell() const {
+        if (!atomic_data_) {
+            throw std::runtime_error("RSATB has no atomic data yet.");
         }
-        if (!ops.has_velocity()) {
-            throw std::runtime_error("compute_ac requires a velocity-capable model/operator setup.");
-        }
-        
-        std::vector<double> local_ac(ops.global_nk() * (nt + 1) * 6, 0.0);
-        
-        double scale = (ops.emax() - ops.emin()) / 2.0;
-        double shift = (ops.emax() + ops.emin()) / 2.0;
-        double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
-        double ac_prefactor = (double)atomic_data_->norb() / atomic_data_->volume(axis);
-        double t_step = M_PI / scale;
-        
-        // Precompute omega
-        std::vector<double> omega(nt + 1);
-        for(int i=0; i<=nt; ++i) {
-             omega[i] = i * scale / (nt + 1);
-        }
-
-        for (const auto& kp : ops.local_kpoints()) {
-            int k_idx = kp.first;
-            const auto& state = ops.kpoint_state(k_idx);
-            const auto& velocity = ops.velocity_state(k_idx);
-            auto cheby = make_chebyshev(state);
-            
-            std::vector<std::complex<double>> cac;
-            
-            if (sampling_.nsamples == 1) {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *sampling_.sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
-            } else {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *sampling_.sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, verbose_);
-            }
-
-            
-            // Transform and store in local_ac
-            size_t k_offset = k_idx * (nt + 1) * 6;
-            
-            for( int iac=0; iac<6; ++iac ){
-                for( int iw=0; iw<=nt; ++iw ){
-                    size_t idx = k_offset + iw*6+iac;
-                    double val = 0.0;
-                    if (omega[iw] != 0.0){
-                        for( int it=0; it<=nt; ++it ){
-                            val += 2.0 * std::sin(omega[iw]*it*t_step) * std::exp(-2.0*std::pow((double)(it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
-                        }
-                        const double thermal_factor =
-                            (temp > 0.0) ? (std::exp(-beta * omega[iw]) - 1.0) : -1.0;
-                        val = ac_prefactor * t_step * val * thermal_factor / omega[iw];
-                    }
-                    local_ac[idx] = val;
-                }
-            }
-        }
-        
-        // Gather
-        ac_out.assign(ops.global_nk() * (nt + 1) * 6, 0.0);
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(local_ac.data(), ac_out.data(), local_ac.size(), MPI_DOUBLE, MPI_SUM, master_comm_);
-        } else {
-            ac_out = local_ac;
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(ac_out.data(), ac_out.size(), MPI_DOUBLE, 0, sub_comm_);
-        }
-        
-        omega_out = omega;
+        return atomic_data_->cell;
     }
 
-    // Compute the full zero-temperature transport spectrum on the native
-    // Chebyshev energy grid for every k-point handled by this RSATB instance.
-    //
-    // Output layout:
-    // - `sigma_out` has shape [global_nk_, n_moments, 6] flattened in row-major
-    //   order with tensor components stored as (xx, xy, xz, yy, yz, zz).
-    // - `energy_out` has length `n_moments` and is shared by all k-points.
-    //
-    // `formulation="greenwood"` fills the diagonal components from the
-    // longitudinal DC spectrum.
-    // `formulation="bastin"` fills the full upper-triangular tensor and
-    // includes Hall-type responses for complex Hamiltonians.
-    void compute_dc_spectrum(
-        int n_moments,
-        std::vector<double>& sigma_out,
-        std::vector<double>& energy_out,
-        std::string formulation = "greenwood",
-        std::string axis = "abc",
-        int partition_sections = 0,
-        size_t max_workspace_mb = 0
-    ) {
+    /// Returns the spectral window [emin, emax] the expansions are scaled to.
+    ///
+    /// Callers need it to place energies: every Chebyshev observable is
+    /// defined on the open interval, and the reconstruction returns zero at
+    /// and beyond the endpoints.
+    std::pair<double, double> energy_bounds() {
         auto& ops = require_operators();
-        if (!ops.has_bounds()) {
-            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
-        }
-        if (!ops.has_velocity()) {
-            throw std::runtime_error("compute_dc_spectrum requires a velocity-capable model/operator setup.");
-        }
-
-        const auto dc_formulation = parse_dc_formulation(formulation);
-        const double trace_prefactor = static_cast<double>(atomic_data_->norb()) / atomic_data_->volume(axis);
-        const double transport_prefactor =
-            (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
-
-        std::vector<double> local_sigma(ops.global_nk() * n_moments * 6, 0.0);
-        std::vector<double> local_energy;
-
-        for (const auto& kp : ops.local_kpoints()) {
-            int k_idx = kp.first;
-            const auto& state = ops.kpoint_state(k_idx);
-            const auto& velocity = ops.velocity_state(k_idx);
-            auto cheby = make_chebyshev(state);
-
-            MultiVector sample_mv(atomic_data_->get_graph(), sampling_.nsamples == 1 ? 1 : sampling_.nsamples);
-            if (sampling_.nsamples == 1) {
-                sample_mv.set_col(0, *sampling_.sample_vec);
-            } else {
-                sample_mv.copy_from(*sampling_.sample_multi_vec);
-            }
-
-            std::vector<double> sigma_k;
-            std::vector<double> energy_k;
-            rsatb::calc::dc_spectrum_fftcheb(
-                *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
-                transport_prefactor, partition_sections, max_workspace_mb,
-                sigma_k, energy_k, verbose_
-            );
-
-            if (local_energy.empty()) {
-                local_energy = energy_k;
-            }
-
-            const size_t offset = static_cast<size_t>(k_idx) * static_cast<size_t>(n_moments) * 6;
-            std::copy(sigma_k.begin(), sigma_k.end(), local_sigma.begin() + offset);
-        }
-
-        sigma_out.assign(local_sigma.size(), 0.0);
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(local_sigma.data(), sigma_out.data(), static_cast<int>(local_sigma.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
-        } else {
-            sigma_out = local_sigma;
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(sigma_out.data(), static_cast<int>(sigma_out.size()), MPI_DOUBLE, 0, sub_comm_);
-        }
-
-        energy_out.resize(n_moments, 0.0);
-        if (!local_energy.empty()) {
-            energy_out = local_energy;
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(energy_out.data(), n_moments, MPI_DOUBLE, 0, sub_comm_);
-        }
+        return std::make_pair(ops.emin(), ops.emax());
     }
 
-    // Convenience wrapper over `compute_dc_spectrum(...)`.
-    // It evaluates the finite-temperature conductivity tensor by integrating
-    // the zero-temperature spectrum against -df/dE at the target (mu, T).
-    void compute_dc(
-        int n_moments,
-        double mu,
-        double temp,
-        std::vector<double>& dc_out,
-        std::string formulation = "greenwood",
-        std::string axis = "abc",
-        int partition_sections = 0,
-        size_t max_workspace_mb = 0
-    ) {
-        std::vector<double> sigma_spectrum;
-        std::vector<double> energy_out;
-        compute_dc_spectrum(n_moments, sigma_spectrum, energy_out, formulation, axis, partition_sections, max_workspace_mb);
-
-        auto& ops = require_operators();
-        dc_out.assign(ops.global_nk() * 6, 0.0);
-        for (int k_idx = 0; k_idx < ops.global_nk(); ++k_idx) {
-            std::vector<double> sigma_k(sigma_spectrum.begin() + static_cast<size_t>(k_idx) * static_cast<size_t>(n_moments) * 6,
-                                        sigma_spectrum.begin() + static_cast<size_t>(k_idx + 1) * static_cast<size_t>(n_moments) * 6);
-            std::vector<double> dc_k;
-            rsatb::calc::integrate_dc_spectrum(sigma_k, energy_out, mu, temp, dc_k);
-            std::copy(dc_k.begin(), dc_k.end(), dc_out.begin() + static_cast<size_t>(k_idx) * 6);
-        }
+    void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out,
+                    std::vector<double>& omega_out, std::string axis = "ab") {
+        calc::ComputeAc(observable_context(), nt, n_kpm, temp, mu, ac_out, omega_out, axis);
     }
 
-    void compute_msd_spectrum(
-        int n_steps,
-        double dt_fs,
-        int n_kpm,
-        std::vector<double>& msd_out,
-        std::vector<double>& energy_out,
-        std::vector<double>& time_out,
-        std::string axis = "x"
-    ) {
-        // MSD always uses the configured Gamma-point state. Once that state is
-        // selected, the only remaining switch is which position representation
-        // is valid for the requested axis.
-
-        auto& ops = require_operators();
-        if (!ops.has_bounds()) {
-            throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
-        }
-        if (!ops.has_hamiltonian()) {
-            throw std::runtime_error("compute_msd_spectrum requires a Hamiltonian-capable model/operator setup.");
-        }
-
-        const size_t per_k_size = static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm);
-        std::vector<double> local_msd(per_k_size, 0.0);
-        std::vector<double> local_energy;
-        const int axis_idx = axis_to_index(axis);
-        const int gamma_k_idx = select_gamma_kpoint_index(ops);
-        const auto* gamma_state = ops.try_kpoint_state(gamma_k_idx);
-
-        if (gamma_state != nullptr) {
-            auto cheby = make_chebyshev(*gamma_state);
-            const auto& first_lattice_moment = ops.first_lattice_moment_state(gamma_k_idx);
-            const auto& moment_axis = select_axis_data(first_lattice_moment, axis_idx);
-            const bool periodic_axis = static_cast<bool>(moment_axis.first_moment);
-
-            auto run_msd_for_sample = [&](const auto& sample) {
-                if (periodic_axis) {
-                    if (ops.has_overlap()) {
-                        throw std::runtime_error(
-                            "compute_msd_spectrum periodic MSD currently supports orthogonal systems only.");
-                    }
-                    const auto& position = ops.position_state(gamma_k_idx);
-                    const auto& position_axis = select_axis_data(position, axis_idx);
-                    if (!position_axis.orthogonal_diagonal) {
-                        throw std::runtime_error("Orthogonal diagonal position data is missing for affine MSD.");
-                    }
-
-                    // MSD is defined from the Gamma-point wavepacket evolution. For periodic
-                    // axes we switch to the affine route, where the first lattice moment
-                    // accounts for wrap-around contributions and the orthogonal diagonal
-                    // position provides the intra-cell coordinate.
-                    rsatb::calc::corr_msd(
-                        *cheby,
-                        *moment_axis.first_moment,
-                        *position_axis.orthogonal_diagonal,
-                        sample,
-                        n_steps,
-                        dt_fs,
-                        n_kpm,
-                        local_msd,
-                        local_energy,
-                        verbose_);
-                    return;
-                }
-
-                if (!ops.has_position()) {
-                    throw std::runtime_error("compute_msd_spectrum requires a position-capable model/operator setup.");
-                }
-                const auto& position = ops.position_state(gamma_k_idx);
-                const auto& position_axis = select_axis_data(position, axis_idx);
-                if (ops.has_overlap()) {
-                    if (!position_axis.matrix) {
-                        throw std::runtime_error("Explicit position matrix data is missing for MSD.");
-                    }
-                    // Open-boundary MSD also uses the Gamma-point Hamiltonian. With overlap the
-                    // position operator is not diagonal in the working basis, so we use the
-                    // explicit real-space matrix route.
-                    rsatb::calc::corr_msd(
-                        *cheby,
-                        *position_axis.matrix,
-                        sample,
-                        n_steps,
-                        dt_fs,
-                        n_kpm,
-                        local_msd,
-                        local_energy,
-                        verbose_);
-                    return;
-                }
-
-                if (!position_axis.orthogonal_diagonal) {
-                    throw std::runtime_error("Orthogonal diagonal position data is missing for MSD.");
-                }
-
-                // Open-boundary orthogonal MSD still runs at Gamma; the route switch here is
-                // only about how the position operator is represented, not about which k-point
-                // is used.
-                rsatb::calc::corr_msd(
-                    *cheby,
-                    *position_axis.orthogonal_diagonal,
-                    sample,
-                    n_steps,
-                    dt_fs,
-                    n_kpm,
-                    local_msd,
-                    local_energy,
-                    verbose_);
-            };
-
-            if (sampling_.nsamples == 1) {
-                run_msd_for_sample(*sampling_.sample_vec);
-            } else {
-                run_msd_for_sample(*sampling_.sample_multi_vec);
-            }
-        }
-
-        msd_out.assign(local_msd.size(), 0.0);
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(local_msd.data(), msd_out.data(), static_cast<int>(local_msd.size()), MPI_DOUBLE, MPI_SUM, master_comm_);
-        } else {
-            msd_out = local_msd;
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(msd_out.data(), static_cast<int>(msd_out.size()), MPI_DOUBLE, 0, sub_comm_);
-        }
-
-        energy_out.assign(static_cast<size_t>(n_kpm), 0.0);
-        if (!local_energy.empty()) {
-            energy_out = local_energy;
-        }
-        if (master_comm_ != MPI_COMM_NULL) {
-            std::vector<double> reduced_energy(static_cast<size_t>(n_kpm), 0.0);
-            MPI_Allreduce(
-                energy_out.data(),
-                reduced_energy.data(),
-                n_kpm,
-                MPI_DOUBLE,
-                MPI_SUM,
-                master_comm_);
-            energy_out.swap(reduced_energy);
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(energy_out.data(), n_kpm, MPI_DOUBLE, 0, sub_comm_);
-        }
-
-        time_out.resize(static_cast<size_t>(n_steps + 1), 0.0);
-        for (int step = 0; step <= n_steps; ++step) {
-            time_out[static_cast<size_t>(step)] = dt_fs * static_cast<double>(step);
-        }
+    void compute_dc_spectrum(int n_moments, std::vector<double>& sigma_out,
+                             std::vector<double>& energy_out,
+                             std::string formulation = "greenwood", std::string axis = "abc",
+                             int partition_sections = 0, size_t max_workspace_mb = 0,
+                             std::string kernel = "jackson") {
+        calc::ComputeDcSpectrum(observable_context(), n_moments, sigma_out, energy_out,
+                                formulation, axis, partition_sections, max_workspace_mb, kernel);
     }
 
-    void compute_quantum_metric(
-        int nt,
-        int n_kpm,
-        double temp,
-        double mu,
-        std::vector<double>& gxx_out,
-        std::vector<double>& sigma_xx_out,
-        std::vector<double>& omega_out,
-        std::string axis = "abc",
-        double omega_min_ev = 0.0
-    ) {
-        std::vector<double> ac_out;
-        compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
-
-        auto& ops = require_operators();
-        const int nk = ops.global_nk();
-        const size_t n_omega = static_cast<size_t>(nt + 1);
-
-        constexpr double sigma_au_to_si = 2.4341348e6;
-        constexpr double hbar_ev_s = 6.582119569e-16;
-        constexpr double h_si = 6.62607015e-34;
-        constexpr double e_si = 1.602176634e-19;
-
-        sigma_xx_out.assign(static_cast<size_t>(nk) * n_omega, 0.0);
-        gxx_out.assign(static_cast<size_t>(nk), 0.0);
-
-        std::vector<double> omega_rad_s(n_omega, 0.0);
-        std::vector<int> mask_indices;
-        mask_indices.reserve(n_omega);
-        for (size_t iw = 0; iw < n_omega; ++iw) {
-            omega_rad_s[iw] = omega_out[iw] / hbar_ev_s;
-            if (omega_out[iw] > std::max(omega_min_ev, 1e-12)) {
-                mask_indices.push_back(static_cast<int>(iw));
-            }
-        }
-
-        for (int k_idx = 0; k_idx < nk; ++k_idx) {
-            const size_t k_offset_ac = static_cast<size_t>(k_idx) * n_omega * 6;
-            const size_t k_offset_sigma = static_cast<size_t>(k_idx) * n_omega;
-            for (size_t iw = 0; iw < n_omega; ++iw) {
-                sigma_xx_out[k_offset_sigma + iw] = ac_out[k_offset_ac + iw * 6] * sigma_au_to_si;
-            }
-
-        }
-
-        if (mask_indices.size() < 2) {
-            return;
-        }
-
-        const double prefactor = h_si / (M_PI * e_si * e_si);
-        for (int k_idx = 0; k_idx < nk; ++k_idx) {
-            const size_t k_offset_sigma = static_cast<size_t>(k_idx) * n_omega;
-            double integral = 0.0;
-            for (size_t idx = 1; idx < mask_indices.size(); ++idx) {
-                const int left = mask_indices[idx - 1];
-                const int right = mask_indices[idx];
-                const double w0 = omega_rad_s[static_cast<size_t>(left)];
-                const double w1 = omega_rad_s[static_cast<size_t>(right)];
-                if (w0 <= 0.0 || w1 <= 0.0) {
-                    continue;
-                }
-
-                const double f0 = sigma_xx_out[k_offset_sigma + static_cast<size_t>(left)] / w0;
-                const double f1 = sigma_xx_out[k_offset_sigma + static_cast<size_t>(right)] / w1;
-                integral += 0.5 * (f0 + f1) * (w1 - w0);
-            }
-            gxx_out[static_cast<size_t>(k_idx)] = prefactor * integral;
-        }
+    void compute_dc(int n_moments, double mu, double temp, std::vector<double>& dc_out,
+                    std::string formulation = "greenwood", std::string axis = "abc",
+                    int partition_sections = 0, size_t max_workspace_mb = 0,
+                    std::string kernel = "jackson") {
+        calc::ComputeDc(observable_context(), n_moments, mu, temp, dc_out, formulation, axis,
+                        partition_sections, max_workspace_mb, kernel);
     }
 
+    calc::OccupationResult compute_occupation(double mu, double temp,
+                                              double indicator_threshold = 1e-4, int n_max = 1 << 16) {
+        return calc::ComputeOccupation(observable_context(), mu, temp, indicator_threshold, n_max);
+    }
+
+    calc::OccupationResult find_fermi_level(
+        double n_electrons, double temp, double indicator_threshold = 1e-4, int n_max = 1 << 16,
+        double mu_guess = std::numeric_limits<double>::quiet_NaN()) {
+        return calc::ComputeFermiLevel(observable_context(), n_electrons, temp, indicator_threshold,
+                                       n_max, mu_guess);
+    }
+
+    void compute_msd_spectrum(int n_steps, double dt_fs, int n_kpm, std::vector<double>& msd_out,
+                              std::vector<double>& energy_out, std::vector<double>& time_out,
+                              std::string axis = "x") {
+        calc::ComputeMsdSpectrum(observable_context(), n_steps, dt_fs, n_kpm, msd_out, energy_out,
+                                 time_out, axis);
+    }
+
+    void compute_quantum_metric(int nt, int n_kpm, double temp, double mu,
+                                std::vector<double>& gxx_out, std::vector<double>& sigma_xx_out,
+                                std::vector<double>& omega_out, std::string axis = "abc",
+                                double omega_min_ev = 0.0) {
+        calc::ComputeQuantumMetric(observable_context(), nt, n_kpm, temp, mu, gxx_out,
+                                   sigma_xx_out, omega_out, axis, omega_min_ev);
+    }
 
     // Test Helpers
     Matrix* get_H_k(int k_idx) {
         return operators_ ? operators_->hamiltonian_k(k_idx) : nullptr;
     }
 
-    backend::OperatorSet* operators() {
+    setup::OperatorSet* operators() {
         return operators_.get();
     }
 
-    const backend::OperatorSet* operators() const {
+    const setup::OperatorSet* operators() const {
         return operators_.get();
     }
     
@@ -661,36 +289,7 @@ public:
         return atomic_data_.get();
     }
 
-    const std::vector<std::string>& type_symbols() const {
-        return type_symbols_;
-    }
-
 private:
-    struct SamplingState {
-        int nsamples = 1;
-        std::unique_ptr<Vector> sample_vec;
-        std::unique_ptr<MultiVector> sample_multi_vec;
-
-        void reset() {
-            sample_vec.reset();
-            sample_multi_vec.reset();
-            nsamples = 1;
-        }
-
-        void initialize(AtomicData& atomic_data, int requested_nsamples) {
-            reset();
-            nsamples = requested_nsamples;
-            if (nsamples == 1) {
-                sample_vec = std::make_unique<Vector>(atomic_data.get_graph());
-                sample_vec->set_random_normal(true);
-                return;
-            }
-
-            sample_multi_vec = std::make_unique<MultiVector>(atomic_data.get_graph(), nsamples);
-            sample_multi_vec->set_random_normal(true);
-        }
-    };
-
     void init_comms() {
         int initialized = 0;
         MPI_Initialized(&initialized);
@@ -750,8 +349,73 @@ private:
         return initialized && !finalized;
     }
 
-    backend::OperatorRuntimeContext make_operator_runtime_context() const {
-        backend::OperatorRuntimeContext runtime;
+    /// Rejects a graph whose local pieces do not add up to the declared totals.
+    ///
+    /// `AtomicGraphArrays` is a *distributed* description: each rank supplies
+    /// only its own atoms and edges. Handing every rank the full graph instead
+    /// is the natural mistake, and it silently builds a system duplicated once
+    /// per rank -- a doubled spectrum rather than an error. Summing the local
+    /// counts across the sub-communicator catches exactly that.
+    void RequireConsistentGraphPartition(const AtomicGraphArrays& graph) const {
+        if (sub_comm_ == MPI_COMM_NULL) {
+            return;
+        }
+
+        long long local[2] = {static_cast<long long>(graph.n_atom),
+                              static_cast<long long>(graph.n_edge)};
+        long long total[2] = {0, 0};
+        MPI_Allreduce(local, total, 2, MPI_LONG_LONG, MPI_SUM, sub_comm_);
+
+        if (graph.N_atom != 0 && total[0] != static_cast<long long>(graph.N_atom)) {
+            throw std::runtime_error(
+                "AtomicGraphArrays is a distributed description: the local n_atom values sum to " +
+                std::to_string(total[0]) + " across this sub-communicator, but N_atom is " +
+                std::to_string(graph.N_atom) +
+                ". Each rank must supply only its own atoms, or run with one rank per sub-communicator.");
+        }
+        if (graph.N_edge != 0 && total[1] != static_cast<long long>(graph.N_edge)) {
+            throw std::runtime_error(
+                "AtomicGraphArrays is a distributed description: the local n_edge values sum to " +
+                std::to_string(total[1]) + " across this sub-communicator, but N_edge is " +
+                std::to_string(graph.N_edge) +
+                ". Each rank must supply only its own edges.");
+        }
+    }
+
+    /// Rejects a layout that leaves a rank with no atoms.
+    ///
+    /// The operator stack assumes every rank in a sub-communicator owns part of
+    /// the system; an empty rank deadlocks it rather than idling. That is only
+    /// reachable by giving a sub-communicator more ranks than the cell has
+    /// atoms, which is never what anyone wants, so say so instead of hanging.
+    /// Raising `npar` puts the extra ranks on k-points, where they are useful.
+    void RequireEveryRankOwnsAtoms() const {
+        if (sub_comm_ == MPI_COMM_NULL || atomic_data_ == nullptr) {
+            return;
+        }
+        int sub_size = 1;
+        MPI_Comm_size(sub_comm_, &sub_size);
+        if (sub_size <= 1) {
+            return;
+        }
+
+        int local = atomic_data_->n_atom;
+        int fewest = local;
+        MPI_Allreduce(&local, &fewest, 1, MPI_INT, MPI_MIN, sub_comm_);
+        if (fewest > 0) {
+            return;
+        }
+
+        int total = 0;
+        MPI_Allreduce(&local, &total, 1, MPI_INT, MPI_SUM, sub_comm_);
+        throw std::runtime_error(
+            "This sub-communicator has " + std::to_string(sub_size) + " ranks but the cell has " +
+            std::to_string(total) + " atoms, so at least one rank owns none. Use fewer ranks, or "
+            "raise npar so the extra ranks work on k-points instead.");
+    }
+
+    setup::OperatorRuntimeContext make_operator_runtime_context() const {
+        setup::OperatorRuntimeContext runtime;
         runtime.npar = npar_;
         runtime.world_rank = world_rank_;
         runtime.world_size = world_size_;
@@ -769,161 +433,36 @@ private:
         return options;
     }
 
-    void validate_pairwise_model_setup(
-        const backend::SKTBModel& sktb_model,
-        const std::string& model_name,
-        bool require_overlap = false
-    ) const {
-        if (!sktb_model.enabled()) {
-            return;
-        }
-        if (require_overlap && !sktb_model.has_overlap) {
-            throw std::runtime_error(model_name + " native setup requires overlap parameterization.");
-        }
+    // The old validate_pairwise_model_setup() cross-checked user-supplied
+    // orbital counts and cutoffs against a second derivation from the model.
+    // Both now come from the model's BasisSpec, so there is nothing left to
+    // reconcile; the block structure is checked once, where it is used, by
+    // SkTableConstruction::validate_atomic_data.
 
-        const auto prepared = backend::prepare_sktb_atomic_data(sktb_model);
-
-        if (prepared.type_norb.size() != atomic_data_->type_norb.size()) {
-            throw std::runtime_error(model_name + " basis/type count does not match the current AtomicData.");
-        }
-        for (size_t type = 0; type < prepared.type_norb.size(); ++type) {
-            if (prepared.type_norb[type] != atomic_data_->type_norb[type]) {
-                throw std::runtime_error(
-                    model_name + " basis-derived orbital count does not match AtomicData for species " +
-                    prepared.type_symbols[type] + ".");
-            }
-        }
-
-        if (r_max_per_type_.empty()) {
-            return;
-        }
-        if (r_max_per_type_.size() != prepared.r_max_per_type.size()) {
-            throw std::runtime_error("Stored AtomicData cutoffs do not match the " + model_name + " type count.");
-        }
-
-        for (const auto& pair : sktb_model.atom_pairs) {
-            const double required_pair_cutoff = pair.max_cutoff();
-            if (required_pair_cutoff <= 0.0) {
-                continue;
-            }
-            const size_t row_type = static_cast<size_t>(pair.row_type);
-            const size_t col_type = static_cast<size_t>(pair.col_type);
-            const double available_pair_cutoff =
-                r_max_per_type_[row_type] + r_max_per_type_[col_type];
-            if (available_pair_cutoff + 1e-12 < required_pair_cutoff) {
-                throw std::runtime_error(
-                    "Current AtomicData graph cutoff is too small for " + model_name + " pair (" +
-                    prepared.type_symbols[row_type] + ", " + prepared.type_symbols[col_type] + ").");
-            }
-        }
+    /// Bundles what the observables need out of this object.
+    calc::ObservableContext observable_context() {
+        calc::ObservableContext context;
+        context.operators = operators_.get();
+        context.atomic_data = atomic_data_.get();
+        context.samples = &sampling_;
+        context.master_comm = master_comm_;
+        context.sub_comm = sub_comm_;
+        context.verbose = verbose_;
+        return context;
     }
 
-    void validate_model_setup(const model::AnyModelConfig& model_config) const {
-        std::visit(
-            [&](const auto& cfg) {
-                using Config = std::decay_t<decltype(cfg)>;
-                if constexpr (std::is_same_v<Config, model::SKTBModelConfig>) {
-                    validate_pairwise_model_setup(cfg.native, "SKTB");
-                } else if constexpr (std::is_same_v<Config, model::DFTBModelConfig>) {
-                    validate_pairwise_model_setup(cfg.native, "DFTB", true);
-                }
-            },
-            model_config);
-    }
-
-    backend::OperatorSet& require_operators() {
+    setup::OperatorSet& require_operators() {
         if (!operators_) {
             throw std::runtime_error("RSATB is not set up yet. Call setup(...) before computing properties.");
         }
         return *operators_;
     }
 
-    const backend::OperatorSet& require_operators() const {
+    const setup::OperatorSet& require_operators() const {
         if (!operators_) {
             throw std::runtime_error("RSATB is not set up yet. Call setup(...) before computing properties.");
         }
         return *operators_;
-    }
-
-    std::unique_ptr<Chebyshev<Scalar>> make_chebyshev(const backend::OperatorSet::KPointOperatorState& state) const {
-        Matrix* Hk = state.hamiltonian.get();
-        Matrix* Sk = state.overlap.get();
-        auto* P = state.preconditioner.get();
-        const auto& ops = require_operators();
-
-        if (!Hk) {
-            throw std::runtime_error("Hamiltonian is not available for the requested k-point.");
-        }
-
-        if (Sk && P) {
-            return std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, *P, P->get_type(), ops.emin(), ops.emax(), verbose_);
-        }
-        if (Sk) {
-            return std::make_unique<Chebyshev<Scalar>>(*Hk, *Sk, ops.emin(), ops.emax(), verbose_);
-        }
-        if (P) {
-            return std::make_unique<Chebyshev<Scalar>>(*Hk, *P, P->get_type(), ops.emin(), ops.emax(), verbose_);
-        }
-        return std::make_unique<Chebyshev<Scalar>>(*Hk, ops.emin(), ops.emax(), verbose_);
-    }
-
-    static const backend::PositionAxisData& select_axis_data(
-        const backend::PositionTriplet& position,
-        int axis_idx
-    ) {
-        if (axis_idx == 0) return position.x;
-        if (axis_idx == 1) return position.y;
-        if (axis_idx == 2) return position.z;
-        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
-    }
-
-    static const backend::FirstLatticeMomentAxisData& select_axis_data(
-        const backend::FirstLatticeMomentTriplet& first_lattice_moment,
-        int axis_idx
-    ) {
-        if (axis_idx == 0) return first_lattice_moment.x;
-        if (axis_idx == 1) return first_lattice_moment.y;
-        if (axis_idx == 2) return first_lattice_moment.z;
-        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
-    }
-
-    static int axis_to_index(const std::string& axis) {
-        if (axis == "x") return 0;
-        if (axis == "y") return 1;
-        if (axis == "z") return 2;
-        throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
-    }
-
-    static bool is_gamma_kpoint(const std::vector<double>& kpoint, double tol = 1e-12) {
-        for (double value : kpoint) {
-            if (std::abs(value) > tol) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    int select_gamma_kpoint_index(const backend::OperatorSet& ops) const {
-        int local_gamma_k_idx = ops.global_nk();
-        for (const auto& kp : ops.local_kpoints()) {
-            if (is_gamma_kpoint(kp.second)) {
-                local_gamma_k_idx = std::min(local_gamma_k_idx, kp.first);
-            }
-        }
-
-        int global_gamma_k_idx = local_gamma_k_idx;
-        if (master_comm_ != MPI_COMM_NULL) {
-            MPI_Allreduce(&local_gamma_k_idx, &global_gamma_k_idx, 1, MPI_INT, MPI_MIN, master_comm_);
-        }
-        if (sub_comm_ != MPI_COMM_NULL) {
-            MPI_Bcast(&global_gamma_k_idx, 1, MPI_INT, 0, sub_comm_);
-        }
-
-        if (global_gamma_k_idx >= ops.global_nk()) {
-            throw std::runtime_error(
-                "compute_msd_spectrum requires a Gamma-point in setup.");
-        }
-        return global_gamma_k_idx;
     }
 
     MPI_Comm world_comm_;
@@ -935,10 +474,10 @@ private:
     bool verbose_;
     
     std::unique_ptr<AtomicData> atomic_data_;
-    std::unique_ptr<backend::OperatorSet> operators_;
-    SamplingState sampling_;
-    std::vector<std::string> type_symbols_;
-    std::vector<double> r_max_per_type_;
+    std::unique_ptr<setup::OperatorSet> operators_;
+    /// Radial orbital files of the model last set up, empty if it has none.
+    std::vector<std::string> orbital_files_;
+    calc::SampleVectors sampling_;
 };
 
 } // namespace rsatb

@@ -49,3 +49,6 @@ dev = [
 [tool.pytest.ini_options]
 testpaths = ["test"]
 python_files = ["test_*.py"]
+markers = [
+    "mpi: needs MPI initialized (import mpi4py); skipped where it is not available",
+]
