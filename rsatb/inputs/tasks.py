@@ -130,6 +130,17 @@ def _plain(value):
     return value
 
 
+def format_duration(seconds: float) -> str:
+    """41.3s / 2m 08s / 1h 04m -- for humans, not for parsing."""
+    if seconds < 60.0:
+        return "{:.1f}s".format(seconds)
+    minutes, secs = divmod(int(round(seconds)), 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return "{}h {:02d}m".format(hours, minutes)
+    return "{}m {:02d}s".format(minutes, secs)
+
+
 def run_tasks(calc, tasks: List[dict], options, log=None) -> List[Result]:
     """Runs every task against one setup, in the order given."""
     results: List[Result] = []
@@ -142,8 +153,26 @@ def run_tasks(calc, tasks: List[dict], options, log=None) -> List[Result]:
         started = time.time()
         RUNNERS[kind](calc, task, options, result)
         result.seconds = time.time() - started
+        if log:
+            log("        \u2713 {}".format(format_duration(result.seconds)))
         results.append(result)
+
+    # The whole-run table: the setup phases printed earlier plus what the tasks
+    # spent, so the cost of a run can be read off one place. Per-task wall time
+    # is already in result.seconds; what this adds is the breakdown inside them,
+    # and the reminder of what setup cost to get there.
+    _report_profile()
     return results
+
+
+def _report_profile():
+    """Prints the C++ phase profile, if the extension is loaded."""
+    try:
+        import rsatb  # noqa: F401  -- puts the extension on sys.path
+        import _rsatb
+    except ImportError:
+        return
+    _rsatb.profile_report()
 
 
 # --- writing ---------------------------------------------------------------

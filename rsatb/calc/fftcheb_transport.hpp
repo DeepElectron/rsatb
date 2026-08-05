@@ -1,6 +1,8 @@
 #ifndef RSATB_CALC_FFTCHEB_TRANSPORT_HPP
 #define RSATB_CALC_FFTCHEB_TRANSPORT_HPP
 
+#include "../utils/interrupt.hpp"
+#include "../utils/profile.hpp"
 #include "ac.hpp"
 #include "fft.hpp"
 #include "kpm.hpp"
@@ -285,7 +287,6 @@ void accumulate_fftcheb_block(
     int n_moments,
     DCFormulation formulation,
     int resolved_sections,
-    bool verbose,
     KpmKernel kernel,
     std::vector<cd>& kernel_accum
 ) {
@@ -371,7 +372,8 @@ void accumulate_fftcheb_block(
             continue;
         }
 
-        if (rank == 0 && verbose && n_sections > 1) {
+        if (rank == 0 && n_sections > 1 &&
+            ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
             std::cout << "fftcheb section " << (section + 1) << " / " << n_sections << "\n";
         }
 
@@ -411,6 +413,9 @@ void accumulate_fftcheb_block(
         }
 
         for (int moment = 2; moment < n_moments; ++moment) {
+            // Poll every 16 moments: one pass is a handful of matvecs, and a
+            // production n_moments runs to the tens of thousands.
+            if ((moment & 15) == 0) ::rsatb::util::throw_if_interrupted(graph->comm);
             for (int axis = 0; axis < 3; ++axis) {
                 cheby.apply_op(right_curr[axis], right_next[axis], ChebyMode::NORMAL);
                 right_next[axis].axpby(static_cast<T>(-1.0), right_prev[axis], static_cast<T>(2.0));
@@ -559,7 +564,6 @@ void dc_spectrum_fftcheb(
     size_t max_workspace_mb,
     std::vector<double>& sigma_out,
     std::vector<double>& energy_out,
-    bool verbose = false,
     KpmKernel kernel = KpmKernel::Jackson
 ) {
     if (n_moments <= 0) {
@@ -588,12 +592,12 @@ void dc_spectrum_fftcheb(
         if (block_width == 1) {
             DistVector<T> sample = psi_samples.get_col(sample_begin);
             accumulate_fftcheb_block(
-                cheby, Vx, Vy, Vz, sample, n_moments, formulation, resolved_sections, verbose, kernel, local_kernel
+                cheby, Vx, Vy, Vz, sample, n_moments, formulation, resolved_sections, kernel, local_kernel
             ); // there should be another switch when block_width == n_samples so we do not need to extract.
         } else {
             DistMultiVector<T> sample_block = extract_sample_block(psi_samples, sample_begin, block_width);
             accumulate_fftcheb_block(
-                cheby, Vx, Vy, Vz, sample_block, n_moments, formulation, resolved_sections, verbose, kernel, local_kernel
+                cheby, Vx, Vy, Vz, sample_block, n_moments, formulation, resolved_sections, kernel, local_kernel
             );
         }
     }

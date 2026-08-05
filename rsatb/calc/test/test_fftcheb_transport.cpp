@@ -383,13 +383,13 @@ std::vector<double> run_fftcheb(
         Chebyshev<Scalar> cheby(problem.H, *problem.S, -1.0, 1.0);
         dc_spectrum_fftcheb(
             cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
-            formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy, false
+            formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy
         );
     } else {
         Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
         dc_spectrum_fftcheb(
             cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
-            formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy, false
+            formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy
         );
     }
 

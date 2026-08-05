@@ -1,6 +1,8 @@
 #ifndef BESSEL_FUNCTION
 #define BESSEL_FUNCTION
 
+#include <iostream>
+#include "utils/profile.hpp"
 #include <bessel-library/bessel-library.hpp>
 #include <list>
 
@@ -34,7 +36,10 @@ inline void build_bessel_vector(
 
     // Check for non-convergence
     if (!converged) {
-        std::cout << "ERROR: Bessel series not converged\n";
+        // A fault, not progress: on stderr and never gated on the level.
+        if (::rsatb::util::fault()) {
+            std::cerr << "bessel: series not converged\n";
+        }
         std::exit(-1);
     }
 

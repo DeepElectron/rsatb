@@ -1,6 +1,9 @@
 #ifndef RSATB_CALC_DOS_HPP
 #define RSATB_CALC_DOS_HPP
 
+#include <algorithm>
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include "cheby.hpp"
 #include <vector>
 #include <cmath>
@@ -21,8 +24,7 @@ void corr_dos(Chebyshev<T>& cheby,
               int nt, 
               std::vector<std::complex<double>>& cdos, 
               const DistVector<T>* proj_mask = nullptr, 
-              std::vector<std::complex<double>>* pcdos = nullptr,
-              bool verbose = false) {
+              std::vector<std::complex<double>>* pcdos = nullptr) {
     
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
@@ -74,8 +76,10 @@ void corr_dos(Chebyshev<T>& cheby,
 
     // 3. Time Propagation Loop
     for (int it = 0; it < nt; ++it) {
-        if (rank == 0 && verbose) {
-            std::cout << "corr_dos calculation: " << it + 1 << " / " << nt << "\n";
+        ::rsatb::util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+            if (::rsatb::util::every_nth(it, std::max(1, nt / 20)))
+                std::cout << "dos: step " << it + 1 << " / " << nt << "\n";
         }
 
         // Propagate: psi_out = e^{-i H dt} psi_curr
@@ -123,8 +127,7 @@ void corr_dos(Chebyshev<T>& cheby,
               int nt, 
               std::vector<std::complex<double>>& cdos, 
               const DistVector<T>* proj_mask = nullptr, 
-              std::vector<std::complex<double>>* pcdos = nullptr,
-              bool verbose = false) {
+              std::vector<std::complex<double>>* pcdos = nullptr) {
     
     DistGraph* graph = psi_in.graph;
     int rank = graph->rank;
@@ -167,8 +170,10 @@ void corr_dos(Chebyshev<T>& cheby,
     }
 
     for (int it = 0; it < nt; ++it) {
-        if (rank == 0 && verbose) {
-            std::cout << "corr_dos calculation: " << it + 1 << " / " << nt << "\n";
+        ::rsatb::util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+            if (::rsatb::util::every_nth(it, std::max(1, nt / 20)))
+                std::cout << "dos: step " << it + 1 << " / " << nt << "\n";
         }
 
         cheby.propagate(psi_curr, psi_out, coeffs, ChebyMode::NORMAL);

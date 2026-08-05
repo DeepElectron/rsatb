@@ -1,6 +1,9 @@
 #ifndef RSATB_CALC_MSD_HPP
 #define RSATB_CALC_MSD_HPP
 
+#include <algorithm>
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include "ac.hpp"
 #include "kpm.hpp"
 
@@ -160,8 +163,7 @@ void run_explicit_position_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out,
-    bool verbose
+    std::vector<double>& energy_out
 ) {
     // This helper backs both explicit-position entry points below. The route is
     // already decided by overload selection; the only difference here is whether
@@ -200,6 +202,7 @@ void run_explicit_position_msd(
     xpsi0_prop.copy_from(xpsi0);
 
     for (int step = 0; step <= n_steps; ++step) {
+        ::rsatb::util::throw_if_interrupted(psi_in.graph->comm);
         if (step > 0) {
             cheby.propagate(psi_curr, psi_next, coeffs, ChebyMode::NORMAL);
             psi_curr.copy_from(psi_next);
@@ -208,8 +211,9 @@ void run_explicit_position_msd(
             xpsi0_prop.copy_from(xpsi0_prop_next);
         }
 
-        if (verbose && psi_in.graph->rank == 0) {
-            std::cout << "corr_msd calculation: " << step + 1 << " / " << (n_steps + 1) << "\n";
+        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
+                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << "\n";
         }
 
         apply_position(psi_curr, xpsi_curr);
@@ -233,8 +237,7 @@ void run_gamma_affine_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out,
-    bool verbose
+    std::vector<double>& energy_out
 ) {
     // This is the periodic/Gamma route. The caller supplies the first-moment
     // coupling H1 and the cell-periodic diagonal part of X, and we propagate the
@@ -261,14 +264,16 @@ void run_gamma_affine_msd(
     state_curr.affine.pointwise_mult(diagonal_position);
 
     for (int step = 0; step <= n_steps; ++step) {
+        ::rsatb::util::throw_if_interrupted(psi_in.graph->comm);
         if (step > 0) {
             propagate_affine(cheby, H1, state_curr, state_next, coeffs);
             state_curr.affine.copy_from(state_next.affine);
             state_curr.periodic.copy_from(state_next.periodic);
         }
 
-        if (verbose && psi_in.graph->rank == 0) {
-            std::cout << "corr_msd calculation: " << step + 1 << " / " << (n_steps + 1) << "\n";
+        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
+                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << "\n";
         }
 
         // The affine branch stores U(t)X|psi> as a(t) + R b(t). In the commutator
@@ -306,8 +311,7 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out,
-    bool verbose = false
+    std::vector<double>& energy_out
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -327,8 +331,7 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out,
-        verbose);
+        energy_out);
 }
 
 // open-boundary condition MSD with an explicit position operator, for orthogonal systems where only the diagonal of X is needed.
@@ -341,8 +344,7 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out,
-    bool verbose = false
+    std::vector<double>& energy_out
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -362,8 +364,7 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out,
-        verbose);
+        energy_out);
 }
 
 // periodic boundary condition MSD for Gamma-point calculations on orthogonal systems, using the affine translation-covariant representation.
@@ -377,8 +378,7 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out,
-    bool verbose = false
+    std::vector<double>& energy_out
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -402,8 +402,7 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out,
-        verbose);
+        energy_out);
 }
 
 } // namespace calc

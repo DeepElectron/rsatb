@@ -1,3 +1,5 @@
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 #include <pybind11/complex.h>
@@ -66,6 +68,45 @@ PYBIND11_MODULE(_rsatb, m) {
             return "<Structure n_atom=" + std::to_string(self.n_atom) +
                    " species=[" + species + "]>";
         });
+
+    // Ctrl-C arrives as InterruptedError from a step boundary inside the
+    // C++ loops (utils/interrupt.hpp -- CPython's own deferred handling never
+    // fires during an hours-long extension call). Mapping it onto
+    // KeyboardInterrupt gives the Python side the exception Ctrl-C ordinarily
+    // means, so the CLI and scripts handle it with the ordinary idiom.
+    pybind11::register_exception<rsatb::util::InterruptedError>(
+        m, "Interrupted", PyExc_KeyboardInterrupt);
+
+    // Verbosity is process-wide state rather than a per-object setting: the
+    // solver logs from many call sites that never see the calculation object,
+    // so threading a level through every one of them would be the `verbose`
+    // bool's problem again. Set it once before building a calculation.
+    m.def("set_log_level", [](const std::string& level) {
+        using rsatb::util::Log;
+        using rsatb::util::LogLevel;
+        if (level == "silent") Log::level() = LogLevel::kSilent;
+        else if (level == "summary") Log::level() = LogLevel::kSummary;
+        else if (level == "progress") Log::level() = LogLevel::kProgress;
+        else if (level == "debug") Log::level() = LogLevel::kDebug;
+        else throw std::invalid_argument(
+            "unknown log level '" + level + "'; expected silent, summary, progress or debug");
+    }, pybind11::arg("level"),
+       "Set solver verbosity: silent, summary, progress or debug.");
+
+    // Setup prints its own table when it finishes, because a setup that goes
+    // wrong is usually abandoned before any task runs and the numbers are still
+    // wanted. This prints the whole run: the same setup phases plus whatever the
+    // tasks added, against wall time since setup began. The registry is never
+    // cleared between the two, so calling this is the only way to see task rows.
+    m.def("profile_report", []() {
+        // Over the world, matching what setup reports against: a table that
+        // silently described rank 0 alone would be the thing the reduce exists
+        // to prevent. Every rank must reach this, so it is called from
+        // run_tasks() on all of them, not just the writing rank.
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        rsatb::util::Profile::report(0.0, initialized ? MPI_COMM_WORLD : MPI_COMM_NULL);
+    }, "Print the accumulated phase profile for the whole run.");
 
     m.def("atomic_number", [](const std::string& symbol) {
               return vbcsr::atomic::AtomicNumber(vbcsr::atomic::CanonicalSymbol(symbol));

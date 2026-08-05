@@ -89,6 +89,35 @@ against it: an input with `run.bounds.mode = "fixed"` states it, and otherwise
 pass `--bounds EMIN EMAX` or `--summary` from an earlier run. Like `rsatb
 check`, it imports nothing compiled.
 
+## Choosing the parallel layout
+
+Three levels of parallelism, filled outside-in, because communication cost
+increases inward:
+
+1. **k-points** (`run.npar`): sub-communicator groups working independent
+   k-points. Zero communication between groups, so this axis is linear —
+   take all of it first. Set `npar` to the number of k-points or a divisor.
+2. **MPI ranks within a group**: split the atoms; every rank must own some,
+   and setup refuses layouts where one would own none.
+3. **OpenMP threads within a rank** (`OMP_NUM_THREADS`): split the block
+   rows. Effective while rows per thread stays large; physical cores only —
+   the KPM loop is bandwidth-bound and SMT siblings just contend.
+
+Two traps worth naming. Open MPI 5's default binds each rank to a **single
+core**, so `mpirun -n 4` without a mapping gives four serial ranks whatever
+`OMP_NUM_THREADS` says — always state the layout:
+
+```bash
+OMP_NUM_THREADS=12 mpirun -n 4 --map-by numa:PE=12 --bind-to core \
+    rsatb run examples/02_lcao_diamond.json
+```
+
+And threads without work spin rather than sleep: a cell with 2 atoms has 2
+block rows, so 96 threads on it burn ~100% CPU per thread at the barriers
+while 2 do the work. If the profile table shows a KPM task consuming far more
+CPU than wall time, the thread count is too high for the system, not the
+other way around.
+
 ## Coordinates are used exactly as written
 
 Positions may sit inside the cell or outside it; POSCAR, XYZ and CIF all allow

@@ -67,7 +67,7 @@ int main(int argc, char** argv) {
     double dt = M_PI;
     std::vector<std::complex<double>> cdos, pcdos;
     
-    corr_dos(cheby, psi_in, nt, cdos, &mask, &pcdos, true);
+    corr_dos(cheby, psi_in, nt, cdos, &mask, &pcdos);
     
     // 7. Verify Results
     if (rank == 0) {
@@ -124,7 +124,7 @@ int main(int argc, char** argv) {
     }
     
     std::vector<std::complex<double>> cdos_mv, pcdos_mv;
-    corr_dos(cheby, psi_mv, nt, cdos_mv, &mask, &pcdos_mv, true);
+    corr_dos(cheby, psi_mv, nt, cdos_mv, &mask, &pcdos_mv);
     
     if (rank == 0) {
         std::cout << "Verifying Multivector Correlation Functions..." << std::endl;

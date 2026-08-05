@@ -8,6 +8,8 @@
 // specific to the inverse square root - the dense kernel (isqrt_action.hpp),
 // the route bookkeeping and the purification - is rsatb's.
 
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
 #include <vector>
@@ -38,7 +40,6 @@ using vbcsr::DistGraph;
 struct GraphInverseSqrtReport {
     long long krylov = 0;      // problems solved by the inverse block Lanczos route
     long long band = 0;        // ... by the dense-to-band + Zolotarev route
-    long long rational = 0;    // ... by the tridiagonal sinc-rational route
     long long eigen = 0;       // ... by the clamped eigendecomposition
     long long failed = 0;
     double mean_krylov_blocks = 0.0;
@@ -50,7 +51,6 @@ namespace detail {
 struct IsqrtTally {
     std::atomic<long long> krylov{0};
     std::atomic<long long> band{0};
-    std::atomic<long long> rational{0};
     std::atomic<long long> eigen{0};
     std::atomic<long long> failed{0};
     std::atomic<long long> krylov_blocks{0};
@@ -68,9 +68,6 @@ struct IsqrtTally {
             case isqrt::Method::BandZolotarev:
                 band.fetch_add(1, std::memory_order_relaxed);
                 break;
-            case isqrt::Method::TridiagonalRational:
-                rational.fetch_add(1, std::memory_order_relaxed);
-                break;
             default:
                 eigen.fetch_add(1, std::memory_order_relaxed);
                 break;
@@ -78,7 +75,7 @@ struct IsqrtTally {
     }
 };
 
-// RSATB_ISQRT_INIT=auto|krylov|band|rational|eigen overrides the requested route
+// RSATB_ISQRT_INIT=auto|krylov|band|eigen overrides the requested route
 // without a rebuild; "eigen" reproduces the plain per-subgraph diagonalization.
 inline isqrt::Method resolve_isqrt_method(isqrt::Method requested) {
     const char* env = std::getenv("RSATB_ISQRT_INIT");
@@ -87,7 +84,6 @@ inline isqrt::Method resolve_isqrt_method(isqrt::Method requested) {
     if (value == "auto") return isqrt::Method::Auto;
     if (value == "krylov") return isqrt::Method::InverseBlockLanczos;
     if (value == "band") return isqrt::Method::BandZolotarev;
-    if (value == "rational") return isqrt::Method::TridiagonalRational;
     if (value == "eigen") return isqrt::Method::Eigen;
     return requested;
 }
@@ -100,7 +96,7 @@ inline isqrt::Method resolve_isqrt_method(isqrt::Method requested) {
 // Only one block row of every subgraph's inverse square root is used, so the
 // dense problems go to the thin action kernel (isqrt_action.hpp) rather than to
 // a full diagonalization: Cholesky + inverse block Lanczos where its convergence
-// certificate holds, tridiagonal + sinc rational otherwise, and the clamped
+// certificate holds, the dense-to-band Zolotarev action otherwise, and the clamped
 // eigendecomposition for tiny or numerically singular subgraphs. The kernel
 // consumes the dense matrix as its working buffer, so a problem needs no second
 // n x n allocation - which is what lets several run per rank concurrently.
@@ -152,34 +148,33 @@ void graph_inverse_sqrt(BlockSpMat<T>& S, BlockSpMat<T>* out,
     // Unconditionally collective: every rank must agree on the failure count
     // before anyone decides to report or throw.
     const long long krylov = tally.krylov.load();
-    long long counts[5] = {krylov, tally.band.load(), tally.rational.load(),
-                           tally.eigen.load(), tally.failed.load()};
-    long long totals[5] = {0, 0, 0, 0, 0};
+    long long counts[4] = {krylov, tally.band.load(), tally.eigen.load(),
+                           tally.failed.load()};
+    long long totals[4] = {0, 0, 0, 0};
     MPI_Comm comm = S.graph->comm;
     if (comm != MPI_COMM_NULL && comm != MPI_COMM_SELF) {
-        MPI_Allreduce(counts, totals, 5, MPI_LONG_LONG, MPI_SUM, comm);
+        MPI_Allreduce(counts, totals, 4, MPI_LONG_LONG, MPI_SUM, comm);
     } else {
-        std::copy(counts, counts + 5, totals);
+        std::copy(counts, counts + 4, totals);
     }
 
     GraphInverseSqrtReport summary;
     summary.krylov = totals[0];
     summary.band = totals[1];
-    summary.rational = totals[2];
-    summary.eigen = totals[3];
-    summary.failed = totals[4];
+    summary.eigen = totals[2];
+    summary.failed = totals[3];
     if (krylov > 0) {
         summary.mean_krylov_blocks =
             static_cast<double>(tally.krylov_blocks.load()) / static_cast<double>(krylov);
     }
     if (report) *report = summary;
 
-    if (verbose && S.graph->rank == 0) {
+    if (S.graph->rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
         std::cout << "graph_inverse_sqrt: subgraph actions - krylov " << summary.krylov
-                  << ", band " << summary.band << ", rational " << summary.rational
+                  << ", band " << summary.band
                   << ", eigen " << summary.eigen << ", failed " << summary.failed;
         if (krylov > 0) std::cout << " (mean krylov blocks " << summary.mean_krylov_blocks << ")";
-        std::cout << std::endl;
+        std::cout << "\n";
     }
     if (summary.failed > 0) {
         throw std::runtime_error("graph_inverse_sqrt: " + std::to_string(summary.failed) +
@@ -219,6 +214,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // nothing production ever selected it.
     const double t_seed0 = MPI_Wtime();
     {
+        RSATB_PHASE("setup/isqrt_seed");
         isqrt::Options kernel = options.kernel;
         // The seed only has to be as accurate as the iteration's target.
         kernel.relative_tolerance = (tol > 0.0)
@@ -228,15 +224,42 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     }
 
     const double t_seed = MPI_Wtime() - t_seed0;
-    if (rank == 0 && verbose) {
-        std::cout << "inverse_sqrt: seed " << t_seed << "s" << std::endl;
+    if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+        std::cout << "inverse_sqrt: seed " << t_seed << "s\n";
     }
 
     if (maxit == 0) return;
 
     // Newton-Schulz on X = Z^H S Z: Z <- Z (1.875 I - 1.25 X + 0.375 X^2),
-    // which is the order-3 iteration for X -> I.
+    // the order-3 iteration for X -> I.
+    //
+    // Every design choice below was challenged by measurement on the real
+    // problem (diamond sc888, seed residual 1.9e-2, 3 steps to 4.4e-9) and
+    // the measured winner kept:
+    //
+    //  - Cubic, not quadratic. The seed's maxabs-block residual understates
+    //    its spectral spread: X's lowest eigenvalue sits far from 1, where
+    //    the quadratic map contracts only ~2x per step and needs four steps
+    //    against the cubic's three. Roughly a wash in flops; the wider
+    //    contraction basin keeps it.
+    //
+    //  - Propagated X (X <- P X P), not per-step exact reformation. Static
+    //    flop counting says the exact Z^H (S Z) refresh should win (S at
+    //    0.286 block density is the sparsest matrix in the loop; P and X are
+    //    dense) -- and it measures SLOWER, 345s against 302s: P and X
+    //    converge to the identity, their off-diagonal blocks fall under
+    //    sptol, and the threshold-aware SpGEMM makes the late P X P products
+    //    nearly free, while an exact refresh multiplies the permanently
+    //    dense Z at full price every step. The propagation drifts, which the
+    //    periodic exact reformation bounds.
+    //
+    //  - The congruence must stay the CONJUGATE transpose. Z^T S Z is
+    //    identical at Gamma but diverges instantly at complex k -- the seed
+    //    approximates the Hermitian S^-1/2, which violates the unconjugated
+    //    congruence by O(1) -- and Z S Z (no transpose) diverges from any
+    //    truncated seed. Measurements: calc/test/experiment_ns_variants.cpp.
     const double t_ns0 = MPI_Wtime();
+    RSATB_PHASE("setup/isqrt_newton_schulz");
     BlockSpMat<T> tmp1(graph), tmp2(graph);
 
     auto residual_norm = [&](BlockSpMat<T>& X) {
@@ -249,50 +272,63 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return global;
     };
 
-    tmp2 = S_inv_sqrt->spmm(S_mat, sptol, true, false);
-    tmp2 = tmp2.spmm(*S_inv_sqrt, sptol, false, false);
+    // X = Z^H (S Z): grouped so the first product is the sparse one, and the
+    // second computed as a known-Hermitian product -- half the block products,
+    // and X comes out exactly Hermitian, which everything below relies on.
+    auto reform_x = [&]() {
+        tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
+        tmp2 = S_inv_sqrt->spmm_hermitian(tmp2, sptol, /*transA=*/true);
+    };
+
+    reform_x();
     double norm = residual_norm(tmp2);
     double norm_pre = 0.0;
     int count = 0;
 
     while (norm > tol && count < maxit && std::abs(norm_pre - norm) > 0.005 * norm) {
-        if (rank == 0 && verbose) {
+        util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && util::Log::enabled(util::LogLevel::kDebug)) {
             std::cout << "inverse_sqrt: maxabs residual " << norm << ", density "
-                      << S_inv_sqrt->get_block_density() << std::endl;
+                      << S_inv_sqrt->get_block_density() << "\n";
         }
         if (norm > 100.0) {
-            if (rank == 0) {
-                std::cout << "inverse_sqrt: diverged, residual " << norm << std::endl;
+            if (rank == 0 && util::fault()) {
+                std::cerr << "inverse_sqrt: diverged, residual " << norm << "\n";
             }
             break;
         }
         norm_pre = norm;
 
-        tmp1 = tmp2.spmm(tmp2, sptol);
+        // P = 1.875 I - 1.25 X + 0.375 X^2, then Z <- Z P. X is exactly
+        // Hermitian (every route that forms it mirrors), X^2 of a Hermitian
+        // matrix is Hermitian, and the polynomial's coefficients are real --
+        // so P is exactly Hermitian too, which the propagation below uses.
+        tmp1 = tmp2.spmm_hermitian(tmp2, sptol);
         tmp1.axpby(T(-1.25), tmp2, T(0.375));
         tmp1.shift(T(1.875));
         tmp1.filter_blocks(sptol);
 
         *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
 
-        // Propagating X through the same polynomial is cheaper than reforming
-        // Z^H S Z, but it drifts; refresh it exactly every fifth step and while
-        // still far from convergence.
+        // X <- P X P while converging -- cheap, because P and X collapse
+        // toward the identity and the threshold drops their blocks -- with
+        // an exact reformation every fifth step and while still far out.
+        // P^H = P exactly, so the first product needs no transpose at all,
+        // and the second is the known-Hermitian congruence.
         if (norm < 1e-1 && ((count + 1) % 5 != 0)) {
-            tmp2 = tmp1.spmm(tmp2, sptol, true, false);
-            tmp2 = tmp2.spmm(tmp1, sptol, false, false);
+            tmp2 = tmp1.spmm(tmp2, sptol);
+            tmp2 = tmp2.spmm_hermitian(tmp1, sptol);
         } else {
-            tmp2 = S_inv_sqrt->spmm(S_mat, sptol, true, false);
-            tmp2 = tmp2.spmm(*S_inv_sqrt, sptol, false, false);
+            reform_x();
         }
         norm = residual_norm(tmp2);
         ++count;
     }
 
-    if (rank == 0 && verbose) {
+    if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
         std::cout << "inverse_sqrt: converged at maxabs residual " << norm << ", density "
                   << S_inv_sqrt->get_block_density() << " (" << count << " Newton-Schulz steps, "
-                  << (MPI_Wtime() - t_ns0) << "s)" << std::endl;
+                  << (MPI_Wtime() - t_ns0) << "s)\n";
     }
 }
 

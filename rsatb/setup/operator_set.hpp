@@ -14,6 +14,7 @@
 // in this header alongside the cache. They are now in operator/ and in
 // operator_assembly.hpp, and what is left matches the name.
 
+#include "../utils/profile.hpp"
 #include "../calc/preconditioner.hpp"
 #include "../calc/eigen.hpp"
 #include "../model/setup.hpp"
@@ -266,10 +267,14 @@ private:
             state.k_idx = entry.first;
             state.kpoint = entry.second;
 
+            // Separate phases: together they were 43% of a multi-k setup, and
+            // one merged row could not say whether H or S sampling carried it.
             if (hamiltonian_images_) {
+                RSATB_PHASE("setup/hamiltonian_sample_k");
                 state.hamiltonian.reset(hamiltonian_images_->sample_k(state.kpoint, PhaseConvention::R_AND_POSITION));
             }
             if (overlap_images_) {
+                RSATB_PHASE("setup/overlap_sample_k");
                 state.overlap.reset(overlap_images_->sample_k(state.kpoint, PhaseConvention::R_AND_POSITION));
             }
             if (state.overlap) {
@@ -317,6 +322,7 @@ private:
         comms.master = master_comm;
         comms.sub = comm_;
 
+        RSATB_PHASE("setup/spectral_bounds");
         const auto bounds =
             rsatb::setup::EstimateSpectralBounds(views, bounds_options, comms, verbose_);
         emin_ = bounds.emin;
@@ -336,6 +342,10 @@ private:
             return;
         }
 
+        // Wraps the seed and refinement phases nested inside it, so this row
+        // reports only the preconditioner's own overhead -- if it is ever large,
+        // that is news.
+        RSATB_PHASE("setup/preconditioner");
         state.preconditioner = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
             *overlap, config.maxiter, config.tol, config.sptol, verbose_);
 

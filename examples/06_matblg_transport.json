@@ -1,0 +1,42 @@
+{
+  "_comment": "The clean pz-only MATBLG transport calculation of P. Alcazar Guerrero et al., Phys. Rev. Lett. 134, 126301 (2025). One pz orbital per carbon, Slater-Koster pp_pi / pp_sigma channels with the paper's distance dependence, a 16x16x1 tiling of the relaxed moire unit cell, sampled at Gamma. THE ONE THING YOU MUST SUPPLY is structure.file: the relaxed moire unit cell, in POSCAR or XYZ. Structural relaxation itself and Anderson-disorder injection are not part of this input; for the disordered workflow you still need either a wrapper around rsatb::calc::apply_anderson_disorder or an externally generated disordered Hamiltonian read through an 'lcao'/'tb_file' model.",
+
+  "structure": {
+    "_comment": "Replace with your relaxed moire cell. The tiling is the paper's transport supercell; drop it to [1, 1, 1] to work on the moire cell itself. Coordinates are used exactly as written -- nothing is wrapped or reordered -- so the tiled cell is the one you would get from ASE's repeat.",
+    "file": "REPLACE_ME_relaxed_moire_cell.vasp",
+    "supercell": [16, 16, 1]
+  },
+
+  "model": {
+    "_comment": "The paper's parameters: Vpp_pi^0 = -2.7 eV, Vpp_sigma^0 = 0.3675 eV, q_pi/a0 = q_sigma/d0 = 22.18 nm^-1, a0 = 0.1439 nm, d0 = 0.33 nm, rc = 0.614 nm, lambda_c = 0.0265 nm. RSATB needs a finite graph cutoff, so the smooth Fermi cutoff is tabulated out to rc + 8 lambda_c = 8.26 A, where the residual tail is already negligible. The two files carry the closed form in their headers.",
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {
+        "C-C": {
+          "pp_pi":    {"kind": "spline", "file": "data/matblg/Vpp_pi.txt",    "r_cut": 8.26},
+          "pp_sigma": {"kind": "spline", "file": "data/matblg/Vpp_sigma.txt", "r_cut": 8.26}
+        }
+      }
+    }
+  },
+
+  "run": {
+    "_comment": "No overlap, so the basis is orthogonal and velocity and position come for free -- which is what makes the MSD and the quantum metric available. MSD is defined from the Gamma-point wavepacket evolution, which is also the real-space supercell picture the paper works in. Fixed bounds skip the PRIMME estimate: on a cell this size that is both faster and more robust. Raise npar only if you add k-points; every rank must own at least one atom.",
+    "npar": 1,
+    "nsamples": 1,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "bounds": {"mode": "fixed", "energy": [-11.0, 11.0]},
+    "preconditioner": {"target": "none"}
+  },
+
+  "tasks": [
+    {"type": "dos", "nt": 1024},
+    {"type": "msd", "n_steps": 200, "dt_fs": 10.0, "n_kpm": 3500, "axis": "x"},
+    {"type": "quantum_metric", "nt": 1024, "n_kpm": 3500, "temp": 0.0, "mu": 0.0,
+     "omega_min_ev": 0.0}
+  ],
+
+  "output": {"dir": "results/06_matblg", "prefix": "matblg_"}
+}

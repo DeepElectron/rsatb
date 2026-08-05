@@ -26,7 +26,7 @@
 //
 //   OMP_NUM_THREADS=1 ./benchmark_isqrt_diamond [--poscar diamond_sc888.vasp]
 //                                              [--atoms 3] [--skip-spectrum]
-//                                              [--route legacy|eigen|rational|auto]
+//                                              [--route legacy|eigen|band|auto]
 //
 // --route runs exactly one route per sampled atom, for isolated timing.
 // --graph runs the whole graph_inverse_sqrt instead (use several OMP threads
@@ -347,10 +347,10 @@ int main(int argc, char** argv) {
         vbcsr::BlockSpMat<Scalar> Z0(S->graph);
         const auto tg = Clock::now();
         rsatb::calc::graph_inverse_sqrt(*S, &Z0, {}, false, &report);
-        std::printf("graph seed (%d threads): %.2fs (krylov %lld, band %lld, rational %lld, "
+        std::printf("graph seed (%d threads): %.2fs (krylov %lld, band %lld, "
                     "eigen %lld, failed %lld)\n",
                     omp_get_max_threads(), seconds_since(tg), report.krylov, report.band,
-                    report.rational, report.eigen, report.failed);
+                    report.eigen, report.failed);
         MPI_Finalize();
         return 0;
     }
@@ -361,7 +361,7 @@ int main(int argc, char** argv) {
     // Spread the samples across the cell rather than taking the first atoms.
     const int stride = std::max(1, n_owned / n_atoms_sampled);
 
-    double total_legacy = 0.0, total_eigen = 0.0, total_rational = 0.0, total_auto = 0.0;
+    double total_legacy = 0.0, total_eigen = 0.0, total_auto = 0.0;
     int fast_accepted = 0;
 
     for (int s = 0; s < n_atoms_sampled; ++s) {
@@ -392,7 +392,6 @@ int main(int argc, char** argv) {
             if (only_route == "legacy") single = run_legacy(sg);
             else if (only_route == "eigen") single = run_route(sg, isq::Method::Eigen);
             else if (only_route == "band") single = run_route(sg, isq::Method::BandZolotarev);
-            else if (only_route == "rational") single = run_route(sg, isq::Method::TridiagonalRational);
             else single = run_route(sg, isq::Method::Auto);
             std::printf("  %-10s %8.3fs\n", only_route.c_str(), single.seconds);
             std::fflush(stdout);
@@ -402,13 +401,11 @@ int main(int argc, char** argv) {
         const Outcome legacy = run_legacy(sg);
         const Outcome eigen = run_route(sg, isq::Method::Eigen);
         const Outcome band = run_route(sg, isq::Method::BandZolotarev);
-        const Outcome rational = run_route(sg, isq::Method::TridiagonalRational);
         const Outcome autorun = run_route(sg, isq::Method::Auto);
 
         total_legacy += legacy.seconds;
         (void)band;
         total_eigen += eigen.seconds;
-        total_rational += rational.seconds;
         total_auto += autorun.seconds;
         if (autorun.stats.used_method == isq::Method::InverseBlockLanczos) ++fast_accepted;
 
@@ -422,10 +419,6 @@ int main(int argc, char** argv) {
                     band.seconds, band.stats.band_width, band.stats.rational_poles,
                     relative_deviation(band.x, legacy.x),
                     legacy.seconds / std::max(1.0e-9, band.seconds));
-        std::printf("  rational        %8.3fs  poles %3d                  dev %8.2e  speedup %5.2fx\n",
-                    rational.seconds, rational.stats.rational_poles,
-                    relative_deviation(rational.x, legacy.x),
-                    legacy.seconds / std::max(1.0e-9, rational.seconds));
         std::printf("  auto            %8.3fs  %-22s m %3d  dev %8.2e  speedup %5.2fx\n",
                     autorun.seconds, isq::method_name(autorun.stats.used_method),
                     autorun.stats.krylov_blocks, relative_deviation(autorun.x, legacy.x),
@@ -437,15 +430,14 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return 0;
     }
-    std::printf("\n%d subgraph problems: legacy %.2fs | eigen %.2fs (%.2fx), rational %.2fs "
-                "(%.2fx), auto %.2fs (%.2fx); fast path accepted on %d/%d\n",
+    std::printf("\n%d subgraph problems: legacy %.2fs | eigen %.2fs (%.2fx), "
+                "auto %.2fs (%.2fx); fast path accepted on %d/%d\n",
                 n_atoms_sampled, total_legacy, total_eigen,
-                total_legacy / std::max(1.0e-9, total_eigen), total_rational,
-                total_legacy / std::max(1.0e-9, total_rational), total_auto,
+                total_legacy / std::max(1.0e-9, total_eigen), total_auto,
                 total_legacy / std::max(1.0e-9, total_auto), fast_accepted, n_atoms_sampled);
     std::printf("(auto pays for a refused Krylov trial on every problem here; in the graph loop "
                 "isqrt::Router stops trying after a few atoms, so the run-level figure is the "
-                "rational one.)\n");
+                "representative one.)\n");
 
     MPI_Finalize();
     return 0;

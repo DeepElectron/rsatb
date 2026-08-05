@@ -45,9 +45,9 @@ const rsatb::io::HamiltonianReader& reader
 ) {
 auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
 
-    // An exception must not leave an OpenMP structured block, so a
-    // dimension mismatch is recorded here and rethrown once the region
-    // closes.
+    // The first dimension mismatch is recorded and rethrown after both loops,
+    // so one bad block does not abort the read half-way. The critical section
+    // keeps this correct if these loops are ever threaded again.
     std::string mismatch;
     auto record_mismatch = [&mismatch](const std::string& message) {
         #pragma omp critical(rsatb_hamiltonian_reader_mismatch)
@@ -59,11 +59,19 @@ auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
     int nstart, nend;
     ad.get_vertex_range_local(&nstart, &nend);
 
-    // Onsite blocks
-    #pragma omp parallel
+    // Onsite blocks.
+    //
+    // Deliberately serial. HDF5 is built thread-safe here, which means a single
+    // global mutex around every API call: threads gain no concurrency and only
+    // contend. Measured on diamond sc888 (150528 datasets), reading this file
+    // takes 12.4s on 1 thread and degrades monotonically to 55.5s on 96 --
+    // 4.5x slower for doing the same work. The assembly that follows each read
+    // is far cheaper than the read, so there is nothing left worth threading.
+    //
+    // Real parallelism for this file comes from MPI ranks, which own disjoint
+    // vertex ranges and open the file independently.
     {
         rsatb::io::DenseBlock block;
-        #pragma omp for
         for (int i = nstart; i < nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
 
@@ -91,10 +99,9 @@ auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
     // Edge blocks
     int estart, eend;
     ad.get_edge_range_local(&estart, &eend);
-    #pragma omp parallel
+    // Serial for the same reason as the onsite loop above.
     {
         rsatb::io::DenseBlock block;
-        #pragma omp for
         for (int ie = estart; ie < eend; ++ie) {
             int i, j;
             ad.get_connected_atoms(ie, &i, &j);

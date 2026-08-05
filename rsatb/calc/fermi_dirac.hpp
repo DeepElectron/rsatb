@@ -1,6 +1,8 @@
 #ifndef RSATB_CALC_FERMI_DIRAC_HPP
 #define RSATB_CALC_FERMI_DIRAC_HPP
 
+#include "../utils/interrupt.hpp"
+#include "../utils/profile.hpp"
 #include "cheby.hpp"
 #include "kpm.hpp"
 #include "vector_utils.hpp"
@@ -316,8 +318,6 @@ struct FermiExpansionOptions {
     // pointwise degree ~ 2*pi*beta*half_width, where a tapered sum is
     // Jackson-grade by construction and further probing cannot help.
     int n_max = 1 << 16;
-
-    bool verbose = false;
 };
 
 struct FermiExpansionReport {
@@ -443,6 +443,9 @@ void fermi_dirac_kpm(Chebyshev<T>& cheby,
     n_now = 2;
 
     while (true) {
+        // Poll every 64 terms: this loop advances one matvec per pass, not one
+        // time step, and may run to n_max = 65536.
+        if ((n_now & 63) == 0) ::rsatb::util::throw_if_interrupted(psi_in.graph->comm);
         if (schedule.due(n_now)) {
             if (schedule.evaluate(moments, rep)) break;
             // Missed: the hypothesis moves out one rung, and its taper is flat
@@ -460,7 +463,7 @@ void fermi_dirac_kpm(Chebyshev<T>& cheby,
         ++n_now;
     }
 
-    if (opt.verbose && psi_in.graph->rank == 0) {
+    if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
         std::cout << "fermi-dirac: N = " << rep.n_used
                   << (schedule.adaptive() ? " (adaptive, indicator = " : " (fixed")
                   << (schedule.adaptive() ? std::to_string(rep.indicator) + ", " : ", ")

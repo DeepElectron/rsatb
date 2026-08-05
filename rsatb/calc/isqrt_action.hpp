@@ -78,7 +78,6 @@ enum class Method {
     Auto,
     InverseBlockLanczos,  // fast path (Cholesky + inverse block Lanczos)
     BandZolotarev,        // robust path: dense-to-band + Zolotarev rational action
-    TridiagonalRational,  // fallback robust path: full tridiagonalization
     Eigen                 // clamped eigendecomposition
 };
 
@@ -326,57 +325,7 @@ vbcsr_lapack_int heevd(char uplo, int n, T* a, int lda, double* w) {
     return info;
 }
 
-template <typename T>
-vbcsr_lapack_int hetrd(char uplo, int n, T* a, int lda, double* d, double* e, T* tau) {
-    const char u[2] = {uplo, '\0'};
-    vbcsr_lapack_int n_ = n, lda_ = lda, lwork = -1, info = 0;
-    T query = T(0);
-    if constexpr (std::is_same<T, double>::value) {
-        dsytrd_(u, &n_, a, &lda_, d, e, tau, &query, &lwork, &info);
-        if (info != 0) return info;
-        lwork = static_cast<vbcsr_lapack_int>(std::max(1.0, query));
-        std::vector<T> work(static_cast<std::size_t>(lwork));
-        dsytrd_(u, &n_, a, &lda_, d, e, tau, work.data(), &lwork, &info);
-    } else {
-        zhetrd_(u, &n_, a, &lda_, d, e, tau, &query, &lwork, &info);
-        if (info != 0) return info;
-        lwork = static_cast<vbcsr_lapack_int>(std::max(1.0, query.real()));
-        std::vector<T> work(static_cast<std::size_t>(lwork));
-        zhetrd_(u, &n_, a, &lda_, d, e, tau, work.data(), &lwork, &info);
-    }
-    return info;
-}
 
-// C <- Q C  (trans = 'N')  or  Q^H C  (trans = 'C'), Q implicit from hetrd.
-template <typename T>
-vbcsr_lapack_int unmtr_left(char uplo, char trans, int m, int n, const T* a, int lda,
-                            const T* tau, T* c, int ldc) {
-    const char side[2] = {'L', '\0'};
-    const char u[2] = {uplo, '\0'};
-    const char* tr = trans_str(trans, is_complex_v<T>);
-    vbcsr_lapack_int m_ = m, n_ = n, lda_ = lda, ldc_ = ldc, lwork = -1, info = 0;
-    T query = T(0);
-    if constexpr (std::is_same<T, double>::value) {
-        dormtr_(side, u, tr, &m_, &n_, a, &lda_, tau, c, &ldc_, &query, &lwork, &info);
-        if (info != 0) return info;
-        lwork = static_cast<vbcsr_lapack_int>(std::max(1.0, query));
-        std::vector<T> work(static_cast<std::size_t>(lwork));
-        dormtr_(side, u, tr, &m_, &n_, a, &lda_, tau, c, &ldc_, work.data(), &lwork, &info);
-    } else {
-        zunmtr_(side, u, tr, &m_, &n_, a, &lda_, tau, c, &ldc_, &query, &lwork, &info);
-        if (info != 0) return info;
-        lwork = static_cast<vbcsr_lapack_int>(std::max(1.0, query.real()));
-        std::vector<T> work(static_cast<std::size_t>(lwork));
-        zunmtr_(side, u, tr, &m_, &n_, a, &lda_, tau, c, &ldc_, work.data(), &lwork, &info);
-    }
-    return info;
-}
-
-inline vbcsr_lapack_int sterf(int n, double* d, double* e) {
-    vbcsr_lapack_int n_ = n, info = 0;
-    dsterf_(&n_, d, e, &info);
-    return info;
-}
 
 // Thin QR of the m x k block a (m >= k).  On exit a holds Q; r (k x k,
 // column-major) holds the upper triangular factor.
@@ -566,88 +515,6 @@ std::vector<T> compact_leading(const std::vector<T>& store, int stride, int q) {
     return out;
 }
 
-// ----------------------------------------------------- sinc rational weights
-
-struct SincCoefficients {
-    std::vector<double> shifts;
-    std::vector<double> weights;
-    double scalar_error = 0.0;
-};
-
-inline double scalar_rational_error(double a, double b, const SincCoefficients& c) {
-    constexpr int samples = 512;
-    const double log_a = std::log(a), log_b = std::log(b);
-    double worst = 0.0;
-    for (int i = 0; i < samples; ++i) {
-        const double t = static_cast<double>(i) / (samples - 1);
-        const double x = std::exp(log_a + t * (log_b - log_a));
-        long double value = 0.0L;
-        for (std::size_t k = 0; k < c.shifts.size(); ++k) {
-            value += static_cast<long double>(c.weights[k]) / (x + c.shifts[k]);
-        }
-        worst = std::max(worst, std::abs(static_cast<double>(value) * std::sqrt(x) - 1.0));
-    }
-    return worst;
-}
-
-// x^{-1/2} = (2/pi) \int_0^\infty dt/(x+t^2); substituting t = sqrt(c) e^s with
-// c = sqrt(ab) and applying the trapezoidal rule in s gives the pole/weight
-// pairs below, whose error decays geometrically in the number of poles.
-inline bool make_sinc_coefficients(double a, double b, double target, SincCoefficients& out) {
-    if (!(a > 0.0) || !(b >= a)) return false;
-    constexpr double h = 0.39;
-    const double center = std::sqrt(a * b);
-    const double root_center = std::sqrt(center);
-    constexpr double two_over_pi = 0.63661977236758134308;
-
-    for (int m = 8; m <= 320; m += 2) {
-        SincCoefficients c;
-        c.shifts.reserve(static_cast<std::size_t>(2 * m + 1));
-        c.weights.reserve(static_cast<std::size_t>(2 * m + 1));
-        for (int k = -m; k <= m; ++k) {
-            const double s = k * h;
-            c.shifts.push_back(center * std::exp(2.0 * s));
-            c.weights.push_back(two_over_pi * h * root_center * std::exp(s));
-        }
-        c.scalar_error = scalar_rational_error(a, b, c);
-        if (c.scalar_error <= target) {
-            out = std::move(c);
-            return true;
-        }
-    }
-    return false;
-}
-
-// y = sum_k w_k (T + s_k I)^{-1} c, T real symmetric tridiagonal SPD.
-template <typename T>
-void shifted_tridiagonal_action(const std::vector<double>& d, const std::vector<double>& e,
-                                const std::vector<T>& c, int n, int nrhs,
-                                const SincCoefficients& coeff, std::vector<T>& y) {
-    y.assign(static_cast<std::size_t>(n) * nrhs, T(0));
-    std::vector<double> diag(static_cast<std::size_t>(n));
-    std::vector<double> lower(static_cast<std::size_t>(std::max(0, n - 1)));
-    std::vector<T> work;
-
-    for (std::size_t p = 0; p < coeff.shifts.size(); ++p) {
-        const double shift = coeff.shifts[p];
-        // (T + shift I) = L D L^T, unpivoted: safe because the shifted matrix
-        // is symmetric positive definite.
-        diag[0] = d[0] + shift;
-        for (int i = 0; i < n - 1; ++i) {
-            lower[i] = e[i] / diag[i];
-            diag[i + 1] = d[i + 1] + shift - e[i] * lower[i];
-        }
-        work = c;
-        for (int j = 0; j < nrhs; ++j) {
-            T* x = work.data() + static_cast<std::size_t>(j) * n;
-            for (int i = 1; i < n; ++i) x[i] -= lower[i - 1] * x[i - 1];
-            for (int i = 0; i < n; ++i) x[i] /= diag[i];
-            for (int i = n - 2; i >= 0; --i) x[i] -= lower[i] * x[i + 1];
-        }
-        const double w = coeff.weights[p];
-        for (std::size_t i = 0; i < y.size(); ++i) y[i] += w * work[i];
-    }
-}
 
 
 // -------------------------------------------------- Zolotarev on a band matrix
@@ -1024,7 +891,9 @@ Status band_zolotarev_action(T* a, int lda, int n, const T* b, int ldb, int nrhs
     const int ldab = kd + 1;
     std::vector<T> band(static_cast<std::size_t>(ldab) * n, T(0));
     std::vector<T> tau(static_cast<std::size_t>(std::max(1, n - kd)), T(0));
-    if (he2hb_lower<T>(n, kd, a, lda, band.data(), ldab, tau.data()) != 0) {
+    const vbcsr_lapack_int he2hb_info =
+        he2hb_lower<T>(n, kd, a, lda, band.data(), ldab, tau.data());
+    if (he2hb_info != 0) {
         // HE2HB reports only argument errors, raised before any data is
         // touched: `a`'s opt.uplo triangle is still valid and the dispatcher
         // may reroute.
@@ -1120,66 +989,6 @@ Status band_zolotarev_action(T* a, int lda, int n, const T* b, int ldb, int nrhs
     apply_band_q<T>(false, n, kd, nrhs, a, lda, tau.data(), x.data(), n,
                     opt.reflector_block_size);
 
-    st.status = Status::Success;
-    return Status::Success;
-}
-
-// Route 3 (fallback robust): one tridiagonal reduction, then either the sinc
-// rational action or - if A turns out numerically singular - the exact clamped
-// action on the same tridiagonal.  Destructive: the reduction overwrites `a`, so no n x n copy is
-// made, which makes this the cheapest route in memory as well as the fallback
-// that always applies.
-template <typename T>
-Status tridiagonal_action(T* a, int lda, int n, const T* b, int ldb, int nrhs,
-                          const Options& opt, std::vector<T>& x, Stats& st) {
-    std::vector<double> d(static_cast<std::size_t>(n));
-    std::vector<double> e(static_cast<std::size_t>(std::max(1, n - 1)), 0.0);
-    std::vector<T> tau(static_cast<std::size_t>(std::max(1, n - 1)));
-
-    if (hetrd<T>(opt.uplo, n, a, lda, d.data(), e.data(), tau.data()) != 0) {
-        return Status::LapackFailure;
-    }
-
-    std::vector<T> c = copy_block(b, ldb, n, nrhs);
-    if (unmtr_left<T>(opt.uplo, 'C', n, nrhs, a, lda, tau.data(), c.data(), n) != 0) {
-        return Status::LapackFailure;
-    }
-
-    {
-        std::vector<double> ed = d, ee = e;
-        if (sterf(n, ed.data(), ee.data()) != 0) return Status::LapackFailure;
-        st.lambda_min = ed.front();
-        st.lambda_max = ed.back();
-    }
-
-    bool done = false;
-    if (st.lambda_min > opt.lambda_min_floor) {
-        const double target = (opt.rational_scalar_tolerance > 0.0)
-                                  ? opt.rational_scalar_tolerance
-                                  : std::max(1.0e-14, 0.01 * opt.relative_tolerance);
-        SincCoefficients coeff;
-        if (make_sinc_coefficients(st.lambda_min, st.lambda_max, target, coeff)) {
-            shifted_tridiagonal_action<T>(d, e, c, n, nrhs, coeff, x);
-            st.used_method = Method::TridiagonalRational;
-            st.rational_poles = static_cast<int>(coeff.shifts.size());
-            st.estimated_relative_error = coeff.scalar_error;
-            done = true;
-        }
-    }
-    if (!done) {
-        // Numerically singular, or a scalar tolerance the rational form cannot
-        // reach: fall back to the exact clamped action on the tridiagonal we
-        // already have. This allocates the n x n tridiagonal eigenvectors, the
-        // only route besides the Krylov one that needs n^2 workspace.
-        if (!tridiagonal_clamped_action<T>(d, e, c, n, nrhs, opt.eigen_clamp, x)) {
-            return Status::LapackFailure;
-        }
-        st.used_method = Method::Eigen;
-    }
-
-    if (unmtr_left<T>(opt.uplo, 'N', n, nrhs, a, lda, tau.data(), x.data(), n) != 0) {
-        return Status::LapackFailure;
-    }
     st.status = Status::Success;
     return Status::Success;
 }
@@ -1372,7 +1181,6 @@ inline const char* method_name(Method m) {
         case Method::Auto: return "auto";
         case Method::InverseBlockLanczos: return "inverse_block_lanczos";
         case Method::BandZolotarev: return "band_zolotarev";
-        case Method::TridiagonalRational: return "tridiagonal_rational";
         case Method::Eigen: return "eigen";
     }
     return "unknown";
@@ -1445,25 +1253,21 @@ Status inverse_sqrt_action_destructive(T* a, int lda, int n, const T* b, int ldb
         if (status == Status::Success && route == Method::BandZolotarev && result.empty()) {
             status = detail::band_zolotarev_action<T>(a, lda, n, b, ldb, nrhs, opt, result, st);
             // The route claims used_method the moment HE2HB has overwritten
-            // `a`; before that point `a` is still valid and the tridiagonal
-            // route can take over (e.g. an old LAPACK without SY2SB). After
-            // it, the route resolves everything internally, including the
-            // clamped near-singular case.
+            // `a`; before that point `a` is still valid and the clamped
+            // eigendecomposition can take over. After it, the route resolves
+            // everything internally, including the near-singular case.
             if (status != Status::Success && opt.method != Method::BandZolotarev &&
                 st.used_method != Method::BandZolotarev) {
-                route = Method::TridiagonalRational;
+                route = Method::Eigen;
                 status = Status::Success;
                 result.clear();
             }
         }
 
         if (status == Status::Success && result.empty() && route != Method::BandZolotarev) {
-            // The remaining routes are destructive and always applicable: the
-            // tridiagonal one falls back internally to the exact clamped action
-            // when A turns out numerically singular.
-            status = (route == Method::Eigen)
-                         ? detail::eigen_action<T>(a, lda, n, b, ldb, nrhs, opt, result, st)
-                         : detail::tridiagonal_action<T>(a, lda, n, b, ldb, nrhs, opt, result, st);
+            // Destructive and always applicable: the clamp is what defines the
+            // answer when A turns out numerically singular.
+            status = detail::eigen_action<T>(a, lda, n, b, ldb, nrhs, opt, result, st);
         }
     } catch (...) {
         status = Status::LapackFailure;
@@ -1547,6 +1351,55 @@ Status inverse_sqrt_columns_inplace(int n, std::vector<T>& m, int k_cols, int co
         return Status::InvalidArgument;
     }
     try {
+        // Real-arithmetic fast path.
+        //
+        // At a real k-point the Bloch phase is exactly 1, so the subgraph block
+        // carries identically-zero imaginary parts. Gamma is the common case
+        // for the large supercells this solver targets, and solving such a
+        // block in complex arithmetic costs 2x the bytes and 4x the flops of
+        // the equivalent real problem -- in the routine that is the O(n^3) hot
+        // spot of the whole seed. Fewer bytes per problem is also what keeps a
+        // full thread-count batch of concurrent problems off the memory system.
+        //
+        // The test is exact (== 0.0) rather than a tolerance: at a real k-point
+        // the zeros come from multiplying by 1.0 + 0.0i and are bit-exact, and
+        // anything genuinely complex must keep the complex path. It costs
+        // O(n^2) to decide, against the O(n^3) it saves.
+        //
+        // The packing is in place. A complex element is two doubles, so the
+        // real part of element i is written at offset i while element i is read
+        // at offset 2i: the write cursor never overtakes the read cursor and no
+        // second n x n buffer is needed -- which matters, because allocating
+        // one would raise the very peak this path exists to lower.
+        if constexpr (std::is_same<T, std::complex<double>>::value) {
+            const std::size_t nn = static_cast<std::size_t>(n) * n;
+            bool is_real = true;
+            for (std::size_t i = 0; i < nn; ++i) {
+                if (m[i].imag() != 0.0) {
+                    is_real = false;
+                    break;
+                }
+            }
+            if (is_real) {
+                double* real_view = reinterpret_cast<double*>(m.data());
+                for (std::size_t i = 0; i < nn; ++i) real_view[i] = m[i].real();
+
+                std::vector<double> selector(static_cast<std::size_t>(n) * k, 0.0);
+                for (int j = 0; j < k; ++j) {
+                    selector[col_start + j + static_cast<std::size_t>(j) * n] = 1.0;
+                }
+                std::vector<double> xr(static_cast<std::size_t>(n) * k, 0.0);
+                Options o = opt;
+                o.rhs_is_orthonormal = true;
+                const Status s = inverse_sqrt_action_destructive<double>(
+                    real_view, n, n, selector.data(), n, k, xr.data(), n, o, router, stats);
+                std::vector<T> xc(xr.size());
+                for (std::size_t i = 0; i < xc.size(); ++i) xc[i] = T(xr[i], 0.0);
+                m = std::move(xc);
+                return s;
+            }
+        }
+
         std::vector<T> selector(static_cast<std::size_t>(n) * k, T(0));
         for (int j = 0; j < k; ++j) {
             selector[col_start + j + static_cast<std::size_t>(j) * n] = T(1);

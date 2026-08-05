@@ -212,12 +212,11 @@ void run_case(const char* label, Family family, int n, int nrhs, int n_low, doub
     isq::Router router;
     const Outcome autorun = run(p, isq::Method::Auto, &router);
     const Outcome band = run(p, isq::Method::BandZolotarev, nullptr);
-    const Outcome rational = run(p, isq::Method::TridiagonalRational, nullptr);
     const Outcome eigen = run(p, isq::Method::Eigen, nullptr);
 
     const double budget = error_budget(condition);
     const char* verdict = "ok";
-    if (autorun.error > budget || band.error > budget || rational.error > budget) {
+    if (autorun.error > budget || band.error > budget) {
         verdict = "FAIL";
         ++failures;
     }
@@ -225,15 +224,13 @@ void run_case(const char* label, Family family, int n, int nrhs, int n_low, doub
     char route[80];
     std::snprintf(route, sizeof(route), "%s m=%d",
                   isq::method_name(autorun.stats.used_method),
-                  autorun.stats.used_method == isq::Method::TridiagonalRational
-                      ? autorun.stats.rational_poles
-                      : autorun.stats.krylov_blocks);
+                  autorun.stats.krylov_blocks);
     std::printf("%-8s %-10s n=%-5d b=%-3d low=%-4d kappa=%-8.0e | auto %7.3fs %8.1e %-30s"
-                " | band %7.3fs %8.1e p=%-3d | rational %7.3fs %8.1e | eigen %7.3fs %8.1e"
+                " | band %7.3fs %8.1e p=%-3d | eigen %7.3fs %8.1e"
                 " | speedup %5.2fx (band %4.2fx) %s\n",
                 label, family_name(family), n, nrhs, n_low, condition, autorun.seconds,
                 autorun.error, route, band.seconds, band.error, band.stats.rational_poles,
-                rational.seconds, rational.error, eigen.seconds, eigen.error,
+                eigen.seconds, eigen.error,
                 eigen.seconds / std::max(1.0e-9, autorun.seconds),
                 eigen.seconds / std::max(1.0e-9, band.seconds), verdict);
     std::fflush(stdout);

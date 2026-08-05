@@ -1,6 +1,8 @@
 #ifndef RSATB_CORE_RSATB_HPP
 #define RSATB_CORE_RSATB_HPP
 
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
@@ -105,13 +107,17 @@ public:
           MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
         init_comms();
+        begin_profile();
 
         const model::BasisSpec& basis = model.basis();
         RequireConsistentGraphPartition(graph);
-        atomic_data_ = std::make_unique<AtomicData>(
-            graph.n_atom, graph.N_atom, graph.atom_offset, graph.n_edge, graph.N_edge,
-            graph.atom_index, graph.atom_type, graph.edge_index, basis.type_norb.data(),
-            graph.edge_shift_vec, graph.cell, graph.pos, sub_comm_);
+        {
+            RSATB_PHASE("setup/atomic_graph");
+            atomic_data_ = std::make_unique<AtomicData>(
+                graph.n_atom, graph.N_atom, graph.atom_offset, graph.n_edge, graph.N_edge,
+                graph.atom_index, graph.atom_type, graph.edge_index, basis.type_norb.data(),
+                graph.edge_shift_vec, graph.cell, graph.pos, sub_comm_);
+        }
         RequireEveryRankOwnsAtoms();
         init_components();
 
@@ -138,13 +144,20 @@ public:
           MPI_Comm comm = MPI_COMM_WORLD)
         : world_comm_(comm), npar_(npar), verbose_(verbose) {
         init_comms();
+        // Before the graph is built, not after: the neighbour list and the
+        // distributed partition are setup work, and starting the clock in
+        // setup() below would leave them permanently outside the table.
+        begin_profile();
 
         const model::BasisSpec& basis = model.basis();
         basis.RequireCovers(structure.TypeSymbols(), model.name() + " setup");
 
-        atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(
-            structure.pos, structure.z, structure.cell, structure.pbc,
-            basis.cutoff_radius, basis.type_norb, sub_comm_));
+        {
+            RSATB_PHASE("setup/atomic_graph");
+            atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(
+                structure.pos, structure.z, structure.cell, structure.pbc,
+                basis.cutoff_radius, basis.type_norb, sub_comm_));
+        }
         RequireEveryRankOwnsAtoms();
         init_components();
 
@@ -153,6 +166,14 @@ public:
 
     /// Sets up the operators for a model against the existing atomic data.
     void setup(const model::Model& model, const model::SetupOptions& options = model::SetupOptions{}) {
+        // A standalone setup() starts its own clock; one reached through the
+        // constructor keeps the clock the constructor started, so the graph
+        // build stays in the same table as the operators built from it.
+        if (!profile_open_) begin_profile();
+        // Ctrl-C during setup lands at the next Newton-Schulz step; the seed
+        // itself finishes first, since its batch loop lives in vbcsr.
+        util::InterruptGuard interrupt_guard;
+
         const auto normalized_options = normalize_setup_options(options);
         operators_ = setup::BuildOperatorSet(
             *atomic_data_,
@@ -161,10 +182,29 @@ public:
             model,
             normalized_options,
             make_operator_runtime_context());
-        sampling_.initialize(*atomic_data_, normalized_options.nsamples);
+        {
+            RSATB_PHASE("setup/sample_vectors");
+            sampling_.initialize(*atomic_data_, normalized_options.nsamples);
+        }
         // Retained rather than re-derived: the real-space observables need the
         // radials themselves, and the model is not kept past setup.
         orbital_files_ = model.RealSpaceOrbitalFiles();
+
+        // Reported against wall time since the clock started, so the table shows
+        // what the named phases did not account for. An unattributed remainder
+        // is the thing worth chasing next, and hiding it would defeat the point.
+        util::Profile::report(0.0, world_comm_);
+        profile_open_ = false;
+    }
+
+    /// Rank of this process, or 0 when MPI is not initialised.
+    static int world_rank_of(MPI_Comm comm) {
+        int initialized = 0;
+        MPI_Initialized(&initialized);
+        if (!initialized || comm == MPI_COMM_NULL) return 0;
+        int rank = 0;
+        MPI_Comm_rank(comm, &rank);
+        return rank;
     }
 
     ~RSATB() {
@@ -290,6 +330,21 @@ public:
     }
 
 private:
+    /// Establishes the process-wide log state and starts the profile clock.
+    ///
+    /// This is the one place that knows both the verbosity and the rank. The
+    /// level is only derived from `verbose` when nothing has set it already, so
+    /// an explicit set_log_level() from the CLI is not overwritten by the
+    /// constructor's default `verbose=false`; until the bool is replaced by a
+    /// level throughout, `verbose=true` still means kDebug.
+    void begin_profile() {
+        util::Log::rank() = world_rank_of(world_comm_);
+        if (verbose_) util::Log::level() = util::LogLevel::kDebug;
+        util::Profile::enabled() = true;
+        util::Profile::reset();
+        profile_open_ = true;
+    }
+
     void init_comms() {
         int initialized = 0;
         MPI_Initialized(&initialized);
@@ -472,7 +527,10 @@ private:
     int sub_rank_, sub_size_;
     int npar_;
     bool verbose_;
-    
+    /// True between begin_profile() and the report that closes it, so a setup()
+    /// reached through a constructor does not restart a clock already running.
+    bool profile_open_ = false;
+
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<setup::OperatorSet> operators_;
     /// Radial orbital files of the model last set up, empty if it has none.

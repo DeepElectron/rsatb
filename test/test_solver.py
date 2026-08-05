@@ -31,7 +31,6 @@ model_runner = RSATB(
             tol=1e-7,
             sptol=1e-5,
             maxiter=10,
-            method="graph",
         ),
     ),
     npar=1,

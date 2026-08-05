@@ -259,7 +259,7 @@ TEST(MSDTest, CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap) {
     Chebyshev<Scalar> cheby(H, S, -1.0, 1.0);
     std::vector<double> msd;
     std::vector<double> energy;
-    corr_msd(cheby, X, sample, 3, 0.5, 64, msd, energy, false);
+    corr_msd(cheby, X, sample, 3, 0.5, 64, msd, energy);
 
     ASSERT_EQ(energy.size(), 64u);
     ASSERT_EQ(msd.size(), static_cast<size_t>(4 * 64));
@@ -291,7 +291,7 @@ TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
 
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, X, sample_a, 2, 0.4, 48, msd_single, energy_single, false);
+        corr_msd(cheby, X, sample_a, 2, 0.4, 48, msd_single, energy_single);
     }
 
     MultiVector samples(&graph, 2);
@@ -301,7 +301,7 @@ TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     std::vector<double> msd_mv;
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, X, samples, 2, 0.4, 48, msd_mv, energy_mv, false);
+        corr_msd(cheby, X, samples, 2, 0.4, 48, msd_mv, energy_mv);
     }
 
     ASSERT_EQ(msd_mv.size(), msd_single.size());
@@ -336,7 +336,7 @@ TEST(MSDTest, DiagonalExplicitPositionMultiVectorMatchesSingleVectorRun) {
 
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, diagonal_x, sample, 2, 0.4, 48, msd_single, energy_single, false);
+        corr_msd(cheby, diagonal_x, sample, 2, 0.4, 48, msd_single, energy_single);
     }
 
     MultiVector samples(&graph, 2);
@@ -345,7 +345,7 @@ TEST(MSDTest, DiagonalExplicitPositionMultiVectorMatchesSingleVectorRun) {
 
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, diagonal_x, samples, 2, 0.4, 48, msd_multi, energy_multi, false);
+        corr_msd(cheby, diagonal_x, samples, 2, 0.4, 48, msd_multi, energy_multi);
     }
 
     ASSERT_EQ(energy_single.size(), energy_multi.size());
@@ -384,7 +384,7 @@ TEST(MSDTest, GammaAffineRouteMatchesDenseReference) {
     const int n_steps = 2;
     const double dt_fs = 0.4;
     const int n_kpm = 48;
-    corr_msd(cheby, H1, diagonal_x, sample, n_steps, dt_fs, n_kpm, msd, energy, false);
+    corr_msd(cheby, H1, diagonal_x, sample, n_steps, dt_fs, n_kpm, msd, energy);
 
     const Dense2 h0_dense = {
         Scalar(-0.2, 0.0), Scalar(0.35, 0.0),
@@ -495,8 +495,7 @@ TEST(MSDTest, GammaAffineRepeatedSamplesInMultiVectorMatchSingleVectorRun) {
             dt_fs,
             n_kpm,
             msd_single,
-            energy_single,
-            false);
+            energy_single);
     }
 
     MultiVector samples(&graph, 2);
@@ -514,8 +513,7 @@ TEST(MSDTest, GammaAffineRepeatedSamplesInMultiVectorMatchSingleVectorRun) {
             dt_fs,
             n_kpm,
             msd_multi,
-            energy_multi,
-            false);
+            energy_multi);
     }
 
     ASSERT_EQ(energy_single.size(), energy_multi.size());

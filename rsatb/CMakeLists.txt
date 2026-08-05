@@ -77,7 +77,9 @@ if(BLAS_BACKEND STREQUAL "MKL")
     else()
         set(RSATB_USE_ILP64 OFF)
     endif()
-    add_compile_definitions(__MKL RSATB_USE_MKL VBCSR_USE_MKL)
+    # MKL always ships the grouped batch-GEMM API, which the SpGEMM numeric
+    # phase uses (vbcsr gates it on this define).
+    add_compile_definitions(__MKL RSATB_USE_MKL VBCSR_USE_MKL VBCSR_BLAS_HAS_BATCH_GEMM)
     if(DEFINED ENV{MKLROOT})
         include_directories($ENV{MKLROOT}/include)
     endif()
@@ -387,6 +389,27 @@ if(RSATB_BUILD_TESTS)
     add_executable(test_metric_sampler calc/test/test_metric_sampler.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_metric_sampler PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_metric_sampler PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
+    # Executable: benchmark_spgemm - the SpGEMM numeric phase cost breakdown
+    # on synthetic block matrices: full vs Hermitian-halved, batched vs
+    # per-pair, at sparse and dense block densities.
+    add_executable(benchmark_spgemm calc/test/benchmark_spgemm.cpp)
+    target_include_directories(benchmark_spgemm PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_spgemm PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: test_spmm_hermitian - the half-computed Hermitian product
+    # against the full one, on synthetic serial matrices. No integral engine.
+    add_executable(test_spmm_hermitian calc/test/test_spmm_hermitian.cpp)
+    target_include_directories(test_spmm_hermitian PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_spmm_hermitian PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: experiment_ns_variants - which congruence (Z^H S Z vs Z S Z)
+    # the Newton-Schulz refinement should iterate on, measured on the real
+    # diamond overlap. An experiment, not a test: it reports, it does not assert.
+    add_executable(experiment_ns_variants calc/test/experiment_ns_variants.cpp
+                   $<TARGET_OBJECTS:backend>)
+    target_include_directories(experiment_ns_variants PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(experiment_ns_variants PRIVATE ${RSATB_LINK_LIBS})
 
     # Executable: benchmark_isqrt_diamond - the thin inverse-square-root action
     # timed on the real diamond sc888 subgraph problems (needs the integral

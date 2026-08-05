@@ -2,7 +2,7 @@
 //
 // graph_inverse_sqrt builds one block row per atom from the dense subgraph of its
 // neighbourhood. The accelerated routes (Cholesky + inverse block Lanczos,
-// tridiagonal + sinc rational) must reproduce, to the requested tolerance, the
+// dense-to-band Zolotarev) must reproduce, to the requested tolerance, the
 // matrix the legacy per-subgraph diagonalization produces - on a real
 // BlockSpMat, for both scalar types, and including the S^{-1/2} S S^{-1/2} = I
 // check on the assembled result.
@@ -157,7 +157,7 @@ void run(const char* label, int n_blocks, int block_size, int radius, double dom
 
     struct Route { const char* env; const char* name; };
     const Route routes[] = {{"eigen", "eigen (legacy)"}, {"auto", "auto"}, {"band", "band"},
-                            {"rational", "rational"}, {"krylov", "krylov"}};
+                            {"krylov", "krylov"}};
 
     BlockSpMat<T> reference = S.duplicate(true);
     double reference_scale = 0.0;

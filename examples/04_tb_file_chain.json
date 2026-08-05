@@ -1,0 +1,31 @@
+{
+  "_comment": "TightBindingFileModel: an orthogonal H(R) read straight from a file. This is what a DeePTB Slater-Koster export produces -- H(R) already in an orthogonal basis, with no overlap and no parameters to evaluate. It is not LCAO (that needs orbital files and is non-orthogonal) and not SKTB (that computes H from parameters), so it is its own family. data/chain.h5 is a 1D chain with e0 = +0.5 eV and t = -1.0 eV, whose bands E(k) = e0 + 2t cos(ka) are known analytically: the Gamma-point level is e0 + 2t = -1.5 eV.",
+
+  "structure": {
+    "positions": [[0.0, 0.0, 0.0]],
+    "symbols": ["C"],
+    "cell": [[2.0, 0.0, 0.0], [0.0, 20.0, 0.0], [0.0, 0.0, 20.0]],
+    "pbc": [true, false, false]
+  },
+
+  "model": {
+    "_comment": "The one model that must be told its basis: the supported file formats carry no basis header, so orbital counts cannot be derived. The cutoff reaches one neighbour at 1.0 A, not two at 2.0 A -- an edge exists iff d <= r_i + r_j.",
+    "type": "tb_file",
+    "hamiltonian": {"path": "data/chain.h5", "format": "deeptb"},
+    "type_symbols": ["C"],
+    "type_norb": [1],
+    "cutoff_radius": [1.1]
+  },
+
+  "run": {
+    "nsamples": 1,
+    "kpoints": {"line": [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]], "points_per_segment": 11}
+  },
+
+  "tasks": [
+    {"type": "energy_bounds"},
+    {"type": "dos", "nt": 100}
+  ],
+
+  "output": {"dir": "results/04_tb_file_chain"}
+}

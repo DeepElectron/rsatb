@@ -1,0 +1,36 @@
+{
+  "_comment": "LCAO: a precomputed Hamiltonian plus the numerical atomic orbitals it was written in. The orbital files are required, not optional -- an LCAO basis is non-orthogonal and they are what the overlap is computed from. Adding the pseudopotentials additionally enables the velocity operator. Nothing about the basis is declared: the orbital count (13) and the graph cutoff (3.7042 A) are read from the .orb file. Uses the diamond test data; paths are relative to this file, so it runs from anywhere.",
+
+  "structure": {"file": "../test/data/diamond/diamond_sc111.vasp"},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../test/data/diamond/C2.0/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": ["C_gga_7au_100Ry_2s2p1d.orb"],
+      "dir": "../test/data/diamond"
+    },
+    "pseudopotentials": {
+      "names": ["C_ONCV_PBE-1.0.upf"],
+      "dir": "../test/data/diamond"
+    },
+    "spin": "none"
+  },
+
+  "run": {
+    "_comment": "A short path through the Brillouin zone. The preconditioner target defaults to 'auto', which picks 'overlap' here because the model is non-orthogonal; releasing S afterwards saves memory.",
+    "npar": 1,
+    "nsamples": 200,
+    "kpoints": {"line": [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0]], "points_per_segment": 11},
+    "preconditioner": {"release_overlap_after_build": true}
+  },
+
+  "tasks": [
+    {"type": "dos", "nt": 100}
+  ],
+
+  "output": {"dir": "results/02_lcao_diamond"}
+}

@@ -1,0 +1,32 @@
+{
+  "_comment": "DFTB: Slater-Koster tables read from a directory of .skf files, one per ordered species pair -- C-C.skf, C-H.skf, H-C.skf and so on. data/skf holds a small synthetic C-C.skf with smooth decaying integrals, so this runs with no downloads; for real work point skf_dir at a released set (mio-1-1, 3ob, ...) and expect different numbers.",
+
+  "structure": {
+    "_comment": "Diamond, two atoms.",
+    "positions": [[0.0, 0.0, 0.0], [0.89175, 0.89175, 0.89175]],
+    "symbols": ["C", "C"],
+    "cell": [[0.0, 1.7835, 1.7835], [1.7835, 0.0, 1.7835], [1.7835, 1.7835, 0.0]],
+    "pbc": [true, true, true]
+  },
+
+  "model": {
+    "_comment": "The basis is declared, not inferred: a .skf tabulates all ten channels up to d whether or not the parameterization uses them, and DFTB+ likewise takes the basis from its own input. DFTB data always carries both H and S, so the model is non-orthogonal -- which is why no velocity- or position-dependent task appears below.",
+    "type": "dftb",
+    "skf_dir": "data/skf",
+    "basis": {"C": ["s", "p"]},
+    "heteronuclear": "reject_ambiguous"
+  },
+
+  "run": {
+    "_comment": "A Gamma-centred 2x2x2 mesh. Observables return one row per k-point, in the order the mesh generates them.",
+    "nsamples": 32,
+    "kpoints": {"mesh": [2, 2, 2]}
+  },
+
+  "tasks": [
+    {"type": "energy_bounds"},
+    {"type": "dos", "nt": 200}
+  ],
+
+  "output": {"dir": "results/03_dftb_skf"}
+}

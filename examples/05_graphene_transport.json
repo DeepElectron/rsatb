@@ -1,0 +1,41 @@
+{
+  "_comment": "Several observables against one setup. Tasks run in order, so the DC conductivity spectrum and the mean-square displacement here cost one setup between them, not three. An orthogonal SKTB model supplies velocity and position for free, which is what makes those observables available. Scale the supercell and the moment counts up for a production run; these are sized to finish on a laptop.",
+
+  "structure": {
+    "positions": [[0.0, 0.0, 10.0], [0.0, 1.42, 10.0]],
+    "symbols": ["C", "C"],
+    "cell": [[2.4595, 0.0, 0.0], [1.22975, 2.13, 0.0], [0.0, 0.0, 20.0]],
+    "pbc": [true, true, false],
+    "supercell": [4, 4, 1]
+  },
+
+  "model": {
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {
+        "C-C": {
+          "_comment": "A cosine taper between r_on and r_cut, so the hopping reaches zero smoothly rather than being cut mid-value.",
+          "pp_pi": {"kind": "exp_poly", "coeffs": [-2.7], "lambda": 0.0,
+                    "r_on": 1.5, "r_cut": 1.7}
+        }
+      }
+    }
+  },
+
+  "run": {
+    "_comment": "MSD is defined from the Gamma-point wavepacket evolution, so the k-point set has to contain Gamma. Fixed bounds skip the PRIMME estimate, which on a large cell is usually the faster and more robust choice.",
+    "nsamples": 4,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "bounds": {"mode": "fixed", "energy": [-9.0, 9.0]}
+  },
+
+  "tasks": [
+    {"type": "dos", "nt": 256},
+    {"type": "dc_spectrum", "n_moments": 256, "kernel": "costaper"},
+    {"type": "msd", "n_steps": 40, "dt_fs": 10.0, "n_kpm": 256, "axis": "x"}
+  ],
+
+  "output": {"dir": "results/03_graphene_transport", "prefix": "graphene_"}
+}

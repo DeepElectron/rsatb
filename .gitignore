@@ -1,5 +1,9 @@
 test*.ipynb
-*.json
+# The rsatb input format IS JSON, so *.json must never be ignored wholesale:
+# it hid every examples/*.json and kept them out of both git and the wheel.
+# Ignore generated JSON outputs only.
+**/time.json
+.vscode/
 *.npy
 test/data/diamond/C2.0
 test/data/silicon/exported/*
@@ -25,7 +29,10 @@ benchmarks/*
 *log
 *.mtx
 *CMakeFiles/
-build*
+# Trailing slash matters: bare `build*` also matched source files whose names
+# merely start with "build" (rsatb/inputs/build.py, rsatb/operator/builders.hpp),
+# hiding them from git and excluding them from the wheel.
+build*/
 rsatb/test/data/**/out*/config_*.json
 bandstructure.npy
 run_config.json

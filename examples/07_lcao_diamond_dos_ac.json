@@ -1,0 +1,45 @@
+{
+  "_comment": "Diamond, 128-atom supercell, LCAO: density of states and AC conductivity from one setup. Both observables reuse the same S^-1/2 preconditioner and the same Chebyshev machinery, so asking for them together costs one setup instead of two. The pseudopotentials are what make the AC task legal: velocity is v = (i/hbar)[H, r] plus the non-local commutator, and without the .upf files the model reports velocity as unavailable rather than silently dropping the non-local term. A 4x4x4 supercell folds the Brillouin zone onto Gamma, which is why one k-point is enough here.",
+
+  "structure": {"file": "../test/data/diamond/diamond_sc444.vasp"},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../test/data/diamond/H_diamond_sc444.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": ["C_gga_7au_100Ry_2s2p1d.orb"],
+      "dir": "../test/data/diamond"
+    },
+    "pseudopotentials": {
+      "names": ["C_ONCV_PBE-1.0.upf"],
+      "dir": "../test/data/diamond"
+    },
+    "spin": "none"
+  },
+
+  "run": {
+    "_comment_conv": "The 2s2p1d basis puts core-like states near 250 eV, so the Chebyshev expansion spans ~280 eV. Energy resolution is that width divided by nt, which is why nt has to be large here: 400 moments would give only 0.7 eV and leave the valence structure unresolved. nsamples controls the stochastic-trace noise, which shows up as negative excursions in derived quantities like the absorption coefficient if it is too small.",
+    "npar": 1,
+    "nsamples": 128,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "preconditioner": {"release_overlap_after_build": true}
+  },
+
+  "tasks": [
+    {"type": "dos", "nt": 2000},
+    {
+      "_comment": "mu sits in the gap of this basis; 300 K is room temperature. nt sets the frequency resolution of sigma(omega) and n_kpm the sharpness of the Fermi occupation.",
+      "type": "ac",
+      "nt": 400,
+      "n_kpm": 1000,
+      "temp": 300.0,
+      "mu": 16.225300864,
+      "axis": "abc"
+    }
+  ],
+
+  "output": {"dir": "results/07_lcao_diamond_dos_ac"}
+}

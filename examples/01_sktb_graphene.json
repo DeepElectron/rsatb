@@ -1,0 +1,35 @@
+{
+  "_comment": "SKTB: the model IS the parameters, so this input needs no data files and runs as written. Graphene, one pz orbital per carbon, a single -2.7 eV pp_pi hopping out to 1.6 A (first neighbours only). Each carbon has three neighbours at 1.42 A, so the Gamma-point eigenvalues are +-3|t| = +-8.1 eV and the reported spectral window is that padded by 0.5 eV.",
+
+  "structure": {
+    "_comment": "The conventional two-atom basis. The second carbon sits at fractional (-1/3, 2/3) -- outside the cell -- which is fine: coordinates are used exactly as written and periodic images are expressed against them.",
+    "positions": [[0.0, 0.0, 10.0], [0.0, 1.42, 10.0]],
+    "symbols": ["C", "C"],
+    "cell": [[2.4595, 0.0, 0.0], [1.22975, 2.13, 0.0], [0.0, 0.0, 20.0]],
+    "pbc": [true, true, false]
+  },
+
+  "model": {
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {
+        "C-C": {"pp_pi": {"kind": "constant", "value": -2.7, "r_cut": 1.6}}
+      }
+    }
+  },
+
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": [[0.0, 0.0, 0.0]]
+  },
+
+  "tasks": [
+    {"type": "energy_bounds"},
+    {"type": "dos", "nt": 200}
+  ],
+
+  "output": {"dir": "results/01_sktb_graphene"}
+}

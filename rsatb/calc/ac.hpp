@@ -1,6 +1,9 @@
 #ifndef RSATB_CALC_AC_HPP
 #define RSATB_CALC_AC_HPP
 
+#include <algorithm>
+#include "utils/interrupt.hpp"
+#include "utils/profile.hpp"
 #include "cheby.hpp"
 #include "fermi_dirac.hpp"
 #include <vector>
@@ -131,13 +134,11 @@ void corr_ac(Chebyshev<T>& cheby,
              int n_kpm,
              double eps = 1e-14,
              std::vector<std::complex<double>>* cac = nullptr,
-             bool verbose = true,
              FermiExpansionOptions fermi_options = {}) {
 
     DistGraph* graph = Psi_in.graph;
     int rank = graph->rank;
 
-    fermi_options.verbose = fermi_options.verbose || verbose;
     if (n_kpm > 0) {
         // Legacy call style: a positive n_kpm pins the degree and asks for
         // the classic Jackson expansion.
@@ -258,7 +259,11 @@ void corr_ac(Chebyshev<T>& cheby,
 
     // 7. Time Propagation
     for (int it = 0; it < nt; ++it) {
-        if (rank == 0 && verbose) std::cout << "corr_ac calculation: " << it + 1 << " / " << nt << "\n";
+        ::rsatb::util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
+            ::rsatb::util::every_nth(it, std::max(1, nt / 20))) {
+            std::cout << "ac: step " << it + 1 << " / " << nt << "\n";
+        }
 
         // Propagate J_Psi (Right) - NORMAL
         for (int i = 0; i < 3; ++i) {

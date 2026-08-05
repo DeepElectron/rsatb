@@ -191,17 +191,36 @@ public:
         int ntype = ad.n_type();
         int nstart, nend;
         ad.get_vertex_range_local(&nstart, &nend);
-        
-        ModuleBase::Vector3<double> vR(0,0,0);
-        // #pragma omp parallel for
+
+        // An exception must not leave an OpenMP structured block, so a failing
+        // add_block (an R absent from the AtomicData edge set) is recorded here
+        // and rethrown once the region closes, as in BuildHamiltonianImagesFromFile.
+        std::string failure;
+        auto record_failure = [&failure](const std::string& message) {
+            #pragma omp critical(rsatb_op2c_engine_failure)
+            {
+                if (failure.empty()) failure = message;
+            }
+        };
+
+        // Parallel over atoms, as in BuildHamiltonianImagesFromFile. Everything
+        // op2c touches on this path is const (TwoCenterIntegrator::calculate ->
+        // TwoCenterTable::lookup, no mutable members), and BlockSpMat::add_block
+        // keeps per-thread remote buffers, so distinct rows never collide.
+        // vR is declared per iteration rather than hoisted: it is three doubles,
+        // so there is no buffer worth reusing, and sharing it was the data race
+        // that got this directive commented out in the first place.
+        #pragma omp parallel for
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
-            
+
+            const ModuleBase::Vector3<double> vR(0, 0, 0);
+
             int inorb;
             ad.get_atom_norb(i, &inorb);
             int itype;
             ad.get_atom_type(i, &itype);
-            
+
             // On-site
             std::vector<double> vS(inorb*inorb);
             
@@ -210,7 +229,11 @@ public:
             // Set blocks
             int global_i = ad.get_global_index(i);
             std::vector<int> R = {0, 0, 0};
-            img->add_block(R, global_i, global_i, vS.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+            try {
+                img->add_block(R, global_i, global_i, vS.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+            } catch (const std::exception& error) {
+                record_failure(error.what());
+            }
         }
         
         // Edges
@@ -218,8 +241,12 @@ public:
         ad.get_edge_range_local(&estart, &eend);
         const double* cell = ad.cell_ptr();
 
-        // #pragma omp parallel for
+        // Parallel over edges: each edge owns a distinct (i, j, R) block, so the
+        // ADD accumulations never target the same destination.
+        #pragma omp parallel for
         for(int ie=estart; ie<eend; ++ie) {
+            ModuleBase::Vector3<double> vR;
+
             int i, j;
             ad.get_connected_atoms(ie, &i, &j);
             int inorb, jnorb;
@@ -254,10 +281,16 @@ public:
                 int global_i = ad.get_global_index(i);
                 int global_j = ad.get_global_index(j);
                 std::vector<int> R = {Rx_, Ry_, Rz_};
-                img->add_block(R, global_i, global_j, vS.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+                try {
+                    img->add_block(R, global_i, global_j, vS.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+                } catch (const std::exception& error) {
+                    record_failure(error.what());
+                }
             }
         }
-        
+
+        if (!failure.empty()) throw std::runtime_error(failure);
+
         img->assemble();
         return img;
     }
@@ -283,6 +316,9 @@ public:
         int nend = 0;
         ad.get_vertex_range_local(&nstart, &nend);
 
+        // Every scratch value below is already declared inside the loop and each
+        // atom writes only its own row, so this parallelises without changes.
+        #pragma omp parallel for
         for (int i = nstart; i < nend; ++i) {
             if (ad.atom_is_ghost(i)) {
                 continue;
@@ -371,8 +407,20 @@ public:
         std::complex<double> IMAG_UNIT(0, 1);
         std::complex<double> erfactor = 27.211386245981 / 1.8897259886;
 
+        // As in build_overlap: an add_block failure cannot propagate out of the
+        // OpenMP region, so it is recorded and rethrown once the region closes.
+        std::string failure;
+        auto record_failure = [&failure](const std::string& message) {
+            #pragma omp critical(rsatb_op2c_engine_failure)
+            {
+                if (failure.empty()) failure = message;
+            }
+        };
+
         // 1. 2-body part (Overlap + Gradient)
-        // #pragma omp parallel for
+        // Safe to parallelise as written: vR and every scratch vector below are
+        // already declared inside the loop, and each atom writes its own row.
+        #pragma omp parallel for
         for(int i=nstart; i<nend; ++i) {
             if (ad.atom_is_ghost(i)) continue;
             
@@ -403,9 +451,13 @@ public:
             std::vector<int> R = {0, 0, 0};
             // op2c emits row-major; state it explicitly rather than relying on the
             // library's default layout argument.
-            img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb,
-                             AssemblyMode::ADD, MatrixLayout::RowMajor);
-            
+            try {
+                img_S->add_block(R, global_i, global_i, vS.data(), inorb, inorb,
+                                 AssemblyMode::ADD, MatrixLayout::RowMajor);
+            } catch (const std::exception& error) {
+                record_failure(error.what());
+            }
+
             if(Vx) op::AddLocalBlock(*Vx, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), IMAG_UNIT * erfactor);
             if(Vy) op::AddLocalBlock(*Vy, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), IMAG_UNIT * erfactor);
             if(Vz) op::AddLocalBlock(*Vz, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
@@ -441,8 +493,12 @@ public:
                 
                 int global_j = ad.get_global_index(j);
                 std::vector<int> R_vec = {Rx_, Ry_, Rz_};
-                img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb,
-                                 AssemblyMode::ADD, MatrixLayout::RowMajor);
+                try {
+                    img_S->add_block(R_vec, global_i, global_j, vS.data(), inorb, jnorb,
+                                     AssemblyMode::ADD, MatrixLayout::RowMajor);
+                } catch (const std::exception& error) {
+                    record_failure(error.what());
+                }
 
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);
@@ -452,7 +508,9 @@ public:
                 if(Vz) op::AddLocalBlock(*Vz, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), IMAG_UNIT * erfactor);
             }
         }
-        
+
+        if (!failure.empty()) throw std::runtime_error(failure);
+
         // 2. 3-body part (v_comm)
         if (Vx || Vy || Vz) {
             for(int k=nstart; k<nend; ++k) {

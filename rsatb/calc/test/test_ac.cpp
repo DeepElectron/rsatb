@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
     
     std::vector<std::complex<double>> cac((nt + 1) * 6);
     
-    corr_ac(cheby, Vx, Vy, Vz, psi_in, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, cac.data(), true);
+    corr_ac(cheby, Vx, Vy, Vz, psi_in, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, cac.data());
     
     if (rank == 0) {
         std::cout << "AC Correlation Results:" << std::endl;
@@ -86,7 +86,7 @@ int main(int argc, char** argv) {
     psi_mv.set_constant(1.0);
     
     std::vector<std::complex<double>> cac_mv((nt + 1) * 6);
-    corr_ac(cheby, Vx, Vy, Vz, psi_mv, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, cac_mv.data(), true);
+    corr_ac(cheby, Vx, Vy, Vz, psi_mv, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, cac_mv.data());
     
     if (rank == 0) {
         std::cout << "AC Correlation Results (Multivector):" << std::endl;

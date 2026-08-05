@@ -1,6 +1,7 @@
 #ifndef RSATB_CALC_SOLVER_HPP
 #define RSATB_CALC_SOLVER_HPP
 
+#include "utils/profile.hpp"
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
@@ -20,10 +21,21 @@ class LinearSolver {
 public:
     double tol;
     int max_iter;
-    bool verbose;
+    /// Per-solver debug opt-in, ORed with the process-wide level at each print.
+    /// A local flag rather than a write to the global: a constructor that
+    /// silently changed process-wide logging would be a side effect nobody
+    /// asked for, and one no later solver could undo.
+    bool debug;
 
     LinearSolver(double tolerance = 1e-8, int max_iterations = 1000, bool verbose_output = false)
-        : tol(tolerance), max_iter(max_iterations), verbose(verbose_output) {}
+        : tol(tolerance), max_iter(max_iterations), debug(verbose_output) {}
+
+private:
+    bool debug_enabled(util::LogLevel at) const {
+        return debug || util::Log::enabled(at);
+    }
+
+public:
 
     // Generic Solve for any MatrixType that supports mult_optimized and has graph member
     template <typename MatrixType>
@@ -43,8 +55,8 @@ public:
         T r_norm_sq = r.dot(r); // (r, r)
         double initial_error = std::sqrt(std::abs(r_norm_sq));
         
-        if (verbose && A.graph->rank == 0) {
-            std::cout << "CG Start: Initial Residual = " << initial_error << std::endl;
+        if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug)) {
+            std::cout << "cg: initial residual " << initial_error << "\n";
         }
         
         if (initial_error < tol) return;
@@ -59,7 +71,11 @@ public:
             T p_Ap = p.dot(Ap);
             
             if (std::abs(p_Ap) < 1e-16) {
-                if (verbose && A.graph->rank == 0) std::cout << "CG Breakdown: p_Ap too small" << std::endl;
+                // A breakdown is why the answer is wrong -- report it whatever
+                // the level says, on stderr.
+                if (A.graph->rank == 0 && ::rsatb::util::fault()) {
+                    std::cerr << "cg: breakdown, p_Ap too small\n";
+                }
                 break;
             }
             
@@ -74,12 +90,14 @@ public:
             T r_new_norm_sq = r.dot(r);
             
             double error = std::sqrt(std::abs(r_new_norm_sq));
-            if (verbose && A.graph->rank == 0 && (k % 10 == 0)) {
-                std::cout << "CG Iter " << k << ": Residual = " << error << std::endl;
+            if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug) &&
+                util::every_nth(k, 10)) {
+                std::cout << "cg: iter " << k << " residual " << error << "\n";
             }
             
             if (error < tol) {
-                if (verbose && A.graph->rank == 0) std::cout << "CG Converged in " << k+1 << " iterations." << std::endl;
+                if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kProgress))
+                    std::cout << "cg: converged in " << k + 1 << " iterations\n";
                 break;
             }
             
@@ -127,8 +145,8 @@ public:
             T rho = r.dot(z); // rho = r . z
             
             double initial_error = std::sqrt(std::abs(r.dot(r)));
-             if (verbose && A.graph->rank == 0) {
-                std::cout << "PCG Start: Initial Residual = " << initial_error << std::endl;
+             if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug)) {
+                std::cout << "pcg: initial residual " << initial_error << "\n";
             }
             
             if (initial_error < tol) return;
@@ -143,7 +161,9 @@ public:
                 T p_Ap = p.dot(Ap);
                 
                 if (std::abs(p_Ap) < 1e-16) {
-                    if (verbose && A.graph->rank == 0) std::cout << "PCG Breakdown: p_Ap too small" << std::endl;
+                    if (A.graph->rank == 0 && ::rsatb::util::fault()) {
+                        std::cerr << "pcg: breakdown, p_Ap too small\n";
+                    }
                     break;
                 }
                 
@@ -159,12 +179,14 @@ public:
                 T r_norm_sq = r.dot(r);
                 double error = std::sqrt(std::abs(r_norm_sq));
                 
-                if (verbose && A.graph->rank == 0 && (k % 10 == 0)) {
-                    std::cout << "PCG Iter " << k << ": Residual = " << error << std::endl;
+                if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug) &&
+                    util::every_nth(k, 10)) {
+                    std::cout << "pcg: iter " << k << " residual " << error << "\n";
                 }
                 
                 if (error < tol) {
-                    if (verbose && A.graph->rank == 0) std::cout << "PCG Converged in " << k+1 << " iterations." << std::endl;
+                    if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kProgress))
+                        std::cout << "pcg: converged in " << k + 1 << " iterations\n";
                     break;
                 }
                 
@@ -246,12 +268,14 @@ public:
             double max_err = 0.0;
             for(auto v : R_new_norm_sq) max_err = std::max(max_err, std::sqrt(std::abs(v)));
             
-            if (verbose && A.graph->rank == 0 && (k % 10 == 0)) {
-                std::cout << "Batched CG Iter " << k << ": Max Residual = " << max_err << std::endl;
+            if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug) &&
+                util::every_nth(k, 10)) {
+                std::cout << "cg-batched: iter " << k << " max residual " << max_err << "\n";
             }
             
             if (max_err < tol) {
-                if (verbose && A.graph->rank == 0) std::cout << "Batched CG Converged in " << k+1 << " iterations." << std::endl;
+                if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kProgress))
+                    std::cout << "cg-batched: converged in " << k + 1 << " iterations\n";
                 break;
             }
             
@@ -314,8 +338,8 @@ public:
             double initial_max_err = 0.0;
             for(auto v : R_norm_sq) initial_max_err = std::max(initial_max_err, std::sqrt(std::abs(v)));
             
-            if (verbose && A.graph->rank == 0) {
-                std::cout << "Batched PCG Start: Max Residual = " << initial_max_err << std::endl;
+            if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug)) {
+                std::cout << "pcg-batched: initial max residual " << initial_max_err << "\n";
             }
             
             if (initial_max_err < tol) return;
@@ -352,12 +376,14 @@ public:
                 double max_err = 0.0;
                 for(auto v : R_norm_sq) max_err = std::max(max_err, std::sqrt(std::abs(v)));
                 
-                if (verbose && A.graph->rank == 0 && (k % 10 == 0)) {
-                    std::cout << "Batched PCG Iter " << k << ": Max Residual = " << max_err << std::endl;
+                if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kDebug) &&
+                    util::every_nth(k, 10)) {
+                    std::cout << "pcg-batched: iter " << k << " max residual " << max_err << "\n";
                 }
                 
                 if (max_err < tol) {
-                    if (verbose && A.graph->rank == 0) std::cout << "Batched PCG Converged in " << k+1 << " iterations." << std::endl;
+                    if (A.graph->rank == 0 && debug_enabled(util::LogLevel::kProgress))
+                        std::cout << "pcg-batched: converged in " << k + 1 << " iterations\n";
                     break;
                 }
                 

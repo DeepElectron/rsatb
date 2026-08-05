@@ -159,6 +159,15 @@ def cmd_show(args) -> int:
 # --- run -------------------------------------------------------------------
 
 
+_RULE_WIDTH = 62
+
+
+def _rule(title: str) -> str:
+    """A thin section rule: -- title ------- . Decoration, kept quiet."""
+    head = "\u2500\u2500 {} ".format(title)
+    return head + "\u2500" * max(4, _RULE_WIDTH - len(head))
+
+
 def cmd_run(args) -> int:
     resolved, issues = _load(args.input, check_paths=True)
     if any(issue.is_error for issue in issues):
@@ -195,11 +204,28 @@ def cmd_run(args) -> int:
     if args.output_dir:
         resolved.setdefault("output", {})["dir"] = args.output_dir
 
-    for line in check_module.summarize(resolved):
-        log(line)
-    log("ranks         {}".format(n_rank))
+    # The flag beats the file: how loud a run is belongs to the person watching
+    # it, not to the input -- a "verbose": true left in a shared input makes
+    # every future run noisy (which is exactly how it was found). Writing into
+    # the resolved dict rather than a side channel keeps build_calculation the
+    # single reader of run.log_level.
+    cli_level = "debug" if args.verbose else args.log_level
+    if cli_level:
+        run_section = resolved.setdefault("run", {})
+        run_section["log_level"] = cli_level
+        run_section["verbose"] = False  # the file's shorthand must not out-shout the flag
+
+    import time as _time
+    t_start = _time.time()
+
+    log("rsatb {}".format(_version()))
     log("")
-    log("setting up...")
+    for line in check_module.summarize(resolved):
+        log("  " + line)
+    log("  ranks         {}".format(n_rank))
+    log("")
+    log(_rule("setup"))
+    # No blank line here: the C++ profile table opens with one.
 
     calculation, model, options = build.build_calculation(resolved)
 
@@ -220,18 +246,36 @@ def cmd_run(args) -> int:
     emin, emax = calculation.energy_bounds()
     setup["energy_bounds"] = [float(emin), float(emax)]
 
-    log("basis         {}".format(basis))
-    log("bounds        [{:.6f}, {:.6f}] eV".format(emin, emax))
+    log("")
+    species = "; ".join(
+        "{} \u00b7 {} orbitals \u00b7 cutoff {:.3f} \u00c5".format(symbol, norb, radius)
+        for symbol, norb, radius in zip(
+            basis.type_symbols, basis.type_norb, basis.cutoff_radius))
+    log("  basis         {}".format(species))
+    log("  bounds        [{:.6f}, {:.6f}] eV".format(emin, emax))
 
     task_list = resolved.get("tasks", [])
     if not task_list:
         log("\nno tasks: setup completed and the spectral window is reported above")
         return 0
 
-    log("\ncomputing {} task(s)...".format(len(task_list)))
-    results = task_module.run_tasks(calculation, task_list, options, log=log)
+    log("")
+    log(_rule("tasks"))
+    log("")
+    try:
+        results = task_module.run_tasks(calculation, task_list, options, log=log)
+    except KeyboardInterrupt:
+        # Raised from a step boundary inside the C++ loops (every rank throws
+        # together, so MPI state is clean). Results of the interrupted task
+        # are lost; completed tasks were not yet written, so nothing partial
+        # lands on disk to be mistaken for a finished run.
+        log("")
+        log("interrupted \u2014 nothing written")
+        return 130
 
     if rank == 0:
+        log("")
+        log(_rule("results"))
         log("")
         task_module.write_results(results, resolved, setup, base_dir, log=log)
         for result in results:
@@ -239,7 +283,8 @@ def cmd_run(args) -> int:
                 log("  {}: {}".format(result.label, ", ".join(
                     "{}={}".format(key, _short(value))
                     for key, value in result.scalars.items())))
-    log("\ndone")
+    log("")
+    log("done in {}".format(task_module.format_duration(_time.time() - t_start)))
     return 0
 
 
@@ -338,6 +383,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true",
                      help="validate and report what would run, then stop")
     run.add_argument("-o", "--output-dir", help="override output.dir")
+    run.add_argument("--log-level", choices=("silent", "summary", "progress", "debug"),
+                     help="override run.log_level from the input; verbosity is a "
+                          "property of this invocation, not of the calculation, "
+                          "which is why the flag wins over the file")
+    run.add_argument("-v", "--verbose", action="store_true",
+                     help="shorthand for --log-level debug")
     run.set_defaults(func=cmd_run)
 
     info = subparsers.add_parser("info", help="what this build supports")

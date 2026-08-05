@@ -12,6 +12,8 @@
 // write into the slice of a [global_nk][per_k] buffer, and reduce. The context
 // owns that reduction so the loop bodies stay about physics.
 
+#include "../utils/interrupt.hpp"
+#include "../utils/profile.hpp"
 #include "../setup/operator_assembly.hpp"
 #include "ac.hpp"
 #include "cheby.hpp"
@@ -224,6 +226,8 @@ inline const op::LatticeMomentAxis& SelectAxisData(
 }
 
 inline void ComputeDos(const ObservableContext& context, int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
+    RSATB_PHASE("task/dos");
+    util::InterruptGuard interrupt_guard;
         // Output size: global_nk * 2*nt
         auto& ops = context.RequireOperators();
         if (!ops.has_bounds()) {
@@ -247,9 +251,9 @@ inline void ComputeDos(const ObservableContext& context, int nt, std::vector<dou
             std::vector<std::complex<double>>* null_res = nullptr;
             
             if (context.samples->nsamples == 1) {
-                rsatb::calc::corr_dos(*cheby, *context.samples->sample_vec, nt, cdos, null_vec, null_res, context.verbose);
+                rsatb::calc::corr_dos(*cheby, *context.samples->sample_vec, nt, cdos, null_vec, null_res);
             } else {
-                rsatb::calc::corr_dos(*cheby, *context.samples->sample_multi_vec, nt, cdos, null_vec, null_res, context.verbose);
+                rsatb::calc::corr_dos(*cheby, *context.samples->sample_multi_vec, nt, cdos, null_vec, null_res);
             }
             
             // Transform per K-point
@@ -287,6 +291,8 @@ inline void ComputeDos(const ObservableContext& context, int nt, std::vector<dou
     }
 
 inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
+    RSATB_PHASE("task/ac");
+    util::InterruptGuard interrupt_guard;
         // Output size: global_nk * (nt+1) * 6
         auto& ops = context.RequireOperators();
         if (!ops.has_bounds()) {
@@ -319,9 +325,9 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
             std::vector<std::complex<double>> cac;
             
             if (context.samples->nsamples == 1) {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, context.verbose);
+                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             } else {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac, context.verbose);
+                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             }
 
             
@@ -374,6 +380,8 @@ inline void ComputeDcSpectrum(
         size_t max_workspace_mb = 0,
         std::string kernel = "jackson"
     ) {
+        RSATB_PHASE("task/dc_spectrum");
+        util::InterruptGuard interrupt_guard;
         auto& ops = context.RequireOperators();
         if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
@@ -408,7 +416,7 @@ inline void ComputeDcSpectrum(
             rsatb::calc::dc_spectrum_fftcheb(
                 *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
                 transport_prefactor, partition_sections, max_workspace_mb,
-                sigma_k, energy_k, context.verbose, parse_kpm_kernel(kernel)
+                sigma_k, energy_k, parse_kpm_kernel(kernel)
             );
 
             if (local_energy.empty()) {
@@ -447,6 +455,8 @@ inline void ComputeDc(
         size_t max_workspace_mb = 0,
         std::string kernel = "jackson"
     ) {
+        RSATB_PHASE("task/dc");
+        util::InterruptGuard interrupt_guard;
         std::vector<double> sigma_spectrum;
         std::vector<double> energy_out;
         ComputeDcSpectrum(context, n_moments, sigma_spectrum, energy_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
@@ -472,6 +482,8 @@ inline void ComputeMsdSpectrum(
         std::vector<double>& time_out,
         std::string axis = "x"
     ) {
+        RSATB_PHASE("task/msd");
+        util::InterruptGuard interrupt_guard;
         // MSD always uses the configured Gamma-point state. Once that state is
         // selected, the only remaining switch is which position representation
         // is valid for the requested axis.
@@ -522,8 +534,7 @@ inline void ComputeMsdSpectrum(
                         dt_fs,
                         n_kpm,
                         local_msd,
-                        local_energy,
-                        context.verbose);
+                        local_energy);
                     return;
                 }
 
@@ -547,8 +558,7 @@ inline void ComputeMsdSpectrum(
                         dt_fs,
                         n_kpm,
                         local_msd,
-                        local_energy,
-                        context.verbose);
+                        local_energy);
                     return;
                 }
 
@@ -567,8 +577,7 @@ inline void ComputeMsdSpectrum(
                     dt_fs,
                     n_kpm,
                     local_msd,
-                    local_energy,
-                    context.verbose);
+                    local_energy);
             };
 
             if (context.samples->nsamples == 1) {
@@ -612,6 +621,8 @@ inline void ComputeQuantumMetric(
         std::string axis = "abc",
         double omega_min_ev = 0.0
     ) {
+        RSATB_PHASE("task/quantum_metric");
+        util::InterruptGuard interrupt_guard;
         std::vector<double> ac_out;
         ComputeAc(context, nt, n_kpm, temp, mu, ac_out, omega_out, axis);
 
@@ -742,6 +753,8 @@ inline OccupationResult ComputeOccupation(const ObservableContext& context,
                                           double mu, double temp,
                                           double indicator_threshold = 1e-4,
                                           int n_max = 1 << 16) {
+    RSATB_PHASE("task/occupation");
+    util::InterruptGuard interrupt_guard;
     auto& ops = context.RequireOperators();
     if (!ops.has_bounds()) {
         throw std::runtime_error(
@@ -791,6 +804,8 @@ inline OccupationResult ComputeFermiLevel(
     const ObservableContext& context, double n_electrons_target, double temp,
     double indicator_threshold = 1e-4, int n_max = 1 << 16,
     double mu_guess = std::numeric_limits<double>::quiet_NaN()) {
+    RSATB_PHASE("task/fermi_level");
+    util::InterruptGuard interrupt_guard;
     auto& ops = context.RequireOperators();
     if (!ops.has_bounds()) {
         throw std::runtime_error(

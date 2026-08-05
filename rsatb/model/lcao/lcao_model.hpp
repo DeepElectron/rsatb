@@ -15,6 +15,7 @@
 // The basis itself is read from those same orbital files, so a caller never
 // supplies orbital counts or cutoff radii.
 
+#include "utils/profile.hpp"
 #include "op2c_engine.hpp"
 
 #include "../model.hpp"
@@ -117,11 +118,13 @@ public:
     }
 
     std::unique_ptr<ImageContainer> BuildHamiltonianImages(AtomicData& atomic_data) const override {
+        RSATB_PHASE("setup/hamiltonian_read");
         auto reader = io::OpenHamiltonianFile(config_.hamiltonian);
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }
 
     std::unique_ptr<ImageContainer> BuildOverlapImages(AtomicData& atomic_data) const override {
+        RSATB_PHASE("setup/overlap_build");
         return integrals_->build_overlap(atomic_data);
     }
 
