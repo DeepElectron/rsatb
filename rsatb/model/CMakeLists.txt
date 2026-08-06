@@ -2,6 +2,9 @@ cmake_minimum_required(VERSION 3.15...4.0)
 project(model LANGUAGES CXX Fortran C)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/../cmake")
+include(CheckCXXCompilerFlag)
+
+option(RSATB_ENABLE_X86_SIMD "Compile rsatb backend with explicit x86 AVX2/FMA flags when supported" OFF)
 
 if (PROJECT_IS_TOP_LEVEL)
     # Standalone build: the parent rsatb/CMakeLists.txt normally supplies this.
@@ -67,10 +70,20 @@ add_library(
 )
 set_target_properties(backend PROPERTIES LINKER_LANGUAGE CXX)
 target_compile_features(backend PUBLIC cxx_std_17)
-target_compile_options(backend PUBLIC -mavx2 -mfma)
+if(RSATB_ENABLE_X86_SIMD AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|i[3-6]86)$")
+    check_cxx_compiler_flag("-mavx2" RSATB_COMPILER_SUPPORTS_AVX2)
+    check_cxx_compiler_flag("-mfma" RSATB_COMPILER_SUPPORTS_FMA)
+    if(RSATB_COMPILER_SUPPORTS_AVX2 AND RSATB_COMPILER_SUPPORTS_FMA)
+        target_compile_options(backend PUBLIC -mavx2 -mfma)
+    else()
+        message(WARNING "RSATB_ENABLE_X86_SIMD=ON, but the compiler does not support both -mavx2 and -mfma; building without explicit SIMD flags.")
+    endif()
+endif()
 
 target_link_libraries(backend PUBLIC MPI::MPI_CXX Threads::Threads BLAS::BLAS LAPACK::LAPACK vbcsr)
-if(TARGET primme)
+if(TARGET PRIMME::PRIMME)
+    target_link_libraries(backend PUBLIC PRIMME::PRIMME)
+elseif(TARGET primme)
     target_link_libraries(backend PUBLIC primme)
 elseif(PRIMME_LIB)
     target_link_libraries(backend PUBLIC ${PRIMME_LIB})

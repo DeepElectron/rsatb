@@ -55,50 +55,44 @@ Native libraries (conda-forge names):
 
 ```bash
 conda install -c conda-forge \
-    parmetis metis fftw hdf5 libmatio pybind11 mpi4py
+    compilers cmake ninja openmpi mpi4py \
+    blas lapack fftw hdf5 libmatio metis parmetis primme
 ```
 
-`libmatio` is required by the bundled `op2c` (it links its rescumat `.mat`
-reader into `nao_core` unconditionally, even though rsatb does not use that
-format). Configuration fails with an explicit message if it is missing.
+Python build/runtime packages:
+
+```bash
+python -m pip install scikit-build-core pybind11 numpy scipy ase
+```
+
+`libmatio` is required by the bundled `op2c` because its rescumat `.mat`
+reader is compiled into `nao_core`. `hdf5` must include the C++ library
+(`libhdf5_cpp`). `primme`, `metis`, `parmetis`, `fftw`, MPI, and BLAS/LAPACK
+are native build/link dependencies, not optional Python packages.
 
 ### Compute Canada Instructions
-1. Load required modules:
+1. Load required modules, create or activate a virtual environment, then run:
    ```bash
-   module load python/3.11
-   module load scipy-stack
-   module load petsc
-   module load slepc
-   module load mpi4py
-   ```
-   *Note: `dbcsr` is not available as a module and will be built locally.*
-
-2. Create a virtual environment:
-   ```bash
-   virtualenv --no-download .venv
-   source .venv/bin/activate
+   bash scripts/install_alliance.sh
    ```
 
-3. Install dependencies and build:
-   ```bash
-   # Install build dependencies
-   pip install scikit-build-core pybind11 cmake ninja fypp
-
-   # Build external dependencies (DBCSR)
-   # This script detects if PETSc/SLEPc are loaded and skips them if so.
-   source scripts/install_deps.sh
-
-   # Install rsatb
-   pip install .
-   ```
+The script loads the Alliance module stack by default, verifies the native
+headers and shared libraries with a compile/run smoke test, installs Python
+dependencies into the active virtual environment, builds `rsatb`, then checks
+that the installed extension links to HDF5, HDF5 C++, MATIO, FFTW, MPI, METIS,
+ParMETIS, PRIMME, and BLAS/LAPACK. With the default MKL backend, FFTW API calls
+are provided consistently through MKL's FFTW interface rather than a separate
+`libfftw3`. Override module names with `RSATB_MODULES` or add site-specific
+modules with `RSATB_EXTRA_MODULES`.
 
 ### General Installation
-1. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+1. Install the native prerequisites listed above.
 2. Build and install:
    ```bash
-   source scripts/install_deps.sh
    pip install .
    ```
+
+CMake accepts `-DBLAS_BACKEND=Auto|MKL|OpenBLAS|Generic` and dependency roots
+such as `-DHDF5_ROOT=...`, `-DFFTW_ROOT=...`, `-DMETIS_ROOT=...`,
+`-DPARMETIS_ROOT=...`, `-DPRIMME_ROOT=...`, and `-DMATIO_ROOT=...` when the
+libraries are outside the compiler or module search path.

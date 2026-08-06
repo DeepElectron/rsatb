@@ -5,9 +5,8 @@ description = "A random state method for abinitio tight-binding calculations"
 readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
-    "numpy",
-    "scipy",
-    "matplotlib",
+    "numpy>=1.22",
+    "scipy>=1.8",
     "ase",
     "mpi4py"
 ]
@@ -16,7 +15,7 @@ dependencies = [
 rsatb = "rsatb.cli:main"
 
 [build-system]
-requires = ["scikit-build-core>=0.5", "pybind11>=2.10", "mpi4py", "fypp"]
+requires = ["scikit-build-core>=0.8", "pybind11>=2.10", "mpi4py"]
 build-backend = "scikit_build_core.build"
 
 [tool.scikit-build]
@@ -28,7 +27,7 @@ cmake.source-dir = "rsatb"
 cmake.build-type = "Release"
 cmake.args = [
     "-DUSE_OPENMP=ON",
-    "-DBLAS_BACKEND=MKL", # MKL, OpenBLAS or Generic
+    "-DBLAS_BACKEND=Auto", # Auto, MKL, OpenBLAS or Generic
 ]
 
 # Install the built extension module
@@ -41,7 +40,14 @@ build-dir = "build/{wheel_tag}"
 # Pass any CMake defines here if needed
 
 [project.optional-dependencies]
+plot = [
+    "matplotlib>=3.5",
+]
+examples = [
+    "matplotlib>=3.5",
+]
 dev = [
+    "matplotlib>=3.5",
     "pytest>=7.2.0",
     "pytest-order>=1.2.0",
 ]

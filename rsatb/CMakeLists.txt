@@ -15,10 +15,11 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 
 # --- Options ---
 option(USE_OPENMP "Use OpenMP" ON)
-set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (MKL, OpenBLAS, Generic)")
-set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "MKL" "OpenBLAS" "Generic")
+set(BLAS_BACKEND "Auto" CACHE STRING "BLAS Backend (Auto, MKL, OpenBLAS, Generic)")
+set_property(CACHE BLAS_BACKEND PROPERTY STRINGS "Auto" "MKL" "OpenBLAS" "Generic")
 option(USE_ILP64 "Use 64-bit integers for BLAS/LAPACK" OFF)
 option(RSATB_BUILD_TESTS "Build rsatb C++ test executables" ON)
+option(RSATB_ENABLE_X86_SIMD "Compile rsatb backend with explicit x86 AVX2/FMA flags when supported" OFF)
 
 # Location of the test data tree, baked into the test binaries (see
 # test_data_path.hpp). Overridable at runtime with the same-named env var.
@@ -28,6 +29,72 @@ add_compile_definitions(RSATB_TEST_DATA_DIR="${RSATB_TEST_DATA_DIR}")
 
 # --- Dependencies ---
 include(FetchContent)
+include(CMakeParseArguments)
+
+set(RSATB_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../deps/install"
+    CACHE PATH "Prefix containing rsatb-built native dependencies")
+list(APPEND CMAKE_PREFIX_PATH "${RSATB_DEPS_DIR}")
+
+function(rsatb_import_header_library target cache_prefix header)
+    set(options REQUIRED)
+    set(one_value_args)
+    set(multi_value_args LIB_NAMES ROOT_HINTS LINK_LIBRARIES)
+    cmake_parse_arguments(ARG "${options}" "${one_value_args}" "${multi_value_args}" ${ARGN})
+
+    if(TARGET ${target})
+        return()
+    endif()
+
+    set(_include_hints)
+    set(_library_hints)
+    foreach(_root IN LISTS ARG_ROOT_HINTS)
+        if(_root)
+            list(APPEND _include_hints "${_root}/include")
+            list(APPEND _library_hints "${_root}/lib" "${_root}/lib64")
+        endif()
+    endforeach()
+
+    find_path(${cache_prefix}_INCLUDE_DIR NAMES "${header}" HINTS ${_include_hints})
+    find_library(${cache_prefix}_LIBRARY NAMES ${ARG_LIB_NAMES} HINTS ${_library_hints})
+
+    if(NOT ${cache_prefix}_INCLUDE_DIR OR NOT ${cache_prefix}_LIBRARY)
+        if(ARG_REQUIRED)
+            message(FATAL_ERROR
+                "${cache_prefix} not found. Expected header ${header} and libraries ${ARG_LIB_NAMES}. "
+                "Set CMAKE_PREFIX_PATH or ${cache_prefix}_ROOT to a prefix containing include/ and lib/.")
+        endif()
+        return()
+    endif()
+
+    add_library(${target} UNKNOWN IMPORTED)
+    set_target_properties(${target} PROPERTIES
+        IMPORTED_LOCATION "${${cache_prefix}_LIBRARY}"
+        INTERFACE_INCLUDE_DIRECTORIES "${${cache_prefix}_INCLUDE_DIR}")
+    if(ARG_LINK_LIBRARIES)
+        set_target_properties(${target} PROPERTIES
+            INTERFACE_LINK_LIBRARIES "${ARG_LINK_LIBRARIES}")
+    endif()
+endfunction()
+
+function(rsatb_define_hdf5_target)
+    if(TARGET RSATB::HDF5)
+        return()
+    endif()
+
+    add_library(rsatb_hdf5 INTERFACE)
+    if(TARGET hdf5::hdf5 AND TARGET hdf5::hdf5_cpp)
+        target_link_libraries(rsatb_hdf5 INTERFACE hdf5::hdf5 hdf5::hdf5_cpp)
+    elseif(TARGET HDF5::HDF5)
+        target_link_libraries(rsatb_hdf5 INTERFACE HDF5::HDF5)
+    else()
+        target_include_directories(rsatb_hdf5 INTERFACE ${HDF5_INCLUDE_DIRS})
+        target_link_libraries(rsatb_hdf5 INTERFACE
+            ${HDF5_CXX_LIBRARIES}
+            ${HDF5_C_LIBRARIES}
+            ${HDF5_LIBRARIES})
+    endif()
+    add_library(RSATB::HDF5 ALIAS rsatb_hdf5)
+endfunction()
 
 # Set MPI_HOME to help FindMPI with Conda
 if(DEFINED CONDA_PREFIX)
@@ -43,6 +110,7 @@ find_package(Threads REQUIRED)
 
 # HDF5
 find_package(HDF5 REQUIRED COMPONENTS C CXX)
+rsatb_define_hdf5_target()
 
 # OpenMP
 if(USE_OPENMP)
@@ -50,6 +118,18 @@ if(USE_OPENMP)
 endif()
 
 # BLAS/LAPACK
+if(BLAS_BACKEND STREQUAL "Auto")
+    find_library(MKL_RT_LIB NAMES mkl_rt mkl_rt.2 mkl_rt.1
+                 HINTS $ENV{MKLROOT}/lib $ENV{MKLROOT}/lib/intel64 $ENV{CONDA_PREFIX}/lib)
+    if(MKL_RT_LIB)
+        message(STATUS "Auto-detected MKL SDL: ${MKL_RT_LIB}")
+        set(BLAS_BACKEND "MKL" CACHE STRING "BLAS Backend (Auto, MKL, OpenBLAS, Generic)" FORCE)
+    else()
+        message(STATUS "MKL SDL not found; using Generic BLAS/LAPACK")
+        set(BLAS_BACKEND "Generic" CACHE STRING "BLAS Backend (Auto, MKL, OpenBLAS, Generic)" FORCE)
+    endif()
+endif()
+
 if(BLAS_BACKEND STREQUAL "MKL")
     # Use mkl_rt (Single Dynamic Library) to avoid threading layer conflicts.
     # Individual MKL libs (mkl_gf_lp64 + mkl_gnu_thread) lock in GNU OpenMP,
@@ -103,13 +183,39 @@ configure_file(
 include_directories("${CMAKE_CURRENT_BINARY_DIR}")
 
 # FFTW
-find_package(FFTW REQUIRED)
 add_compile_definitions(__FFTW)
-if(NOT TARGET FFTW::FFTW)
-    add_library(FFTW::FFTW INTERFACE IMPORTED)
-    set_target_properties(FFTW::FFTW PROPERTIES
-        INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}" 
-        INTERFACE_LINK_LIBRARIES     "${FFTW_LIBRARIES}")
+if(BLAS_BACKEND STREQUAL "MKL")
+    find_path(RSATB_MKL_FFTW_INCLUDE_DIR
+        NAMES fftw3.h
+        HINTS $ENV{MKLROOT}/include/fftw $ENV{MKLROOT}/include
+        PATH_SUFFIXES fftw
+    )
+    if(NOT RSATB_MKL_FFTW_INCLUDE_DIR)
+        message(FATAL_ERROR "BLAS_BACKEND=MKL but MKL's FFTW interface header fftw3.h was not found. "
+                "Set MKLROOT correctly, or use BLAS_BACKEND=Generic with an external FFTW module.")
+    endif()
+    if(NOT TARGET FFTW::FFTW)
+        add_library(FFTW::FFTW INTERFACE IMPORTED)
+        set_target_properties(FFTW::FFTW PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${RSATB_MKL_FFTW_INCLUDE_DIR}"
+            INTERFACE_LINK_LIBRARIES     "${MKL_RT_LIB}")
+    endif()
+    set(FFTW_INCLUDE_DIRS "${RSATB_MKL_FFTW_INCLUDE_DIR}")
+    set(FFTW_LIBRARIES "${MKL_RT_LIB}")
+    message(STATUS "Using MKL FFTW interface: ${RSATB_MKL_FFTW_INCLUDE_DIR}; ${MKL_RT_LIB}")
+else()
+    find_package(FFTW REQUIRED COMPONENTS DOUBLE_LIB)
+    if(NOT FFTW_DOUBLE_LIB)
+        message(FATAL_ERROR "FFTW double-precision library libfftw3 was not found.")
+    endif()
+    if(NOT TARGET FFTW::FFTW)
+        add_library(FFTW::FFTW INTERFACE IMPORTED)
+        set_target_properties(FFTW::FFTW PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${FFTW_INCLUDE_DIRS}"
+            INTERFACE_LINK_LIBRARIES     "${FFTW_DOUBLE_LIB}")
+    endif()
+    set(FFTW_LIBRARIES "${FFTW_DOUBLE_LIB}")
+    message(STATUS "Using external FFTW double library: ${FFTW_DOUBLE_LIB}")
 endif()
 include_directories(${FFTW_INCLUDE_DIRS})
 
@@ -123,11 +229,26 @@ execute_process(
 execute_process(
   COMMAND ${Python3_EXECUTABLE} -c "import mpi4py, sys; sys.stdout.write(mpi4py.get_include())"
   OUTPUT_VARIABLE MPI4PY_INCLUDE_DIR
+  RESULT_VARIABLE MPI4PY_INCLUDE_RESULT
   OUTPUT_STRIP_TRAILING_WHITESPACE
 )
+if(NOT MPI4PY_INCLUDE_RESULT EQUAL 0 OR NOT MPI4PY_INCLUDE_DIR)
+    message(FATAL_ERROR
+        "mpi4py is required at build time to provide mpi4py/mpi4py.h. "
+        "Install mpi4py into ${Python3_EXECUTABLE}'s environment.")
+endif()
 message(STATUS "mpi4py include: ${MPI4PY_INCLUDE_DIR}")
 
 set(PYBIND11_FINDPYTHON ON)
+execute_process(
+  COMMAND ${Python3_EXECUTABLE} -c "import pybind11, sys; sys.stdout.write(pybind11.get_cmake_dir())"
+  OUTPUT_VARIABLE PYBIND11_CMAKE_DIR
+  RESULT_VARIABLE PYBIND11_CMAKE_DIR_RESULT
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+if(PYBIND11_CMAKE_DIR_RESULT EQUAL 0 AND PYBIND11_CMAKE_DIR)
+    list(APPEND CMAKE_PREFIX_PATH "${PYBIND11_CMAKE_DIR}")
+endif()
 find_package(pybind11 CONFIG REQUIRED)
 
 # --- Local / Fetched Dependencies ---
@@ -153,17 +274,19 @@ if(RSATB_BUILD_TESTS)
 endif()
 
 # 1. ParMETIS & METIS (Required System/Conda)
-find_library(PARMETIS_LIB parmetis HINTS ${CONDA_PREFIX}/lib)
-find_library(METIS_LIB metis HINTS ${CONDA_PREFIX}/lib)
-
-if(NOT PARMETIS_LIB OR NOT METIS_LIB)
-    message(FATAL_ERROR "ParMETIS or METIS not found! Please install them (e.g., 'conda install -c conda-forge parmetis metis') or set CMAKE_PREFIX_PATH.")
-endif()
+rsatb_import_header_library(METIS::METIS METIS metis.h
+    REQUIRED
+    LIB_NAMES metis
+    ROOT_HINTS "${METIS_ROOT}" "${CONDA_PREFIX}" "$ENV{METIS_ROOT}" "$ENV{EBROOTMETIS}" "${RSATB_DEPS_DIR}")
+rsatb_import_header_library(ParMETIS::ParMETIS PARMETIS parmetis.h
+    REQUIRED
+    LIB_NAMES parmetis
+    ROOT_HINTS "${PARMETIS_ROOT}" "${CONDA_PREFIX}" "$ENV{PARMETIS_ROOT}" "$ENV{EBROOTPARMETIS}" "${RSATB_DEPS_DIR}"
+    LINK_LIBRARIES METIS::METIS MPI::MPI_C)
+get_target_property(METIS_LIB METIS::METIS IMPORTED_LOCATION)
+get_target_property(PARMETIS_LIB ParMETIS::ParMETIS IMPORTED_LOCATION)
 
 # 2. DBCSR (Use existing sources in extern/, or fetch if missing)
-set(RSATB_DEPS_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../deps/install")
-list(APPEND CMAKE_PREFIX_PATH "${RSATB_DEPS_DIR}")
-
 # Disable git updates for FetchContent (faster rebuilds)
 set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 
@@ -198,8 +321,11 @@ set(FETCHCONTENT_UPDATES_DISCONNECTED ON)
 # endif()
 
 # 3. PRIMME (Use existing sources in extern/, or fetch if missing)
-find_library(PRIMME_LIB primme HINTS ${CONDA_PREFIX}/lib "${RSATB_DEPS_DIR}/lib")
-if(NOT PRIMME_LIB)
+rsatb_import_header_library(PRIMME::PRIMME PRIMME primme.h
+    LIB_NAMES primme
+    ROOT_HINTS "${PRIMME_ROOT}" "${CONDA_PREFIX}" "$ENV{PRIMME_ROOT}" "$ENV{EBROOTPRIMME}" "${RSATB_DEPS_DIR}"
+    LINK_LIBRARIES "LAPACK::LAPACK;BLAS::BLAS")
+if(NOT TARGET PRIMME::PRIMME)
     set(PRIMME_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/primme")
     
     if(EXISTS "${PRIMME_SOURCE_DIR}/include/primme.h")
@@ -227,9 +353,14 @@ if(NOT PRIMME_LIB)
         target_link_libraries(primme PRIVATE BLAS::BLAS LAPACK::LAPACK)
         target_compile_definitions(primme PRIVATE F77UNDERSCORE)
     endif()
-    set(PRIMME_LIB primme)
+    if(NOT TARGET PRIMME::PRIMME)
+        add_library(PRIMME::PRIMME ALIAS primme)
+    endif()
+    set(PRIMME_LIB PRIMME::PRIMME)
 else()
-    message(STATUS "PRIMME library found: ${PRIMME_LIB}")
+    get_target_property(PRIMME_LIBRARY PRIMME::PRIMME IMPORTED_LOCATION)
+    set(PRIMME_LIB PRIMME::PRIMME)
+    message(STATUS "PRIMME library found: ${PRIMME_LIBRARY}")
 endif()
 
 # 4. VBCSR (Use existing sources in extern/, or fetch if missing)
@@ -269,15 +400,12 @@ endif()
 # unconditionally and links MATIO::MATIO PUBLIC, so it is a build dependency of
 # rsatb too. Check it here: op2c's own FATAL_ERROR points users at the rescupp
 # environment, which is misleading in an rsatb build.
-find_path(RSATB_MATIO_INCLUDE_DIR NAMES matio.h HINTS ${CONDA_PREFIX}/include)
-find_library(RSATB_MATIO_LIBRARY NAMES matio HINTS ${CONDA_PREFIX}/lib)
-if(NOT RSATB_MATIO_INCLUDE_DIR OR NOT RSATB_MATIO_LIBRARY)
-    message(FATAL_ERROR
-        "libmatio not found, but it is required to build the bundled op2c.\n"
-        "  conda:           conda install -c conda-forge libmatio\n"
-        "  Compute Canada:  module load matio   (or build it into your venv)\n"
-        "Searched CONDA_PREFIX=${CONDA_PREFIX}.")
-endif()
+rsatb_import_header_library(MATIO::MATIO MATIO matio.h
+    REQUIRED
+    LIB_NAMES matio
+    ROOT_HINTS "${MATIO_ROOT}" "${CONDA_PREFIX}" "$ENV{MATIO_ROOT}" "$ENV{EBROOTMATIO}" "${RSATB_DEPS_DIR}")
+set(RSATB_MATIO_INCLUDE_DIR "${MATIO_INCLUDE_DIR}" CACHE PATH "libmatio include directory" FORCE)
+set(RSATB_MATIO_LIBRARY "${MATIO_LIBRARY}" CACHE FILEPATH "libmatio library" FORCE)
 message(STATUS "Found libmatio (required by op2c): ${RSATB_MATIO_LIBRARY}")
 
 set(OP2C_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/extern/op2c")
@@ -316,12 +444,13 @@ set(RSATB_LINK_LIBS
     nao_utils
     MPI::MPI_CXX
     # DBCSR::dbcsr_c
-    HDF5::HDF5
+    RSATB::HDF5
     FFTW::FFTW
     LAPACK::LAPACK
-    ${PRIMME_LIB}
-    ${PARMETIS_LIB}
-    ${METIS_LIB}
+    BLAS::BLAS
+    PRIMME::PRIMME
+    ParMETIS::ParMETIS
+    METIS::METIS
 )
 
 if(USE_OPENMP)
