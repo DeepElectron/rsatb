@@ -213,7 +213,7 @@ void run_explicit_position_msd(
 
         if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
             if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
-                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << "\n";
+                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
         }
 
         apply_position(psi_curr, xpsi_curr);
@@ -273,7 +273,7 @@ void run_gamma_affine_msd(
 
         if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
             if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
-                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << "\n";
+                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
         }
 
         // The affine branch stores U(t)X|psi> as a(t) + R b(t). In the commutator

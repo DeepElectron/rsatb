@@ -325,10 +325,23 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         ++count;
     }
 
+    // Say what actually happened. A run that plateaus against the sptol
+    // floor used to report "converged" -- on a 145k-orbital moire system that
+    // dressed a 2e-5 stall (target 1e-7) as success at the end of 25 minutes
+    // of iteration, one of which the plateau exit spent confirming the stall.
+    const bool hit_tol = norm <= tol;
+    const bool hit_maxiter = count >= maxit;
     if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
-        std::cout << "inverse_sqrt: converged at maxabs residual " << norm << ", density "
+        std::cout << "inverse_sqrt: " << (hit_tol ? "converged" : (hit_maxiter ? "stopped at maxiter" : "plateaued"))
+                  << " at maxabs residual " << norm << ", density "
                   << S_inv_sqrt->get_block_density() << " (" << count << " Newton-Schulz steps, "
-                  << (MPI_Wtime() - t_ns0) << "s)\n";
+                  << (MPI_Wtime() - t_ns0) << "s)" << std::endl;
+    }
+    if (!hit_tol && rank == 0 && util::Log::enabled(util::LogLevel::kSummary)) {
+        std::cout << "inverse_sqrt: NOTE tol " << tol << " was not reached (stopped at "
+                  << norm << "). The iteration cannot converge much below sptol ("
+                  << sptol << "); either raise tol to match or lower sptol."
+                  << std::endl;
     }
 }
 

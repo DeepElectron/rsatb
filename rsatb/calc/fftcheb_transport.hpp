@@ -374,7 +374,7 @@ void accumulate_fftcheb_block(
 
         if (rank == 0 && n_sections > 1 &&
             ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
-            std::cout << "fftcheb section " << (section + 1) << " / " << n_sections << "\n";
+            std::cout << "fftcheb section " << (section + 1) << " / " << n_sections << std::endl;
         }
 
         // we can allocate it once and reuse.

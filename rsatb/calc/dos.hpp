@@ -79,7 +79,7 @@ void corr_dos(Chebyshev<T>& cheby,
         ::rsatb::util::throw_if_interrupted(graph->comm);
         if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
             if (::rsatb::util::every_nth(it, std::max(1, nt / 20)))
-                std::cout << "dos: step " << it + 1 << " / " << nt << "\n";
+                std::cout << "dos: step " << it + 1 << " / " << nt << std::endl;
         }
 
         // Propagate: psi_out = e^{-i H dt} psi_curr
@@ -173,7 +173,7 @@ void corr_dos(Chebyshev<T>& cheby,
         ::rsatb::util::throw_if_interrupted(graph->comm);
         if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
             if (::rsatb::util::every_nth(it, std::max(1, nt / 20)))
-                std::cout << "dos: step " << it + 1 << " / " << nt << "\n";
+                std::cout << "dos: step " << it + 1 << " / " << nt << std::endl;
         }
 
         cheby.propagate(psi_curr, psi_out, coeffs, ChebyMode::NORMAL);

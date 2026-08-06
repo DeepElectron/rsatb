@@ -141,8 +141,14 @@ def format_duration(seconds: float) -> str:
     return "{}m {:02d}s".format(minutes, secs)
 
 
-def run_tasks(calc, tasks: List[dict], options, log=None) -> List[Result]:
-    """Runs every task against one setup, in the order given."""
+def run_tasks(calc, tasks: List[dict], options, log=None, on_task_done=None) -> List[Result]:
+    """Runs every task against one setup, in the order given.
+
+    on_task_done(result), when given, is called after each task completes.
+    The CLI uses it to write that task's arrays immediately: a cluster time
+    limit during task N must not cost tasks 1..N-1 -- hours of finished
+    physics were once lost exactly that way.
+    """
     results: List[Result] = []
     for index, task in enumerate(tasks):
         kind = task["type"]
@@ -156,6 +162,8 @@ def run_tasks(calc, tasks: List[dict], options, log=None) -> List[Result]:
         if log:
             log("        \u2713 {}".format(format_duration(result.seconds)))
         results.append(result)
+        if on_task_done is not None:
+            on_task_done(result)
 
     # The whole-run table: the setup phases printed earlier plus what the tasks
     # spent, so the cost of a run can be read off one place. Per-task wall time
@@ -178,37 +186,61 @@ def _report_profile():
 # --- writing ---------------------------------------------------------------
 
 
-def write_results(results: List[Result], resolved: dict, setup: dict,
-                  base_dir: str, log=None) -> str:
-    """Writes every result and the summary, and returns the summary's path.
+def resolve_output_dir(resolved: dict, base_dir: str) -> str:
+    directory = resolved.get("output", {}).get("dir", ".")
+    if not os.path.isabs(directory):
+        directory = os.path.join(base_dir, directory)
+    return directory
 
-    Only rank 0 should call this.
+
+def write_single_result(result: Result, resolved: dict, base_dir: str, log=None) -> None:
+    """Writes one task's arrays now. Called as each task finishes, so a
+    scheduler killing the job mid-run costs only the task in flight.
+
+    Only rank 0 should call this. Idempotent with write_results below, which
+    skips results already on disk.
     """
     import numpy as np
 
     output = resolved.get("output", {})
-    directory = output.get("dir", ".")
-    if not os.path.isabs(directory):
-        directory = os.path.join(base_dir, directory)
+    fmt = output.get("format", "npz")
+    if not result.arrays or fmt == "none":
+        return
+    directory = resolve_output_dir(resolved, base_dir)
     os.makedirs(directory, exist_ok=True)
     prefix = output.get("prefix", "")
-    fmt = output.get("format", "npz")
+
+    if fmt == "npz":
+        path = os.path.join(directory, "{}{}.npz".format(prefix, result.label))
+        np.savez_compressed(path, **{name: np.asarray(value)
+                                     for name, value in result.arrays.items()})
+    else:
+        path = os.path.join(directory, "{}{}.json".format(prefix, result.label))
+        with open(path, "w") as handle:
+            json.dump({name: np.asarray(value).tolist()
+                       for name, value in result.arrays.items()}, handle)
+    result.file = os.path.relpath(path, directory)
+    if log:
+        log("  wrote {}".format(_readable(path, base_dir)))
+
+
+def write_results(results: List[Result], resolved: dict, setup: dict,
+                  base_dir: str, log=None) -> str:
+    """Writes every result not already written, and the summary.
+
+    Only rank 0 should call this. Results with .file set were written
+    incrementally by write_single_result and are not rewritten.
+    """
+    import numpy as np
+
+    output = resolved.get("output", {})
+    directory = resolve_output_dir(resolved, base_dir)
+    os.makedirs(directory, exist_ok=True)
+    prefix = output.get("prefix", "")
 
     for result in results:
-        if not result.arrays or fmt == "none":
-            continue
-        if fmt == "npz":
-            path = os.path.join(directory, "{}{}.npz".format(prefix, result.label))
-            np.savez_compressed(path, **{name: np.asarray(value)
-                                         for name, value in result.arrays.items()})
-        else:
-            path = os.path.join(directory, "{}{}.json".format(prefix, result.label))
-            with open(path, "w") as handle:
-                json.dump({name: np.asarray(value).tolist()
-                           for name, value in result.arrays.items()}, handle)
-        result.file = os.path.relpath(path, directory)
-        if log:
-            log("  wrote {}".format(_readable(path, base_dir)))
+        if not result.file:
+            write_single_result(result, resolved, base_dir, log=log)
 
     summary_path = ""
     if output.get("summary", True):

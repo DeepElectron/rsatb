@@ -262,15 +262,22 @@ def cmd_run(args) -> int:
     log("")
     log(_rule("tasks"))
     log("")
+    def write_now(result):
+        # Each task's arrays hit disk the moment it finishes: a scheduler
+        # time limit during a later task must not cost the finished ones.
+        if rank == 0:
+            task_module.write_single_result(result, resolved, base_dir, log=log)
+
     try:
-        results = task_module.run_tasks(calculation, task_list, options, log=log)
+        results = task_module.run_tasks(calculation, task_list, options, log=log,
+                                        on_task_done=write_now)
     except KeyboardInterrupt:
         # Raised from a step boundary inside the C++ loops (every rank throws
         # together, so MPI state is clean). Results of the interrupted task
         # are lost; completed tasks were not yet written, so nothing partial
         # lands on disk to be mistaken for a finished run.
         log("")
-        log("interrupted \u2014 nothing written")
+        log("interrupted \u2014 completed tasks are on disk, the one in flight is lost")
         return 130
 
     if rank == 0:

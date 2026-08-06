@@ -262,7 +262,7 @@ void corr_ac(Chebyshev<T>& cheby,
         ::rsatb::util::throw_if_interrupted(graph->comm);
         if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
             ::rsatb::util::every_nth(it, std::max(1, nt / 20))) {
-            std::cout << "ac: step " << it + 1 << " / " << nt << "\n";
+            std::cout << "ac: step " << it + 1 << " / " << nt << std::endl;
         }
 
         // Propagate J_Psi (Right) - NORMAL

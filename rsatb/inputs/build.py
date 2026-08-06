@@ -276,11 +276,15 @@ def build_calculation(resolved: dict):
     options = build_options(resolved.get("run", {}), model)
     structure = build_structure(resolved["structure"])
     run = resolved.get("run", {})
-    # log_level is the real control; verbose is the pre-log_level spelling of
-    # "debug" and still wins when it is set, so old inputs keep their behaviour.
-    # (The CLI's --log-level clears run.verbose before this point, which is how
-    # a flag on the command line beats a "verbose": true left in the file.)
-    level = "debug" if run.get("verbose", False) else run.get("log_level", "summary")
+    # Precedence: an explicit log_level wins; verbose (the pre-log_level
+    # spelling of "debug") only upgrades the default. A file carrying both
+    # "verbose": true and "log_level": "progress" used to run at debug --
+    # exactly the surprise a cluster user hit -- so the more specific key now
+    # rules. (The CLI's --log-level clears run.verbose before this point, so
+    # the flag beats both.)
+    level = run.get("log_level", "summary")
+    if level == "summary" and run.get("verbose", False):
+        level = "debug"
     import rsatb  # ensures rsatb/build is on sys.path for the extension
     import _rsatb
     _rsatb.set_log_level(level)
