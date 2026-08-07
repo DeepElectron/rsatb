@@ -400,10 +400,30 @@ endif()
 # unconditionally and links MATIO::MATIO PUBLIC, so it is a build dependency of
 # rsatb too. Check it here: op2c's own FATAL_ERROR points users at the rescupp
 # environment, which is misleading in an rsatb build.
-rsatb_import_header_library(MATIO::MATIO MATIO matio.h
-    REQUIRED
-    LIB_NAMES matio
-    ROOT_HINTS "${MATIO_ROOT}" "${CONDA_PREFIX}" "$ENV{MATIO_ROOT}" "$ENV{EBROOTMATIO}" "${RSATB_DEPS_DIR}")
+#
+# Do not create MATIO::MATIO here: op2c owns that imported target and creates it
+# in its subdirectory. Defining it twice makes CMake configuration fail. We only
+# locate/cache the paths early so the error message points at rsatb and op2c can
+# reuse the same MATIO_INCLUDE_DIR / MATIO_LIBRARY values.
+set(_RSATB_MATIO_INCLUDE_HINTS)
+set(_RSATB_MATIO_LIBRARY_HINTS)
+foreach(_root IN ITEMS "${MATIO_ROOT}" "${CONDA_PREFIX}" "$ENV{MATIO_ROOT}" "$ENV{EBROOTMATIO}" "${RSATB_DEPS_DIR}")
+    if(_root)
+        list(APPEND _RSATB_MATIO_INCLUDE_HINTS "${_root}/include")
+        list(APPEND _RSATB_MATIO_LIBRARY_HINTS "${_root}/lib" "${_root}/lib64")
+    endif()
+endforeach()
+find_path(MATIO_INCLUDE_DIR NAMES matio.h HINTS ${_RSATB_MATIO_INCLUDE_HINTS})
+find_library(MATIO_LIBRARY NAMES matio HINTS ${_RSATB_MATIO_LIBRARY_HINTS})
+if(NOT MATIO_INCLUDE_DIR OR NOT MATIO_LIBRARY)
+    message(FATAL_ERROR
+        "libmatio not found, but it is required to build the bundled op2c.\n"
+        "  conda:           conda install -c conda-forge libmatio\n"
+        "  Compute Canada:  module load matio   (or build it into your venv)\n"
+        "Set CMAKE_PREFIX_PATH or MATIO_ROOT to a prefix containing include/ and lib/.")
+endif()
+set(MATIO_INCLUDE_DIR "${MATIO_INCLUDE_DIR}" CACHE PATH "libmatio include directory" FORCE)
+set(MATIO_LIBRARY "${MATIO_LIBRARY}" CACHE FILEPATH "libmatio library" FORCE)
 set(RSATB_MATIO_INCLUDE_DIR "${MATIO_INCLUDE_DIR}" CACHE PATH "libmatio include directory" FORCE)
 set(RSATB_MATIO_LIBRARY "${MATIO_LIBRARY}" CACHE FILEPATH "libmatio library" FORCE)
 message(STATUS "Found libmatio (required by op2c): ${RSATB_MATIO_LIBRARY}")
