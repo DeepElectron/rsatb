@@ -1,0 +1,341 @@
+#ifndef RSATB_CALC_RS_LDOS_HPP
+#define RSATB_CALC_RS_LDOS_HPP
+
+// Full-cell LDOS map on the real-space grid, by square-root-filtered
+// stochastic states (doc/design_stochastic_ldos.md; route 5.3b).
+//
+//     rho(r, E) = sum_n |psi_n(r)|^2 delta_eta(E - eps_n)
+//               = E[ |phi(r)^T chi_E|^2 ],      chi_E = F_E(S^-1 H) c0,
+//
+// with F_E = delta_eta^{1/2}(E - .) -- a Gaussian of width sqrt(2) eta -- and
+// c0 drawn with covariance E[c0 c0^H] = S^{-1} by the metric sampler. The
+// identity behind it: for A = S^-1 H with S-orthonormal eigenvectors C,
+// F(A) S^-1 F(A)^H = C F^2 C^H = A(E), the energy-resolved density matrix.
+// Estimating a NORM rather than a bilinear form makes every sample map
+// non-negative pointwise -- no Jackson kernel needed for positivity, so the
+// full sqrt(2) of resolution is kept (design 3.4).
+//
+// The cost structure is what makes full-cell maps affordable:
+//   - ONE Chebyshev sweep serves every energy: the energy dependence lives in
+//     scalar coefficients, so an extra energy point is one AXPY per step
+//     (design 5.1). M ~ a/eta matvecs per sample block, total independent of
+//     the energy count.
+//   - The grid stage squares each filtered block onto the boxes this rank
+//     owns (SquareVectorsOntoBoxes): no n_orb x n_orb object is ever formed,
+//     and the output is the compact per-rank buffer of the grid partition.
+//   - Everything distributed is O(N/P): the demand-built orbital set, its
+//     one-alltoallv coefficient halo (GatherSetRows), the recursion vectors,
+//     and the map itself.
+//
+// Sampling error is the price of the full-cell scope, and it is the honest
+// trade: relative error ~ 1/sqrt(n_samples per resolution volume), it
+// averages down with samples the user controls, and the estimator is
+// positive so the noise can never produce a negative LDOS. For a noise-free
+// answer on a small system (validation), complete_basis sweeps the whole
+// identity instead of random draws and the estimator becomes exact up to the
+// filter truncation and the sampler certificate.
+
+#include "cheby.hpp"
+#include "collocation.hpp"
+#include "kpm.hpp"
+#include "metric_sampler.hpp"
+#include "preconditioner.hpp"
+#include "real_space_grid.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <random>
+#include <stdexcept>
+#include <utility>
+#include <vector>
+
+#include <mpi.h>
+
+namespace rsatb {
+namespace calc {
+
+struct RealSpaceLdosOptions {
+    std::vector<double> energies;  ///< Evaluation energies, eV, absolute.
+    double eta = 0.1;              ///< Gaussian broadening, eV.
+    double emin = 0.0;             ///< Lower bound of the (H, S) pencil, eV.
+    double emax = 0.0;             ///< Upper bound, eV. Required: emax > emin.
+    double bound_pad = 0.01;       ///< Fractional pad on the fitted interval.
+    double spacing = 0.4;          ///< Grid spacing, Angstrom.
+    int box_edge = 0;              ///< Grid box edge; 0 = physical default.
+    int n_samples = 64;            ///< Random states in the estimator.
+    int block = 16;                ///< States per Chebyshev sweep (SpMM width).
+    double coeff_eps = 1e-8;       ///< Filter truncation eps_M (design 3.3).
+    unsigned long seed = 12345;    ///< RNG seed; per-rank streams derive from it.
+    bool complete_basis = false;   ///< Sweep the whole basis instead of
+                                   ///< sampling: the estimator becomes exact.
+                                   ///< Validation mode -- it holds an O(N_atom)
+                                   ///< index on every rank and costs N states.
+    bool certify_sampler = true;   ///< Spend one extra propagation pair on the
+                                   ///< deterministic sampler bias certificate.
+    MetricSamplerOptions sampler;  ///< Options of the S^{-1}-covariance sampler.
+};
+
+struct RealSpaceLdosResult {
+    RealSpaceGrid grid;
+    GridDomain domain;                       ///< This rank's boxes.
+    std::vector<std::vector<double>> ldos;   ///< [energy][owned point], states/eV/A^3.
+    int filter_degree = 0;                   ///< Chebyshev terms per sweep.
+    int n_states = 0;                        ///< States actually swept.
+    double sampler_residual = -1.0;          ///< ||W q(W)^2 xi - xi||/||xi||, or -1.
+};
+
+namespace detail {
+
+/// Chebyshev tables of the sqrt-Gaussian filter, one per energy, all of one
+/// degree M (design eqs. 3.3-3.5). The physical normalization
+/// (2 pi eta^2)^{-1/4} is folded in, so accumulating with these coefficients
+/// yields chi in eV^{-1/2} and |chi|^2 in the 1/eV the LDOS needs.
+inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
+    const std::vector<double>& energies, double eta, double center, double half,
+    double eps) {
+    const int m = static_cast<int>(std::ceil((half / eta) * std::sqrt(std::log(1.0 / eps)))) + 8;
+    const double norm = std::pow(2.0 * M_PI * eta * eta, -0.25);
+    std::vector<std::vector<std::complex<double>>> tables;
+    tables.reserve(energies.size());
+    for (const double energy : energies) {
+        const double e_bar = (energy - center) / half;
+        const double eta_bar = eta / half;
+        auto table = chebyshev_coefficients_from_function(
+            m,
+            [e_bar, eta_bar](double x) {
+                const double d = (e_bar - x) / (2.0 * eta_bar);
+                return std::exp(-d * d);
+            },
+            KpmKernel::None, /*trunc_eps=*/0.0);
+        for (auto& c : table) c *= norm;
+        tables.push_back(std::move(table));
+    }
+    return tables;
+}
+
+}  // namespace detail
+
+/// Computes the LDOS map on this rank's share of the grid.
+///
+/// Args:
+///   atomic_data: Distributed geometry; also fixes cell and boundary conditions.
+///   H, S: The pencil, in the matrix distribution of `atomic_data`'s graph.
+///   Zt: Approximate S^{-1/2} factor (isqrtm). Quality sets iteration counts
+///     -- the sampler degree and the CG preconditioning -- never the answer.
+///   tree: The inertial cut the atoms were partitioned by; classifies boxes.
+///   collocation: Orbital evaluators, one per atom type, same files as H/S.
+///   opt: See RealSpaceLdosOptions. energies, eta, emin/emax are required.
+///   comm: The communicator H, S and atomic_data live on.
+inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomic_data,
+                                                vbcsr::BlockSpMat<double>& H,
+                                                vbcsr::BlockSpMat<double>& S,
+                                                vbcsr::BlockSpMat<double>& Zt,
+                                                const vbcsr::atomic::InertialCut& tree,
+                                                const OrbitalCollocation& collocation,
+                                                const RealSpaceLdosOptions& opt,
+                                                MPI_Comm comm) {
+    using vbcsr::DistGraph;
+    using vbcsr::DistMultiVector;
+    using vbcsr::DistVector;
+
+    if (opt.energies.empty()) {
+        throw std::runtime_error("Real-space LDOS needs at least one energy.");
+    }
+    if (!(opt.eta > 0.0)) {
+        throw std::runtime_error("Real-space LDOS needs a positive broadening eta.");
+    }
+    if (!(opt.emax > opt.emin)) {
+        throw std::runtime_error(
+            "Real-space LDOS needs spectral bounds emin < emax of the (H, S) pencil.");
+    }
+    if (opt.block < 1 || (!opt.complete_basis && opt.n_samples < 1)) {
+        throw std::runtime_error("Real-space LDOS needs at least one sample and block >= 1.");
+    }
+
+    int rank = 0, size = 1;
+    if (comm != MPI_COMM_NULL) {
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_size(comm, &size);
+    }
+
+    std::vector<double> type_rcut(collocation.n_type());
+    for (int t = 0; t < collocation.n_type(); ++t) type_rcut[t] = collocation.rcut_angstrom(t);
+
+    RealSpaceLdosResult result;
+    result.grid = MakeRealSpaceGrid(atomic_data.cell, opt.spacing, opt.box_edge);
+    result.domain = MakeGridDomain(result.grid,
+                                   OwnedBoxesFromAtoms(result.grid, tree, rank));
+
+    OrbitalSetExchangePlan plan;
+    const OrbitalSet set = BuildOrbitalSetFromDemands(atomic_data, result.grid, tree,
+                                                      type_rcut, rank, comm, &plan);
+
+    // Scaled interval of the pencil, padded so the filter never samples the
+    // polynomial outside its fitted range.
+    const double pad = opt.bound_pad * (opt.emax - opt.emin);
+    const double lo = opt.emin - pad, hi = opt.emax + pad;
+    const double center = 0.5 * (hi + lo), half = 0.5 * (hi - lo);
+    const auto tables =
+        detail::SqrtGaussianTables(opt.energies, opt.eta, center, half, opt.coeff_eps);
+    const int degree = static_cast<int>(tables.front().size());
+    result.filter_degree = degree;
+
+    MetricSampler<double> sampler(S, Zt, opt.sampler);
+    ISQRTMPreconditioner<double> precond(Zt, kBorrowFactor);
+    Chebyshev<double> cheb(H, S, precond, PreconditionerType::Symmetric, lo, hi);
+
+    DistGraph* graph = S.graph;
+    const int n_energy = static_cast<int>(opt.energies.size());
+    const int n_total = opt.complete_basis ? graph->global_scalar_rows() : opt.n_samples;
+    result.n_states = n_total;
+    result.ldos.assign(n_energy, std::vector<double>(result.domain.n_point(), 0.0));
+
+    std::mt19937_64 gen(opt.seed + 977 * static_cast<unsigned long>(rank));
+    std::bernoulli_distribution coin(0.5);
+
+    // The complete-basis sweep enumerates the basis gid-major: basis vector s
+    // lives on the atom g whose orbital range covers s. The enumeration is
+    // this function's own, not the library's row ordering, so each rank only
+    // needs the offsets of the atoms it OWNS in it -- derived from one
+    // allgather of (gid, norb). O(N_atom) on every rank, which is exactly why
+    // this mode is documented as validation-only.
+    std::vector<std::pair<int64_t, int>> basis_of_owned;  // (offset, local atom)
+    std::vector<int> local_row_offset(atomic_data.n_atom + 1, 0);
+    for (int a = 0; a < atomic_data.n_atom; ++a) {
+        local_row_offset[a + 1] =
+            local_row_offset[a] + atomic_data.type_norb[atomic_data.atom_type[a]];
+    }
+    if (opt.complete_basis) {
+        std::vector<int> mine;
+        mine.reserve(2 * static_cast<size_t>(atomic_data.n_atom));
+        for (int a = 0; a < atomic_data.n_atom; ++a) {
+            mine.push_back(atomic_data.get_global_index(a));
+            mine.push_back(local_row_offset[a + 1] - local_row_offset[a]);
+        }
+        std::vector<int> all = mine;
+        if (comm != MPI_COMM_NULL && size > 1) {
+            const int local_count = static_cast<int>(mine.size());
+            std::vector<int> counts(size, 0);
+            MPI_Allgather(&local_count, 1, MPI_INT, counts.data(), 1, MPI_INT, comm);
+            std::vector<int> displs(size + 1, 0);
+            for (int r = 0; r < size; ++r) displs[r + 1] = displs[r] + counts[r];
+            all.assign(displs[size], 0);
+            MPI_Allgatherv(mine.data(), local_count, MPI_INT, all.data(), counts.data(),
+                           displs.data(), MPI_INT, comm);
+        }
+        const size_t n_atom_global = all.size() / 2;
+        std::vector<int64_t> prefix(n_atom_global + 1, 0);
+        {
+            std::vector<int> norb_of(n_atom_global, 0);
+            for (size_t i = 0; i < n_atom_global; ++i) {
+                norb_of[static_cast<size_t>(all[2 * i])] = all[2 * i + 1];
+            }
+            for (size_t g = 0; g < n_atom_global; ++g) prefix[g + 1] = prefix[g] + norb_of[g];
+        }
+        if (prefix.back() != graph->global_scalar_rows()) {
+            throw std::runtime_error(
+                "complete_basis enumeration disagrees with the matrix size; the atom global "
+                "indices are not the dense 0..N_atom-1 this mode assumes.");
+        }
+        basis_of_owned.reserve(atomic_data.n_atom);
+        for (int a = 0; a < atomic_data.n_atom; ++a) {
+            basis_of_owned.emplace_back(prefix[atomic_data.get_global_index(a)], a);
+        }
+        std::sort(basis_of_owned.begin(), basis_of_owned.end());
+    }
+
+    if (opt.certify_sampler) {
+        DistVector<double> xi(graph);
+        for (int i = 0; i < xi.local_size; ++i) xi[i] = coin(gen) ? 1.0 : -1.0;
+        result.sampler_residual = sampler.Residual(xi);
+    }
+
+    std::unique_ptr<DistMultiVector<double>> xi, c0, v0, v1, v2;
+    std::vector<std::unique_ptr<DistMultiVector<double>>> accum(n_energy);
+    std::vector<double> coeffs, values;
+
+    for (int start = 0; start < n_total; start += opt.block) {
+        const int blk = std::min(opt.block, n_total - start);
+        auto need = [&](std::unique_ptr<DistMultiVector<double>>& mv) {
+            if (!mv || mv->num_vectors != blk) {
+                mv = std::make_unique<DistMultiVector<double>>(graph, blk);
+            }
+        };
+        need(xi); need(c0); need(v0); need(v1); need(v2);
+        for (auto& a : accum) need(a);
+
+        xi->scale(0.0);
+        if (opt.complete_basis) {
+            // Columns start .. start+blk of the identity, each set by the one
+            // rank owning the atom the basis vector lives on.
+            for (int v = 0; v < blk; ++v) {
+                const int64_t s = start + v;
+                auto it = std::upper_bound(
+                    basis_of_owned.begin(), basis_of_owned.end(),
+                    std::make_pair(s, std::numeric_limits<int>::max()));
+                if (it == basis_of_owned.begin()) continue;
+                const int64_t off = (it - 1)->first;
+                const int a = (it - 1)->second;
+                const int norb = local_row_offset[a + 1] - local_row_offset[a];
+                if (s < off + norb) {
+                    (*xi)(local_row_offset[a] + static_cast<int>(s - off), v) = 1.0;
+                }
+            }
+        } else {
+            for (int row = 0; row < xi->local_rows; ++row) {
+                double* r = xi->row_data(row);
+                for (int v = 0; v < blk; ++v) r[v] = coin(gen) ? 1.0 : -1.0;
+            }
+        }
+        sampler.Sample(*xi, *c0);
+
+        // One sweep, all energies: X_k = sum_m N c_m(E_k) T_m(Op) c0.
+        v0->copy_from(*c0);
+        for (int k = 0; k < n_energy; ++k) {
+            accum[k]->copy_from(*v0);
+            accum[k]->scale(CoeffCast<double>::apply(tables[k][0]));
+        }
+        if (degree > 1) {
+            cheb.apply_op(*v0, *v1);
+            for (int k = 0; k < n_energy; ++k) {
+                accum[k]->axpy(CoeffCast<double>::apply(tables[k][1]), *v1);
+            }
+        }
+        for (int m = 2; m < degree; ++m) {
+            cheb.apply_op(*v1, *v2);
+            v2->axpby(-1.0, *v0, 2.0);
+            for (int k = 0; k < n_energy; ++k) {
+                accum[k]->axpy(CoeffCast<double>::apply(tables[k][m]), *v2);
+            }
+            v0->swap(*v1);
+            v1->swap(*v2);
+        }
+
+        // Grid stage: halo the filtered block onto the set's numbering, square
+        // it onto the owned boxes, fold into the running estimate. The mean
+        // SquareVectorsOntoBoxes takes over this block is reweighted so the
+        // final map is the mean over all states (or the exact sum for the
+        // complete basis, whose estimator has no 1/n).
+        const double weight =
+            opt.complete_basis ? static_cast<double>(blk)
+                               : static_cast<double>(blk) / static_cast<double>(n_total);
+        for (int k = 0; k < n_energy; ++k) {
+            GatherSetRows(atomic_data, *accum[k], set, plan, comm, &coeffs);
+            collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk, result.grid,
+                                               result.domain, &values);
+            double* out = result.ldos[k].data();
+            for (int64_t p = 0; p < result.domain.n_point(); ++p) {
+                out[p] += weight * values[p];
+            }
+        }
+    }
+    return result;
+}
+
+}  // namespace calc
+}  // namespace rsatb
+
+#endif  // RSATB_CALC_RS_LDOS_HPP

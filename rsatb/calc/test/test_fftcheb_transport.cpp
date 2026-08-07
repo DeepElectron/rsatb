@@ -396,6 +396,60 @@ std::vector<double> run_fftcheb(
     return sigma;
 }
 
+std::vector<double> run_qe(
+    ToyProblem& problem,
+    int n_moments,
+    const std::vector<Vector>& samples,
+    const std::vector<int>& nodes = {},
+    KpmKernel kernel = KpmKernel::Jackson
+) {
+    std::vector<double> sigma;
+    std::vector<double> energy;
+
+    MultiVector sample_mv(&problem.graph, static_cast<int>(samples.size()));
+    for (int i = 0; i < static_cast<int>(samples.size()); ++i) {
+        sample_mv.set_col(i, samples[i]);
+    }
+
+    if (problem.S) {
+        Chebyshev<Scalar> cheby(problem.H, *problem.S, -1.0, 1.0);
+        dc_spectrum_qe(
+            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            1.0, sigma, energy, kernel, nodes
+        );
+    } else {
+        Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
+        dc_spectrum_qe(
+            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            1.0, sigma, energy, kernel, nodes
+        );
+    }
+
+    return sigma;
+}
+
+std::vector<double> run_fftcheb_kernel(
+    ToyProblem& problem,
+    int n_moments,
+    const std::vector<Vector>& samples,
+    KpmKernel kernel
+) {
+    std::vector<double> sigma;
+    std::vector<double> energy;
+
+    MultiVector sample_mv(&problem.graph, static_cast<int>(samples.size()));
+    for (int i = 0; i < static_cast<int>(samples.size()); ++i) {
+        sample_mv.set_col(i, samples[i]);
+    }
+
+    Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
+    dc_spectrum_fftcheb(
+        cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+        DCFormulation::Greenwood, 1.0, 1, 0, sigma, energy, kernel
+    );
+    return sigma;
+}
+
 std::vector<double> run_reference(
     ToyProblem& problem,
     int n_moments,
@@ -536,6 +590,68 @@ TEST(FFTChebTransportTest, PartitionedMatchesUnpartitionedAndMultivectorAverage)
     expect_close(averaged, batched, 1e-8);
 }
 
+TEST(FFTChebTransportTest, QeMatchesFftchebGreenwoodOrthogonal) {
+    // Same bilinear form, different contraction layout: full-node qe must
+    // reproduce the fftcheb Greenwood spectrum to rounding.
+    require_single_rank();
+    ToyProblem problem = make_greenwood_problem(MPI_COMM_WORLD, false);
+    const int n_moments = 12;
+    const std::vector<Vector> samples = {problem.sample_a};
+
+    const auto fftcheb = run_fftcheb(problem, n_moments, DCFormulation::Greenwood, samples, 1);
+    const auto qe = run_qe(problem, n_moments, samples);
+
+    expect_close(fftcheb, qe, 1e-10);
+}
+
+TEST(FFTChebTransportTest, QeMatchesFftchebGreenwoodNonOrthogonal) {
+    require_single_rank();
+    ToyProblem problem = make_greenwood_problem(MPI_COMM_WORLD, true);
+    const int n_moments = 10;
+    const std::vector<Vector> samples = {problem.sample_a, problem.sample_b};
+
+    const auto fftcheb = run_fftcheb(problem, n_moments, DCFormulation::Greenwood, samples, 1);
+    const auto qe = run_qe(problem, n_moments, samples);
+
+    expect_close(fftcheb, qe, 1e-10);
+}
+
+TEST(FFTChebTransportTest, QeMatchesFftchebUnderCosTaperKernel) {
+    // The kernel weights flow through kpm_kernel_weights in both routes;
+    // a non-Jackson kernel must preserve the contraction identity.
+    require_single_rank();
+    ToyProblem problem = make_greenwood_problem(MPI_COMM_WORLD, false);
+    const int n_moments = 12;
+    const std::vector<Vector> samples = {problem.sample_a};
+
+    const auto fftcheb = run_fftcheb_kernel(problem, n_moments, samples, KpmKernel::CosTaper);
+    const auto qe = run_qe(problem, n_moments, samples, {}, KpmKernel::CosTaper);
+
+    expect_close(fftcheb, qe, 1e-10);
+}
+
+TEST(FFTChebTransportTest, QeWindowMatchesFullGridOnItsNodes) {
+    // A node window computes exactly the windowed rows and leaves the rest
+    // zero -- the memory-saving mode ComputeDc uses.
+    require_single_rank();
+    ToyProblem problem = make_greenwood_problem(MPI_COMM_WORLD, false);
+    const int n_moments = 12;
+    const std::vector<Vector> samples = {problem.sample_a};
+    const std::vector<int> window = {3, 4, 5, 8};
+
+    const auto full = run_qe(problem, n_moments, samples);
+    const auto windowed = run_qe(problem, n_moments, samples, window);
+
+    for (int k = 0; k < n_moments; ++k) {
+        const bool inside = std::find(window.begin(), window.end(), k) != window.end();
+        for (int comp = 0; comp < 6; ++comp) {
+            const double expected = inside ? full[static_cast<size_t>(k) * 6 + comp] : 0.0;
+            EXPECT_NEAR(windowed[static_cast<size_t>(k) * 6 + comp], expected, 1e-12)
+                << "node " << k << " comp " << comp;
+        }
+    }
+}
+
 TEST(FFTChebTransportTest, GreenwoodMultisampleMatchesAverageNonOrthogonal) {
     require_single_rank();
     ToyProblem problem = make_greenwood_problem(MPI_COMM_WORLD, true);
@@ -581,6 +697,11 @@ TEST(FFTChebTransportTest, DistributedGreenwoodMatchesMomentReferenceTwoRanks) {
     const auto reference = run_reference(problem, n_moments, DCFormulation::Greenwood, problem.sample_a);
 
     expect_close(fftcheb, reference, 1e-8);
+
+    // The qe layout's distributed surface (local partial dots + one
+    // Allreduce) must agree with fftcheb across ranks too.
+    const auto qe = run_qe(problem, n_moments, samples);
+    expect_close(fftcheb, qe, 1e-10);
 }
 
 TEST(FFTChebTransportTest, DistributedBastinMatchesReferenceAndPartitioningTwoRanks) {

@@ -610,6 +610,49 @@ PYBIND11_MODULE(_rsatb, m) {
          }, py::arg("dE"), py::arg("method") = "kpm")
         .def("cell", &rsatb::RSATB::cell)
         .def("energy_bounds", &rsatb::RSATB::energy_bounds)
+        .def("compute_rs_ldos", [](rsatb::RSATB& self, std::vector<double> energies, double eta,
+                                   double spacing, int box_edge, int n_samples, int block,
+                                   unsigned long seed) {
+             rsatb::calc::RealSpaceLdosOptions opt;
+             opt.energies = std::move(energies);
+             opt.eta = eta;
+             opt.spacing = spacing;
+             opt.box_edge = box_edge;
+             opt.n_samples = n_samples;
+             opt.block = block;
+             opt.seed = seed;
+             const auto res = self.compute_rs_ldos(std::move(opt));
+
+             // This rank's compact share: global point indices plus values.
+             // No rank holds the whole map by design; the serial case simply
+             // owns everything.
+             const int64_t n_owned = res.domain.n_point();
+             py::array_t<int64_t> index(n_owned);
+             auto* index_ptr = index.mutable_data();
+             for (int64_t p = 0; p < n_owned; ++p) {
+                 index_ptr[p] = rsatb::calc::GlobalIndexOfOwnedPoint(res.grid, res.domain, p);
+             }
+             const size_t n_energy = res.ldos.size();
+             py::array_t<double> values({static_cast<py::ssize_t>(n_energy),
+                                         static_cast<py::ssize_t>(n_owned)});
+             auto* values_ptr = values.mutable_data();
+             for (size_t k = 0; k < n_energy; ++k) {
+                 std::copy(res.ldos[k].begin(), res.ldos[k].end(),
+                           values_ptr + k * static_cast<size_t>(n_owned));
+             }
+             py::dict out;
+             out["shape"] = py::make_tuple(res.grid.shape[0], res.grid.shape[1],
+                                           res.grid.shape[2]);
+             out["n_point"] = res.grid.n_point();
+             out["point_index"] = index;
+             out["ldos"] = values;
+             out["filter_degree"] = res.filter_degree;
+             out["n_states"] = res.n_states;
+             out["sampler_residual"] = res.sampler_residual;
+             return out;
+         }, py::arg("energies"), py::arg("eta"), py::arg("spacing") = 0.4,
+            py::arg("box_edge") = 0, py::arg("n_samples") = 64, py::arg("block") = 16,
+            py::arg("seed") = 12345)
         .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis, std::string method, int block) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;

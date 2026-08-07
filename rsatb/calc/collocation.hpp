@@ -38,6 +38,7 @@
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/detail/kernels/lapack_api.hpp"
+#include "vbcsr/core/dist_multivector.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -46,6 +47,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <mpi.h>
@@ -53,11 +55,63 @@
 namespace rsatb {
 namespace calc {
 
+namespace detail {
+
+/// Drops rows of Phi that are identically zero, in place.
+///
+/// A box is a cube; orbital support is a union of spheres. Points outside
+/// every active cutoff get exactly 0.0 from the evaluator -- not a small
+/// number, the exact value -- so removing them changes no result at all
+/// while shrinking the GEMM that follows. This is rescu++'s pass-1 trim
+/// (orbital_grid.cpp, "threshold 0 drops [rows] ... EXACTLY zero"); its
+/// optional >0 ONETEP-style variant is approximate and deliberately not
+/// taken here.
+///
+/// The saving is geometry-dependent and honest about it: near zero for a
+/// box deep inside a dense solid, where every point is covered, and large
+/// at a surface, in vacuum, or wherever the active atoms only clip a
+/// corner of the box. It is never a cost beyond the scan itself.
+///
+/// Returns the kept row count; `kept[q]` is the original row of output q.
+inline int TrimZeroRows(int n_point, int n_orb, std::vector<double>* phi,
+                        std::vector<int>* kept) {
+    kept->clear();
+    kept->reserve(n_point);
+    double* data = phi->data();
+    int n_kept = 0;
+    for (int p = 0; p < n_point; ++p) {
+        const double* row = data + static_cast<size_t>(p) * n_orb;
+        bool nonzero = false;
+        for (int i = 0; i < n_orb && !nonzero; ++i) nonzero = (row[i] != 0.0);
+        if (!nonzero) continue;
+        if (n_kept != p) {
+            std::copy(row, row + n_orb, data + static_cast<size_t>(n_kept) * n_orb);
+        }
+        kept->push_back(p);
+        ++n_kept;
+    }
+    return n_kept;
+}
+
+}  // namespace detail
+
 /// The atoms a real-space contraction indexes its matrix block by.
 ///
-/// Replicated across the communicator: the contraction runs on every rank over
-/// its own grid boxes, and a rank generally does not own the atoms whose
-/// orbitals reach those boxes.
+/// There are two ways to build one, and the choice is a scaling decision
+/// rather than a convenience.
+///
+/// BuildOrbitalSetForSpheres is REPLICATED: it gathers the reaching atoms from
+/// every rank so all of them share one numbering. That is right for a probe of
+/// a small region -- a few spheres, a handful of atoms, and the block indexed
+/// by it is small -- and it is what the deterministic region LDOS wants.
+///
+/// BuildLocalOrbitalSet is per-rank: the atoms reaching THIS rank's boxes,
+/// taken from the atoms it already holds, with no collective. That is the only
+/// form that works for a full-cell map, because the replicated set is O(N)
+/// atoms on every rank and the block indexed by it is O(N^2) -- at 10^6 atoms
+/// the block alone would be 10^14 entries. Ownership being bound to the atoms
+/// (OwnedBoxesFromAtoms) is what makes the local set sufficient: the orbitals
+/// reaching a rank's boxes belong to atoms in the same region.
 struct OrbitalSet {
     std::vector<int> atoms;       ///< Global atom indices, ascending.
     std::vector<int> atom_type;   ///< Type of each atom.
@@ -181,6 +235,562 @@ inline OrbitalSet BuildOrbitalSetForSpheres(vbcsr::atomic::AtomicData& atomic_da
     return set;
 }
 
+/// Atoms whose orbitals reach any box this rank owns.
+///
+/// No communication at all. The candidates are the atoms this rank already
+/// holds -- owned plus the graph ghosts, which AtomicData stores contiguously
+/// after them -- and the test is against this rank's own boxes. Nothing is
+/// gathered, so the set is O(atoms in this region) rather than O(N), and the
+/// matrix block indexed by it is O((N/P)^2) rather than O(N^2).
+///
+/// Whether the ghosts are ENOUGH is a geometric condition, checked here rather
+/// than assumed. Graph ghosts reach 2*r_max between atom centres; a box needs
+/// atoms within r_cut of its points. For a point whose nearest owned atom is
+/// at distance d, a foreign atom reaching it lies within d + r_cut of that
+/// owned atom, so the ghosts cover it whenever d <= r_max -- i.e. whenever
+/// every owned grid point is within one orbital cutoff of an owned atom. True
+/// throughout a dense solid; false in vacuum, where a box may sit far from any
+/// atom. That case is not an error: such a box has no orbitals reaching it and
+/// contributes nothing, which is exactly what an empty active list produces.
+/// What would be an error is a box near foreign atoms that are not ghosts, and
+/// the resolution condition on OwnedBoxesFromAtoms is what excludes it.
+///
+/// Cost is O(n_local_atom) after a bounding-sphere reject, not
+/// O(n_local_atom * n_box): the per-box test only runs for atoms that reach
+/// the domain at all.
+inline OrbitalSet BuildLocalOrbitalSet(vbcsr::atomic::AtomicData& atomic_data,
+                                       const RealSpaceGrid& grid,
+                                       const GridDomain& domain,
+                                       const std::vector<double>& type_rcut) {
+    OrbitalSet set;
+    if (domain.n_box() == 0) {
+        set.orb_offset.assign(1, 0);
+        return set;
+    }
+    if (atomic_data.graph == nullptr) {
+        throw std::runtime_error(
+            "The local orbital set needs the neighbour graph: its ghost atoms are what make "
+            "the local candidate pool sufficient. Build the AtomicData through from_points, "
+            "from_file or from_distributed, which construct it.");
+    }
+
+    // Boxes of this rank, and one sphere around all of them for the cheap
+    // reject. Derived once; the boxes themselves are not stored by the grid.
+    std::vector<GridBox> boxes;
+    boxes.reserve(domain.n_box());
+    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
+    for (int slot = 0; slot < domain.n_box(); ++slot) {
+        boxes.push_back(grid.BoxAt(domain.boxes[slot]));
+        const GridBox& b = boxes.back();
+        for (int x = 0; x < 3; ++x) {
+            if (slot == 0) {
+                lo[x] = b.center[x] - b.radius;
+                hi[x] = b.center[x] + b.radius;
+            } else {
+                lo[x] = std::min(lo[x], b.center[x] - b.radius);
+                hi[x] = std::max(hi[x], b.center[x] + b.radius);
+            }
+        }
+    }
+    double hull_center[3], hull_radius = 0.0;
+    for (int x = 0; x < 3; ++x) hull_center[x] = 0.5 * (lo[x] + hi[x]);
+    for (int x = 0; x < 3; ++x) {
+        const double half = 0.5 * (hi[x] - lo[x]);
+        hull_radius += half * half;
+    }
+    hull_radius = std::sqrt(hull_radius);
+
+    const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
+    const int n_ghost = static_cast<int>(atomic_data.graph->ghost_global_indices.size());
+    const int n_candidate = atomic_data.n_atom + n_ghost;
+
+    std::vector<int> meta;      // (global index, type, norb)
+    std::vector<double> pos;
+    for (int local = 0; local < n_candidate; ++local) {
+        const int type = atomic_data.atom_type[local];
+        if (type < 0 || type >= static_cast<int>(type_rcut.size())) {
+            throw std::runtime_error("Orbital-set selection was given no cutoff for an atom type.");
+        }
+        const double rcut = type_rcut[type];
+        double ax = 0.0, ay = 0.0, az = 0.0;
+        atomic_data.get_pos(local, &ax, &ay, &az);
+
+        if (detail::MinimumImageDistance(hull_center, ax, ay, az, atomic_data.cell,
+                                         cell_inv, atomic_data.pbc) >= rcut + hull_radius) {
+            continue;
+        }
+        bool reaches = false;
+        for (size_t b = 0; b < boxes.size() && !reaches; ++b) {
+            reaches = detail::MinimumImageDistance(boxes[b].center, ax, ay, az,
+                                                   atomic_data.cell, cell_inv,
+                                                   atomic_data.pbc) < rcut + boxes[b].radius;
+        }
+        if (!reaches) continue;
+
+        meta.push_back(atomic_data.get_global_index(local));
+        meta.push_back(type);
+        meta.push_back(atomic_data.type_norb[type]);
+        pos.insert(pos.end(), {ax, ay, az});
+    }
+
+    const size_t n_found = meta.size() / 3;
+    std::vector<int> order(n_found);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return meta[3 * a] < meta[3 * b]; });
+
+    set.atoms.reserve(n_found);
+    set.atom_type.reserve(n_found);
+    set.atom_norb.reserve(n_found);
+    set.positions.reserve(3 * n_found);
+    for (int index : order) {
+        set.atoms.push_back(meta[3 * index + 0]);
+        set.atom_type.push_back(meta[3 * index + 1]);
+        set.atom_norb.push_back(meta[3 * index + 2]);
+        set.positions.insert(set.positions.end(),
+                             {pos[3 * index + 0], pos[3 * index + 1], pos[3 * index + 2]});
+    }
+    set.orb_offset.assign(set.atoms.size() + 1, 0);
+    for (size_t i = 0; i < set.atoms.size(); ++i) {
+        set.orb_offset[i + 1] = set.orb_offset[i] + set.atom_norb[i];
+    }
+    // An empty set is legitimate here, unlike the replicated builder: a rank
+    // whose region is vacuum owns boxes that no orbital reaches.
+    return set;
+}
+
+namespace detail {
+
+/// Calls `emit(owner_rank, local_atom_index)` once for every (box-owning
+/// rank, owned atom) pair where the atom's orbitals reach a box of that rank.
+///
+/// The transpose of BuildLocalOrbitalSet's question: that builder asks "which
+/// of the atoms I hold reach my boxes"; this asks "which ranks' boxes do the
+/// atoms I OWN reach". Every atom has exactly one owner, so across the
+/// communicator each pair is generated exactly once, and the overlap
+/// predicate is the same one the per-box selection uses -- which is what
+/// makes both consumers exact: the validator's check is a proof, and the
+/// demand-built set covers by construction.
+///
+/// Cost is O(n_owned_atom): the box lattice is only walked in a window around
+/// each atom, sized by the cutoff against the cell's perpendicular widths (so
+/// the bound survives shear), with the exact sphere test inside. At production
+/// spacings that is a few dozen boxes per atom.
+template <class EmitFn>
+void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
+                      const vbcsr::atomic::InertialCut& tree,
+                      const std::vector<double>& type_rcut, EmitFn&& emit) {
+    const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
+    double widths[3];
+    CellWidths(atomic_data.cell, widths);
+    const double max_box_radius = grid.MaxBoxRadius();
+
+    std::vector<int> owners;
+    for (int local = 0; local < atomic_data.n_atom; ++local) {
+        const int type = atomic_data.atom_type[local];
+        if (type < 0 || type >= static_cast<int>(type_rcut.size())) {
+            throw std::runtime_error("Orbital-set selection was given no cutoff for an atom type.");
+        }
+        const double rcut = type_rcut[type];
+        double ax = 0.0, ay = 0.0, az = 0.0;
+        atomic_data.get_pos(local, &ax, &ay, &az);
+
+        double frac[3];
+        for (int j = 0; j < 3; ++j) {
+            frac[j] = ax * cell_inv[0 * 3 + j] + ay * cell_inv[1 * 3 + j] +
+                      az * cell_inv[2 * 3 + j];
+        }
+
+        int b_lo[3], b_hi[3];
+        for (int d = 0; d < 3; ++d) {
+            const double margin = (widths[d] > 0.0) ? (rcut + max_box_radius) / widths[d] : 0.0;
+            const double scale = static_cast<double>(grid.shape[d]) / grid.box_edge[d];
+            b_lo[d] = static_cast<int>(std::floor((frac[d] - margin) * scale));
+            b_hi[d] = static_cast<int>(std::floor((frac[d] + margin) * scale));
+            if (!atomic_data.pbc[d]) {
+                b_lo[d] = std::max(b_lo[d], 0);
+                b_hi[d] = std::min(b_hi[d], grid.box_count[d] - 1);
+            } else if (b_hi[d] - b_lo[d] + 1 >= grid.box_count[d]) {
+                b_lo[d] = 0;  // window covers the whole axis; visit each box once
+                b_hi[d] = grid.box_count[d] - 1;
+            }
+        }
+
+        owners.clear();
+        for (int bx = b_lo[0]; bx <= b_hi[0]; ++bx) {
+            const int wx = ((bx % grid.box_count[0]) + grid.box_count[0]) % grid.box_count[0];
+            for (int by = b_lo[1]; by <= b_hi[1]; ++by) {
+                const int wy = ((by % grid.box_count[1]) + grid.box_count[1]) % grid.box_count[1];
+                for (int bz = b_lo[2]; bz <= b_hi[2]; ++bz) {
+                    const int wz =
+                        ((bz % grid.box_count[2]) + grid.box_count[2]) % grid.box_count[2];
+                    const GridBox box =
+                        grid.BoxAt((wx * grid.box_count[1] + wy) * grid.box_count[2] + wz);
+                    if (MinimumImageDistance(box.center, ax, ay, az, atomic_data.cell,
+                                             cell_inv, atomic_data.pbc) >= rcut + box.radius) {
+                        continue;
+                    }
+                    const int owner = vbcsr::atomic::ClassifyPoint(tree, box.center);
+                    if (std::find(owners.begin(), owners.end(), owner) == owners.end()) {
+                        owners.push_back(owner);
+                    }
+                }
+            }
+        }
+        for (int owner : owners) emit(owner, local);
+    }
+}
+
+}  // namespace detail
+
+/// (box-owner rank, atom global index) demand pairs from THIS rank's owned
+/// atoms. See detail::ForEachBoxDemand for the enumeration and its cost.
+inline std::vector<std::pair<int, int>> BoxDemandsOfOwnedAtoms(
+    vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
+    const vbcsr::atomic::InertialCut& tree, const std::vector<double>& type_rcut) {
+    std::vector<std::pair<int, int>> demands;
+    detail::ForEachBoxDemand(atomic_data, grid, tree, type_rcut,
+                             [&](int owner, int local) {
+                                 demands.emplace_back(owner,
+                                                      atomic_data.get_global_index(local));
+                             });
+    return demands;
+}
+
+/// How the demand-built set's atoms travel: the routing of the one alltoallv
+/// that built the set, kept so the SAME routing can later ship data that
+/// lives on the atoms -- coefficient rows of a Chebyshev-filtered state,
+/// which the owner holds and the box-owning rank needs to contract.
+///
+/// Records are rank-major on both sides. send_local[i] is the sender's local
+/// atom index of its i-th outgoing record; recv_slot[i] is the position in
+/// the sorted OrbitalSet where the i-th incoming record landed. The plan is
+/// geometry-fixed: build it once with the set, reuse it for every gather.
+struct OrbitalSetExchangePlan {
+    std::vector<int> send_counts;  ///< records per destination rank
+    std::vector<int> send_local;   ///< local atom index per outgoing record
+    std::vector<int> recv_counts;  ///< records per source rank
+    std::vector<int> recv_slot;    ///< set slot per incoming record
+};
+
+/// The orbital set for this rank's boxes, built from the DEMAND side: exact
+/// for any geometry, at the cost of one alltoall.
+///
+/// BuildLocalOrbitalSet finds the reaching atoms among those this rank
+/// already holds, which is sufficient only while the graph ghosts cover every
+/// box overhang -- and there are honest geometries where they do not: a box
+/// straddling a cut plane next to a vacuum gap wider than the neighbour-list
+/// cutoff is reached by foreign atoms that are nobody's ghosts. This builder
+/// closes that hole by inverting the direction of knowledge: each atom's
+/// owner enumerates the boxes the atom reaches (the same windowed walk and
+/// the same overlap predicate as everywhere else) and ships the atom -- index,
+/// type and position -- to those boxes' owners. Nothing needs to be near
+/// anything for that to work, so coverage is exact by construction, not by a
+/// geometric argument with a resolution condition attached.
+///
+/// The received set equals what BuildLocalOrbitalSet builds whenever the
+/// ghosts do suffice (same predicate, complete candidates), so this is the
+/// production default and the local builder remains for contexts proven safe
+/// by ValidateLocalOrbitalCoverage.
+///
+/// `rank` selects whose boxes the set is for; with a real communicator it
+/// must be this process's rank in it. With MPI_COMM_NULL or one rank the
+/// exchange degenerates to keeping own demands, which is what lets a serial
+/// test drive simulated multi-rank cuts.
+inline OrbitalSet BuildOrbitalSetFromDemands(vbcsr::atomic::AtomicData& atomic_data,
+                                             const RealSpaceGrid& grid,
+                                             const vbcsr::atomic::InertialCut& tree,
+                                             const std::vector<double>& type_rcut,
+                                             int rank, MPI_Comm comm,
+                                             OrbitalSetExchangePlan* plan = nullptr) {
+    int size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
+
+    // One record per demand: (gid, type), (x, y, z) and the sender-local atom
+    // index, same order throughout.
+    std::vector<int> meta;
+    std::vector<double> pos;
+    std::vector<int> local_kept;
+    const bool exchange = (comm != MPI_COMM_NULL && size > 1);
+    std::vector<std::vector<int>> meta_out(exchange ? size : 0);
+    std::vector<std::vector<double>> pos_out(exchange ? size : 0);
+    std::vector<std::vector<int>> local_out(exchange ? size : 0);
+    detail::ForEachBoxDemand(
+        atomic_data, grid, tree, type_rcut, [&](int owner, int local) {
+            double ax = 0.0, ay = 0.0, az = 0.0;
+            atomic_data.get_pos(local, &ax, &ay, &az);
+            const int gid = atomic_data.get_global_index(local);
+            const int type = atomic_data.atom_type[local];
+            if (!exchange) {
+                if (owner != rank) return;
+                meta.insert(meta.end(), {gid, type});
+                pos.insert(pos.end(), {ax, ay, az});
+                local_kept.push_back(local);
+                return;
+            }
+            if (owner < 0 || owner >= size) {
+                throw std::runtime_error(
+                    "A grid box classified to a rank outside the communicator; the cut tree "
+                    "and the communicator disagree on the rank count.");
+            }
+            meta_out[owner].insert(meta_out[owner].end(), {gid, type});
+            pos_out[owner].insert(pos_out[owner].end(), {ax, ay, az});
+            local_out[owner].push_back(local);
+        });
+
+    std::vector<int> send_counts(size, 0), recv_counts(size, 0);
+    if (exchange) {
+        for (int r = 0; r < size; ++r) {
+            send_counts[r] = static_cast<int>(meta_out[r].size() / 2);
+        }
+        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm);
+
+        std::vector<int> sdis(size + 1, 0), rdis(size + 1, 0);
+        for (int r = 0; r < size; ++r) {
+            sdis[r + 1] = sdis[r] + send_counts[r];
+            rdis[r + 1] = rdis[r] + recv_counts[r];
+        }
+        std::vector<int> send_meta(static_cast<size_t>(sdis[size]) * 2);
+        std::vector<double> send_pos(static_cast<size_t>(sdis[size]) * 3);
+        for (int r = 0; r < size; ++r) {
+            std::copy(meta_out[r].begin(), meta_out[r].end(),
+                      send_meta.begin() + static_cast<size_t>(sdis[r]) * 2);
+            std::copy(pos_out[r].begin(), pos_out[r].end(),
+                      send_pos.begin() + static_cast<size_t>(sdis[r]) * 3);
+        }
+        meta.assign(static_cast<size_t>(rdis[size]) * 2, 0);
+        pos.assign(static_cast<size_t>(rdis[size]) * 3, 0.0);
+
+        std::vector<int> sc(size), sd(size), rc(size), rd(size);
+        for (int r = 0; r < size; ++r) {
+            sc[r] = send_counts[r] * 2; sd[r] = sdis[r] * 2;
+            rc[r] = recv_counts[r] * 2; rd[r] = rdis[r] * 2;
+        }
+        MPI_Alltoallv(send_meta.data(), sc.data(), sd.data(), MPI_INT,
+                      meta.data(), rc.data(), rd.data(), MPI_INT, comm);
+        for (int r = 0; r < size; ++r) {
+            sc[r] = send_counts[r] * 3; sd[r] = sdis[r] * 3;
+            rc[r] = recv_counts[r] * 3; rd[r] = rdis[r] * 3;
+        }
+        MPI_Alltoallv(send_pos.data(), sc.data(), sd.data(), MPI_DOUBLE,
+                      pos.data(), rc.data(), rd.data(), MPI_DOUBLE, comm);
+
+        if (plan != nullptr) {
+            plan->send_local.clear();
+            plan->send_local.reserve(sdis[size]);
+            for (int r = 0; r < size; ++r) {
+                plan->send_local.insert(plan->send_local.end(), local_out[r].begin(),
+                                        local_out[r].end());
+            }
+        }
+    } else {
+        send_counts[0] = static_cast<int>(local_kept.size());
+        recv_counts[0] = send_counts[0];
+        if (plan != nullptr) plan->send_local = std::move(local_kept);
+    }
+
+    const size_t n_found = meta.size() / 2;
+    std::vector<int> order(n_found);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return meta[2 * a] < meta[2 * b]; });
+
+    if (plan != nullptr) {
+        plan->send_counts = std::move(send_counts);
+        plan->recv_counts = std::move(recv_counts);
+        plan->recv_slot.assign(n_found, 0);
+        for (size_t slot = 0; slot < n_found; ++slot) {
+            plan->recv_slot[order[slot]] = static_cast<int>(slot);
+        }
+    }
+
+    OrbitalSet set;
+    set.atoms.reserve(n_found);
+    set.atom_type.reserve(n_found);
+    set.atom_norb.reserve(n_found);
+    set.positions.reserve(3 * n_found);
+    for (int index : order) {
+        set.atoms.push_back(meta[2 * index + 0]);
+        set.atom_type.push_back(meta[2 * index + 1]);
+        set.atom_norb.push_back(atomic_data.type_norb[meta[2 * index + 1]]);
+        set.positions.insert(set.positions.end(),
+                             {pos[3 * index + 0], pos[3 * index + 1], pos[3 * index + 2]});
+    }
+    set.orb_offset.assign(set.atoms.size() + 1, 0);
+    for (size_t i = 0; i < set.atoms.size(); ++i) {
+        set.orb_offset[i + 1] = set.orb_offset[i] + set.atom_norb[i];
+    }
+    // Empty is legitimate for the same reason as the local builder: a vacuum
+    // region's boxes are reached by nothing.
+    return set;
+}
+
+/// Ships the set's coefficient rows to this rank through the plan's routing.
+///
+/// X holds each atom's orbital rows on the atom's OWNER, in the matrix
+/// distribution; the contraction needs them on the BOX owner, in the set's
+/// compact numbering. The plan already knows both endpoints of every record
+/// -- it is the routing that built the set -- so the gather is one packing
+/// pass, one alltoallv, one unpacking pass, with nothing recomputed. This is
+/// the O(boundary) halo the whole real-space path budgets for; call it once
+/// per filtered block, after the Chebyshev sweep.
+///
+/// coeffs_out is (set.n_orb(), n_vec) row-major over the set's numbering --
+/// exactly what SquareVectorsOntoBoxes takes.
+inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
+                          const vbcsr::DistMultiVector<double>& X,
+                          const OrbitalSet& set,
+                          const OrbitalSetExchangePlan& plan,
+                          MPI_Comm comm,
+                          std::vector<double>* coeffs_out) {
+    if (coeffs_out == nullptr) {
+        throw std::runtime_error("GatherSetRows needs an output pointer.");
+    }
+    int size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
+    const bool exchange = (comm != MPI_COMM_NULL && size > 1);
+    const int n_vec = X.num_vectors;
+
+    // Scalar-row offset of each owned atom in the matrix distribution: the
+    // graph's rows are the owned atoms' orbital blocks in local atom order.
+    std::vector<int> row_offset(atomic_data.n_atom + 1, 0);
+    for (int a = 0; a < atomic_data.n_atom; ++a) {
+        row_offset[a + 1] = row_offset[a] + atomic_data.type_norb[atomic_data.atom_type[a]];
+    }
+
+    // Pack outgoing records: each record is its atom's (norb, n_vec) rows.
+    std::vector<double> send_buf;
+    std::vector<int> send_elems(size, 0);
+    {
+        size_t total = 0;
+        size_t record = 0;
+        for (int r = 0; r < size; ++r) {
+            for (int i = 0; i < plan.send_counts[r]; ++i, ++record) {
+                const int local = plan.send_local[record];
+                const int norb = row_offset[local + 1] - row_offset[local];
+                send_elems[r] += norb * n_vec;
+                total += static_cast<size_t>(norb) * n_vec;
+            }
+        }
+        send_buf.resize(total);
+        size_t at = 0;
+        for (const int local : plan.send_local) {
+            for (int row = row_offset[local]; row < row_offset[local + 1]; ++row) {
+                const double* src = X.row_data(row);
+                std::copy(src, src + n_vec, send_buf.begin() + at);
+                at += n_vec;
+            }
+        }
+    }
+
+    std::vector<double> recv_buf;
+    if (exchange) {
+        std::vector<int> recv_elems(size, 0);
+        // Receive sizes follow from the plan and the set: records are
+        // rank-major, and each carries its set slot's orbital count.
+        {
+            size_t record = 0;
+            for (int r = 0; r < size; ++r) {
+                for (int i = 0; i < plan.recv_counts[r]; ++i, ++record) {
+                    recv_elems[r] += set.atom_norb[plan.recv_slot[record]] * n_vec;
+                }
+            }
+        }
+        std::vector<int> sdis(size + 1, 0), rdis(size + 1, 0);
+        for (int r = 0; r < size; ++r) {
+            sdis[r + 1] = sdis[r] + send_elems[r];
+            rdis[r + 1] = rdis[r] + recv_elems[r];
+        }
+        recv_buf.resize(rdis[size]);
+        MPI_Alltoallv(send_buf.data(), send_elems.data(), sdis.data(), MPI_DOUBLE,
+                      recv_buf.data(), recv_elems.data(), rdis.data(), MPI_DOUBLE, comm);
+    } else {
+        recv_buf = std::move(send_buf);
+    }
+
+    coeffs_out->assign(static_cast<size_t>(set.n_orb()) * n_vec, 0.0);
+    size_t at = 0;
+    for (const int slot : plan.recv_slot) {
+        const int norb = set.atom_norb[slot];
+        std::copy(recv_buf.begin() + at,
+                  recv_buf.begin() + at + static_cast<size_t>(norb) * n_vec,
+                  coeffs_out->begin() + static_cast<size_t>(set.orb_offset[slot]) * n_vec);
+        at += static_cast<size_t>(norb) * n_vec;
+    }
+}
+
+/// Verifies, collectively and exactly, that every rank's local orbital set
+/// contains every atom whose orbitals reach a box the rank owns.
+///
+/// BuildLocalOrbitalSet documents the geometric argument for why the graph
+/// ghosts suffice, and the resolution condition attached to it. This enforces
+/// the condition instead of assuming it: each atom's owner computes which
+/// ranks need the atom, the demands travel to those ranks, and each rank
+/// checks membership in its own set. A failure means grid contributions WOULD
+/// have been silently dropped -- the partition is finer than the ghost layer
+/// covers -- and the error says what to change. Passing is a proof, not an
+/// indicator, because the demand side enumerates every (atom, box) overlap
+/// under the same predicate the contraction selects by.
+///
+/// One alltoall of boundary-atom indices; call it once after building the
+/// set, not per contraction.
+inline void ValidateLocalOrbitalCoverage(vbcsr::atomic::AtomicData& atomic_data,
+                                         const RealSpaceGrid& grid,
+                                         const vbcsr::atomic::InertialCut& tree,
+                                         const OrbitalSet& set,
+                                         const std::vector<double>& type_rcut,
+                                         MPI_Comm comm) {
+    int size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
+
+    const auto demands = BoxDemandsOfOwnedAtoms(atomic_data, grid, tree, type_rcut);
+    std::vector<int> send_counts(size, 0);
+    for (const auto& demand : demands) {
+        if (demand.first < 0 || demand.first >= size) {
+            throw std::runtime_error(
+                "A grid box classified to a rank outside the communicator; the cut tree and "
+                "the communicator disagree on the rank count.");
+        }
+        ++send_counts[demand.first];
+    }
+    std::vector<int> send_displs(size + 1, 0);
+    for (int r = 0; r < size; ++r) send_displs[r + 1] = send_displs[r] + send_counts[r];
+    std::vector<int> send_gids(demands.size());
+    {
+        std::vector<int> cursor(send_displs.begin(), send_displs.end() - 1);
+        for (const auto& demand : demands) send_gids[cursor[demand.first]++] = demand.second;
+    }
+
+    std::vector<int> recv_gids;
+    if (comm != MPI_COMM_NULL && size > 1) {
+        std::vector<int> recv_counts(size, 0);
+        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm);
+        std::vector<int> recv_displs(size + 1, 0);
+        for (int r = 0; r < size; ++r) recv_displs[r + 1] = recv_displs[r] + recv_counts[r];
+        recv_gids.assign(recv_displs[size], 0);
+        MPI_Alltoallv(send_gids.data(), send_counts.data(), send_displs.data(), MPI_INT,
+                      recv_gids.data(), recv_counts.data(), recv_displs.data(), MPI_INT, comm);
+    } else {
+        recv_gids = std::move(send_gids);
+    }
+
+    int missing = 0;
+    for (int gid : recv_gids) {
+        if (!std::binary_search(set.atoms.begin(), set.atoms.end(), gid)) ++missing;
+    }
+    int missing_total = missing;
+    if (comm != MPI_COMM_NULL && size > 1) {
+        MPI_Allreduce(MPI_IN_PLACE, &missing_total, 1, MPI_INT, MPI_SUM, comm);
+    }
+    if (missing_total > 0) {
+        throw std::runtime_error(
+            "Local orbital sets are insufficient: " + std::to_string(missing_total) +
+            " (rank, atom) demands are uncovered, so grid contributions would be silently "
+            "dropped. The rank regions are finer than the grid boxes resolve -- use a finer "
+            "grid or smaller box edge, or fewer ranks.");
+    }
+}
+
 /// Evaluates numerical atomic orbitals on points and contracts blocks onto them.
 ///
 /// One OrbitalEvaluator is built per atom type, which splines every radial
@@ -218,19 +828,33 @@ public:
     /// reach it once, and all of its points then share that covering set, one
     /// Phi buffer and one GEMM.
     ///
+    /// The output is COMPACT -- one value per owned point, in the domain's box
+    /// order -- not a full grid with holes. Owned boxes are disjoint
+    /// (OwnedBoxesFromAtoms returns a partition), so the global result is the
+    /// concatenation of the ranks' buffers and no reduction is needed at all.
+    /// A full-grid buffer would instead cost every rank the whole result: ~5.6
+    /// GB per rank at 10^6 atoms and 0.2 A, plus a grid-sized allreduce, to
+    /// hold something each rank owns 1/P of. rescu++ reaches the same layout
+    /// from the same argument (accumulate_density_packed returns
+    /// (nspin, n_owned_points), "no reduce (owned points are disjoint)").
+    ///
+    /// Phi is evaluated per box and discarded rather than cached. That is
+    /// rescu++'s streaming mode, and it is the right default here: it holds
+    /// flat O(box) memory instead of O(N), which is what a 10^6-atom cell
+    /// needs, and the op2c evaluator underneath is the same one.
+    ///
     /// Args:
     ///   atomic_data: Supplies cell and boundary conditions for imaging.
     ///   set: Atoms and orbital numbering the block is indexed by.
     ///   block: Row-major n_orb x n_orb Hermitian block over `set`.
     ///   grid: The grid whose boxes are being filled.
-    ///   owned_boxes: Indices into `grid.boxes` this rank is responsible for.
-    ///   values_out: grid.n_point() values; entries outside this rank's boxes
-    ///     are left zero, ready to be summed across ranks.
+    ///   domain: This rank's owned boxes and their offsets.
+    ///   values_out: domain.n_point() values, in owned-box order.
     void ContractOntoBoxes(vbcsr::atomic::AtomicData& atomic_data,
                            const OrbitalSet& set,
                            const std::vector<std::complex<double>>& block,
                            const RealSpaceGrid& grid,
-                           const std::vector<int>& owned_boxes,
+                           const GridDomain& domain,
                            std::vector<double>* values_out) const {
         if (values_out == nullptr) {
             throw std::runtime_error("ContractOntoBoxes needs an output pointer.");
@@ -240,56 +864,181 @@ public:
             throw std::runtime_error("Block size does not match the orbital-set size.");
         }
         RequireUniqueMinimumImage(atomic_data, set);
+        ValidateSetAgainstEvaluators(set);
 
         std::vector<double> block_real(block.size());
         for (size_t i = 0; i < block.size(); ++i) block_real[i] = block[i].real();
 
-        values_out->assign(grid.n_point(), 0.0);
+        values_out->assign(static_cast<size_t>(domain.n_point()), 0.0);
         const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
 
-        std::vector<double> points, phi, product, relative, local_block, box_values;
-        std::vector<int> active;
+        // One thread per box, dynamic because the active count varies wildly
+        // (a vacuum box is near-free). Boxes write disjoint slices of the
+        // compact buffer, so there is nothing to reduce. BLAS goes sequential
+        // on its own inside the region, which is the one-GEMM-per-thread shape
+        // rescu++'s threaded box loop uses. Scratch is per-thread and O(box).
+#pragma omp parallel
+        {
+            std::vector<double> points, phi, product, relative, local_block, box_values;
+            std::vector<int> active, kept;
 
-        for (int b : owned_boxes) {
-            const GridBox& box = grid.boxes[b];
-            const int n_box_point = box.n_point();
-            if (n_box_point == 0) continue;
+#pragma omp for schedule(dynamic)
+            for (int slot = 0; slot < domain.n_box(); ++slot) {
+                const GridBox box = grid.BoxAt(domain.boxes[slot]);
+                const int n_box_point = box.n_point();
+                if (n_box_point == 0) continue;
+                double* out = values_out->data() + domain.offset[slot];
 
-            const LocalView local =
-                ViewForSphere(atomic_data, set, box.center, box.radius, cell_inv);
-            const int n_local_orb = static_cast<int>(local.orbitals.size());
-            if (n_local_orb == 0) continue;
+                const LocalView local =
+                    ViewForSphere(atomic_data, set, box.center, box.radius, cell_inv);
+                const int n_local_orb = static_cast<int>(local.orbitals.size());
+                if (n_local_orb == 0) continue;
 
-            local_block.assign(static_cast<size_t>(n_local_orb) * n_local_orb, 0.0);
-            for (int i = 0; i < n_local_orb; ++i) {
-                const size_t src_row = static_cast<size_t>(local.orbitals[i]) * n_orb;
-                for (int j = 0; j < n_local_orb; ++j) {
-                    local_block[static_cast<size_t>(i) * n_local_orb + j] =
-                        block_real[src_row + local.orbitals[j]];
+                local_block.assign(static_cast<size_t>(n_local_orb) * n_local_orb, 0.0);
+                for (int i = 0; i < n_local_orb; ++i) {
+                    const size_t src_row = static_cast<size_t>(local.orbitals[i]) * n_orb;
+                    for (int j = 0; j < n_local_orb; ++j) {
+                        local_block[static_cast<size_t>(i) * n_local_orb + j] =
+                            block_real[src_row + local.orbitals[j]];
+                    }
+                }
+
+                grid.PointsOfBox(box, &points);
+                phi.assign(static_cast<size_t>(n_box_point) * n_local_orb, 0.0);
+                product.resize(static_cast<size_t>(n_box_point) * n_local_orb);
+                box_values.assign(n_box_point, 0.0);
+
+                EvaluatePhi(atomic_data, set, local, points, n_box_point, cell_inv, &relative,
+                            &active, phi.data());
+                const int n_kept = detail::TrimZeroRows(n_box_point, n_local_orb, &phi, &kept);
+                if (n_kept == 0) continue;  // no orbital reaches any point of this box
+                product.resize(static_cast<size_t>(n_kept) * n_local_orb);
+                box_values.assign(n_kept, 0.0);
+                ContractChunk(n_kept, n_local_orb, phi.data(), local_block.data(),
+                              product.data(), box_values.data());
+
+                // Trimmed rows are exactly zero and values_out was zeroed, so
+                // only the kept ones are written back.
+                const double per_angstrom_cubed = model::lcao::kBohrPerAngstrom *
+                                                  model::lcao::kBohrPerAngstrom *
+                                                  model::lcao::kBohrPerAngstrom;
+                for (int q = 0; q < n_kept; ++q) {
+                    out[kept[q]] = box_values[q] * per_angstrom_cubed;
                 }
             }
+        }
+    }
 
-            grid.PointsOfBox(box, &points);
-            phi.assign(static_cast<size_t>(n_box_point) * n_local_orb, 0.0);
-            product.resize(static_cast<size_t>(n_box_point) * n_local_orb);
-            box_values.assign(n_box_point, 0.0);
+    /// Accumulates mean_v |sum_i c_i^(v) phi_i(r)|^2 on this rank's boxes.
+    ///
+    /// Route (5.3b), "square-on-grid", of doc/design_stochastic_ldos.md 5.3:
+    /// the real-space state of each sample is evaluated and squared pointwise,
+    /// and the n_orb x n_orb object is never formed. The two routes agree
+    /// exactly rather than approximately -- for one vector c,
+    ///
+    ///     sum_ij (c_i c_j) phi_i(r) phi_j(r) = ( sum_i c_i phi_i(r) )^2
+    ///
+    /// is an algebraic identity, so this equals ContractOntoBoxes fed the outer
+    /// product c c^T with no sampling error to hide behind. The test asserts
+    /// exactly that.
+    ///
+    /// Why it is the route for the stochastic LDOS. Per box the work is one
+    /// GEMM of (n_point x n_local_orb) against (n_local_orb x n_vec), i.e.
+    /// linear in the sample count where the two-index route is quadratic in
+    /// the orbital count; (5.3b) wins on flops whenever n_vec is below
+    /// n_local_orb, which for a few hundred samples against a few hundred
+    /// local orbitals is the usual case. On memory it wins unconditionally: it
+    /// holds n_local_orb x n_vec coefficients instead of an n_orb^2 block,
+    /// which at 10^6 atoms is the difference between kilobytes and 10^14
+    /// entries that could not be stored at all.
+    ///
+    /// Args:
+    ///   coeffs: Row-major (n_orb, n_vec) coefficients over `set`'s numbering.
+    ///   n_vec: Number of sample vectors; the mean is taken over them.
+    ///   values_out: domain.n_point() values, in owned-box order.
+    void SquareVectorsOntoBoxes(vbcsr::atomic::AtomicData& atomic_data,
+                                const OrbitalSet& set,
+                                const std::vector<double>& coeffs,
+                                int n_vec,
+                                const RealSpaceGrid& grid,
+                                const GridDomain& domain,
+                                std::vector<double>* values_out) const {
+        if (values_out == nullptr) {
+            throw std::runtime_error("SquareVectorsOntoBoxes needs an output pointer.");
+        }
+        if (n_vec <= 0) {
+            throw std::runtime_error("SquareVectorsOntoBoxes needs at least one vector.");
+        }
+        const int n_orb = set.n_orb();
+        if (coeffs.size() != static_cast<size_t>(n_orb) * n_vec) {
+            throw std::runtime_error("Coefficient array does not match (n_orb, n_vec).");
+        }
+        RequireUniqueMinimumImage(atomic_data, set);
+        ValidateSetAgainstEvaluators(set);
 
-            EvaluatePhi(atomic_data, set, local, points, n_box_point, cell_inv, &relative,
-                        &active, phi.data());
-            ContractChunk(n_box_point, n_local_orb, phi.data(), local_block.data(),
-                          product.data(), box_values.data());
+        values_out->assign(static_cast<size_t>(domain.n_point()), 0.0);
+        const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
+        const double per_angstrom_cubed = model::lcao::kBohrPerAngstrom *
+                                          model::lcao::kBohrPerAngstrom *
+                                          model::lcao::kBohrPerAngstrom;
+        const double inv_n_vec = 1.0 / static_cast<double>(n_vec);
 
-            const double per_angstrom_cubed = model::lcao::kBohrPerAngstrom *
-                                              model::lcao::kBohrPerAngstrom *
-                                              model::lcao::kBohrPerAngstrom;
-            int at = 0;
-            for (int ix = box.lo[0]; ix < box.hi[0]; ++ix) {
-                for (int iy = box.lo[1]; iy < box.hi[1]; ++iy) {
-                    for (int iz = box.lo[2]; iz < box.hi[2]; ++iz) {
-                        (*values_out)[grid.LinearIndex(ix, iy, iz)] =
-                            box_values[at] * per_angstrom_cubed;
-                        ++at;
-                    }
+        // Threaded exactly like ContractOntoBoxes: disjoint output slices,
+        // per-thread O(box) scratch, dynamic schedule over uneven boxes.
+#pragma omp parallel
+        {
+            std::vector<double> points, phi, local_coeff, psi, relative;
+            std::vector<int> active, kept;
+
+#pragma omp for schedule(dynamic)
+            for (int slot = 0; slot < domain.n_box(); ++slot) {
+                const GridBox box = grid.BoxAt(domain.boxes[slot]);
+                const int n_box_point = box.n_point();
+                if (n_box_point == 0) continue;
+                double* out = values_out->data() + domain.offset[slot];
+
+                const LocalView local =
+                    ViewForSphere(atomic_data, set, box.center, box.radius, cell_inv);
+                const int n_local_orb = static_cast<int>(local.orbitals.size());
+                if (n_local_orb == 0) continue;  // vacuum box: stays zero
+
+                // Gather this box's rows of the coefficient array.
+                local_coeff.resize(static_cast<size_t>(n_local_orb) * n_vec);
+                for (int i = 0; i < n_local_orb; ++i) {
+                    const double* src =
+                        coeffs.data() + static_cast<size_t>(local.orbitals[i]) * n_vec;
+                    std::copy(src, src + n_vec,
+                              local_coeff.data() + static_cast<size_t>(i) * n_vec);
+                }
+
+                grid.PointsOfBox(box, &points);
+                phi.assign(static_cast<size_t>(n_box_point) * n_local_orb, 0.0);
+                psi.resize(static_cast<size_t>(n_box_point) * n_vec);
+
+                EvaluatePhi(atomic_data, set, local, points, n_box_point, cell_inv, &relative,
+                            &active, phi.data());
+                const int n_kept = detail::TrimZeroRows(n_box_point, n_local_orb, &phi, &kept);
+                if (n_kept == 0) continue;
+                psi.resize(static_cast<size_t>(n_kept) * n_vec);
+
+                // psi = phi * local_coeff, both row-major. In Fortran layout
+                // that is local_coeff^T * phi^T with no transposition, the
+                // same trick ContractChunk uses.
+                {
+                    using vbcsr::vbcsr_lapack_int;
+                    const vbcsr_lapack_int m = n_vec;
+                    const vbcsr_lapack_int n = n_kept;
+                    const vbcsr_lapack_int k = n_local_orb;
+                    const double alpha = 1.0, beta = 0.0;
+                    vbcsr::dgemm_("N", "N", &m, &n, &k, &alpha, local_coeff.data(), &m,
+                                  phi.data(), &k, &beta, psi.data(), &m);
+                }
+
+                for (int q = 0; q < n_kept; ++q) {
+                    const double* row = psi.data() + static_cast<size_t>(q) * n_vec;
+                    double sum = 0.0;
+                    for (int v = 0; v < n_vec; ++v) sum += row[v] * row[v];
+                    out[kept[q]] = sum * inv_n_vec * per_angstrom_cubed;
                 }
             }
         }
@@ -357,7 +1106,6 @@ public:
         for (double& value : *values_out) value *= per_angstrom_cubed;
     }
 
-private:
     /// The orbital-set restricted to what one box needs.
     struct LocalView {
         std::vector<int> atoms;            ///< Indices into the global set.
@@ -369,6 +1117,23 @@ private:
     ///
     /// One distance test per atom instead of one per point -- what rescu++'s
     /// grid_shell_mask does, for the same reason.
+    /// Per-box internals, exposed so a test can measure what the box loop does
+    /// rather than only what it returns -- how much of a box the orbitals
+    /// actually cover is not visible in the contracted output.
+    LocalView ViewForSphereForTest(vbcsr::atomic::AtomicData& atomic_data, const OrbitalSet& set,
+                                   const double* center, double radius,
+                                   const std::array<double, 9>& cell_inv) const {
+        return ViewForSphere(atomic_data, set, center, radius, cell_inv);
+    }
+    void EvaluatePhiForTest(vbcsr::atomic::AtomicData& atomic_data, const OrbitalSet& set,
+                            const LocalView& local, const std::vector<double>& points,
+                            int n_point, const std::array<double, 9>& cell_inv,
+                            std::vector<double>* relative, std::vector<int>* active,
+                            double* phi) const {
+        EvaluatePhi(atomic_data, set, local, points, n_point, cell_inv, relative, active, phi);
+    }
+
+private:
     LocalView ViewForSphere(vbcsr::atomic::AtomicData& atomic_data, const OrbitalSet& set,
                             const double* center, double radius,
                             const std::array<double, 9>& cell_inv) const {
@@ -449,6 +1214,21 @@ private:
                     std::to_string(widths[j]) + " A against a cutoff of " +
                     std::to_string(rcut) + " A. Use a supercell at least " +
                     std::to_string(2.0 * rcut) + " A across.");
+            }
+        }
+    }
+
+    /// Raises, BEFORE a parallel box loop starts, everything the per-box work
+    /// could otherwise raise from inside it -- a type with no orbital file, or
+    /// an orbital count that disagrees with the Hamiltonian's. An exception
+    /// escaping an OpenMP region terminates the program instead of
+    /// propagating, so the loops must be entered exception-free.
+    void ValidateSetAgainstEvaluators(const OrbitalSet& set) const {
+        for (int a = 0; a < set.n_atom(); ++a) {
+            if (Evaluator(set.atom_type[a]).nphi() != set.atom_norb[a]) {
+                throw std::runtime_error(
+                    "Orbital file and Hamiltonian disagree on the orbital count of a type; "
+                    "the contraction would mix unrelated orbitals.");
             }
         }
     }

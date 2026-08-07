@@ -19,6 +19,7 @@
 #include "cheby.hpp"
 #include "collocation.hpp"
 #include "dos.hpp"
+#include "rs_ldos.hpp"
 #include "fft.hpp"
 #include "fftcheb_transport.hpp"
 #include "msd.hpp"
@@ -1059,6 +1060,135 @@ inline OccupationResult ComputeFermiLevel(
     detail::ReduceScalars(context, &nmom, 1, MPI_MAX);
     res.n_moments = static_cast<int>(nmom);
     return res;
+}
+
+// ---------------------------------------------------------------------------
+// Real-space LDOS map (calc/rs_ldos.hpp), wired to the operator set.
+
+namespace detail {
+
+/// The real part of a Gamma-sampled matrix, on the same graph.
+///
+/// The operator set is complex-typed for k-point generality, but the
+/// real-space path is Gamma-only by the collocation's minimum-image guard --
+/// so at its single admissible k-point the matrices are real up to rounding,
+/// and the peel is a representation change, not an approximation. A genuine
+/// imaginary part means the caller is not actually at Gamma, which is an
+/// error, not something to truncate silently.
+inline vbcsr::BlockSpMat<double> PeelGammaReal(vbcsr::BlockSpMat<std::complex<double>>& src,
+                                               const std::string& what) {
+    vbcsr::BlockSpMat<double> out(src.graph);
+    const auto& row_ptr = src.row_ptr();
+    const auto& col_ind = src.col_ind();
+    const int n_rows = static_cast<int>(row_ptr.size()) - 1;
+    double max_imag = 0.0;
+    std::vector<double> buf;
+    for (int i = 0; i < n_rows; ++i) {
+        const int gr = src.graph->get_global_index(i);
+        const int r = src.graph->block_sizes[i];
+        for (int k = row_ptr[i]; k < row_ptr[i + 1]; ++k) {
+            const int lc = col_ind[k];
+            const int gc = src.graph->get_global_index(lc);
+            const int c = src.graph->block_sizes[lc];
+            const std::complex<double>* blk = src.block_data(k);
+            buf.resize(static_cast<size_t>(r) * c);
+            for (size_t t = 0; t < buf.size(); ++t) {
+                buf[t] = blk[t].real();
+                max_imag = std::max(max_imag, std::abs(blk[t].imag()));
+            }
+            out.add_block(gr, gc, buf.data(), r, c, vbcsr::AssemblyMode::INSERT,
+                          vbcsr::MatrixLayout::RowMajor);
+        }
+    }
+    out.assemble();
+    if (max_imag > 1e-9) {
+        throw std::runtime_error(
+            "The " + what + " has imaginary weight " + std::to_string(max_imag) +
+            " at the sampled k-point; the real-space LDOS is Gamma-only.");
+    }
+    return out;
+}
+
+}  // namespace detail
+
+/// The full-cell LDOS map, from the operator set's Gamma pencil.
+///
+/// Glue only -- the method lives in rs_ldos.hpp. This adapter peels the
+/// complex Gamma matrices to real, reuses the operator set's S^{-1/2} factor
+/// when one was built (falling back to a fresh isqrtm), derives the box
+/// ownership tree from the owned atoms by the same collective inertial
+/// bisection the partitioning uses (weighted by orbital count, the
+/// collocation-balance choice), and fills the spectral bounds the operators
+/// already measured. Gamma-only, and it needs an overlap: an orthogonal
+/// tight-binding model has no real-space basis to evaluate.
+inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context,
+                                                const std::vector<std::string>& orbital_files,
+                                                RealSpaceLdosOptions options) {
+    RSATB_PHASE("task/rs_ldos");
+    auto& ops = context.RequireOperators();
+    if (!ops.has_bounds()) {
+        throw std::runtime_error(
+            "Spectral bound is not computed yet. Set it true during Setup stage for random "
+            "state method support.");
+    }
+    if (ops.global_nk() != 1) {
+        throw std::runtime_error(
+            "The real-space LDOS is Gamma-only; run with a single k-point at Gamma "
+            "(use a supercell instead of a k-mesh).");
+    }
+    const auto& kpoints = ops.local_kpoints();
+    if (kpoints.empty()) {
+        throw std::runtime_error("This rank holds no k-point state; cannot compute the LDOS.");
+    }
+    for (double component : kpoints.front().second) {
+        if (std::abs(component) > 1e-12) {
+            throw std::runtime_error("The real-space LDOS is Gamma-only, but the k-point is not Gamma.");
+        }
+    }
+    auto& state = ops.kpoint_state(kpoints.front().first);
+    if (!state.hamiltonian || !state.overlap) {
+        throw std::runtime_error(
+            "The real-space LDOS needs both H and S; an orthogonal model has no real-space "
+            "basis functions to collocate.");
+    }
+
+    auto H = detail::PeelGammaReal(*state.hamiltonian, "Hamiltonian");
+    auto S = detail::PeelGammaReal(*state.overlap, "overlap");
+
+    // The S^{-1/2} factor: reuse the operator set's if it built one (its
+    // quality only sets iteration counts, never the answer), else one fresh
+    // isqrtm at defaults.
+    std::unique_ptr<vbcsr::BlockSpMat<double>> zt;
+    if (auto* isqrt = dynamic_cast<ISQRTMPreconditioner<ObservableScalar>*>(
+            state.preconditioner.get())) {
+        zt = std::make_unique<vbcsr::BlockSpMat<double>>(
+            detail::PeelGammaReal(isqrt->factor(), "S^{-1/2} factor"));
+    } else {
+        zt = std::make_unique<vbcsr::BlockSpMat<double>>(S.duplicate(true));
+        inverse_sqrt(S, zt.get(), InverseSqrtOptions{});
+    }
+
+    // Box ownership follows the atoms: the same collective inertial bisection
+    // the partition layer uses, weighted by orbital count so grid work
+    // balances with collocation cost. Deterministic, so every rank holds the
+    // identical tree.
+    vbcsr::atomic::AtomicData& atomic_data = *context.atomic_data;
+    MPI_Comm comm = atomic_data.comm;
+    int comm_size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &comm_size);
+    std::vector<double> positions(3 * static_cast<size_t>(atomic_data.n_atom));
+    std::vector<double> weights(atomic_data.n_atom);
+    for (int a = 0; a < atomic_data.n_atom; ++a) {
+        atomic_data.get_pos(a, &positions[3 * a], &positions[3 * a + 1], &positions[3 * a + 2]);
+        weights[a] = static_cast<double>(atomic_data.type_norb[atomic_data.atom_type[a]]);
+    }
+    const auto part = vbcsr::atomic::PartitionByInertiaDistributed(positions, weights,
+                                                                   comm_size, comm);
+
+    const OrbitalCollocation collocation(orbital_files, comm);
+    options.emin = ops.emin();
+    options.emax = ops.emax();
+    return ComputeRealSpaceLdos(atomic_data, H, S, *zt, *part.tree, collocation, options, comm);
 }
 
 }  // namespace calc

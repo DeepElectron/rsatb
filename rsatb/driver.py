@@ -132,6 +132,48 @@ class RSATB:
         dos_out, omega_out = self._cpp_obj.compute_dos(dE, method)
         return np.array(dos_out), np.array(omega_out)
 
+    def compute_rs_ldos(self, energies, eta, spacing=0.4, box_edge=0,
+                        n_samples=64, block=16, seed=12345):
+        """
+        Compute the full-cell LDOS map on a real-space grid.
+
+        Square-root-filtered stochastic estimator (Gamma-only; needs a model
+        with real-space orbitals, i.e. LCAO or DFTB with .orb files). One
+        Chebyshev sweep serves every requested energy; sampling error decays
+        as 1/sqrt(n_samples) and the map is non-negative pointwise by
+        construction.
+
+        Args:
+            energies: Evaluation energies in eV, inside the spectral window.
+            eta (float): Gaussian broadening in eV; the filter degree scales
+                as (spectral span) / eta.
+            spacing (float): Grid spacing in Angstrom.
+            box_edge (int): Grid box edge in points; 0 picks a physical
+                (~2.4 A) default whatever the spacing.
+            n_samples (int): Random states; relative noise ~ 1/sqrt(n).
+            block (int): States per Chebyshev sweep (SpMM width).
+            seed (int): RNG seed, for reproducible maps.
+
+        Returns:
+            dict with keys:
+                shape: (n0, n1, n2) grid points along the lattice vectors.
+                n_point: total grid points.
+                point_index: (n_owned,) int64 global index of each owned point.
+                ldos: (n_energy, n_owned) values in states/eV/A^3 -- THIS
+                    RANK's share of the grid; ranks partition the points.
+                grid (serial runs only): ldos scattered to the full
+                    (n_energy, n0, n1, n2) array.
+                filter_degree, n_states, sampler_residual: diagnostics.
+        """
+        out = self._cpp_obj.compute_rs_ldos(
+            list(energies), eta, spacing, box_edge, n_samples, block, seed)
+        if out["ldos"].shape[1] == out["n_point"]:
+            n_energy = out["ldos"].shape[0]
+            full = np.zeros((n_energy, out["n_point"]))
+            full[:, out["point_index"]] = out["ldos"]
+            out["grid"] = full.reshape((n_energy,) + tuple(out["shape"]))
+        return out
+
     def energy_bounds(self):
         """
         Return the spectral window (emin, emax) the expansions are scaled to.

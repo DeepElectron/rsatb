@@ -519,6 +519,12 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_metric_sampler PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_metric_sampler PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: test_rs_ldos - the full-cell stochastic LDOS map against
+    # dense diagonalization
+    add_executable(test_rs_ldos calc/test/test_rs_ldos.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_rs_ldos PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_rs_ldos PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
     # Executable: benchmark_spgemm - the SpGEMM numeric phase cost breakdown
     # on synthetic block matrices: full vs Hermitian-halved, batched vs
     # per-pair, at sparse and dense block densities.

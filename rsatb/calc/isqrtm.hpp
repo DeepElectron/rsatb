@@ -225,7 +225,10 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
 
     const double t_seed = MPI_Wtime() - t_seed0;
     if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
-        std::cout << "inverse_sqrt: seed " << t_seed << "s\n";
+        // std::endl, not "\n": cluster stdout is block-buffered, and this
+        // line is the only signal between the seed and the first (possibly
+        // hour-scale) Newton-Schulz product.
+        std::cout << "inverse_sqrt: seed " << t_seed << "s" << std::endl;
     }
 
     if (maxit == 0) return;
@@ -272,11 +275,23 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return global;
     };
 
+    // Stage heartbeats: each distributed product below can run for hours at
+    // large scale with low CPU during its fetch/symbolic phases, and a log
+    // that goes quiet there is indistinguishable from a hang. One flushed
+    // line per stage bounds the search to a single product.
+    auto stage = [&](const char* what) {
+        if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+            std::cout << "inverse_sqrt:   " << what << std::endl;
+        }
+    };
+
     // X = Z^H (S Z): grouped so the first product is the sparse one, and the
     // second computed as a known-Hermitian product -- half the block products,
     // and X comes out exactly Hermitian, which everything below relies on.
     auto reform_x = [&]() {
+        stage("S * Z (sparse product)");
         tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
+        stage("Z^H (S Z) (hermitian congruence)");
         tmp2 = S_inv_sqrt->spmm_hermitian(tmp2, sptol, /*transA=*/true);
     };
 
@@ -287,9 +302,15 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
 
     while (norm > tol && count < maxit && std::abs(norm_pre - norm) > 0.005 * norm) {
         util::throw_if_interrupted(graph->comm);
-        if (rank == 0 && util::Log::enabled(util::LogLevel::kDebug)) {
-            std::cout << "inverse_sqrt: maxabs residual " << norm << ", density "
-                      << S_inv_sqrt->get_block_density() << "\n";
+        // get_block_density() is a collective (Allreduce on the group comm):
+        // it must run on EVERY rank, outside the rank-0 log guard. Calling it
+        // inside the guard paired rank 0's Allreduce with whatever collective
+        // the other ranks issued next -- MPI_ERR_TRUNCATE on them and a
+        // garbage density on rank 0 were exactly that.
+        const double z_density = S_inv_sqrt->get_block_density();
+        if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+            std::cout << "inverse_sqrt: step " << count + 1 << ": maxabs residual " << norm
+                      << ", density " << z_density << std::endl;
         }
         if (norm > 100.0) {
             if (rank == 0 && util::fault()) {
@@ -303,11 +324,13 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // Hermitian (every route that forms it mirrors), X^2 of a Hermitian
         // matrix is Hermitian, and the polynomial's coefficients are real --
         // so P is exactly Hermitian too, which the propagation below uses.
+        stage("X^2 (hermitian square)");
         tmp1 = tmp2.spmm_hermitian(tmp2, sptol);
         tmp1.axpby(T(-1.25), tmp2, T(0.375));
         tmp1.shift(T(1.875));
         tmp1.filter_blocks(sptol);
 
+        stage("Z * P");
         *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
 
         // X <- P X P while converging -- cheap, because P and X collapse
@@ -316,7 +339,9 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // P^H = P exactly, so the first product needs no transpose at all,
         // and the second is the known-Hermitian congruence.
         if (norm < 1e-1 && ((count + 1) % 5 != 0)) {
+            stage("P X (propagate)");
             tmp2 = tmp1.spmm(tmp2, sptol);
+            stage("(P X) P (hermitian)");
             tmp2 = tmp2.spmm_hermitian(tmp1, sptol);
         } else {
             reform_x();
@@ -331,10 +356,12 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // of iteration, one of which the plateau exit spent confirming the stall.
     const bool hit_tol = norm <= tol;
     const bool hit_maxiter = count >= maxit;
+    // Collective: every rank, before the rank-0 guard (see the note above).
+    const double final_density = S_inv_sqrt->get_block_density();
     if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
         std::cout << "inverse_sqrt: " << (hit_tol ? "converged" : (hit_maxiter ? "stopped at maxiter" : "plateaued"))
                   << " at maxabs residual " << norm << ", density "
-                  << S_inv_sqrt->get_block_density() << " (" << count << " Newton-Schulz steps, "
+                  << final_density << " (" << count << " Newton-Schulz steps, "
                   << (MPI_Wtime() - t_ns0) << "s)" << std::endl;
     }
     if (!hit_tol && rank == 0 && util::Log::enabled(util::LogLevel::kSummary)) {

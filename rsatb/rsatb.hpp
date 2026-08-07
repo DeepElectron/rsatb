@@ -317,6 +317,17 @@ public:
                                  time_out, axis);
     }
 
+    /// Full-cell LDOS map on the real-space grid (calc/rs_ldos.hpp).
+    ///
+    /// Gamma-only, and needs a model with real-space orbitals (LCAO, or DFTB
+    /// with .orb files). Bounds come from the operator set; the options'
+    /// emin/emax are overwritten. Each rank returns its own compact share of
+    /// the grid -- see RealSpaceLdosResult.
+    calc::RealSpaceLdosResult compute_rs_ldos(calc::RealSpaceLdosOptions options) {
+        return calc::ComputeRealSpaceLdos(observable_context(), orbital_files_,
+                                          std::move(options));
+    }
+
     void compute_quantum_metric(int nt, int n_kpm, double temp, double mu,
                                 std::vector<double>& gxx_out, std::vector<double>& sigma_xx_out,
                                 std::vector<double>& omega_out, std::string axis = "abc",

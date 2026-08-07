@@ -22,6 +22,7 @@
 #include <cmath>
 #include <numeric>
 #include <string>
+#include <random>
 #include <vector>
 
 namespace {
@@ -96,6 +97,23 @@ std::unique_ptr<vbcsr::atomic::AtomicData> BuildLoneAtom(double rcut) {
     const std::vector<int> type_norb = {13};
     return std::unique_ptr<vbcsr::atomic::AtomicData>(vbcsr::atomic::AtomicData::from_points(
         pos, z, cell, pbc, cutoff, type_norb, MPI_COMM_WORLD));
+}
+
+// A chain of carbons, spaced so their orbitals overlap. Enough atoms that an
+// inertial partition has something to cut, unlike the lone-atom fixture. The
+// periodic variant exercises the wrap paths; its cell exceeds twice the
+// cutoff along every axis, so one image is always the whole answer.
+std::unique_ptr<vbcsr::atomic::AtomicData> BuildChain(double rcut, int n,
+                                                      bool periodic = false) {
+    std::vector<double> pos;
+    for (int i = 0; i < n; ++i) pos.insert(pos.end(), {2.0 * i, 0.0, 0.0});
+    const std::vector<int> z(n, 6);
+    const double lx = 2.0 * n + 4.0 * rcut, lt = 4.0 * rcut + 6.0;
+    const std::vector<double> cell = {lx, 0.0, 0.0, 0.0, lt, 0.0, 0.0, 0.0, lt};
+    const std::vector<double> cutoff = {rcut};
+    const std::vector<int> type_norb = {13};
+    return std::unique_ptr<vbcsr::atomic::AtomicData>(vbcsr::atomic::AtomicData::from_points(
+        pos, z, cell, {periodic, periodic, periodic}, cutoff, type_norb, MPI_COMM_WORLD));
 }
 
 }  // namespace
@@ -190,7 +208,8 @@ TEST(RealSpaceGridTest, TilesTheCellAndCoversEveryPointOnce) {
 
     // Boxes must tile the index space exactly: every point in one box.
     std::vector<int> seen(grid.n_point(), 0);
-    for (const auto& box : grid.boxes) {
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
         for (int ix = box.lo[0]; ix < box.hi[0]; ++ix) {
             for (int iy = box.lo[1]; iy < box.hi[1]; ++iy) {
                 for (int iz = box.lo[2]; iz < box.hi[2]; ++iz) {
@@ -209,7 +228,8 @@ TEST(RealSpaceGridTest, BoxSpheresContainTheirPoints) {
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.6, 5);
 
     std::vector<double> points;
-    for (const auto& box : grid.boxes) {
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
         grid.PointsOfBox(box, &points);
         for (size_t p = 0; p * 3 < points.size(); ++p) {
             double d2 = 0.0;
@@ -227,7 +247,8 @@ TEST(RealSpaceGridTest, PointsOfBoxMatchTheGridIndexing) {
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 1.0, 3);
 
     std::vector<double> points;
-    for (const auto& box : grid.boxes) {
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
         grid.PointsOfBox(box, &points);
         size_t at = 0;
         for (int ix = box.lo[0]; ix < box.hi[0]; ++ix) {
@@ -242,6 +263,24 @@ TEST(RealSpaceGridTest, PointsOfBoxMatchTheGridIndexing) {
                 }
             }
         }
+    }
+}
+
+TEST(RealSpaceGridTest, DefaultBoxEdgeIsPhysicalNotAPointCount) {
+    // The default targets ~2.4 A of box whatever the spacing. A fixed
+    // 12-point edge would make 12 A boxes on a coarse 1 A property grid,
+    // whose bounding spheres pull in thousands of atoms and blow up the
+    // per-box buffers -- the edge must shrink with the point count.
+    const std::vector<double> cell = {48.0, 0.0, 0.0, 0.0, 48.0, 0.0, 0.0, 0.0, 48.0};
+    for (int d = 0; d < 3; ++d) {
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 0.2).box_edge[d], 12);
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 0.5).box_edge[d], 5);
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 1.0).box_edge[d], 3);
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 4.0).box_edge[d], 1);
+        // Very fine grids stay capped so the Phi buffer stays a few thousand
+        // points; an explicit edge still overrides everything.
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 0.05).box_edge[d], 12);
+        EXPECT_EQ(rsatb::calc::MakeRealSpaceGrid(cell, 1.0, 7).box_edge[d], 7);
     }
 }
 
@@ -266,11 +305,12 @@ TEST(CollocationTest, BoxContractionMatchesPointContraction) {
     }
 
     const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
-    std::vector<int> all_boxes(grid.boxes.size());
+    std::vector<int> all_boxes(grid.n_box());
     std::iota(all_boxes.begin(), all_boxes.end(), 0);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, all_boxes);
 
     std::vector<double> by_box;
-    collocation.ContractOntoBoxes(*atomic_data, set, block, grid, all_boxes, &by_box);
+    collocation.ContractOntoBoxes(*atomic_data, set, block, grid, domain, &by_box);
 
     // Same points, fed through the scattered-point path.
     std::vector<double> points(grid.n_point() * 3);
@@ -284,9 +324,12 @@ TEST(CollocationTest, BoxContractionMatchesPointContraction) {
     std::vector<double> by_point;
     collocation.ContractOntoPoints(*atomic_data, set, block, points, &by_point);
 
-    ASSERT_EQ(by_box.size(), by_point.size());
-    for (size_t i = 0; i < by_box.size(); ++i) {
-        EXPECT_NEAR(by_box[i], by_point[i], 1e-12) << "grid point " << i;
+    // by_box is compact, in owned-box order; by_point is in grid order.
+    ASSERT_EQ(static_cast<int64_t>(by_box.size()), domain.n_point());
+    ASSERT_EQ(domain.n_point(), grid.n_point());
+    for (int64_t k = 0; k < domain.n_point(); ++k) {
+        const int64_t g = rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k);
+        EXPECT_NEAR(by_box[k], by_point[g], 1e-12) << "grid point " << g;
     }
 }
 
@@ -302,4 +345,624 @@ int main(int argc, char** argv) {
     const int result = RUN_ALL_TESTS();
     MPI_Finalize();
     return result;
+}
+
+// --- grid ownership: bound to the atoms, and a partition ------------------
+//
+// These are the two properties the whole scaling argument rests on. If boxes
+// were not a disjoint cover, the compact per-rank buffers would not
+// concatenate into the global result and the missing allreduce would be a
+// silent bug. If ownership were not derived from the atom cut, a rank's boxes
+// would need orbitals from atoms it does not hold, and the work per rank would
+// never fall no matter how many ranks were added.
+
+namespace {
+
+// Atoms in two well-separated clumps, so "which region is this box in" has an
+// unambiguous answer that a test can assert against.
+vbcsr::atomic::InertialPartition TwoClumpPartition(int n_part,
+                                                   std::vector<double>* pos_out) {
+    std::vector<double> pos;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            pos.insert(pos.end(), {1.0 + 0.6 * i, 1.0 + 0.6 * j, 1.0});
+            pos.insert(pos.end(), {8.0 + 0.6 * i, 8.0 + 0.6 * j, 8.0});
+        }
+    }
+    *pos_out = pos;
+    return vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+}
+
+}  // namespace
+
+TEST(GridPartitionTest, AssignsEveryPointExactlyOnce) {
+    const std::vector<double> cell = {10.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 8.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.8, 3);
+
+    for (int n_part : {2, 3, 4, 8, 16}) {
+        std::vector<double> pos;
+        const auto part = TwoClumpPartition(n_part, &pos);
+
+        std::vector<int> seen(grid.n_point(), 0);
+        int64_t total = 0;
+        for (int r = 0; r < n_part; ++r) {
+            const auto domain = rsatb::calc::MakeGridDomain(
+                grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+            total += domain.n_point();
+            for (int64_t k = 0; k < domain.n_point(); ++k) {
+                seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+            }
+        }
+        EXPECT_EQ(total, grid.n_point()) << "n_part = " << n_part;
+        for (int64_t i = 0; i < grid.n_point(); ++i) {
+            ASSERT_EQ(seen[i], 1) << "point " << i << " at n_part = " << n_part;
+        }
+    }
+}
+
+TEST(GridPartitionTest, BindsPointsToTheAtomsTheyLieOn) {
+    // A box sitting inside a clump must be owned by a rank that owns atoms of
+    // that clump -- that is the point_owner == atom_owner contract. Checked by
+    // asserting the box's owner also owns the atom nearest the box centre.
+    const std::vector<double> cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.8, 3);
+
+    for (int n_part : {2, 3, 4, 8, 16}) {
+        std::vector<double> pos;
+        const auto part = TwoClumpPartition(n_part, &pos);
+        const int n_atom = static_cast<int>(pos.size() / 3);
+
+        for (int r = 0; r < n_part; ++r) {
+            for (int b : rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r)) {
+                const auto box = grid.BoxAt(b);
+                int nearest = -1;
+                double best = 0.0;
+                for (int a = 0; a < n_atom; ++a) {
+                    double d2 = 0.0;
+                    for (int x = 0; x < 3; ++x) {
+                        const double d = pos[3 * a + x] - box.center[x];
+                        d2 += d * d;
+                    }
+                    if (nearest < 0 || d2 < best) { nearest = a; best = d2; }
+                }
+                // Only assert where the answer is unambiguous: a box deep
+                // inside a clump. Boxes in the vacuum between clumps fall
+                // wherever the cut planes put them, which is correct but
+                // arbitrary, and asserting there would test nothing.
+                if (std::sqrt(best) < 1.0) {
+                    EXPECT_EQ(part.owner[nearest], r)
+                        << "box " << b << " at n_part = " << n_part;
+                }
+            }
+        }
+    }
+}
+
+TEST(GridPartitionTest, IsDeterministicAndIndependentOfRankOrder) {
+    // Every rank derives the partition itself with no communication, so two
+    // independent derivations must agree exactly or the ranks disagree about
+    // who owns what.
+    const std::vector<double> cell = {7.0, 1.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 7.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.7, 4);
+    std::vector<double> pos;
+    const auto a = TwoClumpPartition(4, &pos);
+    const auto b = TwoClumpPartition(4, &pos);
+    for (int r = 0; r < 4; ++r) {
+        EXPECT_EQ(rsatb::calc::OwnedBoxesFromAtoms(grid, *a.tree, r),
+                  rsatb::calc::OwnedBoxesFromAtoms(grid, *b.tree, r));
+    }
+}
+
+TEST(GridPartitionTest, SurvivesMoreRanksThanAtoms) {
+    // 32 atoms across 64 parts: bisection runs out of atoms to split, so some
+    // parts are empty. Those ranks must own no boxes rather than duplicate or
+    // drop them -- the cover has to stay exact when the partition degenerates.
+    const std::vector<double> cell = {6.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 1.0, 3);
+    std::vector<double> pos;
+    const auto part = TwoClumpPartition(64, &pos);
+
+    std::vector<int> seen(grid.n_point(), 0);
+    for (int r = 0; r < 64; ++r) {
+        const auto domain = rsatb::calc::MakeGridDomain(
+            grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+        for (int64_t k = 0; k < domain.n_point(); ++k) {
+            seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+        }
+    }
+    for (int64_t i = 0; i < grid.n_point(); ++i) ASSERT_EQ(seen[i], 1) << "point " << i;
+}
+
+TEST(GridPartitionTest, GivesEveryAtomOwningRankBoxesWhenBoxesResolveRegions) {
+    // Ownership follows the atoms, so grid balance is not the target: a rank
+    // over vacuum legitimately gets more boxes than one over a dense clump.
+    // What must hold is that a rank owning atoms also owns grid, which needs
+    // the boxes to be finer than the regions -- see OwnedBoxesFromAtoms. Here
+    // the clumps are ~6 A across and split 4 ways gives ~3 A regions against a
+    // 0.75 A box, the same direction as production (17.8 A vs 2.4 A).
+    const std::vector<double> cell = {24.0, 0.0, 0.0, 0.0, 24.0, 0.0, 0.0, 0.0, 24.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.25, 3);
+
+    std::vector<double> pos;
+    for (int i = 0; i < 4; ++i) {
+        for (int j = 0; j < 4; ++j) {
+            pos.insert(pos.end(), {2.0 + 2.0 * i, 2.0 + 2.0 * j, 4.0});
+            pos.insert(pos.end(), {16.0 + 2.0 * i, 16.0 + 2.0 * j, 18.0});
+        }
+    }
+    for (int n_part : {2, 4, 8}) {
+        const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+        for (int r = 0; r < n_part; ++r) {
+            if (part.counts[r] == 0) continue;
+            EXPECT_FALSE(rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r).empty())
+                << "rank " << r << " owns atoms but no boxes, n_part = " << n_part;
+        }
+    }
+}
+
+TEST(GridPartitionTest, CoverStaysExactWhenBoxesAreCoarserThanRegions) {
+    // The other side of the same condition. With boxes coarser than the atom
+    // regions, a region can contain no box centre and that rank gets no grid;
+    // its points belong to a neighbouring rank instead, which then needs
+    // orbitals from atoms it does not own (the ghost layer's job, not the
+    // partition's). That is a resolution question and degrades gracefully --
+    // but the cover must stay exact regardless, because the compact per-rank
+    // buffers are concatenated with no reduction and a double-counted point
+    // would be silently wrong rather than merely imbalanced.
+    const std::vector<double> cell = {6.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0};
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.5, 4);  // 2 A boxes
+    std::vector<double> pos;
+    const auto part = TwoClumpPartition(8, &pos);                    // ~0.9 A regions
+
+    std::vector<int> seen(grid.n_point(), 0);
+    for (int r = 0; r < 8; ++r) {
+        const auto domain = rsatb::calc::MakeGridDomain(
+            grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+        for (int64_t k = 0; k < domain.n_point(); ++k) {
+            seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+        }
+    }
+    for (int64_t i = 0; i < grid.n_point(); ++i) ASSERT_EQ(seen[i], 1) << "point " << i;
+}
+
+TEST(CollocationTest, LocalOrbitalSetHoldsEveryAtomReachingItsBoxes) {
+    // The no-communication claim: a rank's local set must contain every atom
+    // the replicated set would have contributed for the same boxes. If it
+    // missed one, the contraction would silently drop that orbital's weight
+    // rather than fail, so this compares against the gathered answer directly.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
+
+    std::vector<int> all_boxes(grid.n_box());
+    std::iota(all_boxes.begin(), all_boxes.end(), 0);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, all_boxes);
+
+    const auto local = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
+
+    // The replicated reference over the same box centres.
+    std::vector<double> centers, radii;
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto gathered = rsatb::calc::BuildOrbitalSetForSpheres(
+        *atomic_data, centers, radii, {rcut}, MPI_COMM_WORLD);
+
+    EXPECT_EQ(local.atoms, gathered.atoms);
+    EXPECT_EQ(local.n_orb(), gathered.n_orb());
+}
+
+TEST(CollocationTest, LocalOrbitalSetIsEmptyForBoxesNoOrbitalReaches) {
+    // A rank whose region is vacuum owns boxes that nothing reaches. That is
+    // legitimate and must not throw -- unlike the replicated builder, which
+    // treats an empty result as a caller error because it means the requested
+    // probe region found nothing anywhere.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
+
+    // One box, and a cutoff far too short for the atom to reach it.
+    const auto domain = rsatb::calc::MakeGridDomain(grid, {grid.n_box() - 1});
+    const auto set = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {1e-6});
+    EXPECT_EQ(set.n_atom(), 0);
+    EXPECT_EQ(set.n_orb(), 0);
+}
+
+// --- route (5.3b): square-on-grid ----------------------------------------
+
+TEST(CollocationTest, SquaringOneVectorMatchesItsOuterProductBlock) {
+    // The identity the whole route rests on:
+    //   sum_ij (c_i c_j) phi_i phi_j == ( sum_i c_i phi_i )^2
+    // so for a single vector the two routes must agree to machine precision.
+    // No sampling is involved, which is what makes this a correctness test
+    // rather than a convergence test.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+
+    const std::vector<double> seed_point = {0.0, 0.0, 0.0};
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*atomic_data, seed_point, {}, {rcut},
+                                                            MPI_COMM_WORLD);
+    const int n_orb = set.n_orb();
+
+    std::vector<double> c(n_orb);
+    for (int i = 0; i < n_orb; ++i) c[i] = std::cos(0.7 * i + 0.3) / (1.0 + 0.1 * i);
+
+    std::vector<std::complex<double>> block(static_cast<size_t>(n_orb) * n_orb);
+    for (int i = 0; i < n_orb; ++i) {
+        for (int j = 0; j < n_orb; ++j) block[static_cast<size_t>(i) * n_orb + j] = c[i] * c[j];
+    }
+
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
+    std::vector<int> all(grid.n_box());
+    std::iota(all.begin(), all.end(), 0);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, all);
+
+    std::vector<double> by_block, by_square;
+    collocation.ContractOntoBoxes(*atomic_data, set, block, grid, domain, &by_block);
+    collocation.SquareVectorsOntoBoxes(*atomic_data, set, c, 1, grid, domain, &by_square);
+
+    ASSERT_EQ(by_block.size(), by_square.size());
+    double peak = 0.0;
+    for (double v : by_block) peak = std::max(peak, std::abs(v));
+    ASSERT_GT(peak, 0.0) << "the reference is identically zero; the test proves nothing";
+    for (size_t i = 0; i < by_block.size(); ++i) {
+        EXPECT_NEAR(by_square[i], by_block[i], 1e-12 * peak) << "point " << i;
+    }
+}
+
+TEST(CollocationTest, SquaringManyVectorsMatchesTheAveragedOuterProduct) {
+    // With n_vec vectors the route returns mean_v |phi.c_v|^2, which is the
+    // block route fed mean_v c_v c_v^T. Still exact -- averaging commutes with
+    // both contractions -- so this checks the multi-vector bookkeeping (the
+    // GEMM layout and the 1/n_vec) rather than any statistics.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+
+    const std::vector<double> seed_point = {0.0, 0.0, 0.0};
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*atomic_data, seed_point, {}, {rcut},
+                                                            MPI_COMM_WORLD);
+    const int n_orb = set.n_orb();
+    const int n_vec = 5;
+
+    // Row-major (n_orb, n_vec).
+    std::vector<double> c(static_cast<size_t>(n_orb) * n_vec);
+    for (int i = 0; i < n_orb; ++i) {
+        for (int v = 0; v < n_vec; ++v) {
+            c[static_cast<size_t>(i) * n_vec + v] = std::sin(0.4 * i + 1.1 * v) / (1.0 + 0.05 * i);
+        }
+    }
+
+    std::vector<std::complex<double>> block(static_cast<size_t>(n_orb) * n_orb, 0.0);
+    for (int i = 0; i < n_orb; ++i) {
+        for (int j = 0; j < n_orb; ++j) {
+            double acc = 0.0;
+            for (int v = 0; v < n_vec; ++v) {
+                acc += c[static_cast<size_t>(i) * n_vec + v] * c[static_cast<size_t>(j) * n_vec + v];
+            }
+            block[static_cast<size_t>(i) * n_orb + j] = acc / n_vec;
+        }
+    }
+
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
+    std::vector<int> all(grid.n_box());
+    std::iota(all.begin(), all.end(), 0);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, all);
+
+    std::vector<double> by_block, by_square;
+    collocation.ContractOntoBoxes(*atomic_data, set, block, grid, domain, &by_block);
+    collocation.SquareVectorsOntoBoxes(*atomic_data, set, c, n_vec, grid, domain, &by_square);
+
+    double peak = 0.0;
+    for (double v : by_block) peak = std::max(peak, std::abs(v));
+    ASSERT_GT(peak, 0.0);
+    for (size_t i = 0; i < by_block.size(); ++i) {
+        EXPECT_NEAR(by_square[i], by_block[i], 1e-12 * peak) << "point " << i;
+    }
+}
+
+TEST(CollocationTest, SquaredDensityIsNonNegativeEverywhere) {
+    // Route (5.3b) is a sum of squares, so unlike the block route it cannot
+    // produce a negative density from any coefficient input. Worth pinning:
+    // it is the one qualitative guarantee the square-on-grid form buys.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+    const std::vector<double> seed_point = {0.0, 0.0, 0.0};
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*atomic_data, seed_point, {}, {rcut},
+                                                            MPI_COMM_WORLD);
+    const int n_orb = set.n_orb();
+    const int n_vec = 3;
+
+    std::mt19937 rng(12345);
+    std::normal_distribution<double> gauss(0.0, 1.0);
+    std::vector<double> c(static_cast<size_t>(n_orb) * n_vec);
+    for (auto& v : c) v = gauss(rng);
+
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
+    std::vector<int> all(grid.n_box());
+    std::iota(all.begin(), all.end(), 0);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, all);
+
+    std::vector<double> values;
+    collocation.SquareVectorsOntoBoxes(*atomic_data, set, c, n_vec, grid, domain, &values);
+    for (size_t i = 0; i < values.size(); ++i) EXPECT_GE(values[i], 0.0) << "point " << i;
+}
+
+// --- exact-zero row trim --------------------------------------------------
+
+TEST(CollocationTest, TrimDropsExactlyTheAllZeroRowsAndCompacts) {
+    // Exact zeros only: a row of 1e-300 is kept, because the evaluator returns
+    // a true 0.0 outside a cutoff and anything else is real weight. Getting
+    // this wrong would silently truncate the density instead of failing.
+    std::vector<double> phi = {
+        0.0, 0.0, 0.0,       // row 0: drop
+        1.0, 2.0, 3.0,       // row 1: keep
+        0.0, 0.0, 0.0,       // row 2: drop
+        0.0, 1e-300, 0.0,    // row 3: keep -- tiny, not zero
+        4.0, 5.0, 6.0,       // row 4: keep
+    };
+    std::vector<int> kept;
+    const int n_kept = rsatb::calc::detail::TrimZeroRows(5, 3, &phi, &kept);
+
+    ASSERT_EQ(n_kept, 3);
+    EXPECT_EQ(kept, (std::vector<int>{1, 3, 4}));
+    // Kept rows must be compacted to the front, in order, values intact.
+    EXPECT_DOUBLE_EQ(phi[0], 1.0);
+    EXPECT_DOUBLE_EQ(phi[2], 3.0);
+    EXPECT_DOUBLE_EQ(phi[4], 1e-300);
+    EXPECT_DOUBLE_EQ(phi[6], 4.0);
+    EXPECT_DOUBLE_EQ(phi[8], 6.0);
+}
+
+TEST(CollocationTest, TrimActuallyFiresOnBoxesOrbitalsOnlyClip) {
+    // The trim is only worth its scan if it removes rows in a real geometry.
+    // A lone atom in a large cell is the case it targets: most boxes are
+    // vacuum, and the boxes at the edge of the atom's reach are part covered.
+    // Without this the trim could be a silent no-op and every other test would
+    // still pass.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    auto atomic_data = BuildLoneAtom(rcut);
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.0, 4);
+
+    const std::vector<double> seed_point = {0.0, 0.0, 0.0};
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*atomic_data, seed_point, {}, {rcut},
+                                                            MPI_COMM_WORLD);
+    const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data->cell.data());
+
+    int64_t total = 0, trimmed = 0;
+    std::vector<double> points, phi, relative;
+    std::vector<int> active, kept;
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
+        const auto local = collocation.ViewForSphereForTest(*atomic_data, set, box.center,
+                                                            box.radius, cell_inv);
+        const int n_local_orb = static_cast<int>(local.orbitals.size());
+        if (n_local_orb == 0) continue;  // skipped before the trim is reached
+        grid.PointsOfBox(box, &points);
+        phi.assign(static_cast<size_t>(box.n_point()) * n_local_orb, 0.0);
+        collocation.EvaluatePhiForTest(*atomic_data, set, local, points, box.n_point(),
+                                       cell_inv, &relative, &active, phi.data());
+        const int n_kept = rsatb::calc::detail::TrimZeroRows(box.n_point(), n_local_orb,
+                                                             &phi, &kept);
+        total += box.n_point();
+        trimmed += box.n_point() - n_kept;
+    }
+    ASSERT_GT(total, 0);
+    EXPECT_GT(trimmed, 0) << "the trim removed nothing; it is not earning its scan";
+}
+
+// --- end to end: the distributed map equals the serial one ----------------
+
+TEST(CollocationTest, DistributedMapAssemblesIntoTheSerialMap) {
+    // Everything from steps 1-5 acting together, against the answer it must
+    // reproduce. Each simulated rank derives its own boxes from the atom cut,
+    // builds its OWN local orbital set with no gather, contracts only what it
+    // owns with the trim active, and writes a compact buffer. Scattering those
+    // buffers back by global index has to rebuild, bit for bit, the map one
+    // rank produces holding every box and the full replicated set.
+    //
+    // The individual properties are covered elsewhere; what is new here is
+    // that they compose. A local set missing a boundary atom, an off-by-one in
+    // the compact offsets, or a trim that dropped a row with real weight would
+    // each leave the parts correct and the whole wrong.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    const int n_atom = 12;
+    auto atomic_data = BuildChain(rcut, n_atom);
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.2, 4);
+
+    // Serial reference: one domain, replicated set over every box.
+    std::vector<double> centers, radii;
+    for (int b = 0; b < grid.n_box(); ++b) {
+        const auto box = grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto full_set = rsatb::calc::BuildOrbitalSetForSpheres(
+        *atomic_data, centers, radii, {rcut}, MPI_COMM_WORLD);
+
+    std::vector<int> all(grid.n_box());
+    std::iota(all.begin(), all.end(), 0);
+    const auto full_domain = rsatb::calc::MakeGridDomain(grid, all);
+
+    // One coefficient vector per atom, keyed by GLOBAL atom index so the
+    // simulated ranks agree on the values without exchanging them.
+    const int n_vec = 2;
+    auto coeff_for = [&](const rsatb::calc::OrbitalSet& set) {
+        std::vector<double> c(static_cast<size_t>(set.n_orb()) * n_vec, 0.0);
+        for (int a = 0; a < set.n_atom(); ++a) {
+            for (int o = set.orb_offset[a]; o < set.orb_offset[a + 1]; ++o) {
+                const int local_o = o - set.orb_offset[a];
+                for (int v = 0; v < n_vec; ++v) {
+                    c[static_cast<size_t>(o) * n_vec + v] =
+                        std::sin(0.31 * set.atoms[a] + 0.17 * local_o + 0.9 * v);
+                }
+            }
+        }
+        return c;
+    };
+
+    std::vector<double> serial;
+    collocation.SquareVectorsOntoBoxes(*atomic_data, full_set, coeff_for(full_set), n_vec,
+                                       grid, full_domain, &serial);
+
+    double peak = 0.0;
+    for (double v : serial) peak = std::max(peak, std::abs(v));
+    ASSERT_GT(peak, 0.0) << "the reference map is identically zero";
+
+    for (int n_part : {2, 3, 4, 8}) {
+        std::vector<double> pos(atomic_data->x.size() * 3);
+        for (int a = 0; a < n_atom; ++a) {
+            pos[3 * a + 0] = atomic_data->x[a];
+            pos[3 * a + 1] = atomic_data->y[a];
+            pos[3 * a + 2] = atomic_data->z[a];
+        }
+        pos.resize(3 * n_atom);
+        const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+
+        std::vector<double> assembled(grid.n_point(), 0.0);
+        std::vector<int> written(grid.n_point(), 0);
+        int n_strict_subset = 0;
+        for (int r = 0; r < n_part; ++r) {
+            const auto domain = rsatb::calc::MakeGridDomain(
+                grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+            if (domain.n_box() == 0) continue;
+            // The local set -- no gather, and generally not the full set.
+            const auto local_set =
+                rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
+            if (local_set.n_atom() < full_set.n_atom()) ++n_strict_subset;
+            if (local_set.n_orb() == 0) {
+                for (int64_t k = 0; k < domain.n_point(); ++k) {
+                    written[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+                }
+                continue;
+            }
+            std::vector<double> values;
+            collocation.SquareVectorsOntoBoxes(*atomic_data, local_set, coeff_for(local_set),
+                                               n_vec, grid, domain, &values);
+            for (int64_t k = 0; k < domain.n_point(); ++k) {
+                const int64_t g = rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k);
+                assembled[g] = values[k];
+                written[g] += 1;
+            }
+        }
+
+        // If every rank saw the whole set, the local-set path was never
+        // exercised and the agreement above would prove nothing.
+        EXPECT_GT(n_strict_subset, 0)
+            << "no rank had a proper subset of the atoms at n_part = " << n_part;
+        for (int64_t i = 0; i < grid.n_point(); ++i) {
+            ASSERT_EQ(written[i], 1) << "point " << i << " at n_part = " << n_part;
+        }
+        for (int64_t k = 0; k < full_domain.n_point(); ++k) {
+            const int64_t g = rsatb::calc::GlobalIndexOfOwnedPoint(grid, full_domain, k);
+            EXPECT_NEAR(assembled[g], serial[k], 1e-11 * peak)
+                << "point " << g << " at n_part = " << n_part;
+        }
+    }
+}
+
+// --- coverage: the demand side proves the local sets sufficient -----------
+
+TEST(GridPartitionTest, DemandEnumerationMatchesTheLocalSetsExactly) {
+    // BoxDemandsOfOwnedAtoms walks a WINDOW of the box lattice around each
+    // atom; BuildLocalOrbitalSet scans every owned box against every held
+    // atom. Same overlap predicate, opposite sides. On a serial fixture the
+    // candidate pool is complete, so the atoms demanded of a rank must equal
+    // its local set exactly -- a window sized too small, a wrap handled
+    // wrong, or a bound that fails under the periodic images would each show
+    // up as a set difference. Both boundary conditions are run because they
+    // take different code paths through the window arithmetic.
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    const int n_atom = 12;
+
+    for (bool periodic : {false, true}) {
+        auto atomic_data = BuildChain(rcut, n_atom, periodic);
+        const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.2, 4);
+
+        std::vector<double> pos(3 * n_atom);
+        for (int a = 0; a < n_atom; ++a) {
+            pos[3 * a + 0] = atomic_data->x[a];
+            pos[3 * a + 1] = atomic_data->y[a];
+            pos[3 * a + 2] = atomic_data->z[a];
+        }
+
+        for (int n_part : {2, 3, 4, 8}) {
+            const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+            const auto demands =
+                rsatb::calc::BoxDemandsOfOwnedAtoms(*atomic_data, grid, *part.tree, {rcut});
+
+            for (int r = 0; r < n_part; ++r) {
+                std::vector<int> demanded;
+                for (const auto& demand : demands) {
+                    if (demand.first == r) demanded.push_back(demand.second);
+                }
+                std::sort(demanded.begin(), demanded.end());
+
+                const auto domain = rsatb::calc::MakeGridDomain(
+                    grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+                const auto local_set =
+                    rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
+                EXPECT_EQ(demanded, local_set.atoms)
+                    << "rank " << r << " at n_part = " << n_part
+                    << (periodic ? " (periodic)" : " (open)");
+
+                // The demand-BUILT set must reproduce the local one field for
+                // field: on a serial fixture the candidate pool is complete,
+                // so any difference is a bug in the exchange-side packing.
+                const auto demand_set = rsatb::calc::BuildOrbitalSetFromDemands(
+                    *atomic_data, grid, *part.tree, {rcut}, r, MPI_COMM_NULL);
+                EXPECT_EQ(demand_set.atoms, local_set.atoms);
+                EXPECT_EQ(demand_set.atom_type, local_set.atom_type);
+                EXPECT_EQ(demand_set.atom_norb, local_set.atom_norb);
+                EXPECT_EQ(demand_set.positions, local_set.positions);
+                EXPECT_EQ(demand_set.orb_offset, local_set.orb_offset);
+            }
+        }
+    }
+}
+
+TEST(GridPartitionTest, CoverageValidatorPassesAndCatchesATruncatedSet) {
+    // The MPI wrapper around the demands. Serial communicator: every demand
+    // is this rank's own, so the full local set must pass, and a set with one
+    // reaching atom removed must be reported as insufficient -- that is the
+    // "silently dropped contribution" the validator exists to make loud.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "fixture is serial; the wrapper is exercised at np=1";
+
+    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
+    const double rcut = collocation.rcut_angstrom(0);
+    const int n_atom = 12;
+    auto atomic_data = BuildChain(rcut, n_atom);
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.2, 4);
+
+    std::vector<double> pos(3 * n_atom);
+    for (int a = 0; a < n_atom; ++a) {
+        pos[3 * a + 0] = atomic_data->x[a];
+        pos[3 * a + 1] = atomic_data->y[a];
+        pos[3 * a + 2] = atomic_data->z[a];
+    }
+    const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, 1);
+    const auto domain = rsatb::calc::MakeGridDomain(
+        grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, 0));
+    const auto set = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
+    ASSERT_EQ(set.n_atom(), n_atom);
+
+    EXPECT_NO_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
+        *atomic_data, grid, *part.tree, set, {rcut}, MPI_COMM_WORLD));
+
+    auto truncated = set;
+    truncated.atoms.erase(truncated.atoms.begin() + 5);
+    EXPECT_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
+                     *atomic_data, grid, *part.tree, truncated, {rcut}, MPI_COMM_WORLD),
+                 std::runtime_error);
 }
