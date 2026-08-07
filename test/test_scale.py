@@ -35,7 +35,6 @@ model_runner = RSATB(
         ),
     ),
     npar=1,
-    verbose=True,
 )
 
 ac_out, omega_out, properties = model_runner.compute_ac(1000, 1000, 300.0, 16.225300864, axis="abc")

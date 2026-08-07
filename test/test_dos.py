@@ -62,7 +62,6 @@ model_runner = RSATB(
         preconditioner=PreconditionerOptions(operator_form="sandwich"),
     ),
     npar=5,
-    verbose=True,
 )
 
 dos, omega = model_runner.compute_dos(dE=1.4)

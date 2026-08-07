@@ -507,20 +507,6 @@ RUN = Obj(
         "kpoints": F(KPOINTS, default=[[0.0, 0.0, 0.0]]),
         "bounds": F(BOUNDS, default={}),
         "preconditioner": F(PRECONDITIONER, default={}),
-        "verbose": F(_bool("Print setup progress from the C++ side. Equivalent to "
-                           "log_level 'debug'; kept for inputs written before "
-                           "log_level existed. Prefer the CLI flag: verbosity "
-                           "describes one invocation, and a true left in a shared "
-                           "input makes every future run noisy."), default=False),
-        "log_level": F(_str(
-            "How much the solver reports.\n\n"
-            "'silent' prints nothing. 'summary' prints one line per phase plus a "
-            "table of where the wall time went, which is the useful default for a "
-            "production run. 'progress' adds bounded per-iteration progress. "
-            "'debug' adds everything, and is what run.verbose selects.\n\n"
-            "`rsatb run --log-level ...` (or -v for debug) overrides this: the "
-            "flag describes the invocation, the file describes the calculation.",
-            choices=("silent", "summary", "progress", "debug")), default="summary"),
     })
 
 

@@ -95,7 +95,9 @@ PYBIND11_MODULE(_rsatb, m) {
     // Verbosity is process-wide state rather than a per-object setting: the
     // solver logs from many call sites that never see the calculation object,
     // so threading a level through every one of them would be the `verbose`
-    // bool's problem again. Set it once before building a calculation.
+    // bool's problem again. Set it once before building a calculation --
+    // RSATB deliberately takes no verbosity argument, because when it did,
+    // the two spellings could disagree and the bool silently won.
     m.def("set_log_level", [](const std::string& level) {
         using rsatb::util::Log;
         using rsatb::util::LogLevel;
@@ -559,15 +561,13 @@ PYBIND11_MODULE(_rsatb, m) {
         .def(py::init([](const vbcsr::atomic::Structure& structure,
                          const rsatb::model::Model& model,
                          const rsatb::model::SetupOptions& options,
-                         int npar,
-                         bool verbose) {
-                 return new rsatb::RSATB(structure, model, options, npar, verbose);
+                         int npar) {
+                 return new rsatb::RSATB(structure, model, options, npar);
              }),
              py::arg("structure"),
              py::arg("model"),
              py::arg("options") = rsatb::model::SetupOptions{},
              py::arg("npar") = 1,
-             py::arg("verbose") = false,
              py::keep_alive<1, 3>())
         // Pre-partitioned graph plus a model. type_norb is not an argument:
         // it comes from the model's basis, so the block structure has one
@@ -578,7 +578,7 @@ PYBIND11_MODULE(_rsatb, m) {
                          const rsatb::model::Model& model,
                          const rsatb::model::SetupOptions& options,
                          size_t N_atom, size_t atom_offset, size_t N_edge,
-                         int npar, bool verbose) {
+                         int npar) {
                  rsatb::RSATB::AtomicGraphArrays graph;
                  graph.n_atom = static_cast<size_t>(atom_index.size());
                  graph.n_edge = static_cast<size_t>(edge_index.size() / 2);
@@ -591,14 +591,14 @@ PYBIND11_MODULE(_rsatb, m) {
                  graph.edge_shift_vec = edge_shift_vec.data();
                  graph.cell = cell.data();
                  graph.pos = pos.data();
-                 return new rsatb::RSATB(graph, model, options, npar, verbose);
+                 return new rsatb::RSATB(graph, model, options, npar);
              }),
              py::arg("atom_index"), py::arg("atom_type"), py::arg("edge_index"),
              py::arg("edge_shift_vec"), py::arg("cell"), py::arg("pos"),
              py::arg("model"),
              py::arg("options") = rsatb::model::SetupOptions{},
              py::arg("N_atom") = 0, py::arg("atom_offset") = 0, py::arg("N_edge") = 0,
-             py::arg("npar") = 1, py::arg("verbose") = false,
+             py::arg("npar") = 1,
              py::keep_alive<1, 8>())
         .def("get_kernel_info", &rsatb::RSATB::get_kernel_info)
          .def("test_solve", &rsatb::RSATB::test_solve)

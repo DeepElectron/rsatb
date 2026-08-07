@@ -34,7 +34,6 @@ model_runner = RSATB(
         ),
     ),
     npar=1,
-    verbose=True,
 )
 
 model_runner.test_solve()

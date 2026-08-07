@@ -41,6 +41,7 @@ _DRIVER_EXPORTS = (
     "Structure",
     "TightBindingFileModel",
     "atomic_number",
+    "set_log_level",
     "sk_exp_poly",
     "sk_spline",
 )

@@ -9,7 +9,7 @@ model = LcaoModel(
     pseudopotentials=PseudopotentialFiles(["C_ONCV_PBE-1.0.upf"], dir="./data/diamond/"),
 )
 runner = RSATB(structure, model, SetupOptions(kpoints=[[0.0, 0.0, 0.0]], nsamples=8),
-               npar=1, verbose=False)
+               npar=1)
 emin, emax = runner.energy_bounds()
 print("bounds", emin, emax, flush=True)
 energies = [emin + 0.3 * (emax - emin), emin + 0.5 * (emax - emin)]

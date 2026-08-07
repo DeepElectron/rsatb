@@ -62,8 +62,7 @@ try:
             preconditioner=PreconditionerOptions(target="none"),
         ),
         npar=1,
-        verbose=False,
-    )
+        )
     print("Verification successful: RSATB typed model setup works.")
 except Exception as e:
     print(f"Verification failed during SKTB binding smoke test: {e}")

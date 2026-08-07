@@ -93,6 +93,43 @@ need no MPI, so an input can be written and validated on a laptop or a login
 node and only then queued. Only `run` needs the extension. Where the console
 script is not on `PATH`, `python -m rsatb.cli` is the same program.
 
+### Logging
+
+One flag, `--log-level`, and nothing else sets it:
+
+```
+rsatb run input.json                          summary (the default)
+rsatb run input.json --log-level silent       nothing
+rsatb run input.json --log-level progress     adds per-iteration reporting
+rsatb run input.json --log-level debug        adds everything else
+```
+
+Levels are cumulative: `silent` < `summary` < `progress` < `debug`. `summary`
+is one line per phase plus the table of where the wall time went; `progress`
+adds bounded per-iteration reporting (Newton-Schulz steps, task batches).
+
+It is a flag and not an input key on purpose. How loud a run is describes the
+invocation, not the calculation — a level left in a shared input file makes
+every later run noisy — so `run.log_level` does not exist and an input
+carrying it is rejected.
+
+Output goes to stdout; redirecting it is the shell's job, as with `pw.x` or
+any other Unix program. Both of these capture the compiled solver's lines too
+— the phase profile, the per-step reporting — because it is all one stream:
+
+```
+rsatb run input.json --log-level progress > run.log 2>&1     keep it
+rsatb run input.json --log-level progress 2>&1 | tee run.log and watch it
+```
+
+Under a scheduler you usually need neither: SLURM already writes stdout to
+`slurm-<jobid>.out`. Under MPI only rank 0 reports. Faults and input warnings
+ignore the level and always print, so `silent` means "no progress reporting",
+not "no diagnostics".
+
+From Python there is likewise one way — `rsatb.set_log_level("progress")`
+before building a calculation, since a script has no command line to parse.
+
 `rsatb doc` is generated from the same declaration the validator uses, so the
 documentation cannot drift from what is accepted. `rsatb doc` with no argument
 prints the overview and the topic index; `rsatb doc model.sktb`,

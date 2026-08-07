@@ -19,6 +19,10 @@ SetupOptions = _rsatb.SetupOptions
 SpinSpec = _rsatb.SpinSpec
 Structure = _rsatb.Structure
 atomic_number = _rsatb.atomic_number
+# Verbosity is process-wide, not a per-calculation argument: the solver
+# logs from call sites that never see an RSATB object. Set it before
+# building one. How much it says is this; where it goes is the CLI's job.
+set_log_level = _rsatb.set_log_level
 
 
 # The Slater-Koster builders and model types are bound directly from C++.
@@ -40,7 +44,7 @@ class RSATB:
     Python wrapper for the RSATB C++ class.
     """
 
-    def __init__(self, structure, model, options=None, npar=1, verbose=False):
+    def __init__(self, structure, model, options=None, npar=1):
         """
         Build a ready-to-compute RSATB from a structure and a model.
 
@@ -53,11 +57,15 @@ class RSATB:
             options (SetupOptions, optional): k-points, sampling, bounds,
                 and preconditioner settings.
             npar (int): Number of k-point-parallel sub-communicators.
-            verbose (bool): Enable verbose output.
+
+        Verbosity is not an argument here. It is process-wide state: call
+        rsatb.set_log_level('silent'|'summary'|'progress'|'debug') before
+        building, so the many solver call sites that never see this object
+        still agree on how much to say.
         """
         if options is None:
             options = SetupOptions()
-        self._cpp_obj = _rsatb.RSATB(structure, model, options, npar, verbose)
+        self._cpp_obj = _rsatb.RSATB(structure, model, options, npar)
         # Velocity and position operators are built lazily through the model,
         # so keep a Python reference alongside pybind's keep_alive.
         self._model = model
@@ -65,7 +73,7 @@ class RSATB:
     @classmethod
     def from_graph(cls, atom_index, atom_type, edge_index, edge_shift_vec, cell, pos,
                    model, options=None, N_atom=0, atom_offset=0, N_edge=0,
-                   npar=1, verbose=False):
+                   npar=1):
         """
         Build an RSATB from a pre-partitioned atomic graph and a model.
 
@@ -105,7 +113,7 @@ class RSATB:
             np.ascontiguousarray(edge_shift_vec, dtype=np.int32),
             np.ascontiguousarray(cell, dtype=np.float64),
             np.ascontiguousarray(pos, dtype=np.float64),
-            model, options, N_atom, atom_offset, N_edge, npar, verbose,
+            model, options, N_atom, atom_offset, N_edge, npar,
         )
         instance._model = model
         return instance

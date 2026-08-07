@@ -89,7 +89,6 @@ model_runner = RSATB.from_graph(
         preconditioner=PreconditionerOptions(target="none"),
     ),
     npar=1,
-    verbose=False,
 )
 
 dos, omega = model_runner.compute_dos(dE=DE_EV)

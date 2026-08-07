@@ -184,8 +184,22 @@ def cmd_run(args) -> int:
     except ImportError:
         n_rank = 1
 
+    base_dir = os.path.dirname(os.path.abspath(args.input))
+    if args.output_dir:
+        resolved.setdefault("output", {})["dir"] = args.output_dir
+    return _run(args, resolved, issues, rank, n_rank, base_dir)
+
+
+def _run(args, resolved: dict, issues, rank: int, n_rank: int, base_dir: str) -> int:
+    # This module's own framing obeys the same level as the solver's output.
+    # It is summary-grade material -- the banner, the task list, the result
+    # lines -- so 'silent' drops it and every other level keeps it. Warnings
+    # below are deliberately not gated: like a C++ fault, something wrong
+    # with the input prints whatever the level.
+    speak = args.log_level != "silent"
+
     def log(message):
-        if rank == 0:
+        if rank == 0 and speak:
             print(message, flush=True)
 
     if issues and rank == 0:
@@ -200,20 +214,6 @@ def cmd_run(args) -> int:
 
     from .inputs import build, tasks as task_module
 
-    base_dir = os.path.dirname(os.path.abspath(args.input))
-    if args.output_dir:
-        resolved.setdefault("output", {})["dir"] = args.output_dir
-
-    # The flag beats the file: how loud a run is belongs to the person watching
-    # it, not to the input -- a "verbose": true left in a shared input makes
-    # every future run noisy (which is exactly how it was found). Writing into
-    # the resolved dict rather than a side channel keeps build_calculation the
-    # single reader of run.log_level.
-    cli_level = "debug" if args.verbose else args.log_level
-    if cli_level:
-        run_section = resolved.setdefault("run", {})
-        run_section["log_level"] = cli_level
-        run_section["verbose"] = False  # the file's shorthand must not out-shout the flag
 
     import time as _time
     t_start = _time.time()
@@ -227,7 +227,8 @@ def cmd_run(args) -> int:
     log(_rule("setup"))
     # No blank line here: the C++ profile table opens with one.
 
-    calculation, model, options = build.build_calculation(resolved)
+    calculation, model, options = build.build_calculation(
+        resolved, log_level=args.log_level)
 
     basis = model.basis
     setup = {
@@ -390,12 +391,13 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--dry-run", action="store_true",
                      help="validate and report what would run, then stop")
     run.add_argument("-o", "--output-dir", help="override output.dir")
-    run.add_argument("--log-level", choices=("silent", "summary", "progress", "debug"),
-                     help="override run.log_level from the input; verbosity is a "
-                          "property of this invocation, not of the calculation, "
-                          "which is why the flag wins over the file")
-    run.add_argument("-v", "--verbose", action="store_true",
-                     help="shorthand for --log-level debug")
+    # The only way to set verbosity, and it is a flag rather than an input
+    # key because how loud a run is describes the invocation, not the
+    # calculation -- a level left in a shared input makes every later run
+    # noisy. Output goes to stdout; redirecting it is the shell's job.
+    run.add_argument("--log-level", default="summary",
+                     choices=("silent", "summary", "progress", "debug"),
+                     help="how much to report (default: summary)")
     run.set_defaults(func=cmd_run)
 
     info = subparsers.add_parser("info", help="what this build supports")

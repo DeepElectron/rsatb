@@ -103,9 +103,8 @@ public:
           const model::Model& model,
           const model::SetupOptions& options = model::SetupOptions{},
           int npar = 1,
-          bool verbose = false,
           MPI_Comm comm = MPI_COMM_WORLD)
-        : world_comm_(comm), npar_(npar), verbose_(verbose) {
+        : world_comm_(comm), npar_(npar) {
         init_comms();
         begin_profile();
 
@@ -140,9 +139,8 @@ public:
           const model::Model& model,
           const model::SetupOptions& options = model::SetupOptions{},
           int npar = 1,
-          bool verbose = false,
           MPI_Comm comm = MPI_COMM_WORLD)
-        : world_comm_(comm), npar_(npar), verbose_(verbose) {
+        : world_comm_(comm), npar_(npar) {
         init_comms();
         // Before the graph is built, not after: the neighbour list and the
         // distributed partition are setup work, and starting the clock in
@@ -184,7 +182,7 @@ public:
         operators_ = setup::BuildOperatorSet(
             *atomic_data_,
             sub_comm_,
-            verbose_,
+            util::Log::enabled(util::LogLevel::kDebug),
             model,
             normalized_options,
             make_operator_runtime_context());
@@ -218,7 +216,7 @@ public:
     }
 
     void test_solve() {
-        LinearSolver<Scalar> solver(1e-8, 1000, verbose_);
+        LinearSolver<Scalar> solver(1e-8, 1000, util::Log::enabled(util::LogLevel::kDebug));
         auto& ops = require_operators();
         for (const auto& kp : ops.local_kpoints()) {
             int k_idx = kp.first;
@@ -354,16 +352,16 @@ public:
     }
 
 private:
-    /// Establishes the process-wide log state and starts the profile clock.
+    /// Records which rank may print and starts the profile clock.
     ///
-    /// This is the one place that knows both the verbosity and the rank. The
-    /// level is only derived from `verbose` when nothing has set it already, so
-    /// an explicit set_log_level() from the CLI is not overwritten by the
-    /// constructor's default `verbose=false`; until the bool is replaced by a
-    /// level throughout, `verbose=true` still means kDebug.
+    /// The level itself is process-wide state, set once by set_log_level()
+    /// before a calculation is built -- it is not a constructor argument.
+    /// It used to be both, and the two spellings disagreed: a `verbose` bool
+    /// here silently meant kDebug and could out-shout an explicit level.
+    /// Components that want "is this a debug run" ask util::Log, which is
+    /// also rank-aware, so no component has to re-derive the printing rank.
     void begin_profile() {
         util::Log::rank() = world_rank_of(world_comm_);
-        if (verbose_) util::Log::level() = util::LogLevel::kDebug;
         util::Profile::enabled() = true;
         util::Profile::reset();
         profile_open_ = true;
@@ -526,7 +524,7 @@ private:
         context.samples = &sampling_;
         context.master_comm = master_comm_;
         context.sub_comm = sub_comm_;
-        context.verbose = verbose_;
+        context.verbose = util::Log::enabled(util::LogLevel::kDebug);
         return context;
     }
 
@@ -550,7 +548,6 @@ private:
     int world_rank_, world_size_;
     int sub_rank_, sub_size_;
     int npar_;
-    bool verbose_;
     /// True between begin_profile() and the report that closes it, so a setup()
     /// reached through a constructor does not restart a clock already running.
     bool profile_open_ = false;

@@ -102,7 +102,7 @@ FileBackedRsatb make_single_atom_rsatb(
     result.model = make_file_model(hfile);
     result.rsatb = std::make_unique<rsatb::RSATB>(
         structure, *result.model, make_file_setup_options({{0.0, 0.0, 0.0}}),
-        1, false, MPI_COMM_WORLD);
+        1, MPI_COMM_WORLD);
     return result;
 }
 
@@ -138,7 +138,7 @@ FileBackedRsatb make_periodic_single_atom_rsatb(
     FileBackedRsatb result;
     result.model = make_file_model(hfile, norb);
     result.rsatb = std::make_unique<rsatb::RSATB>(
-        graph, *result.model, make_file_setup_options(kpoints), 1, false, MPI_COMM_WORLD);
+        graph, *result.model, make_file_setup_options(kpoints), 1, MPI_COMM_WORLD);
     return result;
 }
 
@@ -184,7 +184,7 @@ SktbBackedRsatb make_sktb_points_rsatb(const rsatb::model::SktbConfig& config) {
     SktbBackedRsatb result;
     result.model = rsatb::model::SktbModel::Create(config);
     result.rsatb = std::make_unique<rsatb::RSATB>(
-        structure, *result.model, make_pairwise_setup_options(true), 1, false, MPI_COMM_WORLD);
+        structure, *result.model, make_pairwise_setup_options(true), 1, MPI_COMM_WORLD);
     return result;
 }
 
@@ -285,7 +285,7 @@ TEST(RSATBOperatorApiTest, SetupUsesExplicitEnergyBounds) {
     options.energy_bounds = std::make_pair(-3.0, 4.0);
     options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
 
-    rsatb::RSATB rsatb_inst(structure, *model, options, 1, false, MPI_COMM_WORLD);
+    rsatb::RSATB rsatb_inst(structure, *model, options, 1, MPI_COMM_WORLD);
 
     ASSERT_NE(rsatb_inst.operators(), nullptr);
     const auto bounds = rsatb_inst.operators()->bounds();
@@ -436,7 +436,7 @@ TEST(RSATBOperatorApiTest, PeriodicOrthogonalSKTBUsesGammaAffineMSDPath) {
 
     auto model = rsatb::model::SktbModel::Create(make_sktb_pz_config(false, 1.1));
     rsatb::RSATB rsatb_inst(
-        graph, *model, make_pairwise_setup_options(true), 1, false, MPI_COMM_WORLD);
+        graph, *model, make_pairwise_setup_options(true), 1, MPI_COMM_WORLD);
 
     std::vector<double> msd;
     std::vector<double> energy;

@@ -234,7 +234,7 @@ def build_options(config: dict, model) -> Any:
     )
 
 
-def build_calculation(resolved: dict):
+def build_calculation(resolved: dict, log_level: str = "summary"):
     """Builds the ready-to-compute object from a resolved input.
 
     Returns:
@@ -247,24 +247,12 @@ def build_calculation(resolved: dict):
     options = build_options(resolved.get("run", {}), model)
     structure = build_structure(resolved["structure"])
     run = resolved.get("run", {})
-    # Precedence: an explicit log_level wins; verbose (the pre-log_level
-    # spelling of "debug") only upgrades the default. A file carrying both
-    # "verbose": true and "log_level": "progress" used to run at debug --
-    # exactly the surprise a cluster user hit -- so the more specific key now
-    # rules. (The CLI's --log-level clears run.verbose before this point, so
-    # the flag beats both.)
-    level = run.get("log_level", "summary")
-    if level == "summary" and run.get("verbose", False):
-        level = "debug"
     import rsatb  # ensures rsatb/build is on sys.path for the extension
     import _rsatb
-    _rsatb.set_log_level(level)
-    # The constructor's bool is derived from the level, not read from the file
-    # again: it feeds the parts that predate the level (PRIMME's printLevel,
-    # vbcsr's phase timers), and reading run.verbose here would make
-    # log_level "debug" quieter than verbose true -- two spellings of the same
-    # request with different behaviour.
-    calculation = RSATB(structure, model, options,
-                        npar=run.get("npar", 1),
-                        verbose=(level == "debug"))
+    # Verbosity is an argument, not an input key: how loud a run is describes
+    # the invocation, and a level left in a shared input file makes every
+    # later run noisy. Process-wide, and set before the calculation exists,
+    # because the solver logs from call sites that never see the RSATB object.
+    _rsatb.set_log_level(log_level)
+    calculation = RSATB(structure, model, options, npar=run.get("npar", 1))
     return calculation, model, options

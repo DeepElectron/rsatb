@@ -66,7 +66,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
 
     rsatb_inst = std::make_unique<RSATB>(
         vbcsr::atomic::ReadStructure(vasp_file), *lcao_model, setup_options,
-        npar, true, MPI_COMM_WORLD
+        npar, MPI_COMM_WORLD
     );
 
     if (rank == 0) {
