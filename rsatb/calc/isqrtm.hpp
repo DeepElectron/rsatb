@@ -266,6 +266,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     BlockSpMat<T> tmp1(graph), tmp2(graph);
 
     auto residual_norm = [&](BlockSpMat<T>& X) {
+        RSATB_PHASE("setup/isqrt_ns_residual");
         X.shift(T(-1.0));
         double norm = 0.0;
         for (double n : X.get_block_norms()) norm = std::max(norm, n);
@@ -279,6 +280,17 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // large scale with low CPU during its fetch/symbolic phases, and a log
     // that goes quiet there is indistinguishable from a hang. One flushed
     // line per stage bounds the search to a single product.
+    //
+    // Each product also opens its own profile phase. The heartbeat says where
+    // a stalled run is now; the phase table says where a finished run spent
+    // its time, accumulated over steps with a call count -- and, on more than
+    // one rank, the max/mean gap per product, which separates a genuinely
+    // expensive product from one rank straggling on it. A single
+    // setup/isqrt_newton_schulz total could not answer either question: the
+    // six products have completely different cost shapes (S is the sparsest
+    // matrix in the loop, Z the densest and permanently so, P and X collapse
+    // toward the identity as the iteration converges), so which one dominates
+    // changes with the system and with the step.
     auto stage = [&](const char* what) {
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
             std::cout << "inverse_sqrt:   " << what << std::endl;
@@ -289,10 +301,16 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // second computed as a known-Hermitian product -- half the block products,
     // and X comes out exactly Hermitian, which everything below relies on.
     auto reform_x = [&]() {
-        stage("S * Z (sparse product)");
-        tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
-        stage("Z^H (S Z) (hermitian congruence)");
-        tmp2 = S_inv_sqrt->spmm_hermitian(tmp2, sptol, /*transA=*/true);
+        {
+            RSATB_PHASE("setup/isqrt_ns_S_times_Z");
+            stage("S * Z (sparse product)");
+            tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
+        }
+        {
+            RSATB_PHASE("setup/isqrt_ns_congruence");
+            stage("Z^H (S Z) (hermitian congruence)");
+            tmp2 = S_inv_sqrt->spmm_hermitian(tmp2, sptol, /*transA=*/true);
+        }
     };
 
     reform_x();
@@ -324,14 +342,27 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // Hermitian (every route that forms it mirrors), X^2 of a Hermitian
         // matrix is Hermitian, and the polynomial's coefficients are real --
         // so P is exactly Hermitian too, which the propagation below uses.
-        stage("X^2 (hermitian square)");
-        tmp1 = tmp2.spmm_hermitian(tmp2, sptol);
-        tmp1.axpby(T(-1.25), tmp2, T(0.375));
-        tmp1.shift(T(1.875));
-        tmp1.filter_blocks(sptol);
+        {
+            RSATB_PHASE("setup/isqrt_ns_X_squared");
+            stage("X^2 (hermitian square)");
+            tmp1 = tmp2.spmm_hermitian(tmp2, sptol);
+        }
+        {
+            // Assembling P from X^2: three passes over P's blocks, no product.
+            // Separated from the square so a surprise here (a filter that
+            // drops nothing, an axpby across mismatched graphs) is visible
+            // rather than folded into the SpGEMM above.
+            RSATB_PHASE("setup/isqrt_ns_polynomial");
+            tmp1.axpby(T(-1.25), tmp2, T(0.375));
+            tmp1.shift(T(1.875));
+            tmp1.filter_blocks(sptol);
+        }
 
-        stage("Z * P");
-        *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
+        {
+            RSATB_PHASE("setup/isqrt_ns_Z_times_P");
+            stage("Z * P");
+            *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
+        }
 
         // X <- P X P while converging -- cheap, because P and X collapse
         // toward the identity and the threshold drops their blocks -- with
@@ -339,10 +370,16 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // P^H = P exactly, so the first product needs no transpose at all,
         // and the second is the known-Hermitian congruence.
         if (norm < 1e-1 && ((count + 1) % 5 != 0)) {
-            stage("P X (propagate)");
-            tmp2 = tmp1.spmm(tmp2, sptol);
-            stage("(P X) P (hermitian)");
-            tmp2 = tmp2.spmm_hermitian(tmp1, sptol);
+            {
+                RSATB_PHASE("setup/isqrt_ns_P_times_X");
+                stage("P X (propagate)");
+                tmp2 = tmp1.spmm(tmp2, sptol);
+            }
+            {
+                RSATB_PHASE("setup/isqrt_ns_PX_times_P");
+                stage("(P X) P (hermitian)");
+                tmp2 = tmp2.spmm_hermitian(tmp1, sptol);
+            }
         } else {
             reform_x();
         }
