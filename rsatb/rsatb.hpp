@@ -150,13 +150,19 @@ public:
         begin_profile();
 
         const model::BasisSpec& basis = model.basis();
-        basis.RequireCovers(structure.TypeSymbols(), model.name() + " setup");
+        const int primitive_n_atom = structure.n_atom;
+        const auto structure_supercell = structure.supercell;
+        const auto expanded_structure = structure.BuildSupercell();
+        basis.RequireCovers(expanded_structure.TypeSymbols(), model.name() + " setup");
 
         {
             RSATB_PHASE("setup/atomic_graph");
             atomic_data_ = std::unique_ptr<AtomicData>(AtomicData::from_points(
-                structure.pos, structure.z, structure.cell, structure.pbc,
+                expanded_structure.pos, expanded_structure.z, expanded_structure.cell,
+                expanded_structure.pbc,
                 basis.cutoff_radius, basis.type_norb, sub_comm_));
+            atomic_data_->primitive_n_atom = primitive_n_atom;
+            atomic_data_->structure_supercell = structure_supercell;
         }
         RequireEveryRankOwnsAtoms();
         init_components();
@@ -241,8 +247,11 @@ public:
     // The observables live in calc/observables.hpp as free functions over an
     // ObservableContext. These forwarders keep the public surface unchanged.
 
-    void compute_dos(int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
-        calc::ComputeDos(observable_context(), nt, dos_out, omega_out);
+    /// Density of states at energy resolution `de_ev` (eV); the Chebyshev
+    /// step and moment counts are derived from the spectral span.
+    void compute_dos(double de_ev, std::vector<double>& dos_out, std::vector<double>& omega_out,
+                     const std::string& method = "kpm") {
+        calc::ComputeDos(observable_context(), de_ev, dos_out, omega_out, method);
     }
 
     /// Returns the unit cell as nine row-major values, Angstrom.
@@ -264,25 +273,29 @@ public:
     }
 
     void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out,
-                    std::vector<double>& omega_out, std::string axis = "ab") {
-        calc::ComputeAc(observable_context(), nt, n_kpm, temp, mu, ac_out, omega_out, axis);
+                    std::vector<double>& omega_out, std::string axis = "ab",
+                    const std::string& method = "concurrent", int block = 0) {
+        calc::ComputeAc(observable_context(), nt, n_kpm, temp, mu, ac_out, omega_out, axis,
+                        method, block);
     }
 
     void compute_dc_spectrum(int n_moments, std::vector<double>& sigma_out,
                              std::vector<double>& energy_out,
                              std::string formulation = "greenwood", std::string axis = "abc",
                              int partition_sections = 0, size_t max_workspace_mb = 0,
-                             std::string kernel = "jackson") {
+                             std::string kernel = "jackson",
+                             const std::string& method = "fftcheb") {
         calc::ComputeDcSpectrum(observable_context(), n_moments, sigma_out, energy_out,
-                                formulation, axis, partition_sections, max_workspace_mb, kernel);
+                                formulation, axis, partition_sections, max_workspace_mb, kernel,
+                                method);
     }
 
     void compute_dc(int n_moments, double mu, double temp, std::vector<double>& dc_out,
                     std::string formulation = "greenwood", std::string axis = "abc",
                     int partition_sections = 0, size_t max_workspace_mb = 0,
-                    std::string kernel = "jackson") {
+                    std::string kernel = "jackson", const std::string& method = "fftcheb") {
         calc::ComputeDc(observable_context(), n_moments, mu, temp, dc_out, formulation, axis,
-                        partition_sections, max_workspace_mb, kernel);
+                        partition_sections, max_workspace_mb, kernel, method);
     }
 
     calc::OccupationResult compute_occupation(double mu, double temp,

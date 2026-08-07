@@ -25,7 +25,7 @@
 
   "tasks": [
     {"type": "energy_bounds"},
-    {"type": "dos", "nt": 200}
+    {"type": "dos", "dE": 0.1}
   ],
 
   "output": {"dir": "results/03_dftb_skf"}

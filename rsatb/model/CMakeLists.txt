@@ -27,6 +27,13 @@ if (PROJECT_IS_TOP_LEVEL)
     find_package(BLAS REQUIRED)
     find_package(LAPACK REQUIRED)
     find_package(FFTW REQUIRED)
+    # Standalone configure: the find module provides FFTW::Double; the
+    # superbuild's neutral name is FFTW::FFTW, which the targets below link.
+    if(NOT TARGET FFTW::FFTW)
+        add_library(FFTW::FFTW INTERFACE IMPORTED)
+        set_target_properties(FFTW::FFTW PROPERTIES
+            INTERFACE_LINK_LIBRARIES FFTW::Double)
+    endif()
     find_package(HDF5 REQUIRED COMPONENTS C CXX)
     
     # Add dependencies
@@ -112,28 +119,28 @@ if(RSATB_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src 
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_op2c_engine PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_op2c_engine PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 
     add_executable(test_operator_set test/test_operator_set.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_operator_set PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_operator_set PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_operator_set PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 
     add_executable(test_sktb sktb/test/test_sktb.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_sktb PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_sktb PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_sktb PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 
     add_executable(test_setup_stages ../setup/test/test_setup_stages.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_setup_stages PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_setup_stages PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_setup_stages PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 
     add_executable(test_collocation ../calc/test/test_collocation.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_collocation PRIVATE
@@ -141,12 +148,12 @@ if(RSATB_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_collocation PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_collocation PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 
     add_executable(test_skf sktb/test/test_skf.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_skf PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
-    target_link_libraries(test_skf PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::Double)
+    target_link_libraries(test_skf PUBLIC backend GTest::gtest MPI::MPI_CXX ${PARMETIS_LIB} ${METIS_LIB} io nao_int2c nao_pseudo nao_core nao_math nao_utils LAPACK::LAPACK BLAS::BLAS FFTW::FFTW)
 endif()

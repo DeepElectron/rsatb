@@ -23,18 +23,28 @@ PYBIND11_MODULE(_rsatb, m) {
         "Atomic geometry: positions, species, cell, periodicity.\n\n"
         "Carries no orbital or cutoff information -- that comes from the model.")
         .def(py::init<>())
-        .def_static("from_file", &vbcsr::atomic::ReadStructure,
-                    py::arg("filename"), py::arg("format") = "")
+        .def_static("from_file",
+            [](const std::string& filename, const std::string& format,
+               const std::array<int, 3>& supercell) {
+                auto structure = vbcsr::atomic::ReadStructure(filename, format);
+                structure.supercell = supercell;
+                return structure;
+            },
+            py::arg("filename"), py::arg("format") = "",
+            py::arg("supercell") = std::array<int, 3>{{1, 1, 1}})
         .def_readwrite("pos", &vbcsr::atomic::Structure::pos)
         .def_readwrite("z", &vbcsr::atomic::Structure::z)
         .def_readwrite("cell", &vbcsr::atomic::Structure::cell)
         .def_readwrite("pbc", &vbcsr::atomic::Structure::pbc)
         .def_readwrite("n_atom", &vbcsr::atomic::Structure::n_atom)
+        .def_readwrite("supercell", &vbcsr::atomic::Structure::supercell)
         .def("type_symbols", &vbcsr::atomic::Structure::TypeSymbols)
+        .def("expanded", &vbcsr::atomic::Structure::BuildSupercell,
+             "Return the geometry after applying the structure's supercell factors.")
         .def_static(
             "from_arrays",
             [](std::vector<double> pos, std::vector<int> z, std::vector<double> cell,
-               std::vector<bool> pbc) {
+               std::vector<bool> pbc, const std::array<int, 3>& supercell) {
                 vbcsr::atomic::Structure structure;
                 if (pos.size() != z.size() * 3) {
                     throw std::runtime_error(
@@ -54,10 +64,12 @@ PYBIND11_MODULE(_rsatb, m) {
                 structure.z = std::move(z);
                 structure.cell = std::move(cell);
                 structure.pbc = std::move(pbc);
+                structure.supercell = supercell;
                 return structure;
             },
             py::arg("pos"), py::arg("z"), py::arg("cell"),
             py::arg("pbc") = std::vector<bool>{true, true, true},
+            py::arg("supercell") = std::array<int, 3>{{1, 1, 1}},
             "Build a Structure from arrays, with the shapes checked.")
         .def("__repr__", [](const vbcsr::atomic::Structure& self) {
             std::string species;
@@ -66,7 +78,10 @@ PYBIND11_MODULE(_rsatb, m) {
                 species += symbol;
             }
             return "<Structure n_atom=" + std::to_string(self.n_atom) +
-                   " species=[" + species + "]>";
+                   " species=[" + species + "] supercell=[" +
+                   std::to_string(self.supercell[0]) + ", " +
+                   std::to_string(self.supercell[1]) + ", " +
+                   std::to_string(self.supercell[2]) + "]>";
         });
 
     // Ctrl-C arrives as InterruptedError from a step boundary inside the
@@ -211,23 +226,30 @@ PYBIND11_MODULE(_rsatb, m) {
     py::class_<rsatb::model::PreconditionerOptions>(m, "PreconditionerOptions",
         "Preconditioner settings for the iterative solvers.")
         .def(py::init([](const std::string& target,
-                         bool release_overlap_after_build,
+                         const std::string& operator_form,
                          double tol, double sptol, int maxiter) {
                  rsatb::model::PreconditionerOptions options;
                  options.target = rsatb::model::ParsePreconditionerTarget(target);
-                 options.release_overlap_after_build = release_overlap_after_build;
+                 options.operator_form = rsatb::model::ParseOperatorForm(operator_form);
                  options.tol = tol;
                  options.sptol = sptol;
                  options.maxiter = maxiter;
                  return options;
              }),
              py::arg("target") = "overlap",
-             py::arg("release_overlap_after_build") = false,
+             py::arg("operator_form") = "solve",
              py::arg("tol") = 1e-7,
              py::arg("sptol") = 1e-5,
              py::arg("maxiter") = 20)
-        .def_readwrite("release_overlap_after_build",
-                       &rsatb::model::PreconditionerOptions::release_overlap_after_build)
+        .def_property(
+            "operator_form",
+            [](const rsatb::model::PreconditionerOptions& self) {
+                return self.operator_form == rsatb::model::OperatorForm::kSandwich
+                           ? "sandwich" : "solve";
+            },
+            [](rsatb::model::PreconditionerOptions& self, const std::string& value) {
+                self.operator_form = rsatb::model::ParseOperatorForm(value);
+            })
         .def_readwrite("tol", &rsatb::model::PreconditionerOptions::tol)
         .def_readwrite("sptol", &rsatb::model::PreconditionerOptions::sptol)
         .def_readwrite("maxiter", &rsatb::model::PreconditionerOptions::maxiter)
@@ -242,8 +264,11 @@ PYBIND11_MODULE(_rsatb, m) {
         .def("__repr__", [](const rsatb::model::PreconditionerOptions& self) {
             const std::string target =
                 self.target == rsatb::model::PreconditionerTarget::kNone ? "none" : "overlap";
-            return "<PreconditionerOptions target='" + target + "'" +
-                   (self.release_overlap_after_build ? " release_overlap" : "") + ">";
+            const std::string form =
+                self.operator_form == rsatb::model::OperatorForm::kSandwich
+                    ? "sandwich" : "solve";
+            return "<PreconditionerOptions target='" + target + "' operator_form='" +
+                   form + "'>";
         });
 
     py::class_<rsatb::model::SetupOptions>(m, "SetupOptions",
@@ -577,24 +602,25 @@ PYBIND11_MODULE(_rsatb, m) {
              py::keep_alive<1, 8>())
         .def("get_kernel_info", &rsatb::RSATB::get_kernel_info)
          .def("test_solve", &rsatb::RSATB::test_solve)
-        .def("compute_dos", [](rsatb::RSATB& self, int nt) {
+        .def("compute_dos", [](rsatb::RSATB& self, double dE, std::string method) {
              std::vector<double> dos_out;
              std::vector<double> omega_out;
-             self.compute_dos(nt, dos_out, omega_out);
+             self.compute_dos(dE, dos_out, omega_out, method);
              return std::make_pair(dos_out, omega_out);
-         }, py::arg("nt"))
+         }, py::arg("dE"), py::arg("method") = "kpm")
         .def("cell", &rsatb::RSATB::cell)
         .def("energy_bounds", &rsatb::RSATB::energy_bounds)
-        .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis) {
+        .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis, std::string method, int block) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;
-             self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis);
+             self.compute_ac(nt, n_kpm, temp, mu, ac_out, omega_out, axis, method, block);
              return std::make_pair(ac_out, omega_out);
-         }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"), py::arg("axis") = "abc")
-        .def("compute_dc_spectrum", [](rsatb::RSATB& self, int n_moments, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel) {
+         }, py::arg("nt"), py::arg("n_kpm"), py::arg("temp"), py::arg("mu"), py::arg("axis") = "abc",
+            py::arg("method") = "concurrent", py::arg("block") = 0)
+        .def("compute_dc_spectrum", [](rsatb::RSATB& self, int n_moments, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel, std::string method) {
              std::vector<double> sigma_out;
              std::vector<double> energy_out;
-             self.compute_dc_spectrum(n_moments, sigma_out, energy_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
+             self.compute_dc_spectrum(n_moments, sigma_out, energy_out, formulation, axis, partition_sections, max_workspace_mb, kernel, method);
              return std::make_pair(sigma_out, energy_out);
          },
          py::arg("n_moments"),
@@ -602,10 +628,11 @@ PYBIND11_MODULE(_rsatb, m) {
          py::arg("axis") = "abc",
          py::arg("partition_sections") = 0,
          py::arg("max_workspace_mb") = 0,
-         py::arg("kernel") = "jackson")
-        .def("compute_dc", [](rsatb::RSATB& self, int n_moments, double mu, double temp, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel) {
+         py::arg("kernel") = "jackson",
+         py::arg("method") = "fftcheb")
+        .def("compute_dc", [](rsatb::RSATB& self, int n_moments, double mu, double temp, std::string formulation, std::string axis, int partition_sections, size_t max_workspace_mb, std::string kernel, std::string method) {
              std::vector<double> dc_out;
-             self.compute_dc(n_moments, mu, temp, dc_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
+             self.compute_dc(n_moments, mu, temp, dc_out, formulation, axis, partition_sections, max_workspace_mb, kernel, method);
              return dc_out;
          },
          py::arg("n_moments"),
@@ -615,7 +642,8 @@ PYBIND11_MODULE(_rsatb, m) {
          py::arg("axis") = "abc",
          py::arg("partition_sections") = 0,
          py::arg("max_workspace_mb") = 0,
-         py::arg("kernel") = "jackson")
+         py::arg("kernel") = "jackson",
+         py::arg("method") = "fftcheb")
         .def("compute_occupation", [](rsatb::RSATB& self, double mu, double temp, double indicator_threshold, int n_max) {
              const auto r = self.compute_occupation(mu, temp, indicator_threshold, n_max);
              py::dict d;

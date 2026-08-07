@@ -194,6 +194,52 @@ std::vector<cd> chebyshev_coefficients_from_function(
     return coeffs;
 }
 
+// Kernel-smoothed spectral density at arbitrary points x in (-1, 1) from
+// precomputed trace moments mu_n = <psi|T_n(Op)|psi>:
+//   rho(x) = (g_0 mu_0 + 2 sum_{n>=1} g_n mu_n T_n(x)) / (pi sqrt(1 - x^2))
+// normalised so that the integral over [-1, 1] equals mu_0. Imaginary parts
+// of the moments are dropped: for a Hermitian operator they are pure
+// stochastic-estimator noise. The Chebyshev weight diverges at the interval
+// ends, so points are pulled into the open interval by `edge_inset`; a
+// uniform grid that touches -1 (the DOS grid does) gets the half-bin-inset
+// value there instead of a 1/sqrt spike.
+template <typename ScalarT>
+std::vector<double> evaluate_kpm_density(
+    const std::vector<ScalarT>& moments,
+    const std::vector<double>& x_values,
+    double edge_inset,
+    KpmKernel kernel = KpmKernel::Jackson
+) {
+    const int n_moments = static_cast<int>(moments.size());
+    std::vector<double> rho(x_values.size(), 0.0);
+    if (n_moments == 0) {
+        return rho;
+    }
+    const std::vector<double> g = kpm_kernel_weights(kernel, n_moments);
+
+    for (size_t j = 0; j < x_values.size(); ++j) {
+        const double x = std::max(-1.0 + edge_inset,
+                                  std::min(1.0 - edge_inset, x_values[j]));
+        // T_n(x) by the recurrence rather than cos(n acos x): one multiply
+        // per term and exact at the clamped ends.
+        double t_prev = 1.0;
+        double t_curr = x;
+        double accum = g[0] * static_cast<cd>(moments[0]).real();
+        if (n_moments > 1) {
+            accum += 2.0 * g[1] * static_cast<cd>(moments[1]).real() * t_curr;
+        }
+        for (int n = 2; n < n_moments; ++n) {
+            const double t_next = 2.0 * x * t_curr - t_prev;
+            accum += 2.0 * g[static_cast<size_t>(n)] *
+                     static_cast<cd>(moments[static_cast<size_t>(n)]).real() * t_next;
+            t_prev = t_curr;
+            t_curr = t_next;
+        }
+        rho[j] = accum / (M_PI * std::sqrt(std::max(1e-14, 1.0 - x * x)));
+    }
+    return rho;
+}
+
 template <typename ScalarT>
 void reconstruct_spectrum_from_moments(
     const std::vector<ScalarT>& moments,

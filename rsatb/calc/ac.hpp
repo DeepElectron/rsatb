@@ -18,6 +18,17 @@ using namespace vbcsr;
 namespace rsatb {
 namespace calc {
 
+// Time-sampling density of the AC correlator, shared by both evolution
+// routes and the sine transform. The correlator carries transition
+// frequencies up to the FULL spectral span (occupied-to-unoccupied energy
+// differences, 2 half-widths), so its Nyquist step is pi/(2*half_width) --
+// half the DOS step. Coarser sampling folds content in (S, 2S) back onto
+// (0, S) with a sign flip (sin((2S-w) t_k) = -sin(w t_k) on that grid):
+// spurious negative low-frequency absorption. This is a constant, not a
+// knob: the content bound 2S is exact, so 1 aliases, 2 is Nyquist-exact,
+// and more adds nothing.
+inline constexpr int kAcOversample = 2;
+
 template <typename T, typename VectorType>
 void apply_operator_dual(
     Chebyshev<T>& cheby,
@@ -149,20 +160,23 @@ void corr_ac(Chebyshev<T>& cheby,
         fermi_dirac_kpm(cheby, in, out, temp, mu, fermi_options, fd_mode);
     };
     
-    // 1. Generate Time Propagation Coefficients
-    double dt = M_PI; // Fixed in original code?
-    // Let's stick to `dt = M_PI` as argument to `timeprop_coeff` as in original code.
-    
+    // 1. Generate Time Propagation Coefficients. The step is the correlator's
+    // Nyquist step pi/(2S) (see kAcOversample above); the original code's
+    // dt = pi aliased occupied-to-unoccupied transitions above the
+    // half-width onto the reported window with a sign flip.
+    const double dt = M_PI / kAcOversample;
+    const int ns = nt * kAcOversample;
+
     std::vector<std::complex<double>> coeffs;
     timeprop_coeff(dt, eps, true, coeffs);
     int n_bes = coeffs.size();
 
-    // Initialize cac
+    // Initialize cac: ns + 1 samples at spacing dt.
     if (cac!=nullptr) {
-        if (cac->size()<(nt+1)*6) {
-            cac->resize((nt+1)*6);
+        if (cac->size() < static_cast<size_t>(ns + 1) * 6) {
+            cac->resize(static_cast<size_t>(ns + 1) * 6);
         }
-        std::fill(cac->data(), cac->data() + (nt + 1) * 6, 0.0);
+        std::fill(cac->data(), cac->data() + (ns + 1) * 6, 0.0);
     }
 
     // Prepare Vectors
@@ -258,11 +272,11 @@ void corr_ac(Chebyshev<T>& cheby,
     }
 
     // 7. Time Propagation
-    for (int it = 0; it < nt; ++it) {
+    for (int it = 0; it < ns; ++it) {
         ::rsatb::util::throw_if_interrupted(graph->comm);
         if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
-            ::rsatb::util::every_nth(it, std::max(1, nt / 20))) {
-            std::cout << "ac: step " << it + 1 << " / " << nt << std::endl;
+            ::rsatb::util::every_nth(it, std::max(1, ns / 20))) {
+            std::cout << "ac: step " << it + 1 << " / " << ns << std::endl;
         }
 
         // Propagate J_Psi (Right) - NORMAL
@@ -294,6 +308,216 @@ void corr_ac(Chebyshev<T>& cheby,
                 if (cac!=nullptr) (*cac)[(it + 1) * 6 + int((-i * i + 5 * i) / 2 + j)] = dot_val;
             }
         }
+    }
+}
+
+// Concurrent (shared-Chebyshev-state) AC correlator.
+//
+// Mathematically the same estimator as corr_ac: both sides of
+//   C_ij(t) = < J_j U(t) f(H) psi ,  U(t) (1 - f(H)) J_i psi >
+// are linear combinations of the Chebyshev states T_n(Op) of their
+// block-start seeds, so one recurrence of ~b*pi + tail matvecs per side per
+// block replaces b sequential propagations of ~19 matvecs each (the
+// state-based scheme of arXiv:2510.17432: expansion load R(pi) ~ 6 falls
+// towards 1 for long steps). Reconstructing the state at each sample time is
+// axpys over those shared states -- cheap next to the preconditioned matvec,
+// which is why the per-sample current applications and dots, not the
+// reconstruction, are the non-accelerable cost here.
+//
+// Sampling follows kAcOversample (see its note at the top of this file):
+// dt = pi/(2*half_width), alias-free for the full transition band. Here the
+// finer sampling is essentially free -- half-step states are just different
+// coefficient combinations of the same stored Chebyshev states -- whereas
+// the sequential route pays real matvecs for it (two pi/2 expansions cost
+// ~32 terms where one pi step costs ~20).
+//
+// `block` bounds memory: 4 sides x (block*pi + Bessel tail) stored
+// states of Nbasis (x nsamples columns for the multivector case). The
+// matvec saving saturates like 4*pi + 4*N(pi)/block, so block ~ 128
+// already captures ~95% of the full-block gain.
+//
+// cac receives nt*kAcOversample + 1 samples x 6 components, sample spacing
+// pi/(kAcOversample*half_width) in physical time -- the same contract as
+// corr_ac, so the two routes are interchangeable sample for sample.
+template <typename T, typename VectorType>
+void corr_ac_concurrent(Chebyshev<T>& cheby,
+                        BlockSpMat<T>& Vx,
+                        BlockSpMat<T>& Vy,
+                        BlockSpMat<T>& Vz,
+                        const VectorType& Psi_in,
+                        int nt,
+                        double temp,
+                        double mu,
+                        int n_kpm,
+                        double eps = 1e-14,
+                        std::vector<std::complex<double>>* cac = nullptr,
+                        int block = 0,
+                        FermiExpansionOptions fermi_options = {}) {
+
+    DistGraph* graph = Psi_in.graph;
+    int rank = graph->rank;
+
+    if (n_kpm > 0) {
+        fermi_options.n_fixed = n_kpm;
+        fermi_options.summation = KpmKernel::Jackson;
+    }
+    auto apply_fermi = [&](const VectorType& in, VectorType& out, ChebyMode fd_mode) {
+        fermi_dirac_kpm(cheby, in, out, temp, mu, fermi_options, fd_mode);
+    };
+
+    const int os = kAcOversample;
+    if (block <= 0 || block > nt) block = nt;
+    const int ns = nt * os;
+
+    if (cac != nullptr) {
+        if (cac->size() < static_cast<size_t>(ns + 1) * 6) {
+            cac->resize(static_cast<size_t>(ns + 1) * 6);
+        }
+        std::fill(cac->data(), cac->data() + (ns + 1) * 6, 0.0);
+    }
+
+    // Coefficient table: expansion of e^{-i Op (k pi/os)} for every sample
+    // offset within a block. Truncation length grows monotonically with the
+    // time, so ctab.back() sets the number of stored Chebyshev states.
+    std::vector<std::vector<std::complex<double>>> ctab(block * os + 1);
+    for (int k = 1; k <= block * os; ++k) {
+        timeprop_coeff(k * M_PI / os, eps, true, ctab[k]);
+    }
+    const int n_states = static_cast<int>(ctab[block * os].size());
+
+    auto construct_vec = [&](DistGraph* g, int nv) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            return VectorType(g, nv);
+        } else {
+            return VectorType(g);
+        }
+    };
+    int nv = 1;
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        nv = Psi_in.num_vectors;
+    }
+
+    // Seeds: identical to corr_ac steps 2-5.
+    VectorType Psi0 = construct_vec(graph, nv);
+    VectorType buff = construct_vec(graph, nv);
+    std::vector<VectorType> Phi_vec;
+    Phi_vec.reserve(3);
+    for (int i = 0; i < 3; ++i) Phi_vec.emplace_back(construct_vec(graph, nv));
+    VectorType* Phi = Phi_vec.data();
+
+    apply_fermi(Psi_in, Psi0, ChebyMode::ADJOINT);
+    current(cheby, Vx, Vy, Vz, Psi_in, Phi, 1.0);
+    for (int i = 0; i < 3; ++i) {
+        apply_fermi(Phi[i], buff, ChebyMode::NORMAL);
+        Phi[i].axpy(-1.0, buff);
+    }
+
+    std::vector<VectorType> J0_vec;
+    J0_vec.reserve(3);
+    for (int i = 0; i < 3; ++i) J0_vec.emplace_back(construct_vec(graph, nv));
+    VectorType* J0 = J0_vec.data();
+
+    auto record = [&](int sample, VectorType* left_J, VectorType* right) {
+        for (int i = 0; i < 3; ++i) {
+            for (int j = i; j < 3; ++j) {
+                std::complex<double> dot_val;
+                if constexpr (std::is_same_v<VectorType, DistVector<T>>) {
+                    dot_val = left_J[j].dot(right[i]);
+                } else {
+                    std::vector<typename VectorType::value_type> dots;
+                    left_J[j].dot(right[i], dots);
+                    std::complex<double> sum = 0;
+                    for (auto d : dots) sum += d;
+                    dot_val = sum / static_cast<double>(nv);
+                }
+                if (cac != nullptr) {
+                    (*cac)[static_cast<size_t>(sample) * 6 + ((-i * i + 5 * i) / 2 + j)] = dot_val;
+                }
+            }
+        }
+    };
+
+    // t = 0.
+    current_adjoint(cheby, Vx, Vy, Vz, Psi0, J0, 1.0);
+    record(0, J0, Phi);
+
+    // Shared Chebyshev states: sides 0-2 are the Phi_i (NORMAL evolution),
+    // side 3 is Psi0 (ADJOINT evolution, as in the sequential loop).
+    std::vector<std::vector<VectorType>> X(4);
+    for (int s = 0; s < 4; ++s) {
+        X[s].reserve(n_states);
+        for (int n = 0; n < n_states; ++n) X[s].emplace_back(construct_vec(graph, nv));
+    }
+    std::vector<VectorType> R_vec;
+    R_vec.reserve(4);
+    for (int s = 0; s < 4; ++s) R_vec.emplace_back(construct_vec(graph, nv));
+    VectorType* R = R_vec.data();
+
+    if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+        std::cout << "ac: concurrent, block " << block << " of " << nt
+                  << " steps, oversample " << os << ", " << 4 * n_states
+                  << " stored states" << std::endl;
+    }
+
+    const int n_blocks = (nt + block - 1) / block;
+    int done = 0;
+    int iblock = 0;
+    while (done < nt) {
+        ::rsatb::util::throw_if_interrupted(graph->comm);
+        const int b = std::min(block, nt - done);
+        const int nk = static_cast<int>(ctab[b * os].size());
+        ++iblock;
+
+        // Chebyshev recurrence from the block-start seeds (the matvecs).
+        // Progress counts applies across all four sides, so long blocks
+        // never go quiet while the later sides expand.
+        const int total_applies = 4 * std::max(1, nk - 1);
+        for (int s = 0; s < 4; ++s) {
+            const ChebyMode mode = (s == 3) ? ChebyMode::ADJOINT : ChebyMode::NORMAL;
+            const VectorType& seed = (s == 3) ? Psi0 : Phi[s];
+            X[s][0].copy_from(seed);
+            if (nk > 1) cheby.apply_op(X[s][0], X[s][1], mode);
+            for (int n = 2; n < nk; ++n) {
+                ::rsatb::util::throw_if_interrupted(graph->comm);
+                const int applies_done = s * (nk - 1) + n - 1;
+                if (rank == 0 &&
+                    ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
+                    ::rsatb::util::every_nth(applies_done, std::max(1, total_applies / 20))) {
+                    std::cout << "ac: block " << iblock << " / " << n_blocks
+                              << ", expansion " << applies_done << " / " << total_applies
+                              << std::endl;
+                }
+                cheby.apply_op(X[s][n - 1], X[s][n], mode);
+                X[s][n].axpby(-1.0, X[s][n - 2], 2.0);
+            }
+        }
+
+        // Reconstruct every sample in the block from the shared states.
+        for (int k = 1; k <= b * os; ++k) {
+            ::rsatb::util::throw_if_interrupted(graph->comm);
+            const auto& c = ctab[k];
+            const int n_terms = static_cast<int>(c.size());
+            for (int s = 0; s < 4; ++s) {
+                R[s].copy_from(X[s][0]);
+                R[s].scale(CoeffCast<T>::apply(c[0]));
+                for (int n = 1; n < n_terms; ++n) {
+                    R[s].axpy(CoeffCast<T>::apply(c[n]), X[s][n]);
+                }
+            }
+            current_adjoint(cheby, Vx, Vy, Vz, R[3], J0, 1.0);
+            record(done * os + k, J0, R);
+            if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
+                ::rsatb::util::every_nth(done * os + k - 1, std::max(1, ns / 20))) {
+                std::cout << "ac: sample " << done * os + k << " / " << ns << std::endl;
+            }
+        }
+
+        // Block-end states seed the next block. The reconstruction at
+        // k = b*os is the same expansion of e^{-i Op b pi} the sequential
+        // path would compose stepwise, accurate to the 1e-14 truncation.
+        for (int i = 0; i < 3; ++i) Phi[i].copy_from(R[i]);
+        Psi0.copy_from(R[3]);
+        done += b;
     }
 }
 

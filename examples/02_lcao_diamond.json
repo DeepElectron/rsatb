@@ -25,11 +25,11 @@
     "npar": 1,
     "nsamples": 200,
     "kpoints": {"line": [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0]], "points_per_segment": 11},
-    "preconditioner": {"release_overlap_after_build": true}
+    "preconditioner": {"operator_form": "sandwich"}
   },
 
   "tasks": [
-    {"type": "dos", "nt": 100}
+    {"type": "dos", "dE": 2.8}
   ],
 
   "output": {"dir": "results/02_lcao_diamond"}

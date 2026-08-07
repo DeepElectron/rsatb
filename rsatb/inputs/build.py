@@ -8,7 +8,7 @@ what each value means, so this module only translates.
 from __future__ import annotations
 
 import os
-from typing import Any, List, Sequence
+from typing import Any, List
 
 
 def _atomic_number(symbol: str) -> int:
@@ -25,61 +25,32 @@ def _atomic_number(symbol: str) -> int:
 # --- structure -------------------------------------------------------------
 
 
-def tile(positions: Sequence[Sequence[float]], numbers: Sequence[int],
-         cell: Sequence[Sequence[float]], supercell: Sequence[int]):
-    """Repeats a cell, leaving the original coordinates of every image intact.
-
-    Images are laid down in the order a1, then a2, then a3, with the original
-    atom order inside each image -- the same convention ASE's `repeat` uses.
-    """
-    nx, ny, nz = (int(n) for n in supercell)
-    tiled_positions: List[List[float]] = []
-    tiled_numbers: List[int] = []
-    for i in range(nx):
-        for j in range(ny):
-            for k in range(nz):
-                offset = [i * cell[0][axis] + j * cell[1][axis] + k * cell[2][axis]
-                          for axis in range(3)]
-                for position, number in zip(positions, numbers):
-                    tiled_positions.append([position[axis] + offset[axis] for axis in range(3)])
-                    tiled_numbers.append(number)
-    tiled_cell = [[cell[0][axis] * nx for axis in range(3)],
-                  [cell[1][axis] * ny for axis in range(3)],
-                  [cell[2][axis] * nz for axis in range(3)]]
-    return tiled_positions, tiled_numbers, tiled_cell
-
-
 def build_structure(config: dict):
     """Builds a Structure from the 'structure' section."""
     from .. import Structure
 
     supercell = config.get("supercell", [1, 1, 1])
-    tiled = any(n > 1 for n in supercell)
-
     if "file" in config:
         structure = Structure.from_file(config["file"], config.get("format", ""))
-        if not tiled:
-            return structure
-        positions = [list(structure.pos[3 * i:3 * i + 3]) for i in range(structure.n_atom)]
-        numbers = list(structure.z)
-        cell = [list(structure.cell[3 * i:3 * i + 3]) for i in range(3)]
-        pbc = list(structure.pbc)
-    else:
-        positions = [list(p) for p in config["positions"]]
-        numbers = (list(config["numbers"]) if "numbers" in config
-                   else [_atomic_number(s) for s in config["symbols"]])
-        cell = [list(row) for row in config["cell"]]
-        pbc = list(config.get("pbc", [True, True, True]))
+        if supercell != [1, 1, 1]:
+            structure.supercell = supercell
+        return structure
 
-    if tiled:
-        positions, numbers, cell = tile(positions, numbers, cell, supercell)
+    positions = [list(p) for p in config["positions"]]
+    numbers = (list(config["numbers"]) if "numbers" in config
+               else [_atomic_number(s) for s in config["symbols"]])
+    cell = [list(row) for row in config["cell"]]
+    pbc = list(config.get("pbc", [True, True, True]))
 
-    return Structure.from_arrays(
+    structure = Structure.from_arrays(
         pos=[component for position in positions for component in position],
         z=numbers,
         cell=[component for row in cell for component in row],
         pbc=pbc,
     )
+    if supercell != [1, 1, 1]:
+        structure.supercell = supercell
+    return structure
 
 
 # --- k-points --------------------------------------------------------------

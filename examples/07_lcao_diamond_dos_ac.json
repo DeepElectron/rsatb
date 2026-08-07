@@ -21,15 +21,15 @@
   },
 
   "run": {
-    "_comment_conv": "The 2s2p1d basis puts core-like states near 250 eV, so the Chebyshev expansion spans ~280 eV. Energy resolution is that width divided by nt, which is why nt has to be large here: 400 moments would give only 0.7 eV and leave the valence structure unresolved. nsamples controls the stochastic-trace noise, which shows up as negative excursions in derived quantities like the absorption coefficient if it is too small.",
+    "_comment_conv": "The 2s2p1d basis puts core-like states near 250 eV, so the Chebyshev expansion spans ~280 eV. The dos task asks for the resolution directly: dE in eV, with the step and moment counts derived from the span at run time -- cost is linear in span/dE, which is why a wide LCAO span makes fine resolution expensive. nsamples controls the stochastic-trace noise, which shows up as negative excursions in derived quantities like the absorption coefficient if it is too small.",
     "npar": 1,
     "nsamples": 128,
     "kpoints": [[0.0, 0.0, 0.0]],
-    "preconditioner": {"release_overlap_after_build": true}
+    "preconditioner": {"operator_form": "sandwich"}
   },
 
   "tasks": [
-    {"type": "dos", "nt": 2000},
+    {"type": "dos", "dE": 0.14},
     {
       "_comment": "mu sits in the gap of this basis; 300 K is room temperature. nt sets the frequency resolution of sigma(omega) and n_kpm the sharpness of the Fermi occupation.",
       "type": "ac",

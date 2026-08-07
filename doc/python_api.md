@@ -27,7 +27,7 @@ structure = Structure.from_file("graphene.vasp")          # where the atoms are
 model     = SktbModel(...)                                 # what H and S are
 calc      = RSATB(structure, model, SetupOptions(...), npar=4)
 
-dos, energy = calc.compute_dos(nt=200)
+dos, energy = calc.compute_dos(dE=0.1)
 ```
 
 `Structure` says where the atoms are. The model says what the Hamiltonian is.
@@ -82,7 +82,7 @@ SktbModel(basis={"C": ["pz"]}, hamiltonian=hopping, overlap=overlap) # not
 **4. Options say what they do.**
 
 `PreconditionerOptions(mode="H")` used to free the overlap matrix as a side
-effect of a mode name. It is now `release_overlap_after_build=True`.
+effect of a mode name. It is now `operator_form="sandwich"` (previously `release_overlap_after_build=True`), naming the operator it selects -- Z H Z with S released -- rather than the memory side effect.
 
 **5. Objects describe themselves.**
 
@@ -110,9 +110,16 @@ supported file formats carry no basis header. Every other model reads it.
 ## Building the structure
 
 ```python
-Structure.from_file("POSCAR")                       # POSCAR/.vasp or .xyz
+Structure.from_file("POSCAR", supercell=[4, 4, 1]) # expansion happens during setup
 Structure.from_arrays(pos=[...], z=[6, 6], cell=[...], pbc=[True, True, False])
 ```
+
+`supercell=[nx, ny, nz]` belongs to the structure. `RSATB` expands the
+coordinates immediately before it builds the atomic graph and operators. For
+a DeePTB HDF5 Hamiltonian, primitive `(i,j,R)` blocks are mapped into the
+expanded atom and image indexing during the read; no expanded HDF5 file is
+written. Other Hamiltonian formats must define their own mapping before they
+can be used with this tag.
 
 For a neighbour list you already have, `RSATB.from_graph(...)` takes it
 directly. That is a **distributed** description — each rank passes its own
@@ -145,7 +152,7 @@ Check ahead of time with `model.capabilities`.
 | `SKTBModel.native(basis, onsite, pairs)` | `SktbModel(basis, hamiltonian=SkParameters(onsite, pairs))` |
 | `LCAOModel.hdf5(f, integrals=LCAOIntegralInput(...))` | `LcaoModel(hamiltonian=HamiltonianFile(f), orbitals=..., pseudopotentials=...)` |
 | `Hdf5Input(f, nspin=..., lspinorb=...)` | `HamiltonianFile(f, format=...)` + `spin=` on the model |
-| `PreconditionerOptions(mode="H")` | `PreconditionerOptions(release_overlap_after_build=True)` |
+| `PreconditionerOptions(mode="H")` | `PreconditionerOptions(operator_form="sandwich")` |
 | `PreconditionerOptions(mode="None")` | `PreconditionerOptions(target="none")` |
 | `setup_model` / `setup_lcao` / `setup_sktb` / `setup_dftb` / `setup_config` | the constructor |
 

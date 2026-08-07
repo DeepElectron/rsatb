@@ -24,7 +24,7 @@
     "spin": "none"
   },
   "run": {
-    "_comment_conv": "The 2s2p1d basis puts core-like states near 250 eV, so the Chebyshev expansion spans ~280 eV. Energy resolution is that width divided by nt, which is why nt has to be large here: 400 moments would give only 0.7 eV and leave the valence structure unresolved. nsamples controls the stochastic-trace noise, which shows up as negative excursions in derived quantities like the absorption coefficient if it is too small.",
+    "_comment_conv": "The 2s2p1d basis puts core-like states near 250 eV, so the Chebyshev expansion spans ~280 eV. The dos task asks for the resolution directly: dE in eV, with the step and moment counts derived from the span at run time -- cost is linear in span/dE, which is why a wide LCAO span makes fine resolution expensive. nsamples controls the stochastic-trace noise, which shows up as negative excursions in derived quantities like the absorption coefficient if it is too small.",
     "npar": 1,
     "nsamples": 32,
     "kpoints": [
@@ -34,15 +34,15 @@
         0.0
       ]
     ],
-    "_comment_sparsity": "Preconditioner left at defaults deliberately, and this was measured rather than assumed (2026-08: three routes on this system, dos nt=100): (1) raising sptol to 1e-4 does NOT keep S^-1/2 sparse -- density still hits 1.0 after one Newton-Schulz step, so the looser tolerances only bought a cheaper setup (-150s) at the price of Z accuracy 9.5e-4 vs 2.5e-9, and Z is the orthogonalization itself, so that error lands in the spectrum (~0.1-0.3 eV at this 280 eV span). (2) Keeping S and using the sparse seed as a PCG preconditioner per matvec (maxiter 0, release_overlap_after_build false) is 5.9x slower per matvec (13 CG iterations each). (3) Peak memory (~81 GB) comes from the seed's concurrent dense subgraph batch, identically in every route -- not from the dense S^-1/2 (2.8 GB). So: full-accuracy Z, S released, is both the fastest and the most accurate route on this system.",
+    "_comment_sparsity": "Preconditioner left at defaults deliberately, and this was measured rather than assumed (2026-08: three routes on this system, dos nt=100): (1) raising sptol to 1e-4 does NOT keep S^-1/2 sparse -- density still hits 1.0 after one Newton-Schulz step, so the looser tolerances only bought a cheaper setup (-150s) at the price of Z accuracy 9.5e-4 vs 2.5e-9, and Z is the orthogonalization itself, so that error lands in the spectrum (~0.1-0.3 eV at this 280 eV span). (2) Keeping S and using the sparse seed as a PCG preconditioner per matvec (maxiter 0, operator_form solve) is 5.9x slower per matvec (13 CG iterations each). (3) Peak memory (~81 GB) comes from the seed's concurrent dense subgraph batch, identically in every route -- not from the dense S^-1/2 (2.8 GB). So: full-accuracy Z, S released, is both the fastest and the most accurate route on this system.",
     "preconditioner": {
-      "release_overlap_after_build": true
+      "operator_form": "sandwich"
     }
   },
   "tasks": [
     {
       "type": "dos",
-      "nt": 800
+      "dE": 0.35
     },
     {
       "_comment": "mu sits in the gap of this basis; 300 K is room temperature. nt sets the frequency resolution of sigma(omega) and n_kpm the sharpness of the Fermi occupation.",

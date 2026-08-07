@@ -24,7 +24,7 @@
 
   "tasks": [
     {"type": "energy_bounds"},
-    {"type": "dos", "nt": 100}
+    {"type": "dos", "dE": 0.1}
   ],
 
   "output": {"dir": "results/04_tb_file_chain"}

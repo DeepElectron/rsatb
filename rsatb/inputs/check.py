@@ -201,16 +201,20 @@ def check_consistency(document: dict) -> List[Issue]:
     kpoints = run.get("kpoints", [[0.0, 0.0, 0.0]])
     n_kpoint = len(_kpoint_list(kpoints))
 
-    # A tiling changes atom order and count, which is exactly what a
-    # Hamiltonian file's own atom indexing refers to.
+    # File-backed repetition needs a declared primitive (i,j,R) convention.
+    # DeePTB is currently the only registered format and its convention is
+    # mapped during operator construction. Future formats remain opt-in here.
     supercell = document.get("structure", {}).get("supercell", [1, 1, 1])
     if any(n > 1 for n in supercell) and family in ("lcao", "tb_file"):
-        issues.append(Issue(
-            "structure.supercell",
-            "the '{}' model reads H(R) from a file whose atom indexing refers to "
-            "the cell as written, so the cell cannot be tiled here".format(family),
-            hint="tile the structure yourself and produce a matching Hamiltonian, or "
-                 "use a parameterized model (sktb/dftb) where H is computed"))
+        file_format = document.get("model", {}).get("hamiltonian", {}).get(
+            "format", "deeptb")
+        if file_format != "deeptb":
+            issues.append(Issue(
+                "structure.supercell",
+                "the '{}' Hamiltonian format has not defined how primitive (i,j,R) "
+                "blocks map into a supercell".format(file_format),
+                hint="use the DeePTB HDF5 format, or supply a Hamiltonian already "
+                     "indexed for the expanded structure"))
 
     labels = {}
     for index, task in enumerate(tasks):

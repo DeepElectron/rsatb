@@ -32,7 +32,7 @@
   },
 
   "tasks": [
-    {"type": "dos", "nt": 256},
+    {"type": "dos", "dE": 0.08},
     {"type": "dc_spectrum", "n_moments": 256, "kernel": "costaper"},
     {"type": "msd", "n_steps": 40, "dt_fs": 10.0, "n_kpm": 256, "axis": "x"}
   ],

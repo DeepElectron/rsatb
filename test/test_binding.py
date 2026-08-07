@@ -68,3 +68,31 @@ try:
 except Exception as e:
     print(f"Verification failed during SKTB binding smoke test: {e}")
     sys.exit(1)
+
+
+def test_structure_supercell_is_metadata_until_expanded():
+    structure = Structure.from_arrays(
+        pos=[0.0, 0.0, 0.0],
+        z=[6],
+        cell=[2.0, 0.0, 0.0,
+              1.0, 2.0, 0.0,
+              0.0, 0.0, 10.0],
+        pbc=[True, True, False],
+        supercell=[2, 3, 1],
+    )
+
+    assert structure.n_atom == 1
+    assert list(structure.supercell) == [2, 3, 1]
+
+    expanded = structure.expanded()
+    assert expanded.n_atom == 6
+    assert list(expanded.z) == [6] * 6
+    assert list(expanded.cell) == [4.0, 0.0, 0.0,
+                                   3.0, 6.0, 0.0,
+                                   0.0, 0.0, 10.0]
+    positions = [list(expanded.pos[3 * i:3 * i + 3])
+                 for i in range(expanded.n_atom)]
+    assert positions[0] == [0.0, 0.0, 0.0]
+    assert [2.0, 0.0, 0.0] in positions
+    assert [1.0, 2.0, 0.0] in positions
+    assert list(expanded.supercell) == [1, 1, 1]

@@ -347,13 +347,18 @@ Current coverage includes:
 
 Known limitations:
 
-- `compute_dc_spectrum(...)` currently requires overlap support and will raise if `S_images_` is absent
 - two-terminal conductance is not implemented
 - there is no separate device/contact abstraction yet
 
+(An earlier limitation -- requiring overlap support and raising when
+`S_images_` was absent -- no longer holds: velocity is a model capability,
+and orthogonal models get it through the generic commutator builder
+(`MakeCommutatorVelocityBuilder`). Both `compute_dc_spectrum` and
+`compute_ac` gate only on `has_velocity()`; orthogonal SKTB transport is
+covered by the toy-problem GTests and the graphene example.)
+
 Natural next steps:
 
-- relax the current overlap requirement for orthogonal-only Hamiltonians
 - add more exact-reference coverage for Hall responses on richer toy models
 - add user-facing docs/examples showing how to prepare complex HDF5 inputs
 - add a separate conductance module if the repo gains a lead/contact layer

@@ -7,6 +7,8 @@
 #include <H5Cpp.h>
 
 #include <cstdio>
+#include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -75,6 +77,61 @@ std::unique_ptr<AtomicData> make_periodic_single_atom_data(double cell_x, int no
         atom_index, atom_type, edge_index, type_norb, edge_shift_vec,
         cell, pos, MPI_COMM_WORLD);
 }
+
+std::unique_ptr<AtomicData> make_two_copy_supercell_data() {
+    const int atom_index[] = {0, 1};
+    const int atom_type[] = {0, 0};
+    const int edge_index[] = {
+        0, 1, 1, 0, 0, 1, 1, 0
+    };
+    const int type_norb[] = {1};
+    const int edge_shift[] = {
+         0, 0, 0,
+         0, 0, 0,
+        -1, 0, 0,
+         1, 0, 0
+    };
+    const double cell[] = {
+        6.0, 0.0, 0.0,
+        0.0, 8.0, 0.0,
+        0.0, 0.0, 8.0
+    };
+    const double pos[] = {
+        0.0, 0.0, 0.0,
+        3.0, 0.0, 0.0
+    };
+
+    auto data = std::make_unique<AtomicData>(
+        2, 2, 0, 4, 4, atom_index, atom_type, edge_index, type_norb,
+        edge_shift, cell, pos, MPI_COMM_WORLD,
+        std::vector<bool>{true, false, false});
+    data->primitive_n_atom = 1;
+    data->structure_supercell = {{2, 1, 1}};
+    return data;
+}
+
+class RecordingDeeptbReader : public rsatb::io::HamiltonianReader {
+public:
+    using Key = std::array<int, 5>;
+
+    rsatb::io::HamiltonianFormat format() const override {
+        return rsatb::io::HamiltonianFormat::kDeeptbHdf5;
+    }
+
+    rsatb::io::FileMetadata metadata() const override {
+        return {};
+    }
+
+    bool ReadBlock(int i, int j, const rsatb::io::CellShift& shift,
+                   rsatb::io::DenseBlock* out) const override {
+        ++calls[Key{{i, j, shift[0], shift[1], shift[2]}}];
+        out->Resize(1, 1);
+        out->values[0] = (shift[0] == 0) ? 2.0 : -1.0;
+        return std::abs(shift[0]) <= 1 && shift[1] == 0 && shift[2] == 0;
+    }
+
+    mutable std::map<Key, int> calls;
+};
 
 std::string make_hdf5_hamiltonian_file(const std::complex<double>& value) {
     const std::string path = "/tmp/rsatb_operator_set_test.h5";
@@ -228,6 +285,31 @@ TEST(OperatorSetTest, Hdf5ModelBuildsHamiltonianAndBounds) {
     EXPECT_NEAR(operators->emax(), 4.5, 1e-8);
 
     std::remove(path.c_str());
+}
+
+TEST(OperatorSetTest, DeeptbPrimitiveBlocksMapIntoSupercellIndicesAndShifts) {
+    auto atomic_data = make_two_copy_supercell_data();
+    RecordingDeeptbReader reader;
+
+    auto images = rsatb::model::BuildHamiltonianImagesFromFile(*atomic_data, reader);
+    ASSERT_NE(images, nullptr);
+
+    const RecordingDeeptbReader::Key onsite{{0, 0, 0, 0, 0}};
+    const RecordingDeeptbReader::Key left{{0, 0, -1, 0, 0}};
+    const RecordingDeeptbReader::Key right{{0, 0, 1, 0, 0}};
+    ASSERT_EQ(reader.calls.size(), 3u);
+    EXPECT_EQ(reader.calls.at(onsite), 1);
+    EXPECT_EQ(reader.calls.at(left), 1);
+    EXPECT_EQ(reader.calls.at(right), 1);
+
+    // Assembly remains in supercell indexing: internal copy-to-copy hoppings
+    // are R=0, while the two boundary hoppings live at supercell R=+-1.
+    EXPECT_NE(images->image_blocks.find(std::vector<int>{0, 0, 0}),
+              images->image_blocks.end());
+    EXPECT_NE(images->image_blocks.find(std::vector<int>{-1, 0, 0}),
+              images->image_blocks.end());
+    EXPECT_NE(images->image_blocks.find(std::vector<int>{1, 0, 0}),
+              images->image_blocks.end());
 }
 
 TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacements) {

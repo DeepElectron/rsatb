@@ -15,7 +15,7 @@ rank = MPI.COMM_WORLD.Get_rank()
 if MPI.COMM_WORLD.Get_size() != 1:
     raise RuntimeError("test_graphene_pz_dos.py expects mpirun -np 1.")
 
-N_MOMENTS = 120
+DE_EV = 0.15  # graphene pz span ~17 eV -> ~115 Chebyshev steps
 POINTS_PER_SEGMENT = 24
 
 a_cc = 1.42
@@ -92,7 +92,7 @@ model_runner = RSATB.from_graph(
     verbose=False,
 )
 
-dos, omega = model_runner.compute_dos(N_MOMENTS)
+dos, omega = model_runner.compute_dos(dE=DE_EV)
 del model_runner
 
 if rank == 0:

@@ -42,7 +42,7 @@ The smallest input that runs:
       "pairs": {"C-C": {"pp_pi": {"kind": "constant", "value": -2.7, "r_cut": 1.6}}}
     }
   },
-  "tasks": [{"type": "dos", "nt": 200}]
+  "tasks": [{"type": "dos", "dE": 0.1}]
 }
 ```
 
@@ -172,8 +172,12 @@ Hamiltonian file's own indexing and R-vector convention refer to. Atoms may sit
 outside the cell — the second carbon above is at fractional (-1/3, 2/3) — and
 periodic images are expressed against the coordinates as given.
 
-`supercell` tiles before setup. It is refused for `lcao` and `tb_file`, whose
-Hamiltonian files index the atoms of the cell as written.
+`supercell` belongs to the structure and tiles immediately before graph and
+operator construction. Parameterized SKTB/DFTB operators are built directly
+on the expanded geometry. For `lcao` and `tb_file`, a DeePTB HDF5 Hamiltonian
+is read in primitive `(i,j,R)` indexing and mapped into the expanded cell on
+the fly; no repeated HDF5 file is written. Other file layouts must explicitly
+define the same mapping before they can be combined with `supercell`.
 
 ## k-points
 
@@ -197,7 +201,7 @@ rather than several:
 
 ```json
 "tasks": [
-  {"type": "dos", "nt": 512},
+  {"type": "dos", "dE": 0.05},
   {"type": "dc_spectrum", "n_moments": 1024, "kernel": "costaper"},
   {"type": "msd", "n_steps": 100, "dt_fs": 10.0, "n_kpm": 1024, "axis": "x"}
 ]
@@ -207,8 +211,8 @@ Two runs of the same observable need a `label` to tell their results apart:
 
 ```json
 "tasks": [
-  {"type": "dos", "label": "coarse", "nt": 64},
-  {"type": "dos", "label": "fine",   "nt": 2048}
+  {"type": "dos", "label": "coarse", "dE": 0.3},
+  {"type": "dos", "label": "fine",   "dE": 0.01}
 ]
 ```
 

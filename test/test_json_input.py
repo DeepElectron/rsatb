@@ -235,17 +235,17 @@ def test_msd_is_refused_on_a_non_orthogonal_model():
 
 
 def test_duplicate_result_names_are_refused():
-    _, issues = resolve({"tasks": [{"type": "dos"}, {"type": "dos", "nt": 400}]})
+    _, issues = resolve({"tasks": [{"type": "dos"}, {"type": "dos", "dE": 0.05}]})
     assert any("already used" in issue.message for issue in errors(issues))
 
 
 def test_labels_separate_two_runs_of_the_same_task():
-    _, issues = resolve({"tasks": [{"type": "dos", "label": "coarse", "nt": 50},
-                                   {"type": "dos", "label": "fine", "nt": 500}]})
+    _, issues = resolve({"tasks": [{"type": "dos", "label": "coarse", "dE": 0.4},
+                                   {"type": "dos", "label": "fine", "dE": 0.04}]})
     assert errors(issues) == []
 
 
-def test_tiling_is_refused_for_a_file_backed_hamiltonian():
+def test_deeptb_tiling_is_allowed_for_a_file_backed_hamiltonian():
     document = {
         "structure": {"file": "a.vasp", "supercell": [2, 2, 1]},
         "model": {"type": "tb_file",
@@ -253,7 +253,7 @@ def test_tiling_is_refused_for_a_file_backed_hamiltonian():
                   "type_symbols": ["C"], "type_norb": [1], "cutoff_radius": [1.1]},
     }
     _, issues = check.resolve(document, check_paths=False)
-    assert "structure.supercell" in paths(errors(issues))
+    assert errors(issues) == []
 
 
 def test_a_preconditioner_target_that_disagrees_with_the_model_warns():
@@ -326,17 +326,6 @@ def test_an_energy_grid_expands_to_its_endpoints():
     from rsatb.inputs.build import build_energies
     energies = build_energies({"min": -1.0, "max": 1.0, "n": 5})
     assert energies[0] == -1.0 and energies[-1] == 1.0 and len(energies) == 5
-
-
-def test_tiling_repeats_the_cell_and_leaves_coordinates_alone():
-    from rsatb.inputs.build import tile
-    cell = [[2.0, 0, 0], [1.0, 2.0, 0], [0, 0, 10]]
-    positions, numbers, tiled = tile([[0.0, 0.0, 0.0]], [6], cell, [2, 3, 1])
-    assert len(positions) == 6 and numbers == [6] * 6
-    assert tiled == [[4.0, 0, 0], [3.0, 6.0, 0], [0, 0, 10]]
-    assert positions[0] == [0.0, 0.0, 0.0]      # the original atom is untouched
-    assert [2.0, 0.0, 0.0] in positions          # + a1
-    assert [1.0, 2.0, 0.0] in positions          # + a2
 
 
 # --- documentation ---------------------------------------------------------
@@ -426,7 +415,7 @@ def test_a_graphene_dos_runs_from_json(tmp_path, capsys):
     pytest.importorskip("_rsatb")
     document = copy.deepcopy(templates.get("sktb"))
     document["run"]["nsamples"] = 8
-    document["tasks"] = [{"type": "energy_bounds"}, {"type": "dos", "nt": 64}]
+    document["tasks"] = [{"type": "energy_bounds"}, {"type": "dos", "dE": 0.27}]
     document["output"] = {"dir": str(tmp_path / "out")}
     path = tmp_path / "input.json"
     path.write_text(json.dumps(document))

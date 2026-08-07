@@ -37,7 +37,7 @@ def _n_kpoint(options) -> int:
 def _dos(calc, task, options, result):
     import numpy as np
 
-    dos, energy = calc.compute_dos(task["nt"])
+    dos, energy = calc.compute_dos(task["dE"], method=task.get("method", "kpm"))
     result.arrays["energy"] = energy
     result.arrays["dos"] = np.asarray(dos).reshape(_n_kpoint(options), -1)
 
@@ -52,7 +52,8 @@ def _ac(calc, task, options, result):
     import numpy as np
 
     sigma, omega, properties = calc.compute_ac(
-        task["nt"], task["n_kpm"], task["temp"], task["mu"], task["axis"])
+        task["nt"], task["n_kpm"], task["temp"], task["mu"], task["axis"],
+        method=task.get("method", "concurrent"), block=task.get("block", 0))
     n_k = _n_kpoint(options)
     result.arrays["omega_cm1"] = np.asarray(omega)
     result.arrays["sigma"] = np.asarray(sigma).reshape(n_k, task["nt"] + 1, 6)
@@ -65,7 +66,8 @@ def _dc(calc, task, options, result):
 
     sigma = calc.compute_dc(
         task["n_moments"], task["mu"], task["temp"], task["formulation"], task["axis"],
-        task["partition_sections"], task["max_workspace_mb"], task["kernel"])
+        task["partition_sections"], task["max_workspace_mb"], task["kernel"],
+        method=task.get("method", "fftcheb"))
     result.arrays["sigma"] = np.asarray(sigma)
 
 
@@ -74,7 +76,8 @@ def _dc_spectrum(calc, task, options, result):
 
     sigma, energy = calc.compute_dc_spectrum(
         task["n_moments"], task["formulation"], task["axis"],
-        task["partition_sections"], task["max_workspace_mb"], task["kernel"])
+        task["partition_sections"], task["max_workspace_mb"], task["kernel"],
+        method=task.get("method", "fftcheb"))
     result.arrays["energy"] = np.asarray(energy)
     result.arrays["sigma"] = np.asarray(sigma)
 

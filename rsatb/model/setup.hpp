@@ -24,16 +24,25 @@ enum class PreconditionerTarget {
     kOverlap,   // approximate S^{-1/2}
 };
 
+/// Which form of the non-orthogonal operator the Chebyshev expansions apply.
+enum class OperatorForm {
+    kSolve,     // S^{-1} H: S is kept, each matvec CG-solves S y = H x with
+                // Z = S^{-1/2} as the preconditioner. The fallback for
+                // systems where Z densifies beyond what memory allows.
+    kSandwich,  // Z H Z, exactly Hermitian: S is released after the build
+                // (saves its memory; observables that need S become
+                // unavailable). Two SpMVs per matvec, and the Hermiticity
+                // enables the two-moments-per-matvec KPM shortcut -- see
+                // Chebyshev::op_is_hermitian for why kSolve cannot have it.
+};
+
 struct PreconditionerOptions {
     PreconditionerTarget target = PreconditionerTarget::kOverlap;
 
-    /// Frees the overlap matrix once the preconditioner is built.
-    ///
-    /// The preconditioner already carries the S^{-1/2} information the solvers
-    /// need, so for a large system dropping S saves substantial memory. It
-    /// also makes any observable that needs S explicitly unavailable, which is
-    /// why this is a named option rather than a side effect of a mode string.
-    bool release_overlap_after_build = false;
+    /// Selects between the S^{-1}H and Z H Z forms above. Formerly the bool
+    /// release_overlap_after_build (false = kSolve), named for its memory
+    /// side effect rather than for the operator it selects.
+    OperatorForm operator_form = OperatorForm::kSolve;
 
     double tol = 1e-7;
     double sptol = 1e-5;
@@ -48,7 +57,18 @@ inline PreconditionerTarget ParsePreconditionerTarget(const std::string& raw_nam
     if (name == "s" || name == "overlap") return PreconditionerTarget::kOverlap;
     throw std::runtime_error(
         "Unsupported preconditioner target '" + raw_name + "'. Supported: none, overlap. "
-        "The former \"H\" mode is now preconditioner.release_overlap_after_build.");
+        "The former \"H\" mode is now preconditioner.operator_form = \"sandwich\".");
+}
+
+/// Parses a user-facing operator form name.
+inline OperatorForm ParseOperatorForm(const std::string& raw_name) {
+    const std::string name = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(raw_name));
+    if (name == "solve") return OperatorForm::kSolve;
+    if (name == "sandwich") return OperatorForm::kSandwich;
+    throw std::runtime_error(
+        "Unsupported operator form '" + raw_name + "'. Supported: sandwich (Z H Z, "
+        "S released), solve (S^-1 H by preconditioned CG, S kept). This option was "
+        "formerly the bool release_overlap_after_build (true = sandwich).");
 }
 
 struct SetupOptions {

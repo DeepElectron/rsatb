@@ -29,7 +29,7 @@ model_runner = RSATB(
         kpoints=kpoints,
         nsamples=1,
         preconditioner=PreconditionerOptions(
-            release_overlap_after_build=True,
+            operator_form="sandwich",
             tol=1e-7,
             sptol=1e-5,
         ),

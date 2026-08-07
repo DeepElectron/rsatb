@@ -62,7 +62,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
 
     model::SetupOptions setup_options;
     setup_options.kpoints = kpoints;
-    setup_options.preconditioner.release_overlap_after_build = true;
+    setup_options.preconditioner.operator_form = model::OperatorForm::kSandwich;
 
     rsatb_inst = std::make_unique<RSATB>(
         vbcsr::atomic::ReadStructure(vasp_file), *lcao_model, setup_options,
@@ -80,7 +80,7 @@ TEST(RSATBTest, TestSetupAndCompute) {
     
     // // 6. Compute DOS
     std::vector<double> dos, omega;
-    rsatb_inst->compute_dos(500, dos, omega);
+    rsatb_inst->compute_dos(0.5, dos, omega);
     
     if (rank == 0) {
         std::cout << "DOS computed. Size: " << dos.size() << std::endl;

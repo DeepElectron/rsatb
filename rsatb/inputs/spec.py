@@ -448,9 +448,15 @@ PRECONDITIONER = Obj(
                          "one, none for an orthogonal one, so there is nothing to "
                          "set for the common case. 'none' skips it entirely.",
                          choices=("auto", "overlap", "none")), default="auto"),
-        "release_overlap_after_build": F(_bool(
-            "Free S once S^-1/2 has been built. Saves memory, and makes the "
-            "observables that need S illegal from then on."), default=False),
+        "operator_form": F(_str(
+            "Which operator the Chebyshev expansions apply. 'sandwich' is "
+            "Z H Z with Z = S^-1/2: exactly Hermitian, two SpMVs per matvec, "
+            "and S is released after the build (saves its memory; observables "
+            "that need S become illegal). 'solve' keeps S and applies S^-1 H "
+            "by preconditioned CG each matvec -- the fallback when Z would "
+            "densify beyond memory. Formerly the bool "
+            "release_overlap_after_build (true = sandwich).",
+            choices=("sandwich", "solve")), default="solve"),
         "tol": F(_num("Convergence tolerance of the inverse-square-root iteration.",
                       exclusive_minimum=0.0), default=1e-7),
         "sptol": F(_num("Sparsity threshold: entries below it are dropped from the "
@@ -459,7 +465,7 @@ PRECONDITIONER = Obj(
             "Newton-Schulz iteration cap. 0 keeps the graph seed itself as "
             "S^-1/2 -- sparse but only subgraph-accurate, which is the "
             "seed-only PCG route when the overlap is kept "
-            "(release_overlap_after_build false).", minimum=0), default=20),
+            "(operator_form 'solve').", minimum=0), default=20),
     })
 
 KPOINTS = Choice(
@@ -559,11 +565,23 @@ TASK = Union(
             "model and structure set up at all.",
             {"label": LABEL}),
         "dos": Obj(
-            "Density of states by stochastic Chebyshev time propagation.",
+            "Density of states by stochastic Chebyshev expansion.",
             {
                 "label": LABEL,
-                "nt": F(_int("Time steps. More gives finer energy resolution at "
-                             "linear cost.", minimum=1), default=200),
+                "dE": F(_num("Target energy resolution. The Chebyshev step "
+                             "and moment counts are derived from the "
+                             "spectral span at run time; cost is linear in "
+                             "span/dE. Replaces the former nt (= span/dE) "
+                             "and n_moments.", unit="eV",
+                             exclusive_minimum=0.0), default=0.1),
+                "method": F(_str("Broadening kernel; both run on the same "
+                                 "moment recurrence (~2*span/dE matvecs). "
+                                 "'kpm' is Jackson, strictly positive; "
+                                 "'corr' reconstructs the correlation series "
+                                 "from the moments and applies the "
+                                 "historical Hann window + FFT, matching "
+                                 "legacy outputs.",
+                                 choices=("kpm", "corr")), default="kpm"),
             }),
         "ac": Obj(
             "AC conductivity, plus the dielectric function, refractive index "
@@ -576,6 +594,17 @@ TASK = Union(
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), default=300.0),
                 "mu": F(_num("Chemical potential.", unit="eV"), default=0.0),
                 "axis": F(AXIS, default="abc"),
+                "method": F(_str("Correlator evolution. 'concurrent' shares "
+                                 "Chebyshev states across time steps (~9x "
+                                 "fewer propagation matvecs); 'sequential' "
+                                 "propagates stepwise and is kept as the "
+                                 "independent cross-check. Both sample "
+                                 "alias-free.",
+                                 choices=("concurrent", "sequential")),
+                            default="concurrent"),
+                "block": F(_int("Concurrent only: time steps per block. Memory "
+                                "holds ~4*(pi*block+50) states; the matvec "
+                                "saving saturates around 128.", minimum=1)),
             }),
         "dc": Obj(
             "DC conductivity tensor at one chemical potential and temperature. "
@@ -588,6 +617,14 @@ TASK = Union(
                 "formulation": F(FORMULATION, default="greenwood"),
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
+                "method": F(_str("Spectrum evaluation. 'qe' computes only the "
+                                 "thermal window of energy nodes around mu "
+                                 "via quasi-eigenstate accumulation: MBs of "
+                                 "workspace instead of the full-grid row "
+                                 "store, one pass, greenwood only. 'fftcheb' "
+                                 "is the full-grid row-FFT route and the "
+                                 "only one for 'bastin'.",
+                                 choices=("fftcheb", "qe")), default="fftcheb"),
                 "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
                                              minimum=0), default=0),
                 "max_workspace_mb": F(_int("Workspace cap used to infer row partitioning; "
@@ -602,6 +639,14 @@ TASK = Union(
                 "formulation": F(FORMULATION, default="greenwood"),
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
+                "method": F(_str("Spectrum evaluation. 'fftcheb' (row FFTs, "
+                                 "the default) is the right algorithm for "
+                                 "the full grid; 'qe' (quasi-eigenstate "
+                                 "accumulation, greenwood only) exists for "
+                                 "cross-checks here and shines in the dc "
+                                 "task, where only a thermal window of "
+                                 "nodes is needed.",
+                                 choices=("fftcheb", "qe")), default="fftcheb"),
                 "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
                                              minimum=0), default=0),
                 "max_workspace_mb": F(_int("Workspace cap used to infer row partitioning; "

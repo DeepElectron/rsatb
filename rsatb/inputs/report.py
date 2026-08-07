@@ -219,7 +219,7 @@ The smallest complete input:
         "pairs": {"C-C": {"pp_pi": {"kind": "constant", "value": -2.7, "r_cut": 1.6}}}
       }
     },
-    "tasks": [{"type": "dos", "nt": 200}]
+    "tasks": [{"type": "dos", "dE": 0.1}]
   }
 
 The workflow:

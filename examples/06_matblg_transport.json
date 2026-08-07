@@ -32,7 +32,7 @@
   },
 
   "tasks": [
-    {"type": "dos", "nt": 1024},
+    {"type": "dos", "dE": 0.02},
     {"type": "msd", "n_steps": 200, "dt_fs": 10.0, "n_kpm": 3500, "axis": "x"},
     {"type": "quantum_metric", "nt": 1024, "n_kpm": 3500, "temp": 0.0, "mu": 0.0,
      "omega_min_ev": 0.0}

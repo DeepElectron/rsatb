@@ -113,17 +113,23 @@ class RSATB:
     def test_solve(self):
         self._cpp_obj.test_solve()
 
-    def compute_dos(self, nt):
+    def compute_dos(self, dE, method="kpm"):
         """
         Compute the Density of States (DOS).
 
         Args:
-            nt (int): Number of time steps.
+            dE (float): Target energy resolution in eV. The Chebyshev step
+                and moment counts are derived from the spectral span at run
+                time (cost is linear in span/dE), so this is the only knob.
+            method (str): The broadening kernel; both run on the same moment
+                recurrence. "kpm" (Jackson, strictly positive; the default)
+                or "corr" (the historical Hann-window + FFT output,
+                reconstructed from the moments at the same cost).
 
         Returns:
             tuple: (dos_out, omega_out) as numpy arrays.
         """
-        dos_out, omega_out = self._cpp_obj.compute_dos(nt)
+        dos_out, omega_out = self._cpp_obj.compute_dos(dE, method)
         return np.array(dos_out), np.array(omega_out)
 
     def energy_bounds(self):
@@ -138,7 +144,7 @@ class RSATB:
         """
         return self._cpp_obj.energy_bounds()
 
-    def compute_ac(self, nt, n_kpm, temp, mu, axis="abc"):
+    def compute_ac(self, nt, n_kpm, temp, mu, axis="abc", method="concurrent", block=0):
         """
         Compute the AC conductivity.
 
@@ -148,12 +154,18 @@ class RSATB:
             temp (float): Temperature.
             mu (float): Chemical potential.
             axis (str, optional): Axis for volume calculation. Defaults to "abc".
+            method (str): "concurrent" (shared-Chebyshev-state evolution,
+                ~9x fewer propagation matvecs; the default) or "sequential"
+                (stepwise propagation, the independent cross-check). Both
+                sample the correlator at its Nyquist step, alias-free.
+            block (int): Concurrent only: time steps per block, bounding the
+                stored-state memory. 0 uses the built-in min(nt, 128).
 
         Returns:
             tuple: (ac_out, omega_out) as numpy arrays.
             unit in S/m for ac_out and cm-1 for omega_out
         """
-        ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis)
+        ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis, method, block)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
         n_k, ntp1 = ac_out.shape[0], ac_out.shape[1]
         
@@ -208,7 +220,7 @@ class RSATB:
 
         return ac_out, omega_out, properties
 
-    def compute_dc_spectrum(self, n_moments, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson"):
+    def compute_dc_spectrum(self, n_moments, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson", method="fftcheb"):
         """
         Compute the zero-temperature DC conductivity spectrum on the Chebyshev energy grid.
 
@@ -241,7 +253,7 @@ class RSATB:
         energy_out = np.array(energy_out, dtype=np.float64)
         return sigma_out, energy_out
 
-    def compute_dc(self, n_moments, mu, temp, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson"):
+    def compute_dc(self, n_moments, mu, temp, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson", method="fftcheb"):
         """
         Evaluate the DC conductivity tensor at a target chemical potential and temperature.
 

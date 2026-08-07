@@ -349,7 +349,10 @@ private:
         state.preconditioner = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
             *overlap, config.maxiter, config.tol, config.sptol, verbose_);
 
-        if (config.release_overlap_after_build) {
+        // The sandwich form propagates Z H Z and never touches S again;
+        // releasing it here is what routes MakeChebyshev to that branch.
+        // The solve form keeps S: matvecs CG-solve S y = H x instead.
+        if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
             state.overlap.reset();
         }
     }

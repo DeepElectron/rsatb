@@ -59,13 +59,13 @@ model_runner = RSATB(
     SetupOptions(
         kpoints=kpoints,
         nsamples=500,
-        preconditioner=PreconditionerOptions(release_overlap_after_build=True),
+        preconditioner=PreconditionerOptions(operator_form="sandwich"),
     ),
     npar=5,
     verbose=True,
 )
 
-dos, omega = model_runner.compute_dos(200)
+dos, omega = model_runner.compute_dos(dE=1.4)
 
 if rank == 0:
     import matplotlib.pyplot as plt

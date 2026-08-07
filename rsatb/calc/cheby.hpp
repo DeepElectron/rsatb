@@ -96,6 +96,31 @@ public:
         half_width = (emax - emin) / 2.0;
     }
 
+    // True when the operator applied by apply_op is Hermitian: the orthogonal
+    // case (H alone), and the Symmetric preconditioner sandwich M^H H M,
+    // Hermitian for any M when H is. Left/Right preconditioning and the
+    // S-solver mode apply a similarity transform of H that is not Hermitian
+    // elementwise, so product-identity shortcuts (two KPM moments per
+    // matvec) must not be used there.
+    //
+    // Why the solver mode (S kept, A = S^-1 H) has no doubling either way,
+    // even though A is self-adjoint in the S inner product:
+    //   <x|T_n(A) T_n(A)|x> = <T_n(A^H) x | T_n(A) x>,   A^H = H S^-1 = S A S^-1
+    //                       = <T_n(A) (S^-1 x) | S | T_n(A) x>
+    // -- the bra needs a SECOND Chebyshev chain seeded from S^-1 x: two
+    // recurrences for two moments, no gain. The single-chain alternative
+    // doubles the S-weighted moments <x|S T_n(A)|x>, but those estimate the
+    // DOS trace only for sample vectors drawn with covariance S^-1
+    // (x = Z eta), and then <x|S T_n(A)|x> = <eta|T_n(ZHZ)|eta> identically:
+    // the sandwich estimator again, evaluated through a CG solve per matvec
+    // instead of two SpMVs. The doubling exists only when the operator, the
+    // dot product, and the sampling share one inner product -- exactly the
+    // Symmetric-sandwich configuration this gate accepts.
+    bool op_is_hermitian() const {
+        return S == nullptr &&
+               (M == nullptr || ptype == rsatb::calc::PreconditionerType::Symmetric);
+    }
+
     // Apply scaled operator Op * x -> y
     // Op = (S^-1 H - center) / half_width  (NORMAL)
     // Op = (H^*S^-1* - center) / half_width  (CONJUGATE)

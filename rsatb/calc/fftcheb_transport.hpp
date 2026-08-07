@@ -669,6 +669,295 @@ void dc_spectrum_fftcheb(
     }
 }
 
+/*
+ * Quasi-eigenstate (windowed) evaluation of the Greenwood spectrum.
+ *
+ * Same bilinear form as the fftcheb Greenwood path -- sigma(eps_k) is
+ * Sum_{m,m'} w_m(eps_k) w_m'(eps_k) <L_m|R_m'> with identical kernel
+ * weights, so the two routes agree to rounding -- but with the TBPM memory
+ * layout of arXiv:2510.17432 (their EC-Concurrent-M): the right Chebyshev
+ * sequences accumulate directly into energy-filtered vectors
+ * ("quasi-eigenstates") at the requested nodes, and the left chain
+ * contracts against them with streaming local dots. No row store, no row
+ * FFTs, no partition re-passes: memory is 3 * NE * rows against fftcheb's
+ * 6 * n_moments * rows, where NE is the size of the node window.
+ *
+ * NE is the control knob. For sigma(mu, T) the thermal window is a few
+ * dozen nodes, collapsing the workspace from GBs (or section re-passes) to
+ * MBs in a single pass. For the FULL grid the accumulation is
+ * O(n_moments * NE * rows) where fftcheb's row DCT is
+ * O(n_moments * log * rows): use fftcheb there. Greenwood diagonal only,
+ * like the fftcheb Greenwood path; Bastin needs the row transform.
+ */
+template <typename T, typename VectorType>
+void accumulate_qe_block(
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& Vx,
+    BlockSpMat<T>& Vy,
+    BlockSpMat<T>& Vz,
+    const VectorType& samples,
+    int n_moments,
+    const std::vector<int>& src_nodes,
+    KpmKernel kernel,
+    std::vector<cd>& kernel_accum
+) {
+    DistGraph* graph = samples.graph;
+    const int rank = graph->rank;
+    const int local_rows = graph->block_offsets[graph->owned_global_indices.size()];
+    const int sample_block_size = vector_block_width(samples);
+    const int n_nodes = static_cast<int>(src_nodes.size());
+    const size_t entries = static_cast<size_t>(local_rows) * static_cast<size_t>(sample_block_size);
+
+    const std::vector<double> jackson = kpm_kernel_weights(kernel, n_moments);
+
+    // Per-node theta and the cos(m theta) recurrence state.
+    std::vector<double> cos_theta(n_nodes), denom(n_nodes);
+    std::vector<double> c_prev(n_nodes), c_curr(n_nodes);
+    for (int j = 0; j < n_nodes; ++j) {
+        const double theta = M_PI * (static_cast<double>(src_nodes[j]) + 0.5) /
+                             static_cast<double>(n_moments);
+        cos_theta[j] = std::cos(theta);
+        const double eps = cos_theta[j];
+        denom[j] = std::max(1e-14, 1.0 - eps * eps);
+    }
+
+    auto value_at = [&](const VectorType& vec, int row, int sample_idx) -> cd {
+        if constexpr (is_dist_multivector_v<VectorType>) {
+            return static_cast<cd>(vec(row, sample_idx));
+        } else {
+            (void)sample_idx;
+            return static_cast<cd>(vec.local_data()[row]);
+        }
+    };
+
+    const double velocity_scale = 1.0 / (2.0 * cheby.half_width);
+
+    // Quasi-eigenstate store: [axis][node][row * samples].
+    std::vector<std::vector<cd>> q(static_cast<size_t>(3) * n_nodes);
+    for (auto& slot : q) slot.assign(entries, cd(0.0, 0.0));
+    auto q_slot = [&](int axis, int j) -> std::vector<cd>& {
+        return q[static_cast<size_t>(axis) * n_nodes + static_cast<size_t>(j)];
+    };
+
+    // Right pass: R_m = T_m(Op) J_b psi accumulates into the node vectors.
+    std::array<VectorType, 3> r_prev = {
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size)
+    };
+    std::array<VectorType, 3> r_curr = {
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size)
+    };
+    std::array<VectorType, 3> r_next = {
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size)
+    };
+    current(cheby, Vx, Vy, Vz, samples, r_prev.data(), velocity_scale);
+
+    auto accumulate_right = [&](int m, const std::array<VectorType, 3>& r) {
+        for (int j = 0; j < n_nodes; ++j) {
+            double t_m;
+            if (m == 0) {
+                c_prev[j] = 1.0;
+                t_m = 1.0;
+            } else if (m == 1) {
+                c_curr[j] = cos_theta[j];
+                t_m = cos_theta[j];
+            } else {
+                const double t_next = 2.0 * cos_theta[j] * c_curr[j] - c_prev[j];
+                c_prev[j] = c_curr[j];
+                c_curr[j] = t_next;
+                t_m = t_next;
+            }
+            const double w = (m == 0 ? 1.0 : 2.0) * jackson[m] / M_PI * t_m;
+            for (int axis = 0; axis < 3; ++axis) {
+                std::vector<cd>& slot = q_slot(axis, j);
+                size_t idx = 0;
+                for (int row = 0; row < local_rows; ++row) {
+                    for (int s = 0; s < sample_block_size; ++s, ++idx) {
+                        slot[idx] += w * value_at(r[axis], row, s);
+                    }
+                }
+            }
+        }
+    };
+
+    accumulate_right(0, r_prev);
+    if (n_moments > 1) {
+        for (int axis = 0; axis < 3; ++axis) {
+            cheby.apply_op(r_prev[axis], r_curr[axis], ChebyMode::NORMAL);
+        }
+        accumulate_right(1, r_curr);
+    }
+    for (int m = 2; m < n_moments; ++m) {
+        if ((m & 15) == 0) ::rsatb::util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
+            ::rsatb::util::every_nth(m - 2, std::max(1, n_moments / 10))) {
+            std::cout << "dc: qe right pass, moment " << m << " / " << n_moments << std::endl;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            cheby.apply_op(r_curr[axis], r_next[axis], ChebyMode::NORMAL);
+            r_next[axis].axpby(static_cast<T>(-1.0), r_prev[axis], static_cast<T>(2.0));
+            r_prev[axis].swap(r_curr[axis]);
+            r_curr[axis].swap(r_next[axis]);
+        }
+        accumulate_right(m, r_curr);
+    }
+
+    // Left pass: L_m = J_a^adj T_m(Op_adj) psi contracts against the stored
+    // node vectors with local partial dots; one MPI reduction happens later
+    // over the whole kernel_accum.
+    for (int j = 0; j < n_nodes; ++j) { c_prev[j] = 1.0; c_curr[j] = cos_theta[j]; }
+
+    VectorType l_prev = make_transport_vector<VectorType, T>(graph, sample_block_size);
+    VectorType l_curr = make_transport_vector<VectorType, T>(graph, sample_block_size);
+    VectorType l_next = make_transport_vector<VectorType, T>(graph, sample_block_size);
+    std::array<VectorType, 3> l_axes = {
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size),
+        make_transport_vector<VectorType, T>(graph, sample_block_size)
+    };
+
+    auto accumulate_left = [&](int m) {
+        current_adjoint(cheby, Vx, Vy, Vz, m == 0 ? l_prev : (m == 1 ? l_curr : l_next),
+                        l_axes.data(), velocity_scale);
+        for (int j = 0; j < n_nodes; ++j) {
+            double t_m;
+            if (m == 0) {
+                t_m = 1.0;
+            } else if (m == 1) {
+                t_m = cos_theta[j];
+            } else {
+                const double t_next = 2.0 * cos_theta[j] * c_curr[j] - c_prev[j];
+                t_m = t_next;
+            }
+            const double w = (m == 0 ? 1.0 : 2.0) * jackson[m] / M_PI * t_m;
+            for (int axis = 0; axis < 3; ++axis) {
+                const int comp = conductivity_component_index(axis, axis);
+                const std::vector<cd>& slot = q_slot(axis, j);
+                cd partial(0.0, 0.0);
+                size_t idx = 0;
+                for (int row = 0; row < local_rows; ++row) {
+                    for (int s = 0; s < sample_block_size; ++s, ++idx) {
+                        partial += std::conj(value_at(l_axes[axis], row, s)) * slot[idx];
+                    }
+                }
+                kernel_accum[static_cast<size_t>(src_nodes[j]) * 6 + static_cast<size_t>(comp)] +=
+                    w * partial / denom[j];
+            }
+        }
+        // Advance the shared cos recurrence once per moment (not per node
+        // read): only after every node used t_m at this m.
+        if (m >= 2) {
+            for (int j = 0; j < n_nodes; ++j) {
+                const double t_next = 2.0 * cos_theta[j] * c_curr[j] - c_prev[j];
+                c_prev[j] = c_curr[j];
+                c_curr[j] = t_next;
+            }
+        }
+    };
+
+    l_prev.copy_from(samples);
+    accumulate_left(0);
+    if (n_moments > 1) {
+        cheby.apply_op(l_prev, l_curr, ChebyMode::ADJOINT);
+        accumulate_left(1);
+    }
+    for (int m = 2; m < n_moments; ++m) {
+        if ((m & 15) == 0) ::rsatb::util::throw_if_interrupted(graph->comm);
+        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress) &&
+            ::rsatb::util::every_nth(m - 2, std::max(1, n_moments / 10))) {
+            std::cout << "dc: qe left pass, moment " << m << " / " << n_moments << std::endl;
+        }
+        cheby.apply_op(l_curr, l_next, ChebyMode::ADJOINT);
+        l_next.axpby(static_cast<T>(-1.0), l_prev, static_cast<T>(2.0));
+        accumulate_left(m);
+        l_prev.swap(l_curr);
+        l_curr.swap(l_next);
+    }
+}
+
+// Wrapper matching dc_spectrum_fftcheb's contract: full-length ascending
+// sigma/energy arrays, with sigma zero outside the requested node window.
+// `nodes_ascending` indexes the ascending output grid; empty = all nodes.
+template <typename T>
+void dc_spectrum_qe(
+    Chebyshev<T>& cheby,
+    BlockSpMat<T>& Vx,
+    BlockSpMat<T>& Vy,
+    BlockSpMat<T>& Vz,
+    DistMultiVector<T>& psi_samples,
+    int n_moments,
+    double prefactor,
+    std::vector<double>& sigma_out,
+    std::vector<double>& energy_out,
+    KpmKernel kernel = KpmKernel::Jackson,
+    std::vector<int> nodes_ascending = {}
+) {
+    if (n_moments <= 0) {
+        throw std::runtime_error("n_moments must be positive");
+    }
+    DistGraph* graph = psi_samples.graph;
+    const int n_samples = psi_samples.num_vectors;
+    if (n_samples <= 0) {
+        throw std::runtime_error("At least one stochastic sample is required");
+    }
+
+    if (nodes_ascending.empty()) {
+        nodes_ascending.resize(n_moments);
+        for (int k = 0; k < n_moments; ++k) nodes_ascending[k] = k;
+    }
+    std::sort(nodes_ascending.begin(), nodes_ascending.end());
+    nodes_ascending.erase(std::unique(nodes_ascending.begin(), nodes_ascending.end()),
+                          nodes_ascending.end());
+    if (nodes_ascending.front() < 0 || nodes_ascending.back() >= n_moments) {
+        throw std::runtime_error("dc_spectrum_qe: node index out of range");
+    }
+    std::vector<int> src_nodes(nodes_ascending.size());
+    for (size_t j = 0; j < nodes_ascending.size(); ++j) {
+        src_nodes[j] = n_moments - 1 - nodes_ascending[j];
+    }
+
+    std::vector<cd> local_kernel(static_cast<size_t>(n_moments) * 6, cd(0.0, 0.0));
+    if (n_samples == 1) {
+        DistVector<T> sample = psi_samples.get_col(0);
+        accumulate_qe_block(cheby, Vx, Vy, Vz, sample, n_moments, src_nodes, kernel, local_kernel);
+    } else {
+        accumulate_qe_block(cheby, Vx, Vy, Vz, psi_samples, n_moments, src_nodes, kernel, local_kernel);
+    }
+
+    for (cd& value : local_kernel) {
+        value /= static_cast<double>(n_samples);
+    }
+
+    std::vector<cd> global_kernel(local_kernel.size(), cd(0.0, 0.0));
+    if (graph->size == 1) {
+        global_kernel = local_kernel;
+    } else {
+        MPI_Allreduce(local_kernel.data(), global_kernel.data(),
+                      static_cast<int>(local_kernel.size()), MPI_CXX_DOUBLE_COMPLEX,
+                      MPI_SUM, graph->comm);
+    }
+
+    energy_out.resize(n_moments);
+    sigma_out.assign(static_cast<size_t>(n_moments) * 6, 0.0);
+    for (int k = 0; k < n_moments; ++k) {
+        const int src = n_moments - 1 - k;
+        const double theta = M_PI * (static_cast<double>(src) + 0.5) / static_cast<double>(n_moments);
+        energy_out[k] = cheby.center + cheby.half_width * std::cos(theta);
+    }
+    for (int k : nodes_ascending) {
+        const int src = n_moments - 1 - k;
+        for (int comp = 0; comp < 6; ++comp) {
+            sigma_out[static_cast<size_t>(k) * 6 + static_cast<size_t>(comp)] =
+                prefactor * global_kernel[static_cast<size_t>(src) * 6 + static_cast<size_t>(comp)].real();
+        }
+    }
+}
+
 inline double interpolate_spectrum_component(
     const std::vector<double>& energy,
     const std::vector<double>& sigma,

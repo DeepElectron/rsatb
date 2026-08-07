@@ -29,7 +29,6 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 try:
     from rsatb import (PreconditionerOptions, RSATB, SetupOptions, SkParameters,
                        SktbModel, Structure, sk_spline)
-    from rsatb.inputs.build import tile
 except ImportError as error:  # the compiled extension is not built here
     pytest.skip("rsatb is not importable: {}".format(error), allow_module_level=True)
 
@@ -57,12 +56,13 @@ def pz_model():
     )
 
 
-def spectral_half_width(positions, numbers, cell, model):
+def spectral_half_width(positions, numbers, cell, model, supercell=(1, 1, 1)):
     structure = Structure.from_arrays(
         pos=[v for p in positions for v in p],
         z=numbers,
         cell=[v for row in cell for v in row],
         pbc=[True, True, False],
+        supercell=supercell,
     )
     calculation = RSATB(
         structure,
@@ -78,8 +78,8 @@ def spectral_half_width(positions, numbers, cell, model):
 @pytest.mark.parametrize("supercell", [[1, 1, 1], [2, 2, 1], [3, 3, 1], [4, 4, 1], [5, 5, 1]])
 def test_a_graphene_supercell_keeps_every_bond(supercell):
     positions, numbers, cell = graphene_primitive()
-    positions, numbers, cell = tile(positions, numbers, cell, supercell)
-    half_width = spectral_half_width(positions, numbers, cell, pz_model())
+    half_width = spectral_half_width(
+        positions, numbers, cell, pz_model(), supercell=supercell)
     assert half_width == pytest.approx(ANALYTIC_HALF_WIDTH, abs=1e-6), (
         "{}: |E|max is {:.4f}, not the analytic 3|t| = {:.4f}; the supercell is "
         "missing bonds".format(supercell, half_width, ANALYTIC_HALF_WIDTH))
@@ -101,8 +101,8 @@ def test_the_result_does_not_depend_on_where_the_basis_atom_is_written():
     for supercell in ([1, 1, 1], [3, 3, 1]):
         widths = []
         for basis in (outside, inside):
-            positions, numbers, tiled = tile(basis, [6, 6], cell, supercell)
-            widths.append(spectral_half_width(positions, numbers, tiled, model))
+            widths.append(spectral_half_width(
+                basis, [6, 6], cell, model, supercell=supercell))
         assert widths[0] == pytest.approx(widths[1], abs=1e-6), (
             "{}: {:.4f} vs {:.4f} for the same crystal".format(supercell, *widths))
         assert widths[0] == pytest.approx(ANALYTIC_HALF_WIDTH, abs=1e-6)

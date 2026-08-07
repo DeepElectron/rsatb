@@ -56,7 +56,7 @@ TEMPLATES: Dict[str, dict] = {
         },
         "tasks": [
             {"type": "energy_bounds"},
-            {"type": "dos", "nt": 200},
+            {"type": "dos", "dE": 0.1},
         ],
         "output": {"dir": "results", "format": "npz"},
     },
@@ -82,7 +82,7 @@ TEMPLATES: Dict[str, dict] = {
             "bounds": {"mode": "fixed", "energy": [-9.0, 9.0]},
         },
         "tasks": [
-            {"type": "dos", "nt": 512},
+            {"type": "dos", "dE": 0.05},
             {"type": "dc_spectrum", "n_moments": 1024, "kernel": "costaper"},
             {"type": "msd", "n_steps": 100, "dt_fs": 10.0, "n_kpm": 1024, "axis": "x"},
         ],
@@ -103,9 +103,9 @@ TEMPLATES: Dict[str, dict] = {
             "npar": 1,
             "nsamples": 200,
             "kpoints": {"mesh": [2, 2, 2]},
-            "preconditioner": {"release_overlap_after_build": True},
+            "preconditioner": {"operator_form": "sandwich"},
         },
-        "tasks": [{"type": "dos", "nt": 100}],
+        "tasks": [{"type": "dos", "dE": 0.2}],
         "output": {"dir": "results"},
     },
 
@@ -124,7 +124,7 @@ TEMPLATES: Dict[str, dict] = {
             "basis": {"C": ["s", "p"]},
         },
         "run": {"nsamples": 32, "kpoints": {"mesh": [4, 4, 4]}},
-        "tasks": [{"type": "dos", "nt": 200}],
+        "tasks": [{"type": "dos", "dE": 0.1}],
         "output": {"dir": "results"},
     },
 
@@ -144,7 +144,7 @@ TEMPLATES: Dict[str, dict] = {
         },
         "run": {"nsamples": 1, "kpoints": {"line": [[0.0, 0.0, 0.0], [0.5, 0.0, 0.0]],
                                            "points_per_segment": 11}},
-        "tasks": [{"type": "dos", "nt": 100}],
+        "tasks": [{"type": "dos", "dE": 0.2}],
         "output": {"dir": "results"},
     },
 }

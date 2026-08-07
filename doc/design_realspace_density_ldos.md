@@ -230,7 +230,7 @@ each of the three configurations the class supports:
 | `S` released, `M` set | $MH'M$ | $MV$ | rows $R$ of $Mt_n$ |
 
 The middle row is the design's prescription (§2); the third arises only when
-`release_overlap_after_build` discarded the overlap.
+`operator_form="sandwich"` discarded the overlap.
 
 **Output units are states/eV/Å³.** op2c normalizes its radials in Bohr, so a
 raw contraction lands in Bohr⁻³ — a factor 0.529177³ = 0.1482 low. Everything
@@ -302,8 +302,24 @@ summed — ownership being a partition is what makes that sound, and is tested
 directly (`AssignsEveryPointExactlyOnce`).
 
 Weighting atoms by orbital count balances collocation work rather than atom
-count. Verified: `BindsPointsToTheAtomsTheyLieOn` at 2, 3, 4, 8 and 16 ranks,
-plus determinism, balance, and the degenerate case of more ranks than atoms.
+count. Verified in `calc/test/test_collocation.cpp`:
+`AssignsEveryPointExactlyOnce` and `BindsPointsToTheAtomsTheyLieOn` at 2, 3, 4,
+8 and 16 parts, `IsDeterministicAndIndependentOfRankOrder`, and
+`SurvivesMoreRanksThanAtoms` at 64 parts over 32 atoms. The partition is
+communication-free, so one process deriving every rank's share is the same
+computation the ranks would each do.
+
+One condition is worth stating because it is a resolution limit rather than a
+bug. A box is claimed whole, by where its centre falls, so the binding is only
+as sharp as the boxes are small: a region finer than a box may contain no box
+centre, and its points are then served by a neighbouring rank which does need
+orbitals it does not own. The target regime is comfortably the other way -- at
+$10^6$ atoms on $10^3$ ranks a region spans $\sim18$ A against a 2.4 A box at
+0.2 A spacing -- and the overhang is what the ghost layer covers, so it
+degrades rather than breaks. Exactness does not degrade at any ratio, which is
+what the compact no-reduction buffers rely on:
+`CoverStaysExactWhenBoxesAreCoarserThanRegions` asserts it in the inverted
+regime.
 
 The same tree is what a future subdomain recursion (§3.3) needs: it already
 defines each rank's compact cell, so adding a buffer of $\xi(\eta)$ around it

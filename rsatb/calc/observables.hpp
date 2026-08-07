@@ -225,60 +225,154 @@ inline const op::LatticeMomentAxis& SelectAxisData(
     throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
 }
 
-inline void ComputeDos(const ObservableContext& context, int nt, std::vector<double>& dos_out, std::vector<double>& omega_out) {
+// Density of states. The user-facing knob is the energy resolution `de_ev`
+// (eV); the internal step/moment counts are derived from it against the
+// spectral span, which only exists here at run time:
+//
+//   nt = ceil(span / dE)   -- Chebyshev time steps / grid half-size
+//
+// Two kernels behind one contract, both driven by the same moment
+// recurrence (kpm_dos_moments, ~2*span/dE matvecs with the Hermitian
+// doubling):
+//
+//   method "kpm"  -- Jackson-smoothed moment summation. The default: the
+//                    kernel is strictly positive (no negative DOS, no
+//                    ringing).
+//   method "corr" -- the TBPM correlation kernel: the time series
+//                    C(t_j) = Sum_n c_n(t_j) mu_n is reconstructed from the
+//                    same moments (corr_from_moments) and fed through the
+//                    historical Hann window + FFT, reproducing the stepwise
+//                    estimator's output to expansion truncation at moment
+//                    cost. Stepwise propagation itself survives only as an
+//                    inline cross-check in test_dos.
+//
+// Both kernels honour dE as their broadening FWHM and report on the same
+// uniform 2*nt energy grid, so switching methods changes the kernel, not
+// the resolution, the cost class, or the output shape.
+inline void ComputeDos(const ObservableContext& context, double de_ev, std::vector<double>& dos_out, std::vector<double>& omega_out,
+                       const std::string& method = "kpm") {
     RSATB_PHASE("task/dos");
     util::InterruptGuard interrupt_guard;
-        // Output size: global_nk * 2*nt
         auto& ops = context.RequireOperators();
         if (!ops.has_bounds()) {
             throw std::runtime_error("Spectral bound is not computed yet. Set it true during Setup stage for random state method support.");
         }
+        if (method != "kpm" && method != "corr") {
+            throw std::runtime_error("dos method must be 'kpm' or 'corr', got '" + method + "'");
+        }
+        if (!(de_ev > 0.0)) {
+            throw std::runtime_error("dos dE must be a positive energy resolution in eV");
+        }
+
+        const double span = ops.emax() - ops.emin();
+        const double half_width = span / 2.0;
+        // dE is the FWHM of the effective broadening kernel; each estimator
+        // derives its own count from its own kernel theory.
+        //
+        // corr: a Hann-windowed correlation over nt samples of dt =
+        // pi/half_width; FWHM measured on a delta spectrum is
+        // 1.96*half_width/nt, so nt = span/dE delivers 0.98*dE. nt also
+        // sizes the shared 2*nt output grid (~2 points per FWHM), so
+        // switching kernels never changes the output shape.
+        const int nt = std::max(1, static_cast<int>(std::ceil(span / de_ev)));
+        // kpm: the Jackson kernel at N moments is a Gaussian of sigma =
+        // pi*half_width/N (Weisse et al., RMP 78, 275), so FWHM =
+        // sqrt(8 ln 2)*sigma and N = sqrt(8 ln 2)*pi*half_width/dE = 7.396*
+        // half_width/dE. The delta-spectrum measurement gives 7.39/N,
+        // matching the theory to 0.1%.
+        //
+        // The corr kernel needs the moments of the longest reconstructed
+        // time e^{-i Op nt*pi} instead: the Bessel truncation length at
+        // nt*pi, about 3.14*nt + tail -- the same cost class.
+        int N;
+        if (method == "kpm") {
+            const double jackson_fwhm = std::sqrt(8.0 * std::log(2.0)) * M_PI;
+            N = std::max(1, static_cast<int>(std::ceil(jackson_fwhm * half_width / de_ev)));
+        } else {
+            std::vector<std::complex<double>> coeffs_tot;
+            rsatb::calc::timeprop_coeff(nt * M_PI, 1e-14, true, coeffs_tot);
+            N = static_cast<int>(coeffs_tot.size());
+        }
+
+        int world_rank = 0;
+        MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+        if (world_rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+            std::cout << "dos: dE " << de_ev << " eV over span " << span
+                      << " eV -> " << nt << " steps, " << N << " moments ("
+                      << method << ")" << std::endl;
+        }
 
         std::vector<double> local_dos(ops.global_nk() * 2 * nt, 0.0);
-        
-        std::complex<double> imI(0.0, 1.0);
-        double scale = (ops.emax() - ops.emin()) / 2.0;
+
+        double scale = half_width;
         double shift = (ops.emax() + ops.emin()) / 2.0;
-        
-        for (const auto& kp : ops.local_kpoints()) {
-            int k_idx = kp.first;
-            const auto& state = ops.kpoint_state(k_idx);
-            
-            auto cheby = context.MakeChebyshev(state);
-            
-            std::vector<std::complex<double>> cdos;
-            const SampleVectors::Vector* null_vec = nullptr;
-            std::vector<std::complex<double>>* null_res = nullptr;
-            
-            if (context.samples->nsamples == 1) {
-                rsatb::calc::corr_dos(*cheby, *context.samples->sample_vec, nt, cdos, null_vec, null_res);
-            } else {
-                rsatb::calc::corr_dos(*cheby, *context.samples->sample_multi_vec, nt, cdos, null_vec, null_res);
+
+        if (method == "kpm") {
+            std::vector<double> x_grid(2 * nt);
+            for (int i = 0; i < nt; ++i) {
+                x_grid[i] = static_cast<double>(i - nt) / nt;
+                x_grid[nt + i] = static_cast<double>(i) / nt;
             }
-            
-            // Transform per K-point
-            std::vector<std::complex<double>> cdos_full(2 * nt + 1);
-            cdos_full[0] = cdos[0];
-            
-            for(int i=1; i<=nt; ++i) {
-                // std::complex<double> poscorr = std::exp(imI * shift * M_PI * (double)i);
-                // std::complex<double> negcorr = std::exp(-imI * shift * M_PI * (double)i);
-                double factor = 0.5 * (1 + std::cos(M_PI * (i-1) / nt));
-                cdos_full[i] = cdos[i] * factor;
-                cdos_full[2*nt - i] = std::conj(cdos[i]) * factor;
+            for (const auto& kp : ops.local_kpoints()) {
+                int k_idx = kp.first;
+                auto cheby = context.MakeChebyshev(ops.kpoint_state(k_idx));
+
+                std::vector<std::complex<double>> mu =
+                    (context.samples->nsamples == 1)
+                        ? rsatb::calc::kpm_dos_moments(*cheby, *context.samples->sample_vec, N)
+                        : rsatb::calc::kpm_dos_moments(*cheby, *context.samples->sample_multi_vec, N);
+
+                // Amplitude convention matches the correlation route: the
+                // unnormalised inverse FFT of C(t) sampled at dt = pi gives
+                // 2*rho_scaled, so the KPM density (integral mu_0 = 1) is
+                // scaled by 2 as well. Verified against "corr" in test_dos.
+                const std::vector<double> rho =
+                    rsatb::calc::evaluate_kpm_density(mu, x_grid, 0.5 / nt);
+                size_t offset = k_idx * 2 * nt;
+                for (int i = 0; i < 2 * nt; ++i) {
+                    local_dos[offset + i] = 2.0 * rho[i];
+                }
             }
-            
-            std::vector<std::complex<double>> temp_dos(2 * nt);
-            rsatb::calc::ifft_1d(2 * nt, cdos_full.data(), temp_dos.data());
-            
-            // Store in local_dos at offset k_idx * 2*nt
-            size_t offset = k_idx * 2 * nt;
-            for(int i=0; i<nt; ++i) {
-                local_dos[offset + i] = temp_dos[nt+i].real();
-                local_dos[offset + nt + i] = temp_dos[i].real();
+        } else {
+            for (const auto& kp : ops.local_kpoints()) {
+                int k_idx = kp.first;
+                const auto& state = ops.kpoint_state(k_idx);
+
+                auto cheby = context.MakeChebyshev(state);
+
+                // One moment recurrence replaces nt stepwise propagations of
+                // ~19 matvecs each; the reconstructed series is identical to
+                // the stepwise one to expansion truncation (test_dos).
+                std::vector<std::complex<double>> mu =
+                    (context.samples->nsamples == 1)
+                        ? rsatb::calc::kpm_dos_moments(*cheby, *context.samples->sample_vec, N)
+                        : rsatb::calc::kpm_dos_moments(*cheby, *context.samples->sample_multi_vec, N);
+                std::vector<std::complex<double>> cdos;
+                rsatb::calc::corr_from_moments(mu, nt, cdos);
+
+                // Transform per K-point: Hann-windowed correlation, mirrored
+                // to negative times, inverse FFT.
+                std::vector<std::complex<double>> cdos_full(2 * nt + 1);
+                cdos_full[0] = cdos[0];
+
+                for (int i = 1; i <= nt; ++i) {
+                    double factor = 0.5 * (1 + std::cos(M_PI * (i - 1) / nt));
+                    cdos_full[i] = cdos[i] * factor;
+                    cdos_full[2 * nt - i] = std::conj(cdos[i]) * factor;
+                }
+
+                std::vector<std::complex<double>> temp_dos(2 * nt);
+                rsatb::calc::ifft_1d(2 * nt, cdos_full.data(), temp_dos.data());
+
+                // Store in local_dos at offset k_idx * 2*nt
+                size_t offset = k_idx * 2 * nt;
+                for (int i = 0; i < nt; ++i) {
+                    local_dos[offset + i] = temp_dos[nt + i].real();
+                    local_dos[offset + nt + i] = temp_dos[i].real();
+                }
             }
         }
-        
+
         dos_out = std::move(local_dos);
         context.GatherKPointResults(&dos_out);
 
@@ -290,7 +384,22 @@ inline void ComputeDos(const ObservableContext& context, int nt, std::vector<dou
         }
     }
 
-inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab") {
+// AC conductivity. Two routes to the same Kubo correlator, both sampling at
+// the correlator's Nyquist step pi/(2*half_width) (calc::kAcOversample), so
+// both are alias-free and agree sample for sample:
+//
+//   method "concurrent" -- shared-Chebyshev-state evolution (the default):
+//                          one long recurrence per time block replaces
+//                          step-by-step propagation, ~9x fewer propagation
+//                          matvecs at the default block.
+//   method "sequential" -- stepwise propagation, one pi/2 expansion per
+//                          sample. Kept as the independent cross-check.
+//
+// Both report sigma on the same (nt+1)-point frequency grid up to the
+// half-width; `block` (concurrent only) caps the stored-state memory,
+// 0 = the built-in default min(nt, 128).
+inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab",
+                      const std::string& method = "concurrent", int block = 0) {
     RSATB_PHASE("task/ac");
     util::InterruptGuard interrupt_guard;
         // Output size: global_nk * (nt+1) * 6
@@ -301,15 +410,23 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
         if (!ops.has_velocity()) {
             throw std::runtime_error("compute_ac requires a velocity-capable model/operator setup.");
         }
-        
+        if (method != "concurrent" && method != "sequential") {
+            throw std::runtime_error("ac method must be 'concurrent' or 'sequential', got '" + method + "'");
+        }
+
         std::vector<double> local_ac(ops.global_nk() * (nt + 1) * 6, 0.0);
-        
+
         double scale = (ops.emax() - ops.emin()) / 2.0;
         double shift = (ops.emax() + ops.emin()) / 2.0;
         double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
         double ac_prefactor = (double)context.atomic_data->norb() / context.atomic_data->volume(axis);
-        double t_step = M_PI / scale;
-        
+
+        const bool concurrent = (method == "concurrent");
+        // Both correlator routes sample at the alias-free Nyquist step.
+        const int ns = nt * rsatb::calc::kAcOversample;
+        const double t_step = M_PI / scale / rsatb::calc::kAcOversample;
+        if (concurrent && block <= 0) block = std::min(nt, 128);
+
         // Precompute omega
         std::vector<double> omega(nt + 1);
         for(int i=0; i<=nt; ++i) {
@@ -321,26 +438,34 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
             const auto& state = ops.kpoint_state(k_idx);
             const auto& velocity = ops.velocity_state(k_idx);
             auto cheby = context.MakeChebyshev(state);
-            
+
             std::vector<std::complex<double>> cac;
-            
-            if (context.samples->nsamples == 1) {
+
+            if (concurrent) {
+                if (context.samples->nsamples == 1) {
+                    rsatb::calc::corr_ac_concurrent(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
+                } else {
+                    rsatb::calc::corr_ac_concurrent(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
+                }
+            } else if (context.samples->nsamples == 1) {
                 rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             } else {
                 rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             }
 
-            
-            // Transform and store in local_ac
+
+            // Transform and store in local_ac. The sine transform runs over
+            // the ns correlator samples; the reported grid stays (nt+1)
+            // frequencies up to the half-width for either method.
             size_t k_offset = k_idx * (nt + 1) * 6;
-            
+
             for( int iac=0; iac<6; ++iac ){
                 for( int iw=0; iw<=nt; ++iw ){
                     size_t idx = k_offset + iw*6+iac;
                     double val = 0.0;
                     if (omega[iw] != 0.0){
-                        for( int it=0; it<=nt; ++it ){
-                            val += 2.0 * std::sin(omega[iw]*it*t_step) * std::exp(-2.0*std::pow((double)(it+1) / (nt+1), 2)) * cac[it*6+iac].imag();
+                        for( int it=0; it<=ns; ++it ){
+                            val += 2.0 * std::sin(omega[iw]*it*t_step) * std::exp(-2.0*std::pow((double)(it+1) / (ns+1), 2)) * cac[it*6+iac].imag();
                         }
                         const double thermal_factor =
                             (temp > 0.0) ? (std::exp(-beta * omega[iw]) - 1.0) : -1.0;
@@ -350,7 +475,7 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
                 }
             }
         }
-        
+
         ac_out = std::move(local_ac);
         context.GatherKPointResults(&ac_out);
 
@@ -369,6 +494,22 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
     // longitudinal DC spectrum.
     // `formulation="bastin"` fills the full upper-triangular tensor and
     // includes Hall-type responses for complex Hamiltonians.
+// DC spectrum. Two evaluations of the same Greenwood contraction:
+//
+//   method "fftcheb" -- row-store + row DCT (the default): the right
+//                       algorithm for the FULL energy grid; memory
+//                       6 * n_moments * rows, bounded by partition
+//                       sections at the price of recurrence re-passes.
+//                       Also the only route for formulation "bastin".
+//   method "qe"      -- quasi-eigenstate accumulation (TBPM layout,
+//                       arXiv:2510.17432): memory 3 * NE * rows for an
+//                       NE-node window, one pass, no row FFTs. The route
+//                       ComputeDc uses for sigma(mu, T), where the thermal
+//                       window is a few dozen nodes. Greenwood only.
+//
+// Both produce identical numbers on shared nodes (same moments, same
+// kernel weights, different contraction order) -- checked in
+// test_fftcheb_transport.
 inline void ComputeDcSpectrum(
     const ObservableContext& context,
         int n_moments,
@@ -378,7 +519,9 @@ inline void ComputeDcSpectrum(
         std::string axis = "abc",
         int partition_sections = 0,
         size_t max_workspace_mb = 0,
-        std::string kernel = "jackson"
+        std::string kernel = "jackson",
+        const std::string& method = "fftcheb",
+        const std::vector<int>& qe_nodes = {}
     ) {
         RSATB_PHASE("task/dc_spectrum");
         util::InterruptGuard interrupt_guard;
@@ -388,6 +531,13 @@ inline void ComputeDcSpectrum(
         }
         if (!ops.has_velocity()) {
             throw std::runtime_error("compute_dc_spectrum requires a velocity-capable model/operator setup.");
+        }
+        if (method != "fftcheb" && method != "qe") {
+            throw std::runtime_error("dc method must be 'fftcheb' or 'qe', got '" + method + "'");
+        }
+        if (method == "qe" && formulation != "greenwood") {
+            throw std::runtime_error("dc method 'qe' supports formulation 'greenwood' only; "
+                                     "'bastin' needs the fftcheb row transform");
         }
 
         const auto dc_formulation = parse_dc_formulation(formulation);
@@ -413,11 +563,18 @@ inline void ComputeDcSpectrum(
 
             std::vector<double> sigma_k;
             std::vector<double> energy_k;
-            rsatb::calc::dc_spectrum_fftcheb(
-                *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
-                transport_prefactor, partition_sections, max_workspace_mb,
-                sigma_k, energy_k, parse_kpm_kernel(kernel)
-            );
+            if (method == "qe") {
+                rsatb::calc::dc_spectrum_qe(
+                    *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments,
+                    transport_prefactor, sigma_k, energy_k, parse_kpm_kernel(kernel), qe_nodes
+                );
+            } else {
+                rsatb::calc::dc_spectrum_fftcheb(
+                    *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
+                    transport_prefactor, partition_sections, max_workspace_mb,
+                    sigma_k, energy_k, parse_kpm_kernel(kernel)
+                );
+            }
 
             if (local_energy.empty()) {
                 local_energy = energy_k;
@@ -453,13 +610,45 @@ inline void ComputeDc(
         std::string axis = "abc",
         int partition_sections = 0,
         size_t max_workspace_mb = 0,
-        std::string kernel = "jackson"
+        std::string kernel = "jackson",
+        const std::string& method = "fftcheb"
     ) {
         RSATB_PHASE("task/dc");
         util::InterruptGuard interrupt_guard;
+
+        // With the qe route, sigma(eps) is only needed where -df/dE weighs
+        // it: a window of nodes around mu (plus a floor of a few nodes for
+        // the T = 0 interpolation). The window IS the memory: 3 * NE * rows
+        // instead of the full-grid row store.
+        std::vector<int> qe_nodes;
+        if (method == "qe") {
+            auto& ops = context.RequireOperators();
+            const double half_width = (ops.emax() - ops.emin()) / 2.0;
+            const double center = (ops.emax() + ops.emin()) / 2.0;
+            const double kb = 8.617333262e-5;
+            const double window = std::max(20.0 * temp * kb,
+                                           3.0 * M_PI * half_width / n_moments);
+            for (int k = 0; k < n_moments; ++k) {
+                const int src = n_moments - 1 - k;
+                const double theta = M_PI * (src + 0.5) / n_moments;
+                const double energy = center + half_width * std::cos(theta);
+                if (std::abs(energy - mu) <= window) qe_nodes.push_back(k);
+            }
+            if (qe_nodes.empty()) {
+                throw std::runtime_error("dc: mu lies outside the spectral window");
+            }
+            int world_rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+            if (world_rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+                std::cout << "dc: qe window " << qe_nodes.size() << " / " << n_moments
+                          << " nodes around mu = " << mu << " eV" << std::endl;
+            }
+        }
+
         std::vector<double> sigma_spectrum;
         std::vector<double> energy_out;
-        ComputeDcSpectrum(context, n_moments, sigma_spectrum, energy_out, formulation, axis, partition_sections, max_workspace_mb, kernel);
+        ComputeDcSpectrum(context, n_moments, sigma_spectrum, energy_out, formulation, axis,
+                          partition_sections, max_workspace_mb, kernel, method, qe_nodes);
 
         auto& ops = context.RequireOperators();
         dc_out.assign(ops.global_nk() * 6, 0.0);
