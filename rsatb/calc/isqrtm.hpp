@@ -339,8 +339,15 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // garbage density on rank 0 were exactly that.
         const double z_density = S_inv_sqrt->get_block_density();
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+            // Memory on the step line, not only in the end-of-setup table: a
+            // run that is killed inside this loop never reaches the table, and
+            // then the one thing worth knowing -- how close it came -- is lost.
+            const double rss_gb = util::read_rss_kb() / 1048576.0;
+            const double peak_gb =
+                util::MemorySampler::instance().global_peak_kb() / 1048576.0;
             std::cout << "inverse_sqrt: step " << count + 1 << ": maxabs residual " << norm
-                      << ", density " << z_density << std::endl;
+                      << ", density " << z_density
+                      << ", rss " << rss_gb << " GB (peak " << peak_gb << " GB)" << std::endl;
         }
         if (norm > 100.0) {
             if (rank == 0 && util::fault()) {

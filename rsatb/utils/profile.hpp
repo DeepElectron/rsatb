@@ -110,6 +110,10 @@ public:
         while (value_kb > current &&
                !watermark_.compare_exchange_weak(current, value_kb)) {
         }
+        long long high = global_peak_.load(std::memory_order_relaxed);
+        while (value_kb > high &&
+               !global_peak_.compare_exchange_weak(high, value_kb)) {
+        }
     }
 
     /// Start a fresh watermark and return the one it replaces, so a phase can
@@ -117,6 +121,12 @@ public:
     long long restart_watermark() { return watermark_.exchange(read_rss_kb()); }
 
     long long watermark_kb() const { return watermark_.load(); }
+
+    /// Never reset, unlike the per-phase watermark. This is what a progress
+    /// line reports: a run that dies inside a phase never reaches the profile
+    /// table, so the only memory number it will ever emit is the one printed
+    /// while it was still alive.
+    long long global_peak_kb() const { return global_peak_.load(); }
 
 private:
     MemorySampler() = default;
@@ -126,6 +136,7 @@ private:
     }
 
     std::atomic<long long> watermark_{0};
+    std::atomic<long long> global_peak_{0};
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_{false};
     std::thread thread_;
