@@ -280,6 +280,24 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return global;
     };
 
+    // Mean block-neighbours per row: density * N. At 2e5 block rows a density
+    // reads 6.6e-4 and means nothing; "118 nbr/row" is the same number in the
+    // units the cost is actually linear in. Both operands of every product
+    // below are reported, because the product's cost is their PRODUCT of
+    // neighbour counts, and a run where X and P have filled in behaves nothing
+    // like the one where they have not -- which used to be invisible, since
+    // only Z's density was logged.
+    //
+    // get_block_density() is a collective: called on every rank, never inside
+    // a rank-0 log guard.
+    auto nbr_per_row = [&](const BlockSpMat<T>& m) {
+        const double density = m.get_block_density();
+        const long long n_blocks = graph->block_displs.empty()
+                                       ? 0
+                                       : graph->block_displs.back();
+        return density * static_cast<double>(n_blocks);
+    };
+
     // Stage heartbeats: each distributed product below can run for hours at
     // large scale with low CPU during its fetch/symbolic phases, and a log
     // that goes quiet there is indistinguishable from a hang. One flushed
@@ -337,7 +355,8 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // inside the guard paired rank 0's Allreduce with whatever collective
         // the other ranks issued next -- MPI_ERR_TRUNCATE on them and a
         // garbage density on rank 0 were exactly that.
-        const double z_density = S_inv_sqrt->get_block_density();
+        const double z_nbr = nbr_per_row(*S_inv_sqrt);
+        const double x_nbr = nbr_per_row(tmp2);
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
             // Memory on the step line, not only in the end-of-setup table: a
             // run that is killed inside this loop never reaches the table, and
@@ -346,7 +365,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             const double peak_gb =
                 util::MemorySampler::instance().global_peak_kb() / 1048576.0;
             std::cout << "inverse_sqrt: step " << count + 1 << ": maxabs residual " << norm
-                      << ", density " << z_density
+                      << ", Z " << z_nbr << " nbr/row, X " << x_nbr << " nbr/row"
                       << ", rss " << rss_gb << " GB (peak " << peak_gb << " GB)" << std::endl;
         }
         if (norm > 100.0) {
@@ -382,7 +401,16 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
 
         {
             RSATB_PHASE("setup/isqrt_ns_Z_times_P");
-            stage("Z * P");
+            // P's neighbour count decides this product's cost together with
+            // Z's, and it decides how much of P every rank has to fetch. Both
+            // are on the line so a stall here names its own cause.
+            const double p_nbr = nbr_per_row(tmp1);
+            if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+                std::cout << "inverse_sqrt:   Z * P (P " << p_nbr << " nbr/row)"
+                          << std::endl;
+            } else {
+                stage("Z * P");
+            }
             *S_inv_sqrt = S_inv_sqrt->spmm(tmp1, sptol);
         }
 
