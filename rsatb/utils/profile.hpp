@@ -36,8 +36,12 @@
 #include <mpi.h>
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdio>
+#include <fstream>
 #include <string>
+#include <thread>
 #include <vector>
 
 #ifdef _OPENMP
@@ -54,6 +58,78 @@ inline double wall_time() {
     return MPI_Wtime();
 #endif
 }
+
+/// Resident set size in KiB, or 0 where /proc is not available.
+///
+/// statm rather than status: two integers to parse instead of forty lines, and
+/// the sampler below reads it fifty times a second.
+inline long long read_rss_kb() {
+    std::ifstream statm("/proc/self/statm");
+    if (!statm) return 0;
+    long long total_pages = 0, resident_pages = 0;
+    if (!(statm >> total_pages >> resident_pages)) return 0;
+    static const long long page_kb = 4;  // Linux base page; hugepages still count in 4K units here
+    return resident_pages * page_kb;
+}
+
+/// Highest resident set size seen inside each phase.
+///
+/// Why a sampler and not a reading at each phase boundary: the allocations that
+/// decide whether a run fits are TRANSIENT. A Hermitian product holds its upper
+/// triangle and its completion at the same time and frees one of them before it
+/// returns, so entry/exit readings show nothing while the process really did
+/// touch 1.5x the result. Only something watching from outside sees that.
+///
+/// Cost: one thread reading two integers every 20 ms. Against phases that run
+/// for seconds this is unmeasurable, and it does no MPI, so it is safe under
+/// MPI_THREAD_FUNNELED. It will miss a spike shorter than the interval; phases
+/// here are orders of magnitude longer.
+class MemorySampler {
+public:
+    static MemorySampler& instance() {
+        static MemorySampler sampler;
+        return sampler;
+    }
+
+    /// Idempotent: the first caller starts the thread, later ones do nothing.
+    void start() {
+        if (running_.exchange(true)) return;
+        watermark_.store(read_rss_kb());
+        thread_ = std::thread([this] {
+            while (!stop_.load(std::memory_order_relaxed)) {
+                raise(read_rss_kb());
+                std::this_thread::sleep_for(std::chrono::milliseconds(20));
+            }
+        });
+    }
+
+    bool running() const { return running_.load(); }
+
+    void raise(long long value_kb) {
+        long long current = watermark_.load(std::memory_order_relaxed);
+        while (value_kb > current &&
+               !watermark_.compare_exchange_weak(current, value_kb)) {
+        }
+    }
+
+    /// Start a fresh watermark and return the one it replaces, so a phase can
+    /// restore its parent's on the way out.
+    long long restart_watermark() { return watermark_.exchange(read_rss_kb()); }
+
+    long long watermark_kb() const { return watermark_.load(); }
+
+private:
+    MemorySampler() = default;
+    ~MemorySampler() {
+        stop_.store(true);
+        if (thread_.joinable()) thread_.join();
+    }
+
+    std::atomic<long long> watermark_{0};
+    std::atomic<bool> running_{false};
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
 
 enum class LogLevel : int {
     kSilent = 0,
@@ -100,6 +176,11 @@ struct PhaseRecord {
     /// rank. Reported next to the max so imbalance is visible.
     double mean_seconds = 0.0;
     long long calls = 0;
+    /// Highest resident set size seen while this phase was on the stack, over
+    /// its calls and -- after the cross-rank reduce -- over the team. The max
+    /// and not the mean, because the rank that runs out of memory is the one
+    /// that decides whether the job survives.
+    long long peak_kb = 0;
 };
 
 /// Phase totals for this rank. A plain vector with a linear scan: the number of
@@ -123,7 +204,7 @@ public:
     /// granularity this is allowed to be used at -- a phase runs for seconds,
     /// so contention on a once-per-phase lock is unmeasurable. It would not be
     /// free inside a matvec, which is one more reason that is forbidden.
-    static void add(const std::string& name, double seconds) {
+    static void add(const std::string& name, double seconds, long long peak_kb) {
         #pragma omp critical(rsatb_profile_add)
         {
             auto& all = records();
@@ -132,6 +213,9 @@ public:
                 if (record.name == name) {
                     record.seconds += seconds;
                     record.calls += 1;
+                    // Seconds accumulate across repeats; the peak does not --
+                    // two calls each touching 8 GB did not touch 16.
+                    record.peak_kb = std::max(record.peak_kb, peak_kb);
                     found = true;
                     break;
                 }
@@ -141,6 +225,7 @@ public:
                 record.name = name;
                 record.seconds = seconds;
                 record.calls = 1;
+                record.peak_kb = peak_kb;
                 all.push_back(std::move(record));
             }
         }
@@ -199,34 +284,47 @@ public:
                   });
 
         const bool parallel = ranks > 1;
+        const bool have_memory = std::any_of(
+            all.begin(), all.end(),
+            [](const PhaseRecord& r) { return r.peak_kb > 0; });
         std::printf("\nprofile: %.2fs total, %.2fs in named phases"
                     " (self time, nested phases subtracted)%s\n",
                     total, sum, parallel ? ", slowest rank of the team" : "");
+        if (have_memory) {
+            // Said once rather than implied by the column header: a reader who
+            // adds the column up and compares it with the node's memory will
+            // otherwise conclude the run needs several times what it does.
+            std::printf("         peak(GB) is the highest resident set inside each"
+                        " phase%s; peaks do not sum\n",
+                        parallel ? ", over the team" : "");
+        }
         if (parallel) {
-            std::printf("  %-34s %10s %10s %7s %8s\n",
-                        "phase", "max(s)", "mean(s)", "%", "calls");
+            std::printf("  %-34s %10s %10s %9s %7s %8s\n",
+                        "phase", "max(s)", "mean(s)", "peak(GB)", "%", "calls");
         } else {
-            std::printf("  %-34s %10s %7s %8s\n", "phase", "wall(s)", "%", "calls");
+            std::printf("  %-34s %10s %9s %7s %8s\n",
+                        "phase", "wall(s)", "peak(GB)", "%", "calls");
         }
         for (const auto& record : all) {
             const double share = 100.0 * record.seconds / denominator;
+            const double peak_gb = record.peak_kb / 1048576.0;
             if (parallel) {
-                std::printf("  %-34s %10.2f %10.2f %6.1f%% %8lld\n", record.name.c_str(),
-                            record.seconds, record.mean_seconds, share, record.calls);
+                std::printf("  %-34s %10.2f %10.2f %9.2f %6.1f%% %8lld\n", record.name.c_str(),
+                            record.seconds, record.mean_seconds, peak_gb, share, record.calls);
             } else {
-                std::printf("  %-34s %10.2f %6.1f%% %8lld\n", record.name.c_str(),
-                            record.seconds, share, record.calls);
+                std::printf("  %-34s %10.2f %9.2f %6.1f%% %8lld\n", record.name.c_str(),
+                            record.seconds, peak_gb, share, record.calls);
             }
         }
         if (total > sum) {
             // Always shown. An unattributed remainder is the thing worth
             // chasing next, and a table that hides it reads as full coverage.
             if (parallel) {
-                std::printf("  %-34s %10.2f %10s %6.1f%% %8s\n", "(unaccounted)",
-                            total - sum, "-", 100.0 * (total - sum) / denominator, "-");
+                std::printf("  %-34s %10.2f %10s %9s %6.1f%% %8s\n", "(unaccounted)",
+                            total - sum, "-", "-", 100.0 * (total - sum) / denominator, "-");
             } else {
-                std::printf("  %-34s %10.2f %6.1f%% %8s\n", "(unaccounted)",
-                            total - sum, 100.0 * (total - sum) / denominator, "-");
+                std::printf("  %-34s %10.2f %9s %6.1f%% %8s\n", "(unaccounted)",
+                            total - sum, "-", 100.0 * (total - sum) / denominator, "-");
             }
         }
         std::fflush(stdout);
@@ -261,21 +359,24 @@ private:
 
         std::vector<double> seconds(n, 0.0);
         std::vector<long long> calls(n, 0);
+        std::vector<long long> peaks(n, 0);
         for (int i = 0; i < n; ++i) {
             for (const auto& record : local) {
                 if (record.name == names[i]) {
                     seconds[i] = record.seconds;
                     calls[i] = record.calls;
+                    peaks[i] = record.peak_kb;
                     break;
                 }
             }
         }
 
         std::vector<double> max_seconds(n, 0.0), sum_seconds(n, 0.0);
-        std::vector<long long> max_calls(n, 0);
+        std::vector<long long> max_calls(n, 0), max_peaks(n, 0);
         MPI_Allreduce(seconds.data(), max_seconds.data(), n, MPI_DOUBLE, MPI_MAX, comm);
         MPI_Allreduce(seconds.data(), sum_seconds.data(), n, MPI_DOUBLE, MPI_SUM, comm);
         MPI_Allreduce(calls.data(), max_calls.data(), n, MPI_LONG_LONG, MPI_MAX, comm);
+        MPI_Allreduce(peaks.data(), max_peaks.data(), n, MPI_LONG_LONG, MPI_MAX, comm);
 
         std::vector<PhaseRecord> merged;
         merged.reserve(n);
@@ -285,6 +386,7 @@ private:
             record.seconds = max_seconds[i];
             record.mean_seconds = sum_seconds[i] / ranks;
             record.calls = max_calls[i];
+            record.peak_kb = max_peaks[i];
             merged.push_back(std::move(record));
         }
         return merged;
@@ -367,14 +469,25 @@ public:
           start_(Profile::enabled() ? wall_time() : 0.0),
           saved_child_(child_seconds()) {
         child_seconds() = 0.0;
+        if (Profile::enabled()) {
+            // Fresh watermark for this phase; the parent's is restored below.
+            saved_watermark_ = MemorySampler::instance().restart_watermark();
+        }
     }
 
     ~ScopedPhase() {
         if (!Profile::enabled()) return;
         const double elapsed = wall_time() - start_;
-        Profile::add(name_, elapsed - child_seconds());
+        // Memory is reported as the peak while this phase was on the stack --
+        // NOT self time's analogue. Peaks do not decompose: a parent's peak IS
+        // its tallest child's, and subtracting children would report a parent
+        // that never happened.
+        const long long peak = MemorySampler::instance().watermark_kb();
+        Profile::add(name_, elapsed - child_seconds(), peak);
         // Hand our whole span to the parent so it can subtract us in turn.
         child_seconds() = saved_child_ + elapsed;
+        // ... and our peak, so the parent's covers ours.
+        MemorySampler::instance().raise(std::max(saved_watermark_, peak));
     }
 
     ScopedPhase(const ScopedPhase&) = delete;
@@ -392,6 +505,7 @@ private:
     std::string name_;
     double start_;
     double saved_child_;
+    long long saved_watermark_ = 0;
 };
 
 }  // namespace util

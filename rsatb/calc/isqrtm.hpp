@@ -263,7 +263,11 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     //    truncated seed. Measurements: calc/test/experiment_ns_variants.cpp.
     const double t_ns0 = MPI_Wtime();
     RSATB_PHASE("setup/isqrt_newton_schulz");
-    BlockSpMat<T> tmp1(graph), tmp2(graph);
+    // Declared empty, not graph-shaped: the first product assigns each of
+    // these wholesale, so allocating the local sparsity pattern here would
+    // hold the two largest matrices in the loop before either is written.
+    // Measured on a 1024-atom cell: 1.5 GB, freed unread.
+    BlockSpMat<T> tmp1, tmp2;
 
     auto residual_norm = [&](BlockSpMat<T>& X) {
         RSATB_PHASE("setup/isqrt_ns_residual");
@@ -304,12 +308,20 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         {
             RSATB_PHASE("setup/isqrt_ns_S_times_Z");
             stage("S * Z (sparse product)");
+            // X is dead: this product does not read it. Released before the
+            // result allocates rather than at the assignment afterwards.
+            tmp2.reset();
             tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
         }
         {
             RSATB_PHASE("setup/isqrt_ns_congruence");
             stage("Z^H (S Z) (hermitian congruence)");
-            tmp2 = S_inv_sqrt->spmm_hermitian(tmp2, sptol, /*transA=*/true);
+            // Split so S Z can be freed between the two halves: it dies with
+            // the upper triangle, and the completion is the larger allocation.
+            BlockSpMat<T> upper =
+                S_inv_sqrt->spmm_hermitian_upper(tmp2, sptol, /*transA=*/true);
+            tmp2.reset();
+            tmp2 = upper.complete_hermitian();
         }
     };
 
@@ -345,6 +357,9 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         {
             RSATB_PHASE("setup/isqrt_ns_X_squared");
             stage("X^2 (hermitian square)");
+            // The previous step's P is dead; X is both operands, so only the
+            // destination can be released here.
+            tmp1.reset();
             tmp1 = tmp2.spmm_hermitian(tmp2, sptol);
         }
         {
@@ -378,7 +393,12 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             {
                 RSATB_PHASE("setup/isqrt_ns_PX_times_P");
                 stage("(P X) P (hermitian)");
-                tmp2 = tmp2.spmm_hermitian(tmp1, sptol);
+                // The peak of the whole iteration sits here. P X is the left
+                // operand and dies with the upper triangle, so splitting the
+                // product frees it before the completion allocates.
+                BlockSpMat<T> upper = tmp2.spmm_hermitian_upper(tmp1, sptol);
+                tmp2.reset();
+                tmp2 = upper.complete_hermitian();
             }
         } else {
             reform_x();

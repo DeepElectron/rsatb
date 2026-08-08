@@ -363,6 +363,8 @@ private:
     void begin_profile() {
         util::Log::rank() = world_rank_of(world_comm_);
         util::Profile::enabled() = true;
+        // Before the first phase opens, so the seed's peak is measured too.
+        util::MemorySampler::instance().start();
         util::Profile::reset();
         profile_open_ = true;
     }
