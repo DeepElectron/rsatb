@@ -558,6 +558,27 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_spmm_hermitian PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_spmm_hermitian PRIVATE ${RSATB_LINK_LIBS})
 
+    # Executable: test_square_polynomial - the fused c2 A^2 + c1 A + c0 I
+    # against both a dense reference and the three-step sequence it replaces.
+    add_executable(test_square_polynomial calc/test/test_square_polynomial.cpp)
+    target_include_directories(test_square_polynomial PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_square_polynomial PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: test_spmm_inplace - A <- A B against the ordinary product,
+    # which is the only way a premature storage release shows up (it corrupts
+    # the answer, it does not crash). Drive it at 1, 2 and 4 ranks.
+    add_executable(test_spmm_inplace calc/test/test_spmm_inplace.cpp)
+    target_include_directories(test_spmm_inplace PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_spmm_inplace PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: test_rarh - the fused triple product C = A B A^H against a
+    # dense reference, on synthetic matrices. Runs at any comm size; drive it at
+    # 1, 2, 3 and 4 ranks, because the two-level ghost exchange is only
+    # exercised once a row's neighbours live on another rank.
+    add_executable(test_rarh calc/test/test_rarh.cpp)
+    target_include_directories(test_rarh PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_rarh PRIVATE ${RSATB_LINK_LIBS})
+
     # Executable: experiment_ns_variants - which congruence (Z^H S Z vs Z S Z)
     # the Newton-Schulz refinement should iterate on, measured on the real
     # diamond overlap. An experiment, not a test: it reports, it does not assert.

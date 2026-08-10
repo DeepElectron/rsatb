@@ -39,6 +39,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <thread>
@@ -483,6 +484,7 @@ public:
         if (Profile::enabled()) {
             // Fresh watermark for this phase; the parent's is restored below.
             saved_watermark_ = MemorySampler::instance().restart_watermark();
+            if (per_call_detail()) entry_kb_ = read_rss_kb();
         }
     }
 
@@ -495,6 +497,24 @@ public:
         // that never happened.
         const long long peak = MemorySampler::instance().watermark_kb();
         Profile::add(name_, elapsed - child_seconds(), peak);
+
+        // The phase table keeps the MAX over a phase's calls, which is the
+        // right summary and the wrong diagnostic: in a loop whose matrices grow
+        // and collapse across steps it cannot say WHICH call peaked, so a peak
+        // and the state that produced it can never be lined up. This prints one
+        // line per call -- entry, peak, exit -- so the transient (peak - entry)
+        // is attributable to a single step. Off unless RSATB_PHASE_CALLS is set,
+        // because at that granularity it is a trace, not a report.
+        if (per_call_detail() && Log::enabled(LogLevel::kProgress)) {
+            const long long exit_kb = read_rss_kb();
+            std::printf("phase-call %-32s entry %8.2f  peak %8.2f  exit %8.2f GB"
+                        "  transient %8.2f GB  self %9.2fs\n",
+                        name_.c_str(), entry_kb_ / 1048576.0, peak / 1048576.0,
+                        exit_kb / 1048576.0, (peak - entry_kb_) / 1048576.0,
+                        elapsed - child_seconds());
+            std::fflush(stdout);
+        }
+
         // Hand our whole span to the parent so it can subtract us in turn.
         child_seconds() = saved_child_ + elapsed;
         // ... and our peak, so the parent's covers ours.
@@ -513,10 +533,16 @@ private:
         return value;
     }
 
+    static bool per_call_detail() {
+        static const bool on = std::getenv("RSATB_PHASE_CALLS") != nullptr;
+        return on;
+    }
+
     std::string name_;
     double start_;
     double saved_child_;
     long long saved_watermark_ = 0;
+    long long entry_kb_ = 0;
 };
 
 }  // namespace util
