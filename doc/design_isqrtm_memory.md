@@ -573,13 +573,15 @@ target, so it is dead code rather than a broken test.
 **Accepted, not implemented** -- these are structural and each needs its own
 measurement:
 
-- **RARH halo replication** (the reviewer's top scalability risk). The
-  distributed path fetches the union of all remote rows reached by all locally
-  owned rows, so an unfavourable partition approaches replicating `A` and `B` per
-  rank. The fix is bounded tiles: fetch a tile's `B` rows, derive its reached
-  support, fetch the required `A` rows, compute and commit, then move on -- with
-  the tile bounded by a memory budget rather than a row count. This is the
-  largest remaining 700k risk and is not addressed.
+- ~~**RARH halo replication**~~ -- **closed.** The split that made it tractable
+  is pattern versus payload: patterns are metadata (~16 bytes against ~2704 for
+  a block at LCAO sizes), so both rounds stay global and cheap, and knowing the
+  whole halo's pattern is what lets a tile's exact byte cost be computed before
+  anything is transferred. Only the payload fetch is tiled, sized to keep halo
+  residency under a per-rank budget (`VBCSR_RARH_HALO_BUDGET_BYTES`, default
+  2 GiB). Tile count is Allreduced, since the fetches are collective. Covered by
+  `test_rarh`'s `tiling` case, which asserts the tiled and untiled results agree
+  EXACTLY and is verified to fail if only the first tile is processed.
 - **The kernels stage the whole answer.** Both executors keep one dense
   intermediate row per thread, which is what the design claims, but they also
   retain every finished result row in `row_values` before building the matrix.
