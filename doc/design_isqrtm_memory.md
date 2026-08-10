@@ -1,6 +1,6 @@
 # S^{-1/2} by Newton-Schulz: memory and cost design
 
-Status: implemented, tested, **not committed**. Written for external audit.
+Status: implemented, tested, merged to `main`. Written for external audit.
 
 The target workload is a 700k-atom system. At that size the binding constraint
 is peak resident memory, not flops: the iteration below holds several sparse
@@ -362,7 +362,7 @@ fired.
 | `detail/backend/bsr_backend.hpp` | `initialize_structure_deferred_touch`, `zero_row_range`, `release_blocks_before` | deferred first touch + page release for BSR |
 | `detail/backend/csr_backend.hpp` | same three (1 value per block, so block index == element index) | same for CSR |
 | `detail/backend/vbcsr_backend.hpp` | `defer_zero` param, `zero_domain()`, `has_deferred_zero()`; move ctor/assignment fixed to carry the new member | deferred (not skipped) first touch for VBCSR |
-| `detail/ops/spmm/common.hpp` | extracted `FusedRowAccumulator`, `FusedProductGroup`, `block_squared_magnitude`, `fused_gemm_accumulate`, `grouped_block_gemm_batch`, `vendor_batch_profitable` | shared primitives so fused kernels use the *same* block kernels as spmm (vendor batch >= bs 16, else `rm_gemm`) |
+| `detail/ops/spmm/common.hpp` | extracted `FusedRowAccumulator`, `FusedProductGroup`, `block_squared_magnitude`, `fused_gemm_accumulate`, `grouped_block_gemm_batch`, `vendor_batch_profitable` | shared primitives so fused kernels use the *same* block kernels as spmm (vendor batch above the per-type crossover, else `rm_gemm`) |
 | `detail/ops/spmm/rarh.hpp` **(new)** | fused `A B A^H` | replaces two-call `P X P` |
 | `detail/ops/spmm/square_polynomial.hpp` **(new)** | fused `c2 A^2 + c1 A + c0 I` | never forms `X^2` |
 | `detail/ops/spmm/bsr.hpp` | `run_consuming`, chunked `run_generic(consume_A)`, `make_result_matrix_deferred_touch` | `spmm_inplace` for BSR |
@@ -499,7 +499,8 @@ separate them.** This is the first thing an auditor should ask about.
 
 `test_rarh`, `test_square_polynomial`, `test_spmm_inplace`, `test_spmm_hermitian`
 — all pass at **1, 2 and 4 ranks**, each covering `bsr`, `vbcsr` and `csr`
-matrix kinds. Python suite: 81 passed, 1 skipped.
+matrix kinds. Python suite: 81 passed, 1 skipped. vbcsr adds
+`test_vendor_batch_gemm` (§13).
 
 Multi-rank matters specifically for `spmm_inplace`: the 1-rank result passes
 whether or not the mid-product page release is correct, because there are no
@@ -622,3 +623,71 @@ measurement:
   `row_pattern_exchange`, `upper_result_builder`, `symbolic_spmm`), with the
   fused operations moved out of the path every `BlockSpMat` translation unit
   pulls in.
+
+---
+
+## 13. The vendor-batch gate
+
+Carried out of the round-2 audit as the one item left undecided. `spmm` and both
+fused kernels contract a group of block products that share one left operand and
+have distinct destinations, which is exactly the shape MKL's `?gemm_batch`
+wants. Whether to use it was gated on block size alone: `bs >= 16`.
+
+Re-measured end-to-end (`spmm` on identical operands, batch forced off vs on via
+`VBCSR_SPGEMM_BATCH`, min of 5-9 runs depending on block size — 9 through the
+decision band, fewer where the gap is large enough not to need them; ratio =
+vendor / `rm_gemm`, below 1 the vendor wins):
+
+| bs | 13 | 16 | 18 | 20 | 21 | 22 | 26 | 32 | 48 |
+|---|---|---|---|---|---|---|---|---|---|
+| `complex<double>` | 1.11 | 1.02 | 1.005 | 1.01 | **0.92** | 0.93 | 0.90 | 0.84 | 0.77 |
+| `double` | 1.89 | 1.57 | — | 1.23 | — | 1.13 | 1.00 | 1.13 | 1.00 |
+
+Two findings, and the second is the real one:
+
+1. **Complex crosses over at bs 21, not 16.** At 16 the vendor is 2% slower, and
+   16-20 is a wash. Small, but the gate was on the wrong side of it.
+2. **Real `double` never crosses over at all** — measured out to bs 96 (1.05).
+   At bs 16, where the gate switched it on, the vendor batch was **56% slower**.
+
+That is what the amortisation argument predicts and nobody had checked: the
+vendor's fixed per-call cost is repaid by the *flops* in the call, and a complex
+block product carries ~4x the flops of a real one at the same block size. One
+block-size threshold cannot serve both scalar types, so `vendor_batch_profitable`
+is now a template on `T` — bs >= 21 for `complex<double>`, never for `double`.
+
+rsatb itself is unaffected: carbon is 13 orbitals, below both thresholds and
+below the old one. The exposure was for any other vbcsr consumer with a heavier
+basis, which is why it was worth fixing in a generic library.
+
+**Err high when re-deriving this elsewhere.** The two directions are not
+symmetric: below the crossover the penalty reaches 2.2x, above it the gain tops
+out near 1.2x. A threshold set too low costs far more than one set too high.
+
+### What the measurement does not cover
+
+One machine, one BLAS (MKL 2024.2.2, 48 threads). The crossover is a property of
+the vendor's call overhead and will move elsewhere. The constants are therefore
+documented with the method rather than presented as universal, and
+`VBCSR_SPGEMM_BATCH=1/0` reproduces the table on a new machine.
+
+### Test
+
+`vbcsr/core/test/test_vendor_batch_gemm.cpp` — the vendor path had **no**
+coverage. Every other vbcsr test runs block sizes 1-3, so the batch was never
+reached from a matrix-level test.
+
+It drives `grouped_block_gemm_batch` directly rather than through `spmm`,
+because routing to it depends on rank count, page count and block size at once —
+a matrix-level test that *looked* like it covered this mostly would not. That is
+not hypothetical: the first attempt here added a bs-21 profile to
+`test_numeric_reference` and it never reached the batch, because
+`can_use_mkl_serial` sent single-rank products to MKL's sparse BSR routine
+instead. The test now asserts `grouped_block_gemm_batch` returned true, so it
+cannot silently degrade into comparing the fallback against itself.
+
+Destinations are seeded non-zero (the batch runs with `beta = 1` and must
+accumulate, not overwrite), both scalar types run, and the sub-`kMinBatch` case
+is pinned to decline *without* having written anything. Verified against two
+deliberate mutants — `beta` 1 -> 0, and `CblasNoTrans` -> `CblasTrans` — each of
+which the test catches.
