@@ -409,6 +409,23 @@ Diamond, `sptol` 1e-4, `tol` 1e-7, 1 rank, 48 threads. Sizes come from
 from pre-tiled POSCARs -- one base structure, and the supercell path gets
 exercised as a side effect.
 
+**Against the real baseline.** 2048 atoms (`--supercell 2 1 1`), HEAD `6b41b8d`
+with vbcsr `ebd5d4e` built from a worktree and run on the same machine, same
+day, same driver source -- only the library differs:
+
+| | HEAD | current | |
+|---|---|---|---|
+| NS loop | 1076.9 s | 969.3 s | -10.0% |
+| peak | 46.60 GB | 34.75 GB | -25.4% |
+| NS steps | 4 | 3 | |
+| residual | 1.9975e-4 | 1.9726e-4 | comparable |
+
+An earlier draft of this document reported a "+16.6% time regression" measured
+against `diag.log`. That was wrong: `diag.log` is an intermediate build from
+partway through development, not the starting point, and its build state is not
+reproducible. Comparisons against it should be disregarded. The table above is
+the sound one.
+
 **Verified in the final runs:**
 
 | | 1024 atoms | 4096 atoms |
