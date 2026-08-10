@@ -477,35 +477,6 @@ int main(int argc, char** argv) {
         expect(worst <= thr, "coherent accumulation within the neglect bound", "coherent");
     }
 
-    // Halo tiling: the distributed path fetches remote payloads a tile of local
-    // rows at a time so a rank cannot accumulate a copy of both operands. The
-    // tiling changes only WHICH payloads are resident together -- the per-row
-    // arithmetic is untouched -- so a tiled run must agree with an untiled one
-    // exactly, not approximately.
-    //
-    // Forced through the budget, because no test-sized problem has a halo over
-    // the 2 GiB default and the path would otherwise never run here.
-    if (size > 1) {
-        const std::vector<int> bs(kBlocks, 3);
-        vbcsr::DistGraph graph(MPI_COMM_WORLD);
-        build_graph(graph, bs, MPI_COMM_WORLD);
-        Matrix A = build(&graph, bs, kSaltA, kDecayA);
-        Matrix B = build(&graph, bs, kSaltB, kDecayB);
-
-        unsetenv("VBCSR_RARH_HALO_BUDGET_BYTES");
-        const std::vector<Scalar> untiled = gather_dense(A.rarh_upper(B, 0.0).complete_hermitian(), bs);
-        // 512 bytes is below this cell's halo (a 3x3 complex block alone is 144),
-        // so the row range is split as far as it goes -- one row per tile. A
-        // megabyte-scale budget would leave the whole thing in one tile and the
-        // check would pass without ever entering the path it exists for.
-        setenv("VBCSR_RARH_HALO_BUDGET_BYTES", "512", 1);
-        const std::vector<Scalar> tiled = gather_dense(A.rarh_upper(B, 0.0).complete_hermitian(), bs);
-        unsetenv("VBCSR_RARH_HALO_BUDGET_BYTES");
-
-        expect(max_abs_diff(tiled, untiled) == 0.0,
-               "halo tiling changes nothing about the answer", "tiling");
-    }
-
     // Every rank counted its own failures against the same deterministic data,
     // so they should agree -- but reduce anyway, because a kernel bug that only
     // shows on the rank owning a particular row is exactly the bug this file

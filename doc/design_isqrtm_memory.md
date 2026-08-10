@@ -573,15 +573,32 @@ target, so it is dead code rather than a broken test.
 **Accepted, not implemented** -- these are structural and each needs its own
 measurement:
 
-- ~~**RARH halo replication**~~ -- **closed.** The split that made it tractable
-  is pattern versus payload: patterns are metadata (~16 bytes against ~2704 for
-  a block at LCAO sizes), so both rounds stay global and cheap, and knowing the
-  whole halo's pattern is what lets a tile's exact byte cost be computed before
-  anything is transferred. Only the payload fetch is tiled, sized to keep halo
-  residency under a per-rank budget (`VBCSR_RARH_HALO_BUDGET_BYTES`, default
-  2 GiB). Tile count is Allreduced, since the fetches are collective. Covered by
-  `test_rarh`'s `tiling` case, which asserts the tiled and untiled results agree
-  EXACTLY and is verified to fail if only the first tile is processed.
+- **RARH halo replication** -- characterised, NOT closed, and the tiling attempt
+  was reverted. The distributed path fetches the union of every remote row its
+  local rows reach, which at large rank counts approaches a copy of both
+  operands per rank.
+
+  A tiled payload fetch was implemented and measured (4 ranks, 2048 atoms,
+  against the same run with tiling disabled). It was a clear regression:
+  `P X P` took **1796.7s against 532.6s on identical step-1 inputs, 3.4x
+  slower**, and the peak went **UP**, 31.49 GB against 30.50 GB. The trajectory
+  then diverged because the cost model learned the inflated propagate constant
+  and switched routes -- a consequence of the slowdown, not a correctness break
+  (tiled and untiled results agree exactly; that test held).
+
+  Two things the measurement settled. The slowdown was the per-tile support
+  derivation rebuilding a `std::set` over the tile's rows x their columns x
+  those rows' columns -- work the untiled path does ONCE into a flat array, and
+  a tree instead of an array on top of that. That is fixable. The absence of a
+  memory win is not: at this scale the halo is a few GB against a 30 GB peak,
+  so it is simply not what sets the peak, and no implementation of tiling can
+  produce a saving that is not there.
+
+  Reopening it needs a configuration where the halo actually dominates -- far
+  more ranks than 4, or a partition bad enough that a rank's reach approaches
+  the whole matrix. Until such a case exists to measure against, tiling costs a
+  large measured amount for a benefit that is currently hypothetical.
+
 - **The kernels stage the whole answer.** Both executors keep one dense
   intermediate row per thread, which is what the design claims, but they also
   retain every finished result row in `row_values` before building the matrix.
