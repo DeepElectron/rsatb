@@ -631,10 +631,18 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             stage("Z^H (S Z)");
             // Split so S Z can be freed between the two halves: it dies with
             // the upper triangle, and the completion is the larger allocation.
+            //
+            // complete_hermitian_inplace, not the copying form: the completed
+            // matrix is about twice the triangle it is built from, and copying
+            // leaves the triangle standing beside it for the whole of the
+            // mirror -- 5.72 GB of a 21.50 GB step peak, measured at 4096
+            // atoms. The in-place form hands each row back as it is mirrored.
+            // All three completions in this file are written this way.
             BlockSpMat<T> upper =
                 S_inv_sqrt->spmm_hermitian_upper(tmp2, sptol, /*transA=*/true);
             tmp2.reset();
-            tmp2 = upper.complete_hermitian();
+            upper.complete_hermitian_inplace();
+            tmp2 = std::move(upper);
         }
     };
 
@@ -706,7 +714,8 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             tmp1.reset();
             BlockSpMat<T> upper =
                 tmp2.square_polynomial_upper(T(0.375), T(-1.25), T(1.875), sptol);
-            tmp1 = upper.complete_hermitian();
+            upper.complete_hermitian_inplace();
+            tmp1 = std::move(upper);
         }
         const double t_x2 = util::wall_time() - t0_x2;
 
@@ -823,7 +832,8 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             // half needs a transpose.
             BlockSpMat<T> upper = tmp1.rarh_upper(tmp2, sptol);
             tmp2.reset();
-            tmp2 = upper.complete_hermitian();
+            upper.complete_hermitian_inplace();
+            tmp2 = std::move(upper);
         } else {
             reform_x(z_nbr);
         }

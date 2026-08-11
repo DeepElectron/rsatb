@@ -399,6 +399,60 @@ answer. Runtime is a wash — at 4096, `rarh_upper` min-of-4 went 16.20 s → 15
 — which is the expected trade: a full permutation copy of the answer removed, a
 few hundred index sorts and one `madvise` per row added.
 
+### 4.2 The completion, and why it is the mutating one
+
+Both fused kernels produce only the upper triangle; `complete_hermitian` then
+builds the full matrix from it. Measured across a whole update at 4096 atoms
+(block size 13, 200 neighbours, 48 threads), the completion — not the kernel —
+was where the step peaked:
+
+| | before §4.1 | after §4.1 | after §4.2 | floor |
+|---|---|---|---|---|
+| step peak | 24.26 GB | 21.50 GB | **16.88 GB** | 15.55 GB |
+
+The floor is the two operands (4.13) plus the answer (11.43): what the step would
+cost holding nothing else. The 5.95 GB the step sat above it was **exactly the
+upper triangle** (5.72 GB), standing whole beside the completed matrix it was no
+longer needed for. `complete_hermitian` returns a new matrix, so the triangle had
+to stay readable until its last block was mirrored — and then stayed anyway,
+until the enclosing scope ended.
+
+`complete_hermitian_inplace()` releases each row as it is mirrored. What is left
+over the floor is 1.32 GB, which is one chunk of the source (5.72/4): the release
+runs on 4 chunks, so one chunk's worth is always still held. That is the design's
+own bound, not a leak.
+
+**Why in place rather than a consuming overload.** `complete_hermitian` is
+`const`. An implementation that frees its own object under that signature would
+be lying, and there is no honest way to spell "returns a new matrix, and also
+destroys the one you called it on". `spmm`/`spmm_inplace` already split exactly
+this way, for exactly this reason — the in-place form exists so the operand's
+pages can be released mid-product. "In place" means the VARIABLE, not the
+allocation: the result has a different graph and about twice the blocks, so it
+cannot be written into the old storage.
+
+**The trade this forces.** `conjugate_transpose` built its result through the
+plain constructor, which runs the first-touch zero pass and so places the
+result's pages by thread domain. Consuming cannot keep that: the pass makes the
+result fully resident *before* a single source row has been released, which is
+the peak being removed. The two are mutually exclusive, so the consuming path
+skips it and the plain path keeps it.
+
+That costs less than it appears, because nothing downstream reads this matrix by
+domain. Both fused kernels take their operands with `schedule(dynamic, 8)` — the
+thread that reads a row is whichever picks it up, not the row's domain owner — so
+the domain partition of an *operand* is not exploited. It is exploited when a
+matrix is being WRITTEN (the first touch) and by `copy_from`; the completed X and
+P are neither.
+
+The value ordering also had to change. The source is read by two passes — the
+remote pack and the local writes — so a row is dead only once both have seen it.
+The remote rounds now run first, which makes "read by everything" a row prefix,
+which is what `release_values_below_row` takes. For the plain path the order is
+immaterial: the two write disjoint slots of an already-placed result.
+
+---
+
 **The lesson for the next measurement.** `VBCSR_PROFILE_RARH` and
 `VBCSR_PROFILE_BSR_SPGEMM` sample RSS at phase boundaries. That is the right
 instrument for *which phase allocates* and the wrong one for *what the peak is*;
