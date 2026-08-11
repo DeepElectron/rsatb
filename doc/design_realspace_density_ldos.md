@@ -858,3 +858,31 @@ Deferred from step 2, in priority order:
 Risks: ACE-FD off-diagonal validity (V2 decides; fallback cap bounds cost,
 not correctness); metallic $\xi_K$ growth (physics, disclosed); spline
 $Y_{lm}$ conventions vs. op2c (V1 catches on day one).
+
+---
+
+## Appendix: colour-masked (probing) seeds — tried and rejected
+
+Supporting each seed on one class of a colouring, so same-class cross-terms
+cancel instead of being averaged, is unbiased for any colouring and keeps the
+estimator a sum of squares (so positivity survives). In a cubic tight-binding
+model it looked good: 1.9x at $\chi = 64$ and 2.8x at $\chi = 216$ for
+$\eta/W = 0.046$, rising to 240x as the operator localises.
+
+**On real diamond sc444 it lost**, 0.64-1.02x across valence, gap and
+conduction at $\chi = 104$ and $351$ (six seeds each, matched `n_states`,
+bias/SE 0.59-0.76 so the implementation was correct and unbiased).
+
+Not class imbalance: at $\chi_{\text{spatial}} = 8$ the classes held exactly
+16 atoms each with none empty. The colouring separates same-colour atoms by
+5.06 Å, while the orbital cutoff alone is 3.70 Å and $\delta_\eta(E-H)$ at
+$\eta/W \approx 0.045$ was measured not to decay over that range at all — so
+it separates nothing it needs to and only unbalances the per-class weights. The
+model misled because a cubic lattice has 6 neighbours per site where diamond has
+~176 atoms inside the cutoff, and because the $S^{-1/2}$ metric sampler spreads
+the seed before the filter runs.
+
+Probing needs a local operator: large $\eta$, an in-gap energy, or strong
+disorder — not the in-band narrow-$\eta$ maps this path exists to produce.
+The lesson generalises: **locality of $\delta_\eta(E-H)$, not sampler design,
+governs variance reduction for this estimator.**

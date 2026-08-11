@@ -74,6 +74,12 @@ inline OperatorForm ParseOperatorForm(const std::string& raw_name) {
 struct SetupOptions {
     std::vector<std::vector<double>> kpoints = {{0.0, 0.0, 0.0}};
     int nsamples = 1;
+    /// Seed of the stochastic sample vectors. Fixed by default, so two runs of
+    /// the same calculation agree: the draw is counter-based, hence also
+    /// identical across rank counts and thread counts. Change it to get an
+    /// independent estimate, not to get "more random" -- averaging two seeds is
+    /// the same as doubling nsamples.
+    unsigned long sample_seed = 20240917UL;
     bool compute_bounds = true;
     std::optional<std::pair<double, double>> energy_bounds;
     double bounds_zero_tol = 1e-12;

@@ -245,7 +245,7 @@ int main(int argc, char** argv) {
 
     // --- the vector, and everything the reference needs about it ------------
     DistVector<double> psi(prob.S->graph);
-    psi.set_random_normal(true);
+    psi.set_random(/*seed=*/12345, /*normalize=*/true);
     DistVector<double> Spsi(prob.S->graph);
     prob.S->mult(psi, Spsi);
 

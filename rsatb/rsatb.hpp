@@ -188,7 +188,8 @@ public:
             make_operator_runtime_context());
         {
             RSATB_PHASE("setup/sample_vectors");
-            sampling_.initialize(*atomic_data_, normalized_options.nsamples);
+            sampling_.initialize(*atomic_data_, normalized_options.nsamples,
+                                 normalized_options.sample_seed);
         }
         // Retained rather than re-derived: the real-space observables need the
         // radials themselves, and the model is not kept past setup.

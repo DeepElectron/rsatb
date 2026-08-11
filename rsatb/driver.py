@@ -147,9 +147,27 @@ class RSATB:
 
         Square-root-filtered stochastic estimator (Gamma-only; needs a model
         with real-space orbitals, i.e. LCAO or DFTB with .orb files). One
-        Chebyshev sweep serves every requested energy; sampling error decays
-        as 1/sqrt(n_samples) and the map is non-negative pointwise by
-        construction.
+        Chebyshev sweep serves every requested energy, and the map is
+        non-negative pointwise by construction.
+
+        Choosing n_samples. With Rademacher draws the pointwise relative
+        standard error is
+
+            sigma_rel = sqrt(2 / n_samples)          (n = 2 / sigma^2)
+
+        so 20% needs 50 samples, 10% needs 200, 5% needs 800, and 1% needs
+        20000. Measured on diamond sc444 at 0.95x that bound, flat across
+        valence, gap and conduction energies. What does NOT appear in it is
+        as useful as what does: the error is independent of system size, of
+        the energy, of eta, and of the grid spacing -- refining the grid buys
+        resolution, never accuracy, and a denser grid is nearly free because
+        the Chebyshev sweep does not touch it.
+
+        Any quantity integrated over space converges much faster, because it
+        is a Hutchinson trace over the m_eff states inside the eta window:
+        roughly sqrt(2 / (n_samples * m_eff)). On sc444 that was a factor of
+        ~10 in the bands (m_eff ~ 100-200) and ~4 in the gap (m_eff ~ 15).
+        Budget for the map you want to look at, not for the integral.
 
         Args:
             energies: Evaluation energies in eV, inside the spectral window.

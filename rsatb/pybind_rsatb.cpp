@@ -278,6 +278,7 @@ PYBIND11_MODULE(_rsatb, m) {
         "preconditioning. Independent of which model family supplies operators.")
         .def(py::init([](std::vector<std::vector<double>> kpoints,
                          int nsamples,
+                         unsigned long sample_seed,
                          bool compute_bounds,
                          py::object energy_bounds,
                          double bounds_zero_tol,
@@ -286,6 +287,7 @@ PYBIND11_MODULE(_rsatb, m) {
                  rsatb::model::SetupOptions options;
                  options.kpoints = std::move(kpoints);
                  options.nsamples = nsamples;
+                 options.sample_seed = sample_seed;
                  options.compute_bounds = compute_bounds;
                  if (!energy_bounds.is_none()) {
                      const auto bounds = py::cast<std::vector<double>>(energy_bounds);
@@ -302,6 +304,7 @@ PYBIND11_MODULE(_rsatb, m) {
              }),
              py::arg("kpoints") = std::vector<std::vector<double>>{{0.0, 0.0, 0.0}},
              py::arg("nsamples") = 1,
+             py::arg("sample_seed") = 20240917UL,
              py::arg("compute_bounds") = true,
              py::arg("energy_bounds") = py::none(),
              py::arg("bounds_zero_tol") = 1e-12,
@@ -309,6 +312,7 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("preconditioner") = rsatb::model::PreconditionerOptions{})
         .def_readwrite("kpoints", &rsatb::model::SetupOptions::kpoints)
         .def_readwrite("nsamples", &rsatb::model::SetupOptions::nsamples)
+        .def_readwrite("sample_seed", &rsatb::model::SetupOptions::sample_seed)
         .def_readwrite("compute_bounds", &rsatb::model::SetupOptions::compute_bounds)
         .def_readwrite("bounds_zero_tol", &rsatb::model::SetupOptions::bounds_zero_tol)
         .def_readwrite("bounds_max_matvecs", &rsatb::model::SetupOptions::bounds_max_matvecs)

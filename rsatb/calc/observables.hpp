@@ -61,20 +61,35 @@ struct SampleVectors {
         nsamples = 1;
     }
 
-    /// Draws a fresh set of normally distributed sample vectors.
+    /// Draws the sample vectors: unit-norm random phase, from an explicit seed.
+    ///
+    /// Random phase rather than a normalised complex Gaussian. Both are unit
+    /// norm, so every estimator downstream reads the same mu_0 = <v,v> = 1, but
+    /// the phase draw carries less variance (it cancels the whole diagonal
+    /// sum_i |A_ii|^2 where the Gaussian only cancels (tr A)^2 / N) and its
+    /// norm is |v|^2 = N analytically -- so normalising is a scale by
+    /// 1/sqrt(N) and the global dot product that used to pay for it is gone.
+    ///
+    /// The seed is not optional. These vectors used to come from
+    /// std::random_device via per-thread engines over static slices, so the
+    /// answer moved with the entropy pool, the thread count AND the rank count:
+    /// four runs of one DOS gave four different curves with no way to pin them.
     ///
     /// A single sample uses the vector form rather than a one-column
     /// multivector because the kernels have a cheaper path for it.
-    void initialize(vbcsr::atomic::AtomicData& atomic_data, int requested_nsamples) {
+    void initialize(vbcsr::atomic::AtomicData& atomic_data, int requested_nsamples,
+                    unsigned long seed) {
         reset();
         nsamples = requested_nsamples;
         if (nsamples == 1) {
             sample_vec = std::make_unique<Vector>(atomic_data.get_graph());
-            sample_vec->set_random_normal(true);
+            sample_vec->set_random(static_cast<uint64_t>(seed), /*normalize=*/true,
+                                   atomic_data.atom_index.data());
             return;
         }
         sample_multi_vec = std::make_unique<MultiVector>(atomic_data.get_graph(), nsamples);
-        sample_multi_vec->set_random_normal(true);
+        sample_multi_vec->set_random(static_cast<uint64_t>(seed), /*normalize=*/true,
+                                     atomic_data.atom_index.data());
     }
 };
 
