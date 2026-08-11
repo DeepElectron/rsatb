@@ -327,6 +327,37 @@ inline void ExtremalEigenvalues(const BoundsKPointView& view,
         return;
     }
 
+    // KNOWN: this window is not decomposition-invariant. Measured on diamond
+    // sc444, emax = 271.1921 / 271.2007 / 271.2051 at 1 / 2 / 4 ranks, and
+    // emin likewise; each is reproducible to 12 digits at a FIXED rank count,
+    // so the estimate is deterministic, just not the same across partitions.
+    //
+    // Two causes compound. No initial basis is supplied below, so PRIMME
+    // builds its own, and it seeds that from the rank -- extern/primme
+    // src/eigs/primme_c.c:341, `iseed[0] = procID % 4096`. Each rank also
+    // fills only its own local rows, so pinning iseed would NOT fix it: the
+    // assembled global vector still depends on how rows were partitioned.
+    // A different start gives a different Krylov space, and the 1e-3 tolerance
+    // below is loose enough for that to show through -- PRIMME stops as soon
+    // as the residual clears eps*||A||, about 0.27 eV here, and the Ritz-value
+    // error of a Hermitian problem is bounded by that residual. The observed
+    // 0.013 eV spread is comfortably inside its own specification.
+    //
+    // Not a correctness problem: bound_pad adds ~2.8 eV of margin at this
+    // scale, two orders of magnitude above the spread, so the window never
+    // clips the spectrum -- which WOULD be serious, since a Chebyshev
+    // expansion diverges outside [-1, 1]. It is a reproducibility problem, and
+    // since the sample vectors became decomposition-invariant (vbcsr
+    // random_vectors.hpp) this is the largest remaining source of run-to-run
+    // variation in the DOS: 7.9e-4 relative, against 1.1e-10 once the bounds
+    // are pinned by hand.
+    //
+    // To close it: hand PRIMME an explicit initial basis drawn with the
+    // counter-based sampler (DistVector::set_random keyed on the atom's input
+    // index) via primme.initSize/initBasis. Tightening eps shrinks the spread
+    // but cannot remove it, and costs matvecs in the most expensive part of
+    // setup. Deliberately not done here -- it is a separate mechanism that
+    // deserves its own before/after measurement.
     rsatb::calc::PrimmeEigenSolver<Scalar> esolver;
     std::vector<double> evals_min;
     std::vector<double> evals_max;
