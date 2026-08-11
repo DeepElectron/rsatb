@@ -452,17 +452,24 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // Block-sparsity radii add under a product, and a radius-r row holds ~r^d
     // neighbours, so nbr(AB)^(1/d) = nbr(A)^(1/d) + nbr(B)^(1/d). d is NOT
     // hardcoded to the lattice dimension -- it is solved for from the one
-    // product whose operands and result are all measured for free, S Z inside
-    // the reform, so a 2D moire and a 3D crystal each calibrate themselves.
+    // product whose operands and result are all measured for free, the fused
+    // reform Z^H S Z, so a 2D moire and a 3D crystal each calibrate themselves.
     double fill_dim = 3.0;  // until the first reform measures one
-    auto calibrate_fill_dim = [](double a, double b, double ab, double fallback) {
-        // f(d) = a^(1/d) + b^(1/d) - ab^(1/d) tends to +1 as d grows (every
+    // Solved from the fused reform's own result: radii add, r(Z^H S Z) =
+    // 2 r(Z) + r(S), so nbr(X)^(1/d) = s^(1/d) + 2 z^(1/d). This replaced a
+    // pairwise solve against the S Z intermediate when the reform fused into
+    // one kernel and stopped forming S Z at all -- same model, same
+    // post-threshold bias (S Z was measured after its drop too), measured on
+    // the triple product instead of its half.
+    auto calibrate_fill_dim = [](double s, double z, double x, double fallback) {
+        // f(d) = s^(1/d) + 2 z^(1/d) - x^(1/d) tends to +2 as d grows (every
         // term tends to 1) and is negative at small d whenever the product is
-        // wider than either operand, so a root is bracketed in every
-        // non-degenerate case. Degenerate ones keep the previous calibration.
-        if (!(a > 1.0) || !(b > 1.0) || !(ab > std::max(a, b))) return fallback;
+        // wide enough, so a root is bracketed in every non-degenerate case.
+        // Degenerate ones keep the previous calibration.
+        if (!(s > 1.0) || !(z > 1.0) || !(x > std::max(s, z))) return fallback;
         auto f = [&](double d) {
-            return std::pow(a, 1.0 / d) + std::pow(b, 1.0 / d) - std::pow(ab, 1.0 / d);
+            return std::pow(s, 1.0 / d) + 2.0 * std::pow(z, 1.0 / d) -
+                   std::pow(x, 1.0 / d);
         };
         double lo = 0.5, hi = 8.0;
         if (f(lo) > 0.0 || f(hi) < 0.0) return fallback;
@@ -597,57 +604,55 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         }
     };
 
-    // X = Z^H (S Z): grouped so the first product is the sparse one, and the
-    // second computed as a known-Hermitian product -- half the block products,
-    // and X comes out exactly Hermitian, which everything below relies on.
+    // X = Z^H S Z, one fused kernel (rhar_upper), and X comes out exactly
+    // Hermitian by construction -- Z^H S Z is Hermitian for ANY Z, which is
+    // what everything below relies on and why the reform conjugates Z rather
+    // than trusting its approximate hermiticity.
+    //
+    // One kernel, not the two products this used to be (S Z, then a transposed
+    // Z^H (S Z)). That route materialised two Z-sized matrices the answer
+    // never needed: the S Z intermediate, and -- inside the transA product --
+    // a full copy of Z^H, since spmm's transA path is transpose-then-multiply.
+    // Z is the densest matrix in the loop and never contracts, so both stood
+    // in the reform-step peak. rhar_upper reads Z's local blocks in place
+    // through a transpose index, receives only the partition-boundary blocks
+    // (pushed, already conjugated), and holds one row of the answer per
+    // thread; the flop count is the same pair count as the two products, and
+    // the drop threshold is applied once, to finished values, instead of at
+    // the intermediate and then again at the end.
     //
     // Takes Z's neighbour count rather than measuring it: every caller has just
     // measured it, and get_block_density() is a collective, so re-taking it here
     // would add a round of Allreduces for a number already in hand.
     auto reform_x = [&](double z_nbr) {
-        {
-            RSATB_PHASE("setup/isqrt_ns_S_times_Z");
-            stage("S * Z (sparse product)");
-            // X is dead: this product does not read it. Released before the
-            // result allocates rather than at the assignment afterwards.
-            tmp2.reset();
-            tmp2 = S_mat.spmm(*S_inv_sqrt, sptol);
-            // The one product in the loop whose operands and result are all
-            // measured. The every-fifth-step drift refresh guarantees this runs
-            // often enough to keep the calibration current as Z fills in.
-            //
-            // Unless the product saturated: a count at the full row is a FLOOR,
-            // not a measurement, and solving with it biases d low -- diamond
-            // sc888 calibrated to d = 1.8 from a clipped S Z where the crystal
-            // is 3D. Harmless there (the cap in nbr_product bounds every
-            // saturated prediction anyway) but wrong to learn from.
-            const double sz_nbr = nbr_per_row(tmp2);
-            if (sz_nbr < kSaturatedFraction * row_length) {
-                fill_dim = calibrate_fill_dim(s_nbr, z_nbr, sz_nbr, fill_dim);
-            }
-        }
-        {
-            RSATB_PHASE("setup/isqrt_ns_ZH_S_Z");
-            stage("Z^H (S Z)");
-            // Split so S Z can be freed between the two halves: it dies with
-            // the upper triangle, and the completion is the larger allocation.
-            //
-            // complete_hermitian_inplace, not the copying form: the completed
-            // matrix is about twice the triangle it is built from, and copying
-            // leaves the triangle standing beside it for the whole of the
-            // mirror -- 5.72 GB of a 21.50 GB step peak, measured at 4096
-            // atoms. The in-place form hands each row back as it is mirrored.
-            // All three completions in this file are written this way.
-            BlockSpMat<T> upper =
-                S_inv_sqrt->spmm_hermitian_upper(tmp2, sptol, /*transA=*/true);
-            tmp2.reset();
-            upper.complete_hermitian_inplace();
-            tmp2 = std::move(upper);
+        RSATB_PHASE("setup/isqrt_ns_ZH_S_Z");
+        stage("Z^H S Z (one fused kernel)");
+        // X is dead: the kernel does not read it. Released before the result
+        // allocates rather than at the assignment afterwards.
+        tmp2.reset();
+        BlockSpMat<T> upper = S_inv_sqrt->rhar_upper(S_mat, sptol);
+        upper.complete_hermitian_inplace();
+        tmp2 = std::move(upper);
+        // The calibration point the S Z product used to provide, taken from
+        // the reform's own RESULT instead: under the same additive-radius
+        // model, nbr(Z^H S Z)^(1/d) = s^(1/d) + 2 z^(1/d), and X has just
+        // been measured for free. Same post-threshold bias as before -- the
+        // old S Z was measured after its drop too. The every-fifth-step drift
+        // refresh keeps this current as Z fills in.
+        //
+        // Unless the product saturated: a count at the full row is a FLOOR,
+        // not a measurement, and solving with it biases d low -- diamond
+        // sc888 calibrated to d = 1.8 from a clipped product where the
+        // crystal is 3D. Harmless there (the cap in nbr_product bounds every
+        // saturated prediction anyway) but wrong to learn from.
+        const double x_nbr_reformed = nbr_per_row(tmp2);
+        if (x_nbr_reformed < kSaturatedFraction * row_length) {
+            fill_dim = calibrate_fill_dim(s_nbr, z_nbr, x_nbr_reformed, fill_dim);
         }
     };
 
     // The seed's reform is a free calibration point for the reform constant:
-    // it runs unconditionally, and it is the same two products a scheduled
+    // it runs unconditionally, and it is the same fused kernel a scheduled
     // reform would run.
     double z_nbr = nbr_per_row(*S_inv_sqrt);
     const double t0_seed_reform = util::wall_time();
@@ -808,7 +813,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         // counts are Allreduced -- but the seconds-per-unit constants are timed
         // locally, so cost_reform and cost_propagate can differ between ranks.
         // The two branches issue DIFFERENT collective sequences (rarh_upper
-        // against reform_x's two products), so a split decision is not a
+        // against reform_x's rhar_upper), so a split decision is not a
         // slightly worse route, it is a hang or a mismatched exchange. Rank 0's
         // choice is broadcast and is the only one that runs.
         const bool propagate_local =
@@ -843,7 +848,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             // P is dead on this route -- the reform rebuilds X from Z and S,
             // and the next step's polynomial starts from that X. Reform is
             // chosen precisely at the early steps where P is densest, so
-            // holding it across the two products below was the single largest
+            // holding it across the fused reform below was the single largest
             // avoidable term in the reform-step peak.
             tmp1.reset();
             reform_x(z_nbr);

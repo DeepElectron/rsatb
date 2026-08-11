@@ -298,6 +298,67 @@ fetch.
 
 **Coverage: BSR and CSR. VBCSR falls through to the plain product** — see §5.
 
+### 3.4 `rhar_upper` — `vbcsr/core/detail/ops/spmm/rhar.hpp` (new)
+
+```cpp
+C = A^H B A                   // upper triangle, one pass, A NOT assumed Hermitian
+```
+
+The sibling of `rarh_upper`, as PETSc pairs `MatRARt` with `MatPtAP` — and a
+separate kernel rather than a `transA` flag, because the two rest on different
+contracts. `rarh` reaches its second contraction through `A[j,l]^H == A[l,j]`
+and so *requires* `A` Hermitian; `rhar` requires nothing of `A`. That is the
+contract the reform `X = Z^H S Z` actually presents: `Z` is a thresholded
+polynomial of `S`, Hermitian in neither values nor — after per-block drops —
+pattern, which is why the reform could not use `rarh` and previously ran as
+`S Z` (spmm) followed by `spmm_hermitian_upper(..., transA=true)`. That
+`transA` path is transpose-then-multiply: it materialised a **full copy of
+Z^H**, on top of the **S Z intermediate** — two Z-sized matrices for the
+densest, never-contracting matrix in the loop.
+
+Row `i` of `C` is `(column i of A)^H B A`:
+
+- Column `i` of `A` is never materialised. Local blocks — the overwhelming
+  majority on a locality partition — are read in place through a transpose
+  *index* and conjugate-transposed block by block into thread scratch, an
+  O(dim²) copy against the O(dim³) products each one feeds across `B`'s row.
+  Boundary blocks (rows owned elsewhere, column owned here) are **pushed** by
+  their row owners, already conjugated — the receiver cannot request them,
+  because the transpose pattern is exactly what it does not know. One
+  surface-sized exchange.
+- The second contraction reads rows of `A` in natural layout through the same
+  remote-row fetch `rarh` uses. `B` must be Hermitian so that `C` is; `S` is,
+  exactly, by construction.
+
+Same per-row error budget as `rarh` (a stage-one neglect is multiplied by one
+more factor of `A`, so the gate divides by the global max block norm), one drop
+on finished values, one staged row per thread, deferred-first-touch assembly.
+Flop count is the same pair count as the two products it replaces. The fill
+calibration that used to read the `S Z` intermediate now solves
+`nbr(X)^(1/d) = s^(1/d) + 2 z^(1/d)` from the reform's own result — same
+additive-radius model, same post-threshold bias, measured on the triple product
+instead of its half (`isqrtm.hpp`, `calibrate_fill_dim`).
+
+Measured, one reform at the 2048-atom diamond shape (synthetic operands, 2048
+block rows, bs 13, S 0.74 GB / Z 3.82 GB / X 7.22 GB, threshold 0 so both
+routes keep the identical 2,866,048 blocks; 48 threads, `VmHWM` scoped to the
+route with `clear_refs`):
+
+| route | peak | over resident operands | time |
+|---|---|---|---|
+| `S Z` then `transA` product | 16.51 GB | 11.91 GB | 51.2 s |
+| `rhar_upper` | **12.62 GB** | **8.01 GB** | **38.8 s** |
+
+−3.9 GB of peak — one `Z` copy plus part of the intermediate — landing within
+0.85 GB of the `S + Z + X` floor, and −24 % time. Note the *whole-run* peak of
+the standard benchmark does not move at these sizes: at 1024 atoms the run
+peaks in the seed's dense batches, at 2048 in the `P X P` step, and both runs
+route around the loop reform (2048 routes propagate throughout; the drift
+refresh only fires at step 5). The reform-phase saving matters exactly where
+the reform runs at scale: the unconditional seed reform, every-fifth-step
+drift refreshes on long runs, and saturated systems whose router picks reform
+on cost.
+
 ---
 
 ## 4. Allocation and first touch
@@ -511,7 +572,8 @@ here it reported 0% where the true answer was 20%. Use `VmHWM` with
 | gap | state |
 |---|---|
 | VBCSR value release | **closed.** The contract was stated as a block index into the value array — a CSR/BSR concept, since only those hold one array in `adj_ind` order. It is now `release_values_below_row(row)`, the unit all three callers were already converting into, and each backend converts in its own layout; VBCSR releases a prefix of every shape's buffer, rounded down to a thread-domain edge (releasing fewer pages than permitted is always sound, and it keeps the alignment out of shared caller code). Measured on `filter_blocks`, which calls it and is kind-agnostic — 4096 rows, 400 neighbours, mixed block sizes, 2.95 GB payload, 48 threads: VBCSR peak **5.69 → 3.73 GB**, overhang 1.01 → 0.34× payload. An overhang of 1.01× is a full duplicate: VBCSR had been holding the whole source alongside the whole filtered copy, every time. BSR unchanged at 3.78, as it already had the release. |
-| VBCSR `spmm_inplace` | falls through to the plain product. No longer blocked on the release: `VBCSRSpMMExecutor` has no `run_consuming`, so nothing chunks its numeric loop and no prefix is ever proved dead. Correct, just without the page release. |
+| VBCSR `spmm_inplace` | falls through to the plain product. No longer blocked on the release: `VBCSRSpMMExecutor` has no `run_consuming`, so nothing chunks its numeric loop and no prefix is ever proved dead. Correct, just without the page release. This is now the largest known hole on the Z-update path for VBCSR-kind (mixed-block) systems: `Z <- Z P` pays \|Z_old\| + \|Z_new\| there, where BSR/CSR pay ~max. Diamond dodges it only because uniform blocks route to BSR. |
+| Reform's `transA` transpose copy | **closed** (§3.4). The reform's second product went through `spmm_hermitian_upper(..., transA=true)`, whose implementation is transpose-then-multiply — a full materialised `Z^H` on top of the `S Z` intermediate. `rhar_upper` computes `Z^H S Z` in one pass from row-distributed `Z`; measured −3.9 GB and −24% time on the reform phase at the 2048-atom shape. The `transA` flag itself still materialises the transpose for any *other* caller of `spmm_hermitian_upper`; only the reform stopped paying it. |
 | Spectral window not decomposition-invariant | **known, not closed.** `emax` = 271.1921 / 271.2007 / 271.2051 at 1/2/4 ranks on diamond sc444, each reproducible to 12 digits at a fixed rank count. PRIMME seeds its own initial basis from the rank (`iseed[0] = procID % 4096`) and each rank fills only its local rows, so the start differs per partition; the 1e-3 tolerance is loose enough for that to survive into the answer. Inside spec (0.013 eV spread against a 0.27 eV residual allowance, and `bound_pad` gives ~2.8 eV of margin), but it is now the largest source of run-to-run DOS variation — 7.9e-4, against 1.1e-10 with the bounds pinned. Closing it = hand PRIMME an initial basis from the counter-based sampler. See `rsatb/setup/spectral_bounds.hpp`. |
 | VBCSR SpGEMM eager zero pass | **deliberately kept.** Redundant for correctness (the numeric loop `std::fill`s every destination block), but it is what makes placement deterministic by thread domain, which the apply plan reuses — and that loop is `schedule(dynamic, 4)`. Closing it means a domain-aligned static schedule, trading the load balance dynamic was chosen for. A measurement, not a cleanup. |
 
@@ -646,6 +708,29 @@ atoms near **8 TB steady and 16-19 TB peak** -- 130-150 nodes at 125 GB. That
 extrapolation rests on saturation happening at 4096, which is one measured
 point for X and none for Z, so it is the number most worth checking next.
 
+**Re-measured again after the fused reform (§3.4) and the dead-P releases.**
+Same 2048-atom configuration, idle machine, external `VmHWM` poll:
+
+| | previous re-measure | after §3.4 |
+|---|---|---|
+| peak RSS | 31.21 GB | **30.93 GB** |
+| total | 1500.0 s | **1306.8 s** (-12.9%) |
+| NS loop | 1199.5 s | 1007.4 s |
+| seed | 300.6 s | 299.4 s |
+| residual trajectory | 0.0191865 / 0.000875553 / 0.000197259 | 0.0191865 / 0.000874253 / 0.00019782 |
+
+The step-1 residual is IDENTICAL to six digits — both runs form the same
+`Z^H S Z` after the seed, by different routes — and step 2 pairs within 2%
+across all three unchanged phases, bounding machine noise. The peak barely
+moves because this run routes propagate at every step (both runs do), so the
+in-loop reform never executes and the whole-run peak stays `P X P`-bound; the
+reform-phase saving is the §3.4 kernel A/B, invisible from here. The -13%
+time is real and downstream: the fused reform's single-drop X is slightly
+tighter (P 1405.6 -> 1367 nbr/row out of the same X), and step 1's polynomial
+and `P X P` both inherit it (808.4 -> 621.2 s). The seed — one full reform —
+is a wash in time, confirming the fused kernel costs what the two products
+cost while holding two fewer Z-sized matrices.
+
 **Measured during development, not re-verified in the final runs:** the fused
 `rarh` kernel replacing two-call `P X P` (413/408 s -> ~71 s on the step
 measured); cost-model routing on sc888 (955.8 s -> 223.2 s); the `numa_buffer`
@@ -768,8 +853,9 @@ not a defect with an obvious fix:
   and communication entirely. Weighted local degree sums or sampled symbolic
   counts, fitted as `time = fixed + pair_cost * weighted_pairs + comm_cost`,
   would be better founded.
-- **`complete_hermitian_consuming`.** The upper triangle and the completed matrix
-  currently coexist; mirroring with page release would remove that overlap.
+- **`complete_hermitian_consuming`.** Since implemented as
+  `complete_hermitian_inplace` (§4.2): the upper triangle is released as it is
+  mirrored. Kept here so the audit trail reads in order.
 
 **Noted, not a defect introduced here.** The repo has **no** `add_test` or
 `enable_testing()` anywhere, so the new tests follow the existing convention of
