@@ -339,6 +339,72 @@ and both fused assembles walk the thread-domain partition. See section 8.
 whole matrix in one page — which is why an earlier whole-page-only release never
 fired.
 
+### 4.1 The staged rows, and what the profile hooks could not see
+
+Both fused kernels stage the answer row by row and then copy it into the result,
+so the obvious question is whether staging and result are live at once. The
+`VBCSR_PROFILE_RARH` hooks read RSS either side of `assemble` and said mostly
+no — assembled ≈ staged at 512–2048 blocks, +21% at 4096.
+
+**That reading was an artifact.** Two point samples cannot see a peak that rises
+and falls between them. Measured instead with `VmHWM`, reset per call by writing
+`5` to `/proc/self/clear_refs` so the high water mark belongs to the call, the
+transient was 0.5–0.6× the result *at every size*, not zero below 4096.
+
+Reading `VmHWM` at each stage boundary — it only rises, so a step in it names the
+stage that raised the peak — split that transient into two causes, neither of
+them the co-residency the hooks were built to look for:
+
+| stage | Δ peak | Δ resident | what |
+|---|---|---|---|
+| `fused_rows` | +5.98 GB | +5.98 GB | the staged answer itself (5.72 GB) |
+| ordering pass in `assemble` | **+2.20 GB** | +1.90 GB | a second buffer per row, to permute |
+| result graph, `make_overwritten_result` | +0.02 GB | +0.01 GB | deferred touch working as intended |
+| copy-out | **+3.33 GB** | +1.96 GB | freed staging not returned to the OS |
+
+*(4096 blocks × 200 neighbours, block size 13, complex, 48 threads.)*
+
+1. **The ordering pass permuted out of place.** The row accumulator hands columns
+   back in first-touch order; the result graph is ordered. `assemble` reconciled
+   them by building a sorted copy of every row and swapping. Both kernels now
+   stage in column order directly — the surviving accumulator slots are sorted as
+   *indices* (a few hundred ints) before the values are copied out — and the pass
+   is gone. Rows are also `reserve`d to their exact final size, which removes the
+   geometric growth that left staging holding 9.70 GB of capacity for 5.72 GB of
+   answer.
+2. **`std::vector<T>().swap(v)` frees to the allocator, not to the kernel.** glibc
+   returns a large block by `munmap` only while it is above the mmap threshold,
+   and that threshold is *dynamic*: freeing one mmapped chunk raises it to that
+   chunk's size, so the first staged row returned is also the last. The copy pass
+   wrote a 5.72 GB result while freeing 5.72 GB of staging and RSS still rose
+   3.9 GB. `release_and_drop` (`detail/ops/spmm/common.hpp`) advises the buffer's
+   interior pages `MADV_DONTNEED` before dropping it — the same instrument
+   `PagedBuffer::release_pages_before` uses, and a statement to the kernel rather
+   than to malloc: `free()` writes its own metadata into the chunk afterwards, a
+   page or two faulted straight back, and never reads what was there.
+
+Peak resident, 48 threads, complex, block size 13, 200 neighbours per row:
+
+| kernel | n | result | before | after | floor (operands + result) |
+|---|---|---|---|---|---|
+| `rarh_upper` | 1024 | 1.09 GB | 2.87 GB | 2.29 GB | 2.15 GB |
+| | 2048 | 2.63 GB | 6.58 GB | 4.87 GB | 4.72 GB |
+| | 4096 | 5.72 GB | 15.95 GB | **10.12 GB** (−37%) | 9.88 GB |
+| `square_polynomial_upper` | 1024 | 0.83 GB | 2.38 GB | 1.95 GB | 1.89 GB |
+| | 2048 | 1.86 GB | 5.16 GB | 4.06 GB | 3.92 GB |
+| | 4096 | 3.92 GB | 11.26 GB | **8.20 GB** (−27%) | 8.08 GB |
+
+Both now land within 0.25 GB of holding nothing but their operands and their
+answer. Runtime is a wash — at 4096, `rarh_upper` min-of-4 went 16.20 s → 15.80 s
+— which is the expected trade: a full permutation copy of the answer removed, a
+few hundred index sorts and one `madvise` per row added.
+
+**The lesson for the next measurement.** `VBCSR_PROFILE_RARH` and
+`VBCSR_PROFILE_BSR_SPGEMM` sample RSS at phase boundaries. That is the right
+instrument for *which phase allocates* and the wrong one for *what the peak is*;
+here it reported 0% where the true answer was 20%. Use `VmHWM` with
+`clear_refs` for peak questions.
+
 ---
 
 ## 5. Known gaps
@@ -501,7 +567,16 @@ separate them.** This is the first thing an auditor should ask about.
 `test_rarh`, `test_square_polynomial`, `test_spmm_inplace`, `test_spmm_hermitian`
 — all pass at **1, 2 and 4 ranks**, each covering `bsr`, `vbcsr` and `csr`
 matrix kinds. Python suite: 81 passed, 1 skipped. vbcsr adds
-`test_vendor_batch_gemm` (§13).
+`test_vendor_batch_gemm` (§13) and `test_fused_upper` (§4.1).
+
+**A blind spot found while adding §4.1.** `test_rarh` uses 6 uniform blocks. At 4
+ranks that is at most 2 rows per rank — few enough that the accumulator's
+first-touch order coincides with column order, so a column-ordering fault is
+invisible. With the ordering deliberately removed it fails at 1 and 2 ranks and
+*passes* at 4. `test_fused_upper` (in vbcsr, where the kernels are) uses 9 blocks
+of five different sizes with the input adjacency listed descending, and fails at
+1, 2, 4 and 5. Both are kept: the rsatb pair also checks the thresholded
+accuracy claim against the two-call route, which the vbcsr one does not.
 
 Multi-rank matters specifically for `spmm_inplace`: the 1-rank result passes
 whether or not the mid-product page release is correct, because there are no
