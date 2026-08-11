@@ -459,8 +459,32 @@ real: the writes now fault their own pages in rather than finding them faulted b
 the zero pass, and each chunk boundary costs an madvise and its TLB shootdown
 across every thread. It is ~2% of a step whose other stages run 8 s and 40 s.
 
-The reason there is no placement penalty is structural rather than lucky:
-nothing downstream reads this matrix by domain. Both fused kernels take their operands with `schedule(dynamic, 8)` — the
+**The placement itself is genuinely lost, though, and that is worth stating
+separately from the timing.** `test_numa_locality` samples value pages and asks
+whether each sits on the node of the thread whose domain owns its row:
+
+| | node-local |
+|---|---|
+| copying completion | 100.0% |
+| in-place completion | 27.3 / 44.0 / 54.9 / 66.8 / 72.7 / 72.7% |
+
+Mean ~53% on a two-node machine, where chance is 50%. So it is not *partially*
+aligned — it is **uncorrelated** with the domain partition, and no assertion can
+separate success from luck on that path, which is why the case is reported rather
+than asserted. Placement follows whichever thread wins each dynamically scheduled
+row, so the figure moves run to run.
+
+A per-chunk placing touch does not rescue it, and the reason is worth recording
+so it is not re-attempted: the local writes are a scatter (source row i lands in
+result row j > i), so by the time a chunk is reached its rows may already hold
+values written from earlier chunks, and zeroing them to place them would destroy
+those. Touching in DESCENDING chunk order would be safe — the only writers into a
+chunk's rows are chunks at or below it — but then the dead rows are a suffix and
+the release takes a prefix. The two orders are incompatible, and the release is
+worth more.
+
+That this costs no time is structural rather than lucky: nothing downstream reads
+this matrix by domain. Both fused kernels take their operands with `schedule(dynamic, 8)` — the
 thread that reads a row is whichever picks it up, not the row's domain owner — so
 the domain partition of an *operand* is not exploited. It is exploited when a
 matrix is being WRITTEN (the first touch) and by `copy_from`; the completed X and
