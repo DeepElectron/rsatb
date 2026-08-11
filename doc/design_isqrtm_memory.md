@@ -74,20 +74,30 @@ result.
 five-step drift refresh does not bound it in the common three-step run where it
 never fires at all. Measured on 4096 atoms the gap is a factor of 2.8.
 
-So after the loop, if the last `X` came from propagation, it reforms once and
-re-measures purely to REPORT. Measured on 4096 atoms the reported 1.98e-4 was
-really 9.95e-4 -- a factor of 5.
+So after the loop, every run reports `||(Z^H S Z - I) v||_2` for a fixed
+random unit probe `v` -- three sparse matrix-vector products, WITHOUT forming
+`Z^H S Z`. An earlier version instead reformed the product once purely to
+re-measure (on 4096 atoms the propagated 1.98e-4 was really 9.95e-4, a factor
+of 5), but that re-ran the largest phase of the solve to produce a log line:
+1389 s, and the 4096-atom peak went 85.6 -> 107.0 GB, undoing the memory
+saving the whole design exists for. The probe is not a norm and does not claim
+to be one -- the preconditioner is APPLIED to vectors, so the drift of
+`Z^H S Z v` from `v` is the error a caller sees; one probe can miss the worst
+direction, which is the honest price of three products. It is cheap enough to
+run unconditionally, so every run reports the same quantity whichever route
+the last step took.
 
-That result deliberately does NOT feed the termination test, and the first
-attempt did, which is worth recording as a trap. The exact residual is bounded
-below by `sptol`, so "still above tol" is permanently true on any run whose
-`tol` is under `sptol`; and re-entering compares an exact norm against a
-propagated `norm_pre`, so the plateau detector -- which assumes a single metric
--- never fires either. A 4096-atom run that had been exiting cleanly in three
-steps instead ground on for **eight hours**, its exact residual getting WORSE at
-each extra termination (9.95e-4, then 1.49e-3), because at the `sptol` floor the
-extra propagation only adds truncation. Report honestly; stop where the
-iteration actually stopped improving.
+That number deliberately does NOT feed the termination test, and the first
+attempt at honest reporting -- the reform-based one -- did, which is worth
+recording as a trap. The exact residual is bounded below by `sptol`, so "still
+above tol" is permanently true on any run whose `tol` is under `sptol`; and
+re-entering compares an exact metric against a propagated `norm_pre`, so the
+plateau detector -- which assumes a single metric -- never fires either. A
+4096-atom run that had been exiting cleanly in three steps instead ground on
+for **eight hours**, its exact residual getting WORSE at each extra
+termination (9.95e-4, then 1.49e-3), because at the `sptol` floor the extra
+propagation only adds truncation. Report honestly; stop where the iteration
+actually stopped improving.
 
 After each step `X` must be advanced. There are two ways, and choosing between
 them is the main design decision:
@@ -785,9 +795,11 @@ separate them.** This is the first thing an auditor should ask about.
   the solve it checks, and it, not the solve, is the process peak.
 - The internal and external residuals differed (1.98e-04 vs 5.54e-04 at 4096)
   because the reported number was of `P X P` rather than of the returned `Z`.
-  The termination reform described in section 1 closes this; the measurements in
-  section 8 predate it, so their reported internal residual is still the
-  propagated one.
+  The applied-residual probe described in section 1 closes the honesty gap, but
+  note it is a different QUANTITY: a probe `||(Z^H S Z - I) v||_2` against the
+  external check's untruncated norm, so the two numbers are related, not equal.
+  The measurements in section 8 predate the probe, so their reported internal
+  residual is still the propagated max-block norm.
 
 ---
 
@@ -836,7 +848,7 @@ An external reviewer raised eight issues. Disposition:
 | Ranks could choose different routes (rank-local timing constants driving a branch with different collective sequences -- a hang, not a bad route) | Decision broadcast from rank 0; durations `MPI_Allreduce`d with `MAX` before updating calibration |
 | A missing diagonal block made the residual falsely zero | `residual_norm` rewritten: no mutation, every row accounted for, absent diagonal contributes `||-I||_F` |
 | Metric named "maxabs" but computed Frobenius | Renamed throughout to "max block residual"; the semantics are documented above |
-| Propagated residual is not the residual of the returned `Z` | Reform-and-re-measure before any termination that would report a propagated residual |
+| Propagated residual is not the residual of the returned `Z` | Reform-and-re-measure before any termination that would report a propagated residual (later replaced by the §1 applied-residual probe, which reports without re-running the reform) |
 | `rarh` stage-one pruning bound omitted the second fan-out | Gate scaled per `k` by `|B row k|`. The reviewer's 6x6 counterexample is now the `coherent` test case; it fails against the old gate (error 2.88 vs bound 1.0) and is exact against the new one |
 | `rarh::assemble` eagerly zero-touched the full result while staging was live | Uses `make_overwritten_result`, as `square_polynomial` already did |
 | Peak and steady RSS reduced with independent `MPI_MAX`, so they could come from different ranks | `MPI_MAXLOC` on the peak, then the steady value is broadcast from that rank |
@@ -846,8 +858,8 @@ An external reviewer raised eight issues. Disposition:
 not a defect with an obvious fix:
 
 - **Adaptive drift refresh** driven by accumulated dropped-block error rather
-  than a fixed period of 5. The termination reform above removes the *reporting*
-  hazard; the fixed period remains a heuristic.
+  than a fixed period of 5. The applied-residual probe (§1) removes the
+  *reporting* hazard; the fixed period remains a heuristic.
 - **Memory-budget constraint in route selection.** The stated objective is
   peak-memory survival, but the router optimises time only. Rejecting routes
   whose predicted live set exceeds a per-rank budget, then minimising time among
