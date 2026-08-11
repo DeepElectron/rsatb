@@ -578,6 +578,18 @@ of five different sizes with the input adjacency listed descending, and fails at
 1, 2, 4 and 5. Both are kept: the rsatb pair also checks the thresholded
 accuracy claim against the two-call route, which the vbcsr one does not.
 
+**A rank owning no blocks deadlocked the job**, found by running
+`test_fused_upper` with more ranks than block rows. Nothing to do with the fused
+kernels or with the exchange rounds — `BlockSpMat(DistGraph*)` is *collective*,
+because `detect_matrix_kind` Allreduces the block-size extremes (a rank owning
+nothing cannot decide CSR/BSR/VBCSR alone), and nothing said so.
+`make_overwritten_result` called `detect_matrix_kind` and then, in the branch it
+takes when the result graph is empty, constructed through that constructor —
+so exactly the starved ranks entered two Allreduce nobody else did. It hung
+`test_rarh` and `test_square_polynomial` too, at 10 ranks over their 6 blocks.
+Fixed by constructing with the kind already in hand; `test_fused_upper` now runs
+every check twice, once over a partition that starves half the ranks.
+
 Multi-rank matters specifically for `spmm_inplace`: the 1-rank result passes
 whether or not the mid-product page release is correct, because there are no
 ghosts. Only 2/4 ranks exercise it.
