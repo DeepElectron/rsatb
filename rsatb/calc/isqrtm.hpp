@@ -831,10 +831,21 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             // drops once on the finished result. P^H = P exactly, so neither
             // half needs a transpose.
             BlockSpMat<T> upper = tmp1.rarh_upper(tmp2, sptol);
+            // BOTH operands die with the product: X is being replaced, and P's
+            // last read was the kernel call above -- the next step rebuilds it
+            // from the new X. Held past this point, P would stand beside the
+            // mirroring X_new for exactly the phase this step peaks in.
+            tmp1.reset();
             tmp2.reset();
             upper.complete_hermitian_inplace();
             tmp2 = std::move(upper);
         } else {
+            // P is dead on this route -- the reform rebuilds X from Z and S,
+            // and the next step's polynomial starts from that X. Reform is
+            // chosen precisely at the early steps where P is densest, so
+            // holding it across the two products below was the single largest
+            // avoidable term in the reform-step peak.
+            tmp1.reset();
             reform_x(z_nbr);
         }
         const double t_update = util::wall_time() - t0_update;

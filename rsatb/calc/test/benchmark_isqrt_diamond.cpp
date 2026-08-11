@@ -356,6 +356,11 @@ int main(int argc, char** argv) {
         // taken and the running peak are reported. Without it this mode prints
         // one total and nothing about where the memory went.
         rsatb::util::Log::level() = rsatb::util::LogLevel::kProgress;
+        // The peak in those progress lines comes from MemorySampler, which
+        // only Rsatb::begin_profile() ever started. Standalone, every line
+        // read "peak 0 GB" -- an actively wrong number, not a missing one --
+        // and the real peak had to be polled from outside via VmHWM.
+        rsatb::util::MemorySampler::instance().start();
 
         rsatb::calc::InverseSqrtOptions opts;
         opts.tol = ns_tol;
