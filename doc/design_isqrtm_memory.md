@@ -608,6 +608,44 @@ the sound one.
 phase went **27.90 -> 0.00 -> 0.00 GB** across steps; `Z·P` **32.28 -> 4.50 ->
 1.49 GB**.
 
+**Re-measured on real diamond after the staging (§4.1) and completion
+(§4.2) work.** 2048 atoms, `sptol` 1e-4, 48 threads, idle machine, peak polled
+from `VmHWM` externally (the internal sampler does not collect in this
+benchmark, and GNU time 1.7 here over-reports RSS 4x — §9):
+
+| | §8 table, pre-work | re-measured |
+|---|---|---|
+| peak RSS | 34.75 GB | **31.21 GB** (-10.2%) |
+| steady | — | 11.78 GB |
+| residual trajectory | 0.0191689 / 0.00080307 / 0.00019822 | 0.0191865 / 0.000875553 / 0.000197259 |
+
+Read this as **-10% on a whole run**, not the -21% §4.2 measures on a step: the
+seed phase is 300 s of the 1500 s here and none of the work above touches it.
+Two limits on the comparison — the pre-work figure came from the internal
+sampler and this one from an external poll, which may not be scoped identically;
+and this is measured against a published number rather than a paired A/B, since
+reverting the change set across both repos to re-run a baseline was not done.
+
+**What the run says about which matrix sizes the problem**, which matters more
+than the peak itself for extrapolating:
+
+| step | Z nbr/row | X nbr/row | rss |
+|---|---|---|---|
+| 1 | 293 | 1590 | 13.08 GB |
+| 2 | 1686.5 | 1401.4 | 26.52 GB |
+| 3 | 1683.5 | 657.4 | 19.25 GB |
+
+**Z fills 5.8x in one step and then plateaus; X contracts.** So Z sets the
+memory, and an extrapolation keyed on X's neighbour count is keyed on the matrix
+that collapses. Per-atom at 2048: 15.2 MB peak, 5.75 MB steady; the 4096 row
+above gives 20.9 and 8.12, so the per-atom cost is still RISING between them --
+the interaction sphere is not yet contained. A 14 A decay sphere in diamond
+holds ~2030 atoms, which is about where X lands at 4096 (2080) and where the
+count should stop climbing. Taking 4096 as the saturation point puts a million
+atoms near **8 TB steady and 16-19 TB peak** -- 130-150 nodes at 125 GB. That
+extrapolation rests on saturation happening at 4096, which is one measured
+point for X and none for Z, so it is the number most worth checking next.
+
 **Measured during development, not re-verified in the final runs:** the fused
 `rarh` kernel replacing two-call `P X P` (413/408 s -> ~71 s on the step
 measured); cost-model routing on sc888 (955.8 s -> 223.2 s); the `numa_buffer`

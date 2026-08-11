@@ -27,6 +27,8 @@
 //   OMP_NUM_THREADS=1 ./benchmark_isqrt_diamond [--poscar diamond_sc888.vasp]
 //                                              [--atoms 3] [--skip-spectrum]
 //                                              [--route legacy|eigen|band|auto]
+//                                              [--ns N] [--sptol X] [--tol X]
+//                                              [--supercell nx ny nz]
 //
 // --route runs exactly one route per sampled atom, for isolated timing.
 // --graph runs the whole graph_inverse_sqrt instead (use several OMP threads
@@ -48,6 +50,7 @@
 #include <complex>
 #include <csignal>
 #include <cstdio>
+#include <array>
 #include <cstring>
 #include <memory>
 #include <string>
@@ -220,6 +223,18 @@ int main(int argc, char** argv) {
     bool with_spectrum = true;
     bool graph_mode = false;
     int ns_steps = 0;  // --ns N: run the full inverse_sqrt with N Newton-Schulz steps
+    // The drop threshold decides how dense every matrix in the loop is, so it
+    // decides the memory the run takes -- which makes it the one setting a
+    // memory measurement has to be able to state. It was hardcoded at 1e-5,
+    // and the published figures in doc/design_isqrtm_memory.md section 8 are at
+    // 1e-4, so no run of this benchmark could be compared against them.
+    // Sizes come from repeating the base structure, NOT from pre-tiled POSCARs:
+    // one structure on disk, and the supercell path gets exercised as a side
+    // effect. This is how the figures in doc/design_isqrtm_memory.md section 8
+    // were produced, and without it this benchmark could not reproduce them.
+    std::array<int, 3> supercell{{1, 1, 1}};
+    double ns_sptol = 1e-5;
+    double ns_tol = 1e-5;
     for (int i = 1; i < argc; ++i) {
         if (std::strcmp(argv[i], "--poscar") == 0 && i + 1 < argc) poscar = argv[++i];
         else if (std::strcmp(argv[i], "--atoms") == 0 && i + 1 < argc) n_atoms_sampled = std::atoi(argv[++i]);
@@ -228,12 +243,21 @@ int main(int argc, char** argv) {
         else if (std::strcmp(argv[i], "--kd") == 0 && i + 1 < argc) g_band_width = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--graph") == 0) graph_mode = true;
         else if (std::strcmp(argv[i], "--ns") == 0 && i + 1 < argc) ns_steps = std::atoi(argv[++i]);
+        else if (std::strcmp(argv[i], "--supercell") == 0 && i + 3 < argc) {
+            for (int axis = 0; axis < 3; ++axis) supercell[axis] = std::atoi(argv[++i]);
+        }
+        else if (std::strcmp(argv[i], "--sptol") == 0 && i + 1 < argc) ns_sptol = std::atof(argv[++i]);
+        else if (std::strcmp(argv[i], "--tol") == 0 && i + 1 < argc) ns_tol = std::atof(argv[++i]);
     }
     if (!only_route.empty()) with_spectrum = false;  // keep the RSS reading clean
 
     // ---------------------------------------------------------------- overlap
     const std::string data = rsatb::test::data_dir() + "diamond/";
     vbcsr::atomic::Structure st = vbcsr::atomic::ReadPoscar(data + poscar);
+    if (supercell[0] * supercell[1] * supercell[2] > 1) {
+        st.supercell = supercell;
+        st = st.BuildSupercell();
+    }
 
     // 2s2p1d orbital, r_cut = 7 au; the overlap pattern reaches 2 r_cut.
     const double rcut_ang = 7.0 * 0.529177210903;
@@ -328,10 +352,17 @@ int main(int argc, char** argv) {
         sigaction(SIGBUS, &sa, nullptr);
         sigaction(SIGSEGV, &sa, nullptr);
 
+        // Per-step progress, which is where the neighbour counts, the route
+        // taken and the running peak are reported. Without it this mode prints
+        // one total and nothing about where the memory went.
+        rsatb::util::Log::level() = rsatb::util::LogLevel::kProgress;
+
         rsatb::calc::InverseSqrtOptions opts;
-        opts.tol = 1e-5;
-        opts.sptol = 1e-5;
+        opts.tol = ns_tol;
+        opts.sptol = ns_sptol;
         opts.maxit = ns_steps;
+        std::printf("ns mode: %d atoms, maxit %d, sptol %g, tol %g\n",
+                    n_atom, ns_steps, ns_sptol, ns_tol);
         vbcsr::BlockSpMat<Scalar> Z(S->graph);
         const auto tn = Clock::now();
         rsatb::calc::inverse_sqrt(*S, &Z, opts, true);
