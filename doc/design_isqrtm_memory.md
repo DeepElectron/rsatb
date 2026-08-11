@@ -438,8 +438,29 @@ result fully resident *before* a single source row has been released, which is
 the peak being removed. The two are mutually exclusive, so the consuming path
 skips it and the plain path keeps it.
 
-That costs less than it appears, because nothing downstream reads this matrix by
-domain. Both fused kernels take their operands with `schedule(dynamic, 8)` — the
+**Measured, and it costs nothing downstream.** Alternating runs on an idle
+machine, 2048 atoms, timing the NEXT product with the completed matrix as its
+operand -- `square_polynomial_upper`, exactly what the loop does with it:
+
+| | copying | in place |
+|---|---|---|
+| step peak | 10.03 GB (3 runs, identical) | **7.83 GB** (3 runs, identical) |
+| the completion itself | 0.60 / 0.73 / 0.80 s | 1.35 / 1.70 / 1.80 s |
+| next product on the result | 43.46 / 44.45 / 44.17 s | 44.41 / 38.40 / 40.42 s |
+
+No downstream penalty -- the in-place mean is lower (41.1 s against 44.0), which
+is within the spread rather than a win, but it is certainly not a loss. An
+earlier reading that showed in place 2-7% slower was taken while another job held
+the machine at load 100 and absolute times drifted 44 -> 58 s mid-comparison; it
+measured the contention.
+
+The completion itself does get about 0.8 s slower, consistently, and that is
+real: the writes now fault their own pages in rather than finding them faulted by
+the zero pass, and each chunk boundary costs an madvise and its TLB shootdown
+across every thread. It is ~2% of a step whose other stages run 8 s and 40 s.
+
+The reason there is no placement penalty is structural rather than lucky:
+nothing downstream reads this matrix by domain. Both fused kernels take their operands with `schedule(dynamic, 8)` — the
 thread that reads a row is whichever picks it up, not the row's domain owner — so
 the domain partition of an *operand* is not exploited. It is exploited when a
 matrix is being WRITTEN (the first touch) and by `copy_from`; the completed X and
