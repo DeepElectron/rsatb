@@ -1,12 +1,42 @@
 #ifndef RSATB_CALC_ISQRTM_HPP
 #define RSATB_CALC_ISQRTM_HPP
 
-// S^{-1/2} for the ISQRTM preconditioner: the graph seed (one thin dense
-// inverse-square-root action per block row, through vbcsr's generic
-// graph_function_apply driver) refined by Newton-Schulz purification on the
-// sparse matrix. The generic graph traversal lives in vbcsr; everything
-// specific to the inverse square root - the dense kernel (isqrt_action.hpp),
-// the route bookkeeping and the purification - is rsatb's.
+// S^{-1/2} of a sparse LCAO overlap, distributed, at controlled sparsity.
+//
+// The algorithm has two stages:
+//
+//   1. SEED (graph_inverse_sqrt). Each block row of S^{-1/2} is taken from
+//      the dense inverse square root of that row's neighbourhood subgraph --
+//      one thin "action" per row through vbcsr's generic graph_function_apply
+//      driver, dense kernels in isqrt_action.hpp. The subgraph is S's own row
+//      pattern, so the seed's cost per row and its accuracy are set by the
+//      overlap's interaction radius, not by system size.
+//
+//   2. NEWTON-SCHULZ (inverse_sqrt). The seed Z is refined by the cubic
+//      purification
+//
+//          X  = Z^H S Z                          (congruence residual)
+//          P  = 1.875 I - 1.25 X + 0.375 X^2     (cubic update polynomial)
+//          Z <- Z P
+//
+//      which drives X -> I with cubic order while Z -> S^{-1/2}. Every
+//      product is block-sparse under a Frobenius drop threshold (sptol), so
+//      the achievable residual is floored by sptol; convergence is judged on
+//      the max block Frobenius norm of X - I.
+//
+//      X can be advanced two ways -- reformed exactly as Z^H S Z, or
+//      propagated as P X P -- whose costs move in opposite directions across
+//      the run. A per-step cost model chooses; see the route section below.
+//
+// Layering: the generic graph traversal and all sparse kernels live in
+// vbcsr; everything specific to the inverse square root -- the dense action
+// kernel, the routing, the purification -- is rsatb's.
+//
+// The design constraint throughout is PEAK MEMORY at fixed accuracy: fused
+// upper-triangle kernels, in-place completions, consuming products, and
+// operands released the moment they are dead. Measurements, history, and the
+// full rationale live in doc/design_isqrtm_memory.md; comments here state
+// the invariants the code relies on.
 
 #include "utils/interrupt.hpp"
 #include "utils/profile.hpp"
@@ -37,13 +67,9 @@ namespace calc {
 using vbcsr::BlockSpMat;
 using vbcsr::DistGraph;
 
-// |z|^2, for the residual metrics below.
-//
-// Deliberately NOT vbcsr::detail::block_squared_magnitude. That one lives in
-// detail/ops/spmm/common.hpp -- an SpGEMM-internal header this file never
-// includes, so it was arriving transitively and an include reshuffle inside
-// vbcsr would have broken this build with no warning. The definition is the
-// same (std::norm for complex), so every metric here is bit-for-bit unchanged.
+// |z|^2, for the residual metrics below. Defined locally rather than
+// borrowing vbcsr::detail's equivalent, which lives in an SpGEMM-internal
+// header this file has no business including.
 template <typename T>
 inline double squared_magnitude(const T& v) {
     if constexpr (std::is_same<T, std::complex<double>>::value ||
@@ -125,17 +151,13 @@ void graph_inverse_sqrt(BlockSpMat<T>& S, BlockSpMat<T>* out,
                         const isqrt::Options& kernel = {},
                         bool verbose = false,
                         GraphInverseSqrtReport* report = nullptr) {
-    // opt.method is the route *requested*, not the route taken. Its default is
-    // Auto, and even when it is not, the per-problem Router still falls back:
-    // the fast path carries a convergence certificate and hands off when the
-    // certificate fails, a subgraph can turn out numerically singular, and a
-    // tiny one goes straight to the eigendecomposition. So one call typically
-    // spreads over several routes and the tally below is the only record of
-    // where the work actually went -- it is measurement, not a restatement of
-    // this line. (Forcing a single route for isolated timing is what the
-    // RSATB_ISQRT_INIT override and benchmark_isqrt_diamond's --route are for;
-    // there the tally does collapse to one bucket, plus whatever still fell
-    // back, which is exactly the number that benchmark wants to see.)
+    // opt.method is the route *requested*, not the route taken: the
+    // per-problem Router still falls back when the fast path's convergence
+    // certificate fails, a subgraph turns out numerically singular, or the
+    // problem is tiny. One call therefore spreads over several routes, and
+    // the tally below is the only record of where the work actually went.
+    // (RSATB_ISQRT_INIT and benchmark_isqrt_diamond's --route force a single
+    // route for isolated timing.)
     isqrt::Options opt = kernel;
     opt.method = detail::resolve_isqrt_method(kernel.method);
     // The dense view handed to the action is row-major, so its column-major
@@ -181,10 +203,9 @@ void graph_inverse_sqrt(BlockSpMat<T>& S, BlockSpMat<T>* out,
     summary.band = totals[1];
     summary.eigen = totals[2];
     summary.failed = totals[3];
-    // Global over global. Both halves used to be this rank's own -- a local
-    // numerator over a local denominator -- while every other field in the
-    // report was collective, so the mean described one rank and was labelled as
-    // if it described the run.
+    // Global over global, like every other field in the report: a local
+    // numerator over a local denominator would describe one rank while being
+    // labelled as if it described the run.
     long long krylov_blocks_local = tally.krylov_blocks.load();
     long long krylov_blocks_total = krylov_blocks_local;
     if (comm != MPI_COMM_NULL && comm != MPI_COMM_SELF) {
@@ -217,14 +238,9 @@ struct InverseSqrtOptions {
     isqrt::Options kernel{};  // dense per-subgraph kernel of the seed
 };
 
-// What the iteration did, for a caller that needs to act on it rather than read
-// it off a log line. Same optional-out-param shape as GraphInverseSqrtReport.
-//
-// This exists because everything below used to be reachable only as printed
-// text: a caller could not tell a converged run from one that stopped at
-// maxiter, and a TEST could not tell whether it had exercised the propagated
-// route at all -- so a routing change would have silently turned that coverage
-// vacuous with nothing to notice.
+// What the iteration did, for a caller (or a test) that needs to act on it
+// rather than read it off a log line. Same optional-out-param shape as
+// GraphInverseSqrtReport.
 struct InverseSqrtReport {
     int steps = 0;             // Newton-Schulz steps taken
     bool converged = false;    // residual reached tol
@@ -272,43 +288,24 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     if (maxit == 0) return;
 
     // Newton-Schulz on X = Z^H S Z: Z <- Z (1.875 I - 1.25 X + 0.375 X^2),
-    // the order-3 iteration for X -> I.
+    // the order-3 iteration for X -> I. Three commitments, each the measured
+    // winner over its alternative (doc/design_isqrtm_memory.md §1):
     //
-    // Every design choice below was challenged by measurement on the real
-    // problem (diamond sc888, seed residual 1.9e-2, 3 steps to 4.4e-9) and
-    // the measured winner kept:
+    //  - CUBIC, not quadratic. The seed's spectral spread is wider than its
+    //    max-block residual suggests, and the quadratic map contracts slowly
+    //    where X's lowest eigenvalue sits; the cubic's wider contraction
+    //    basin wins at roughly equal flops.
     //
-    //  - Cubic, not quadratic. The seed's max-block residual understates
-    //    its spectral spread: X's lowest eigenvalue sits far from 1, where
-    //    the quadratic map contracts only ~2x per step and needs four steps
-    //    against the cubic's three. Roughly a wash in flops; the wider
-    //    contraction basin keeps it.
-    //
-    //  - Both routes for X, chosen per step by predicted cost. Neither wins
-    //    outright, and which one is cheaper INVERTS across the iteration:
-    //    reform (Z^H (S Z)) scales with Z, which fills in and stays filled,
-    //    while propagation (P X P) scales with P and X, which collapse
-    //    toward the identity until the threshold drops nearly all of their
-    //    blocks. Measured on 4096-atom diamond at sptol 1e-4, the one cell
-    //    here big enough that the fill-in stops before its own periodic
-    //    image: Z runs 293 -> 2255 nbr/row and STAYS there while P runs
-    //    1628 -> 552 -> 1, and the fused product that costs 1983s at step 1
-    //    costs 6.4s by step 3. A 178k-atom moire cell shows the same shape
-    //    (Z 118 -> 727, P 540 -> 87 -> 1.02). An earlier fixed choice of
-    //    propagation, guarded only by the residual, took the wrong route at
-    //    exactly the step where it was most expensive; see the cost model
-    //    below. A/B on diamond sc888: Newton-Schulz 955.8s under the old
-    //    always-propagate rule against 223.2s routed, 4.3x. The propagation
-    //    drifts, which the periodic exact reformation bounds -- that period
-    //    is a stability bound and cost never overrides it.
-    //
-    //    One caveat the model does NOT know: it ranks TIME, not memory, and
-    //    on sc888 the faster routing also peaked higher, 15.9 GB against
-    //    13.3 GB, because a reform materialises S Z and the completion where
-    //    the fused kernel holds only a row per thread. On a system where
-    //    memory is the binding constraint that trade may be the wrong one.
-    //    (The per-block-pair constants the model once got wrong are now
-    //    measured per route rather than assumed equal -- see below.)
+    //  - BOTH ROUTES for advancing X, chosen per step by predicted cost.
+    //    Which route is cheaper INVERTS across the run: reform (Z^H S Z)
+    //    scales with Z, which fills in and stays filled; propagation (P X P)
+    //    scales with P and X, which collapse toward the identity until the
+    //    threshold drops nearly all of their blocks. Propagation also drifts
+    //    (see the truncation note at the end of the loop), which the
+    //    periodic exact reformation bounds -- that period is a stability
+    //    bound and cost never overrides it. Known limitation: the model
+    //    ranks TIME, not memory, and a reform peaks higher than the fused
+    //    propagation.
     //
     //  - The congruence must stay the CONJUGATE transpose. Z^T S Z is
     //    identical at Gamma but diverges instantly at complex k -- the seed
@@ -317,37 +314,34 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     //    truncated seed. Measurements: calc/test/experiment_ns_variants.cpp.
     const double t_ns0 = MPI_Wtime();
     RSATB_PHASE("setup/isqrt_newton_schulz");
-    // Declared empty, not graph-shaped: the first product assigns each of
-    // these wholesale, so allocating the local sparsity pattern here would
-    // hold the two largest matrices in the loop before either is written.
-    // Measured on a 1024-atom cell: 1.5 GB, freed unread.
+    // tmp1 holds P, tmp2 holds X, and both are declared EMPTY, not
+    // graph-shaped: the first product assigns each wholesale, so shaping them
+    // here would hold the loop's two largest matrices before either is
+    // written.
     BlockSpMat<T> tmp1, tmp2;
 
     // How good Z is where it is actually used: applied to a vector.
     //
     //     ||(Z^H S Z - I) v||_2,   v a fixed random unit vector
     //
-    // Three sparse matrix-vector products, WITHOUT forming Z^H S Z. Not forming
-    // it is the point: reforming purely to report cost 1389 s on 4096 atoms and
-    // took the peak from 85.6 GB to 107.0 GB, re-running the largest phase of
-    // the solve and undoing the memory saving the whole design exists for.
+    // Three sparse matrix-vector products, WITHOUT forming Z^H S Z --
+    // reforming the product purely to report would re-run the largest phase
+    // of the solve and its peak (measured in the doc, §1).
     //
-    // A probe, not a norm, and it does not claim to be one. The preconditioner
-    // is applied to vectors, so the drift of Z^H S Z v from v IS the error a
-    // caller sees; one probe can miss the worst direction, which is the honest
-    // price of three products. Cheap enough to run unconditionally, so every
-    // run reports the same quantity whichever route the last step took.
+    // A probe, not a norm, and it does not claim to be one. The
+    // preconditioner is applied to vectors, so the drift of Z^H S Z v from v
+    // IS the error a caller sees; one probe can miss the worst direction,
+    // which is the honest price of three products. Cheap enough to run
+    // unconditionally, so every run reports the same quantity whichever
+    // route the last step took.
     auto applied_residual = [&]() -> double {
         vbcsr::DistMultiVector<T> v(graph, 1), w(graph, 1), u(graph, 1), y(graph, 1);
-        // vbcsr's sampler, not a hand-rolled hash. The hash this replaces keyed
-        // each entry on rank * 7919 + LOCAL row, so the number reported moved
-        // with the rank count and the partition. set_random normalises too, so
-        // ||v|| == 1 and the quotient is free.
-        //
-        // No zero_padding() calls, and none are needed: the pad lanes are zero
-        // from construction and every writer here keeps them so. That is
-        // asserted, not assumed -- vbcsr guards the invariant on both sides of
-        // each apply below in a debug build (test_isqrtm runs one).
+        // vbcsr's sampler is decomposition-invariant, so the reported number
+        // does not move with the rank count or the partition; it normalises
+        // too, so ||v|| == 1 and the quotient is free. No zero_padding()
+        // calls are needed: every writer here is lane-bounded, and vbcsr
+        // asserts the pad invariant on both sides of each apply in a debug
+        // build (test_isqrtm runs one).
         v.set_random(/*seed=*/1);
         S_inv_sqrt->mult_dense(v, w);          // w = Z v
         S_mat.mult_dense(w, u);                // u = S w
@@ -356,23 +350,18 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return std::sqrt(std::abs(y.bdot(y)[0]));
     };
 
-    // max over blocks of ||(X - I)[i,j]||_F, without mutating X.
+    // The loop metric: max over blocks of ||(X - I)[i,j]||_F, without
+    // mutating X.
     //
-    // The previous form was shift(-1) / scan get_block_norms() / shift(+1), and
-    // it could report ZERO for a completely wrong X. shift() only touches a
-    // diagonal block that is already STORED; on a row whose diagonal was
-    // dropped by the threshold -- or on an empty X -- it does nothing, so that
-    // row contributed 0 instead of ||-I||_F. With a loose enough sptol that is
-    // an immediate false "converged" on an invalid result. Every local row is
-    // now accounted for, present diagonal or not.
-    //
-    // The metric is the max block FROBENIUS norm, not max element magnitude,
-    // and is named accordingly. It is an upper bound on the largest element
-    // (||B||_F >= max|b_ij|), so using it as the convergence test is
-    // conservative -- it stops later, never earlier. It does NOT bound
-    // ||I - X||_2, so it is not a convergence-basin certificate; see the design
-    // note. It is also block-size dependent, which is why it is not called
-    // "maxabs".
+    // Two properties are load-bearing. Every local row must contribute
+    // whether or not it stores a diagonal block -- a row whose diagonal was
+    // dropped by the threshold is a block of X - I equal to exactly -I, and
+    // skipping it turns an invalid X into a false "converged". And the
+    // metric is the max block FROBENIUS norm, not max element magnitude: an
+    // upper bound on the largest element, so the convergence test is
+    // conservative (stops later, never earlier). It does NOT bound
+    // ||I - X||_2, so it is not a convergence-basin certificate, and it is
+    // block-size dependent -- which is why it is not called "maxabs".
     auto residual_norm = [&](const BlockSpMat<T>& X) {
         RSATB_PHASE("setup/isqrt_ns_residual");
         const DistGraph& gx = *X.graph;
@@ -413,13 +402,9 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return global;
     };
 
-    // Mean block-neighbours per row: density * N. At 2e5 block rows a density
-    // reads 6.6e-4 and means nothing; "118 nbr/row" is the same number in the
-    // units the cost is actually linear in. Both operands of every product
-    // below are reported, because the product's cost is their PRODUCT of
-    // neighbour counts, and a run where X and P have filled in behaves nothing
-    // like the one where they have not -- which used to be invisible, since
-    // only Z's density was logged.
+    // Mean block-neighbours per row: density * N. This is the unit the cost
+    // model is linear in, and the unit worth logging -- "118 nbr/row" says
+    // what a density of 6.6e-4 at 2e5 rows does not.
     //
     // get_block_density() is a collective: called on every rank, never inside
     // a rank-0 log guard.
@@ -433,19 +418,14 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
 
     // ---- route cost model -------------------------------------------------
     //
-    // Which route updates X is a COST decision, and the two routes' costs move
-    // in opposite directions across the iteration (see the note above). The old
-    // guard keyed the choice on the residual, which cannot see that: with a
-    // good seed the residual is already below the threshold at step 1, so the
-    // guard never fired and the loop propagated at exactly the step where P and
-    // X were densest and Z sparsest -- the most expensive propagation and the
-    // cheapest reform of the whole run, and the run's peak-memory phase.
-    //
-    // So rank the routes by predicted cost instead, in the unit the SpGEMM is
-    // linear in: block-pair multiplies per row, which for A*B is exactly
+    // Which route updates X is a COST decision, ranked in the unit the SpGEMM
+    // is linear in: block-pair multiplies per row, which for A*B is exactly
     // nbr(A) * nbr(B). The only quantity not measured is the intermediate's
-    // neighbour count, and the SAME estimator serves both routes, so its error
-    // largely cancels in the comparison rather than biasing one side.
+    // neighbour count, and the SAME estimator serves both routes, so its
+    // error largely cancels in the comparison rather than biasing one side.
+    // (A residual-keyed guard cannot do this job: with a good seed the
+    // residual is below any threshold from step 1, exactly when the routes'
+    // costs differ most.)
     //
     // S's own count is fixed for the whole iteration. Collective, so it is
     // taken here on every rank rather than under a log guard.
@@ -455,14 +435,11 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // neighbours, so nbr(AB)^(1/d) = nbr(A)^(1/d) + nbr(B)^(1/d). d is NOT
     // hardcoded to the lattice dimension -- it is solved for from the one
     // product whose operands and result are all measured for free, the fused
-    // reform Z^H S Z, so a 2D moire and a 3D crystal each calibrate themselves.
+    // reform Z^H S Z (radii add twice there: nbr(X)^(1/d) = s^(1/d) +
+    // 2 z^(1/d)), so a 2D moire and a 3D crystal each calibrate themselves.
+    // The measured counts are post-threshold, so the model carries sptol's
+    // bias consistently on both sides of the comparison.
     double fill_dim = 3.0;  // until the first reform measures one
-    // Solved from the fused reform's own result: radii add, r(Z^H S Z) =
-    // 2 r(Z) + r(S), so nbr(X)^(1/d) = s^(1/d) + 2 z^(1/d). This replaced a
-    // pairwise solve against the S Z intermediate when the reform fused into
-    // one kernel and stopped forming S Z at all -- same model, same
-    // post-threshold bias (S Z was measured after its drop too), measured on
-    // the triple product instead of its half.
     auto calibrate_fill_dim = [](double s, double z, double x, double fallback) {
         // f(d) = s^(1/d) + 2 z^(1/d) - x^(1/d) tends to +2 as d grows (every
         // term tends to 1) and is negative at small d whenever the product is
@@ -519,44 +496,31 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     };
 
     // Block pairs are the unit, but the two routes do NOT cost the same per
-    // pair, and comparing raw counts silently assumes they do. Measured on
-    // diamond sc888 the model predicted a 1.9x edge for the reform where the
-    // truth was 9x. So each route carries its own measured seconds-per-unit and
-    // the comparison happens in SECONDS.
+    // pair -- the constants are properties of the machine and the block size,
+    // not of the algorithm -- so each route carries its own measured
+    // seconds-per-unit and the comparison happens in SECONDS.
     //
-    // Worth keeping even now that the two constants are close (the fused kernel
-    // reaching for the same block kernels spmm uses brought propagation to
-    // 4.6e-5 s/unit against the reform's 5.2e-5, i.e. slightly CHEAPER per
-    // pair): the constants are properties of the machine and the block size,
-    // not of the algorithm, and the whole reason this exists is that assuming
-    // them equal was wrong once already.
-    //
-    // Only the LARGEST measurement per route is kept, not the latest and not an
-    // average: a step where a route cost 4 ms is dominated by fixed setup
-    // (result graph, collectives) rather than by its block pairs, and fitting a
-    // constant to it would describe the overhead instead of the work. The large
-    // steps are also the only ones where the decision changes anything.
-    //
-    // Until a route has been measured it borrows the other's constant, which is
-    // exactly the equal-cost assumption this replaces -- no worse than before,
-    // and self-correcting after one step.
+    // Only the LARGEST measurement per route is kept, not the latest and not
+    // an average: a millisecond-scale step is dominated by fixed setup
+    // (result graph, collectives) rather than by its block pairs, and
+    // fitting a constant to it would describe the overhead instead of the
+    // work. The large steps are also the only ones where the decision
+    // changes anything. Until a route has been measured it borrows the
+    // other's constant -- a pure count comparison, self-correcting after one
+    // step.
     double reform_units_seen = 0.0, reform_seconds_seen = 0.0;
     double propagate_units_seen = 0.0, propagate_seconds_seen = 0.0;
-    // Below this a step is setup, not work. Step 3 of a converged run measured
-    // 4 ms of propagation over 5 predicted units, which fits a constant 18x too
-    // expensive -- entirely result-graph construction and collectives. Learning
-    // from it would bias the next run's routing AWAY from propagation, and so
-    // away from the route that costs less memory. Four orders below any
-    // decision-relevant step and comfortably above setup noise.
+    // Below this a step is setup, not work: four orders below any
+    // decision-relevant step and comfortably above setup noise. Learning
+    // from a setup-dominated step would bias routing away from whichever
+    // route happened to run it.
     const double kCalibrationFloorSeconds = 0.1;
-    // COLLECTIVE, and called at the same point on every rank. The duration is
-    // reduced with MAX first: a route is a collective sequence, so its real
-    // cost is the slowest rank's, and leaving each rank to learn its own local
-    // time gave every rank a slightly different constant -- which is what let
-    // the route choice itself diverge. Reducing here keeps the constants (and
-    // so the predictions) identical everywhere; the broadcast at the decision
-    // is the guarantee, this is what stops them drifting apart in the first
-    // place.
+    // COLLECTIVE, called at the same point on every rank, and the duration is
+    // MAX-reduced first: a route is a collective sequence, so its real cost
+    // is the slowest rank's -- and identical constants everywhere are what
+    // keep the per-rank predictions from drifting apart. (The broadcast at
+    // the decision point is the hard guarantee; this is what keeps it from
+    // ever being needed.)
     auto note_route_cost = [&](bool propagated, double units, double local_seconds) {
         double seconds = local_seconds;
         if (graph->size > 1) {
@@ -585,47 +549,34 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         return (other_units > 0.0 && other_secs > 0.0) ? other_secs / other_units : 1.0;
     };
 
-    // Stage heartbeats: each distributed product below can run for hours at
-    // large scale with low CPU during its fetch/symbolic phases, and a log
-    // that goes quiet there is indistinguishable from a hang. One flushed
-    // line per stage bounds the search to a single product.
-    //
-    // Each product also opens its own profile phase. The heartbeat says where
-    // a stalled run is now; the phase table says where a finished run spent
-    // its time, accumulated over steps with a call count -- and, on more than
-    // one rank, the max/mean gap per product, which separates a genuinely
-    // expensive product from one rank straggling on it. A single
-    // setup/isqrt_newton_schulz total could not answer either question: the
-    // six products have completely different cost shapes (S is the sparsest
-    // matrix in the loop, Z the densest and permanently so, P and X collapse
-    // toward the identity as the iteration converges), so which one dominates
-    // changes with the system and with the step.
+    // Stage heartbeats: a distributed product can run for hours with low CPU
+    // during its fetch/symbolic phases, and a log that goes quiet there is
+    // indistinguishable from a hang. One flushed line per stage bounds the
+    // search to a single product. Each product also opens its own profile
+    // phase -- the heartbeat says where a stalled run IS, the phase table
+    // says where a finished run WENT, and the products' cost shapes differ
+    // enough that neither can stand in for the other.
     auto stage = [&](const char* what) {
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
             std::cout << "inverse_sqrt:   " << what << std::endl;
         }
     };
 
-    // X = Z^H S Z, one fused kernel (rhar_upper), and X comes out exactly
+    // X = Z^H S Z, one fused kernel (rhar_upper). X comes out exactly
     // Hermitian by construction -- Z^H S Z is Hermitian for ANY Z, which is
-    // what everything below relies on and why the reform conjugates Z rather
-    // than trusting its approximate hermiticity.
+    // what everything downstream relies on and why the reform conjugates Z
+    // rather than trusting its approximate hermiticity.
     //
-    // One kernel, not the two products this used to be (S Z, then a transposed
-    // Z^H (S Z)). That route materialised two Z-sized matrices the answer
-    // never needed: the S Z intermediate, and -- inside the transA product --
-    // a full copy of Z^H, since spmm's transA path is transpose-then-multiply.
-    // Z is the densest matrix in the loop and never contracts, so both stood
-    // in the reform-step peak. rhar_upper reads Z's local blocks in place
-    // through a transpose index, receives only the partition-boundary blocks
-    // (pushed, already conjugated), and holds one row of the answer per
-    // thread; the flop count is the same pair count as the two products, and
-    // the drop threshold is applied once, to finished values, instead of at
-    // the intermediate and then again at the end.
+    // rhar_upper computes the triple product without materialising either
+    // Z-sized intermediate (S Z, or a transposed copy of Z^H): local Z blocks
+    // are read in place through a transpose index, only partition-boundary
+    // blocks travel (pushed, already conjugated), one answer row lives per
+    // thread, and the drop threshold applies once, to finished values. Z is
+    // the densest matrix in the loop, so this is what keeps the reform's
+    // peak near the S+Z+X floor.
     //
-    // Takes Z's neighbour count rather than measuring it: every caller has just
-    // measured it, and get_block_density() is a collective, so re-taking it here
-    // would add a round of Allreduces for a number already in hand.
+    // Takes Z's neighbour count rather than measuring it: every caller has
+    // just measured it, and get_block_density() is a collective.
     auto reform_x = [&](double z_nbr) {
         RSATB_PHASE("setup/isqrt_ns_ZH_S_Z");
         stage("Z^H S Z (one fused kernel)");
@@ -635,18 +586,11 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         BlockSpMat<T> upper = S_inv_sqrt->rhar_upper(S_mat, sptol);
         upper.complete_hermitian_inplace();
         tmp2 = std::move(upper);
-        // The calibration point the S Z product used to provide, taken from
-        // the reform's own RESULT instead: under the same additive-radius
-        // model, nbr(Z^H S Z)^(1/d) = s^(1/d) + 2 z^(1/d), and X has just
-        // been measured for free. Same post-threshold bias as before -- the
-        // old S Z was measured after its drop too. The every-fifth-step drift
-        // refresh keeps this current as Z fills in.
-        //
-        // Unless the product saturated: a count at the full row is a FLOOR,
-        // not a measurement, and solving with it biases d low -- diamond
-        // sc888 calibrated to d = 1.8 from a clipped product where the
-        // crystal is 3D. Harmless there (the cap in nbr_product bounds every
-        // saturated prediction anyway) but wrong to learn from.
+        // Free calibration point for fill_dim: the reform's own result obeys
+        // nbr(Z^H S Z)^(1/d) = s^(1/d) + 2 z^(1/d) under the additive-radius
+        // model, and X has just been measured. Skipped when the product
+        // saturated: a count clipped at the full row is a FLOOR, not a
+        // measurement, and solving with it biases d low.
         const double x_nbr_reformed = nbr_per_row(tmp2);
         if (x_nbr_reformed < kSaturatedFraction * row_length) {
             fill_dim = calibrate_fill_dim(s_nbr, z_nbr, x_nbr_reformed, fill_dim);
@@ -670,16 +614,13 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     while (norm > tol && count < maxit && std::abs(norm_pre - norm) > 0.005 * norm) {
         util::throw_if_interrupted(graph->comm);
         const double step_t0 = util::wall_time();
-        // get_block_density() is a collective (Allreduce on the group comm):
-        // it must run on EVERY rank, outside the rank-0 log guard. Calling it
-        // inside the guard paired rank 0's Allreduce with whatever collective
-        // the other ranks issued next -- MPI_ERR_TRUNCATE on them and a
-        // garbage density on rank 0 were exactly that.
+        // Collective (Allreduce): must run on EVERY rank, outside the rank-0
+        // log guard, or the ranks' collective sequences diverge.
         const double x_nbr = nbr_per_row(tmp2);
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
             // Memory on the step line, not only in the end-of-setup table: a
-            // run that is killed inside this loop never reaches the table, and
-            // then the one thing worth knowing -- how close it came -- is lost.
+            // run killed inside this loop never reaches the table, and then
+            // the one thing worth knowing -- how close it came -- is lost.
             const double rss_gb = util::read_rss_kb() / 1048576.0;
             const double peak_gb =
                 util::MemorySampler::instance().global_peak_kb() / 1048576.0;
@@ -703,18 +644,14 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         {
             RSATB_PHASE("setup/isqrt_ns_polynomial");
             stage("P = 1.875 I - 1.25 X + 0.375 X^2 (one fused kernel)");
-            // One kernel, not a square followed by an axpby. X^2 is DENSER than
-            // the P it becomes -- squaring doubles the sparsity radius while the
-            // polynomial collapses toward the identity under sptol -- so forming
-            // it was the largest transient in the loop: measured at 39 GB on a
-            // 4096-atom step, filtered away to produce 17 GB of P.
+            // One fused kernel, not a square followed by an axpby: X^2 is
+            // DENSER than the P it becomes (squaring doubles the sparsity
+            // radius while the polynomial collapses toward the identity), so
+            // materialising it was the loop's largest transient.
             // square_polynomial_upper holds one row of the square per thread
-            // instead, and drops once on the finished P. That single drop
-            // removes one truncation, but it does NOT make this route pointwise
-            // more accurate -- the two drop different blocks (the two-call route
-            // decides on |X^2|, this one on the finished polynomial), and on a
-            // scattered pattern it measures ~16% worse at matched nnz. Expect
-            // the same order, not an improvement; see square_polynomial.hpp.
+            // and drops once, on the finished P. Same accuracy ORDER as the
+            // two-call route, not an improvement -- the two drop different
+            // blocks; see square_polynomial.hpp.
             //
             // The previous step's P is dead; X is the operand, so only the
             // destination can be released here.
@@ -740,13 +677,11 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             } else {
                 stage("Z * P");
             }
-            // In place: Z is dead the moment it has been multiplied, and this
-            // was the loop's peak-memory phase precisely because the ordinary
-            // product holds the old Z and the new one at full size at once --
-            // 46 of the 104 GB peak on a 4096-atom cell, for a matrix that only
-            // ever needs to exist once. spmm_inplace consumes Z row block by
-            // row block instead. Nothing else references it: S_inv_sqrt is the
-            // caller's output and P is a separate matrix.
+            // In place: the ordinary product would hold the old Z and the new
+            // one whole at the same moment, for a matrix that only ever needs
+            // to exist once. spmm_inplace consumes Z row block by row block.
+            // Nothing else references it: S_inv_sqrt is the caller's output
+            // and P is a separate matrix.
             S_inv_sqrt->spmm_inplace(tmp1, sptol);
         }
         const double t_zp = util::wall_time() - t0_zp;
@@ -758,66 +693,43 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         const double units_reform = reform_units(z_nbr);
         const double units_propagate = propagate_units(p_nbr, x_nbr);
         // Predicted SECONDS, not block pairs: each route's own measured
-        // constant is applied, so a route that runs at a quarter of the other's
-        // flop rate is charged for it.
-        // Captured, not re-read at print time: note_route_cost below updates
-        // these, and a log line that reported the post-update constants next to
-        // the pre-update prediction would not multiply out -- which defeats the
-        // whole point of printing the model's inputs beside its output.
+        // constant is applied. The constants and fill_dim are CAPTURED here,
+        // not re-read at print time -- note_route_cost and reform_x update
+        // them below, and the log line must multiply out from the values the
+        // decision actually used.
         const double spu_reform = seconds_per_unit(false);
         const double spu_propagate = seconds_per_unit(true);
-        // Captured for the same reason as the two constants above, and missed
-        // there originally: reform_x recalibrates fill_dim, so a reform step
-        // printed the POST-reform dimension beside the units the PRE-reform one
-        // produced. The line then did not multiply out -- on a 4096-atom step it
-        // showed units that require d = 2.15 next to "fill dim 1.05741", which
-        // reads as a calibration collapse that never happened.
         const double fill_dim_used = fill_dim;
         const double cost_reform = units_reform * spu_reform;
         const double cost_propagate = units_propagate * spu_propagate;
         // The every-fifth-step exact reformation is a DRIFT bound, not a cost
-        // choice: P X P accumulates rounding that only Z^H (S Z) clears, and
+        // choice: P X P accumulates truncation that only Z^H S Z clears, and
         // the period was fixed by measurement. Cost never overrides it.
         const bool drift_refresh = ((count + 1) % 5 == 0);
-        // The residual guard stays as well, now doing only the job it can do.
-        // The model ranks cost, not stability, and a seed poor enough to leave
-        // the residual above 1e-1 is where propagation has the least margin. It
-        // can only ever force MORE reforms, never fewer, and on a healthy seed
-        // it never binds -- a residual that large comes with a Z still sparse
-        // enough that the model picks reform on cost anyway.
-        // Cost alone is not the objective, because the two routes do not leave
-        // the same X behind.
+        // The residual guard handles stability, the one job the cost model
+        // cannot: a seed poor enough to leave the residual above 1e-1 is
+        // where propagation has the least margin. It can only ever force MORE
+        // reforms, never fewer, and on a healthy seed it never binds.
         //
-        // Propagation sets X <- P X P, and P collapses toward the identity under
-        // sptol as the iteration converges, so X CONTRACTS: 2080 -> 1514 -> 933
-        // neighbours per row on a 4096-atom run. Reformation sets X <- Z^H S Z,
-        // which inherits Z's density, and Z only ever fills in: the same run,
-        // routed on step cost alone, took X from 2080 to 3092 in one step.
-        // Reform is the cheaper STEP there and the model said so correctly
-        // (predicted 1206s, measured 1168s) -- but it re-densifies the operand
-        // every later step pays for, and the run went from 3279s/101GB over
-        // three propagating steps to >3500s in step 2 alone, past 122GB.
-        //
-        // What decides whether that trade is real is whether X has room to
-        // contract at all. Saturated -- a full block row, as on sc888 where X
-        // sits at 1024 of 1024 -- P X P is dense whatever the polynomial does,
-        // reform costs nothing in trajectory terms, and routing on cost is the
-        // 4.3x win it was measured to be. With headroom, contraction is worth
-        // buying: below, up to kTrajectoryPremium times the reform's cost, which
-        // one contracting step repays by shrinking every step after it.
+        // Cost alone is not the objective, because the two routes do not
+        // leave the same X behind. Propagation CONTRACTS X (P collapses
+        // toward the identity under sptol); reformation re-densifies it to
+        // Z's width, which every later step then pays for -- a reform can be
+        // the cheapest step of the run and still the most expensive choice.
+        // Whether that trade exists at all depends on whether X has room to
+        // contract: saturated (a full block row), P X P is dense whatever
+        // the polynomial does and cost decides alone; with headroom,
+        // contraction is worth buying at up to kTrajectoryPremium times the
+        // reform's price, which one contracting step repays by shrinking
+        // every step after it.
         const bool x_saturated = !(x_nbr < kSaturatedFraction * row_length);
         const bool cost_favours_propagate =
             x_saturated ? (cost_propagate < cost_reform)
                         : (cost_propagate < kTrajectoryPremium * cost_reform);
-        //
-        // COLLECTIVE. Every other input to this decision already agrees across
-        // ranks -- drift_refresh is a step counter, norm and the neighbour
-        // counts are Allreduced -- but the seconds-per-unit constants are timed
-        // locally, so cost_reform and cost_propagate can differ between ranks.
-        // The two branches issue DIFFERENT collective sequences (rarh_upper
-        // against reform_x's rhar_upper), so a split decision is not a
-        // slightly worse route, it is a hang or a mismatched exchange. Rank 0's
-        // choice is broadcast and is the only one that runs.
+        // COLLECTIVE. The two branches issue DIFFERENT collective sequences
+        // (rarh_upper against reform_x's rhar_upper), so a split decision is
+        // not a slightly worse route, it is a hang or a mismatched exchange.
+        // Rank 0's choice is broadcast and is the only one that runs.
         const bool propagate_local =
             !drift_refresh && norm < 1e-1 && cost_favours_propagate;
         int propagate_flag = propagate_local ? 1 : 0;
@@ -830,48 +742,41 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         if (propagate) {
             RSATB_PHASE("setup/isqrt_ns_P_X_P");
             stage("P X P (one fused kernel)");
-            // One kernel, not two products. P X is denser than P X P -- its
-            // radius is r_P + r_X while the answer collapses toward the
-            // identity under sptol -- so forming it was both the largest
-            // allocation in the loop and the place the threshold did the most
-            // damage. rarh_upper holds one of its rows per thread instead, and
-            // drops once on the finished result. P^H = P exactly, so neither
-            // half needs a transpose.
+            // One fused kernel, not two products: the P X intermediate is
+            // denser than the answer (radius r_P + r_X against a result that
+            // collapses under sptol), so rarh_upper holds one of its rows per
+            // thread and drops once, on the finished result. P^H = P exactly
+            // -- established at the polynomial above -- so neither half needs
+            // a transpose; rarh REQUIRES that hermiticity.
             BlockSpMat<T> upper = tmp1.rarh_upper(tmp2, sptol);
-            // BOTH operands die with the product: X is being replaced, and P's
-            // last read was the kernel call above -- the next step rebuilds it
-            // from the new X. Held past this point, P would stand beside the
-            // mirroring X_new for exactly the phase this step peaks in.
+            // BOTH operands die with the product: X is being replaced, and
+            // P's last read was the kernel call above -- the next step
+            // rebuilds it from the new X. Released before the mirror, which
+            // is the phase this step peaks in.
             tmp1.reset();
             tmp2.reset();
             upper.complete_hermitian_inplace();
             tmp2 = std::move(upper);
         } else {
-            // P is dead on this route -- the reform rebuilds X from Z and S,
-            // and the next step's polynomial starts from that X. Reform is
-            // chosen precisely at the early steps where P is densest, so
-            // holding it across the fused reform below was the single largest
-            // avoidable term in the reform-step peak.
+            // P is dead on this route -- the reform rebuilds X from Z and S.
+            // Reform is chosen precisely at the early steps where P is
+            // densest, so it must not be held across the fused reform.
             tmp1.reset();
             reform_x(z_nbr);
         }
         const double t_update = util::wall_time() - t0_update;
-        // Feed the route that actually ran back into its own constant. Only the
-        // route taken is learned from -- there is no counterfactual timing for
-        // the one that did not run, which is exactly why the earlier
-        // reform-vs-propagate comparison off a single call was biased.
+        // Feed the route that actually ran back into its own constant; there
+        // is no counterfactual timing for the one that did not.
         note_route_cost(propagate, propagate ? units_propagate : units_reform, t_update);
 
         norm = residual_norm(tmp2);
 
-        // Per-step times, because the profile table cannot show them: it
-        // accumulates a total and a call count per phase, and over a run these
-        // products vary by three orders of magnitude between the first step and
-        // the last. A total divided by a count describes neither end, and
-        // reading one as if it did is what hid the misroute above. The model's
-        // inputs and its two predictions are printed next to the times they
-        // predicted, so the routing can be checked against reality after a run
-        // rather than trusted.
+        // Per-step times, because the profile table cannot show them: these
+        // products vary by three orders of magnitude between the first step
+        // and the last, and a total divided by a call count describes
+        // neither end. The model's inputs and its two predictions are
+        // printed next to the times they predicted, so the routing can be
+        // checked against reality after a run rather than trusted.
         const double t_step = util::wall_time() - step_t0;
         if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
             std::cout << "inverse_sqrt: step " << count + 1 << " took " << t_step
@@ -894,38 +799,31 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         last_advance_propagated = propagate;
     }
 
-    // Never REPORT a propagated residual.
+    // The honest number, once, AFTER the loop.
     //
-    // X <- P X P is not the residual of the Z being returned: Z is
+    // A propagated X is not the residual of the Z being returned: Z is
     // filter(Z P), and whatever the threshold dropped from that product never
     // enters P X P, so the true operand is (ZP - D)^H S (ZP - D). The gap is
-    // truncation, not rounding -- measured here at 5x (1.98e-4 reported against
-    // 9.95e-4 exact on 4096 atoms) -- so the number handed back was telling the
-    // caller the iteration was five times better than it was.
+    // truncation, not rounding, and it is a MULTIPLE (measured 5-7x; doc §1).
+    // Hence the applied-residual probe here: it measures the returned Z
+    // itself, without reforming anything.
     //
-    // Report once, AFTER the loop, and never feed the number back into the
-    // termination test. The report is the applied residual above, NOT a reform:
-    // this used to reform X here, which cost 1389 s and took the peak from
-    // 85.6 GB to 107.0 GB on 4096 atoms to produce a number nothing iterates on.
+    // Two boundaries are deliberate and load-bearing:
     //
-    // Still open, and deliberately left rather than quietly changed: the
-    // verdict below (hit_tol, and the "max block residual" on the summary
-    // line) is still computed from `norm`, which after a propagated step is the
-    // very quantity this paragraph opens by warning about. The applied residual
-    // is printed beside it but feeds nothing. Fixing that means deciding what
-    // the loop should terminate ON, which is a bigger question than reporting.
+    //  - The probe NEVER feeds the termination test. The exact residual is
+    //    bounded below by sptol, so "still above tol" is permanently true for
+    //    any tol under sptol; and the plateau detector assumes one metric, so
+    //    mixing an exact norm into a propagated norm_pre disarms it. Both
+    //    failure modes were hit when this was tried (doc §1): the run grinds
+    //    at the sptol floor, its exact residual worsening, and never exits.
     //
-    // Feeding it back was tried and is a trap. The exact residual is bounded
-    // below by sptol, so "still above tol" is permanently true on any run whose
-    // tol is under sptol; and re-entering compares an exact norm against a
-    // propagated norm_pre, so the plateau detector -- which assumes one metric
-    // -- never fires either. A 4096-atom run that had been exiting cleanly in
-    // three steps instead ground on for eight hours, its exact residual getting
-    // WORSE with each extra step (9.95e-4, then 1.49e-3) because at the sptol
-    // floor the extra propagation only adds truncation. Report honestly, stop
-    // where the iteration actually stopped improving.
-    // Unconditional: three products is cheap enough that gating it on the route
-    // would only make two runs report different quantities and not compare.
+    //  - The loop verdict below (hit_tol, the "max block residual" on the
+    //    summary line) is still the propagated `norm`, printed beside the
+    //    probe. Changing that means deciding what the loop should terminate
+    //    ON -- a bigger question than reporting, deliberately left open.
+    //
+    // Unconditional: three SpMVs is cheap enough that gating on the route
+    // would only make two runs report incomparable quantities.
     const double applied = applied_residual();
     if (report) report->applied_residual = applied;
     if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
@@ -935,10 +833,10 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
                   << norm << ")" << std::endl;
     }
 
-    // Say what actually happened. A run that plateaus against the sptol
-    // floor used to report "converged" -- on a 145k-orbital moire system that
-    // dressed a 2e-5 stall (target 1e-7) as success at the end of 25 minutes
-    // of iteration, one of which the plateau exit spent confirming the stall.
+    // Say what actually happened: "converged", "stopped at maxiter" and
+    // "plateaued" are three different outcomes, and dressing a plateau
+    // against the sptol floor as success misleads exactly the caller who set
+    // tol below sptol.
     const bool hit_tol = norm <= tol;
     const bool hit_maxiter = count >= maxit;
     if (report) {
@@ -951,29 +849,21 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // Collective: every rank, before the rank-0 guard (see the note above).
     const double final_density = S_inv_sqrt->get_block_density();
 
-    // What the iteration cost in memory, against what the caller KEEPS. The
-    // absolute peak alone does not size a machine; the question a bigger run
-    // asks is "how much do I need in order to end up holding this", and the
-    // answer is a multiple, not a number of bytes.
-    //
-    // The denominator is measured rss after the iteration's temporaries are
-    // released, not Z's block bytes: the steady state also holds S, every
-    // matrix's adjacency, and whatever the allocator has not returned -- on a
-    // 4096-atom cell Z's values are 23.2 GB where the state that survives is
-    // 26+ GB, and quoting the tighter one makes the ratio look worse than the
-    // machine ever sees. X and P die HERE rather than at the closing brace, so
-    // the reading is of the state that actually persists.
+    // What the iteration cost in memory, against what the caller KEEPS: the
+    // question a bigger run asks is "how much headroom over the state I end
+    // up holding", and the answer is a multiple, not a number of bytes. The
+    // denominator is measured rss after the temporaries are released -- the
+    // steady state also holds S, every adjacency, and whatever the allocator
+    // has not returned, and quoting anything tighter makes the ratio look
+    // worse than the machine ever sees. X and P die HERE rather than at the
+    // closing brace, so the reading is of the state that actually persists.
     tmp1.reset();
     tmp2.reset();
     const long long steady_kb_local = util::read_rss_kb();
     long long peak_kb_local = util::MemorySampler::instance().global_peak_kb();
-    // MAXLOC, not two independent MAXes. The comment here used to claim the
-    // steady value was "its own steady state ... for its own peak", but taking
-    // the max of each separately picks whichever rank happened to be highest on
-    // each, which need not be the same rank -- so the ratio could pair one
-    // rank's peak with another's steady and describe no rank at all. MAXLOC
-    // finds the rank that actually peaked; its steady value is then fetched
-    // from that rank, which is what makes the ratio mean something.
+    // MAXLOC, not two independent MAXes: the peak and the steady value must
+    // come from the SAME rank -- the one that actually peaked -- or the
+    // ratio describes no rank at all.
     struct { double value; int rank; } peak_in{static_cast<double>(peak_kb_local), rank},
                                        peak_out{0.0, 0};
     MPI_Allreduce(&peak_in, &peak_out, 1, MPI_DOUBLE_INT, MPI_MAXLOC, graph->comm);
