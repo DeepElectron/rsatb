@@ -615,7 +615,7 @@ if(RSATB_BUILD_TESTS)
 
     # Standalone MPI test drivers (own main(), not GTest). Registered so they
     # are compiled by the normal build and cannot silently bit-rot again.
-    foreach(_driver test_graphmf test_solver test_dos test_ac test_fermi_ace)
+    foreach(_driver test_isqrtm test_graphmf test_solver test_dos test_ac test_fermi_ace)
         add_executable(${_driver} calc/test/${_driver}.cpp)
         target_include_directories(${_driver} PRIVATE ${RSATB_INCLUDE_DIRS})
         target_link_libraries(${_driver} PRIVATE ${RSATB_LINK_LIBS})

@@ -19,9 +19,11 @@
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>
+#include <cstdint>
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include "vbcsr/core/detail/ops/spmf/graph_function.hpp"
 #include "isqrt_action.hpp"
 
@@ -35,6 +37,22 @@ namespace calc {
 using vbcsr::BlockSpMat;
 using vbcsr::DistGraph;
 
+// |z|^2, for the residual metrics below.
+//
+// Deliberately NOT vbcsr::detail::block_squared_magnitude. That one lives in
+// detail/ops/spmm/common.hpp -- an SpGEMM-internal header this file never
+// includes, so it was arriving transitively and an include reshuffle inside
+// vbcsr would have broken this build with no warning. The definition is the
+// same (std::norm for complex), so every metric here is bit-for-bit unchanged.
+template <typename T>
+inline double squared_magnitude(const T& v) {
+    if constexpr (std::is_same<T, std::complex<double>>::value ||
+                  std::is_same<T, std::complex<float>>::value) {
+        return std::norm(v);
+    } else {
+        return static_cast<double>(v) * static_cast<double>(v);
+    }
+}
 
 // Where the per-subgraph work went, aggregated over one graph_inverse_sqrt call.
 struct GraphInverseSqrtReport {
@@ -199,12 +217,32 @@ struct InverseSqrtOptions {
     isqrt::Options kernel{};  // dense per-subgraph kernel of the seed
 };
 
+// What the iteration did, for a caller that needs to act on it rather than read
+// it off a log line. Same optional-out-param shape as GraphInverseSqrtReport.
+//
+// This exists because everything below used to be reachable only as printed
+// text: a caller could not tell a converged run from one that stopped at
+// maxiter, and a TEST could not tell whether it had exercised the propagated
+// route at all -- so a routing change would have silently turned that coverage
+// vacuous with nothing to notice.
+struct InverseSqrtReport {
+    int steps = 0;             // Newton-Schulz steps taken
+    bool converged = false;    // residual reached tol
+    bool hit_maxiter = false;  // stopped on the step count
+    // Whether the last X came from P X P rather than a reform, which is what
+    // says whether `residual` below is exact or propagated.
+    bool last_advance_propagated = false;
+    double residual = 0.0;          // loop metric: max block Frobenius of X - I
+    double applied_residual = 0.0;  // ||(Z^H S Z - I) v|| on a unit random probe
+};
+
 // out <- S^{-1/2}: a seed (by default the subgraph matrix function above)
 // refined by Newton-Schulz iterations on the sparse matrix.
 template <typename T>
 void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
                   const InverseSqrtOptions& options = {},
-                  bool verbose = false) {
+                  bool verbose = false,
+                  InverseSqrtReport* report = nullptr) {
     DistGraph* graph = S_mat.graph;
     const int rank = graph->rank;
     const double tol = options.tol;
@@ -212,16 +250,6 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     const int maxit = options.maxit;
 
     // The subgraph matrix function is the only seed.
-    //
-    // Two others used to be selectable, a scaled identity and a first-order
-    // Taylor step. Neither is viable on a real overlap: Newton-Schulz from
-    // c*I converges only while ||I - c^2 S|| < 1, so the step count runs with
-    // kappa(S), and an LCAO overlap with a diffuse shell reaches kappa ~ 4e3
-    // (measured on diamond). The seed here is instead accurate from the start
-    // and independent of kappa. The Taylor branch was also sign-wrong -- it
-    // computed 1.5 I + 0.5 S where the expansion of S^{-1/2} about I is
-    // 1.5 I - 0.5 S -- which stood undetected, itself good evidence that
-    // nothing production ever selected it.
     const double t_seed0 = MPI_Wtime();
     {
         RSATB_PHASE("setup/isqrt_seed");
@@ -274,11 +302,6 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     //    drifts, which the periodic exact reformation bounds -- that period
     //    is a stability bound and cost never overrides it.
     //
-    //    Note that sc888 (1024 atoms) SATURATES: the fill-in reaches the
-    //    periodic image and every operand sits at the full row width, so the
-    //    routing there is a degenerate choice and its neighbour counts teach
-    //    nothing. Benchmark route behaviour on 4096 atoms or larger.
-    //
     //    One caveat the model does NOT know: it ranks TIME, not memory, and
     //    on sc888 the faster routing also peaked higher, 15.9 GB against
     //    13.3 GB, because a reform materialises S Z and the completion where
@@ -300,58 +323,37 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // Measured on a 1024-atom cell: 1.5 GB, freed unread.
     BlockSpMat<T> tmp1, tmp2;
 
-    // ||Z^H S Z - I||_2, estimated by power iteration, WITHOUT forming Z^H S Z.
+    // How good Z is where it is actually used: applied to a vector.
     //
-    // This replaces a full reform whose only purpose was to report an honest
-    // number. Measured on 4096 atoms that reform cost 1389 s and took the peak
-    // from 85.6 GB to 107.0 GB -- it re-ran Z^H (S Z), the largest phase in the
-    // solve, and undid the memory saving the whole design exists for.
+    //     ||(Z^H S Z - I) v||_2,   v a fixed random unit vector
     //
-    // The operator M = Z^H S Z - I is Hermitian, so power iteration on it
-    // converges to |lambda|_max = ||M||_2. Each iteration is three sparse
-    // matrix-vector products and costs O(nnz) time and O(N) memory: a handful
-    // of vectors against tens of gigabytes of matrix.
+    // Three sparse matrix-vector products, WITHOUT forming Z^H S Z. Not forming
+    // it is the point: reforming purely to report cost 1389 s on 4096 atoms and
+    // took the peak from 85.6 GB to 107.0 GB, re-running the largest phase of
+    // the solve and undoing the memory saving the whole design exists for.
     //
-    // NOTE this is a different norm from the loop's max-block-Frobenius metric,
-    // and deliberately so: the spectral norm is what a preconditioner's quality
-    // actually depends on, and the max block norm does not bound it.
-    auto residual_spectral_estimate = [&](int iterations) -> double {
+    // A probe, not a norm, and it does not claim to be one. The preconditioner
+    // is applied to vectors, so the drift of Z^H S Z v from v IS the error a
+    // caller sees; one probe can miss the worst direction, which is the honest
+    // price of three products. Cheap enough to run unconditionally, so every
+    // run reports the same quantity whichever route the last step took.
+    auto applied_residual = [&]() -> double {
         vbcsr::DistMultiVector<T> v(graph, 1), w(graph, 1), u(graph, 1), y(graph, 1);
-        // Deterministic start, so a run is reproducible; any vector with a
-        // component along the dominant eigenvector will do.
-        const int rank_offset = graph->rank * 7919;
-        for (int r = 0; r < v.local_rows; ++r) {
-            const unsigned k = static_cast<unsigned>(r + rank_offset) * 2654435761u;
-            v(r, 0) = T(static_cast<double>(k % 1000u) / 500.0 - 1.0);
-        }
-        auto norm_of = [&](vbcsr::DistMultiVector<T>& x) {
-            double local = 0.0;
-            for (int r = 0; r < x.local_rows; ++r) {
-                local += vbcsr::detail::block_squared_magnitude<T>(x(r, 0));
-            }
-            double global = local;
-            MPI_Allreduce(&local, &global, 1, MPI_DOUBLE, MPI_SUM, graph->comm);
-            return std::sqrt(global);
-        };
-        double scale = norm_of(v);
-        if (!(scale > 0.0)) return 0.0;
-        for (int r = 0; r < v.local_rows; ++r) v(r, 0) /= T(scale);
-
-        double lambda = 0.0;
-        for (int it = 0; it < iterations; ++it) {
-            v.zero_padding();
-            S_inv_sqrt->mult_dense(v, w);        // w  = Z v
-            w.zero_padding();
-            S_mat.mult_dense(w, u);              // u  = S w
-            u.zero_padding();
-            S_inv_sqrt->mult_dense_adjoint(u, y);  // y = Z^H u
-            for (int r = 0; r < y.local_rows; ++r) y(r, 0) -= v(r, 0);
-            const double nrm = norm_of(y);
-            lambda = nrm;                        // ||v|| == 1
-            if (!(nrm > 0.0)) break;
-            for (int r = 0; r < y.local_rows; ++r) v(r, 0) = y(r, 0) / T(nrm);
-        }
-        return lambda;
+        // vbcsr's sampler, not a hand-rolled hash. The hash this replaces keyed
+        // each entry on rank * 7919 + LOCAL row, so the number reported moved
+        // with the rank count and the partition. set_random normalises too, so
+        // ||v|| == 1 and the quotient is free.
+        //
+        // No zero_padding() calls, and none are needed: the pad lanes are zero
+        // from construction and every writer here keeps them so. That is
+        // asserted, not assumed -- vbcsr guards the invariant on both sides of
+        // each apply below in a debug build (test_isqrtm runs one).
+        v.set_random(/*seed=*/1);
+        S_inv_sqrt->mult_dense(v, w);          // w = Z v
+        S_mat.mult_dense(w, u);                // u = S w
+        S_inv_sqrt->mult_dense_adjoint(u, y);  // y = Z^H S Z v
+        y.axpy(T(-1.0), v);                    // y -= v
+        return std::sqrt(std::abs(y.bdot(y)[0]));
     };
 
     // max over blocks of ||(X - I)[i,j]||_F, without mutating X.
@@ -396,7 +398,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
                         const size_t col_in_block = e % static_cast<size_t>(c_dim);
                         if (row_in_block == col_in_block) value -= T(1.0);
                     }
-                    sq += vbcsr::detail::block_squared_magnitude<T>(value);
+                    sq += squared_magnitude<T>(value);
                 }
                 if (is_diagonal) saw_diagonal = true;
                 local = std::max(local, std::sqrt(sq));
@@ -509,10 +511,10 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
 
     // Both triple products form only the upper triangle -- the mirror is a copy,
     // not a product -- hence the halves on the second product of each.
-    auto reform_units = [&](double z) {
+    auto reform_units = [&](double z) { // ZH S Z
         return s_nbr * z + 0.5 * z * nbr_product(s_nbr, z);
     };
-    auto propagate_units = [&](double p, double x) {
+    auto propagate_units = [&](double p, double x) { // P X P
         return p * x + 0.5 * nbr_product(p, x) * p;
     };
 
@@ -901,8 +903,17 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // 9.95e-4 exact on 4096 atoms) -- so the number handed back was telling the
     // caller the iteration was five times better than it was.
     //
-    // Reform once, AFTER the loop, purely to report. It deliberately does NOT
-    // feed the termination test.
+    // Report once, AFTER the loop, and never feed the number back into the
+    // termination test. The report is the applied residual above, NOT a reform:
+    // this used to reform X here, which cost 1389 s and took the peak from
+    // 85.6 GB to 107.0 GB on 4096 atoms to produce a number nothing iterates on.
+    //
+    // Still open, and deliberately left rather than quietly changed: the
+    // verdict below (hit_tol, and the "max block residual" on the summary
+    // line) is still computed from `norm`, which after a propagated step is the
+    // very quantity this paragraph opens by warning about. The applied residual
+    // is printed beside it but feeds nothing. Fixing that means deciding what
+    // the loop should terminate ON, which is a bigger question than reporting.
     //
     // Feeding it back was tried and is a trap. The exact residual is bounded
     // below by sptol, so "still above tol" is permanently true on any run whose
@@ -913,13 +924,15 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // WORSE with each extra step (9.95e-4, then 1.49e-3) because at the sptol
     // floor the extra propagation only adds truncation. Report honestly, stop
     // where the iteration actually stopped improving.
-    if (last_advance_propagated) {
-        const double spectral = residual_spectral_estimate(12);
-        if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
-            std::cout << "inverse_sqrt:   ||Z^H S Z - I||_2 estimate " << spectral
-                      << " (loop metric, max block Frobenius of the PROPAGATED X, "
-                      << norm << ")" << std::endl;
-        }
+    // Unconditional: three products is cheap enough that gating it on the route
+    // would only make two runs report different quantities and not compare.
+    const double applied = applied_residual();
+    if (report) report->applied_residual = applied;
+    if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+        std::cout << "inverse_sqrt:   ||(Z^H S Z - I) v|| = " << applied
+                  << " on a unit random probe (loop metric, max block Frobenius of "
+                  << (last_advance_propagated ? "the PROPAGATED X" : "X") << ", "
+                  << norm << ")" << std::endl;
     }
 
     // Say what actually happened. A run that plateaus against the sptol
@@ -928,6 +941,13 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     // of iteration, one of which the plateau exit spent confirming the stall.
     const bool hit_tol = norm <= tol;
     const bool hit_maxiter = count >= maxit;
+    if (report) {
+        report->steps = count;
+        report->converged = hit_tol;
+        report->hit_maxiter = hit_maxiter;
+        report->last_advance_propagated = last_advance_propagated;
+        report->residual = norm;
+    }
     // Collective: every rank, before the rank-0 guard (see the note above).
     const double final_density = S_inv_sqrt->get_block_density();
 
