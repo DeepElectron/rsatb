@@ -828,6 +828,39 @@ question above: this run had a quiet, unfragmented machine and still spent
 not the machine — was the problem; the resolution above settles it. GNU-time
 cross-check: max RSS / 4 = 82.06 GB, matching the internal profiler exactly.
 
+**Re-measured after the round-3 batch** (SpGEMM inner loop off C's members,
+paged accumulator tags, gated + tiled halo fetch, arena unpack, square
+polynomial destination slicing — rsatb `dbe4912`, vbcsr `8fb2793`). Same
+2048-atom configuration and machine as the controlled A/B above, quiet in
+both runs; the reference column is that A/B's HEAD arm. The trajectory is
+bit-identical (same residuals to six digits, same 3 steps, same route
+decisions), so the phases compare kernel for kernel:
+
+| phase (3 steps summed) | reference arm | round-3 HEAD |
+|---|---|---|
+| `X^2+P` | 158.2 s | **111.7 s** (-29%) |
+| `Z·P` | 170.5 s | **160.3 s** (-6%) |
+| `P X P` | 654.8 s | 749.7 s (see below) |
+| NS loop | 1013.1 s | 1048.4 s |
+| whole-run peak | 31.34 GB | 31.01 GB |
+
+The two predicted wins landed where predicted: the destination slicing on the
+polynomial (its step-1 X, 1596 nbr/row, is exactly the past-L2 regime the
+slicing targets: 127.6 -> 87.4 s on that step) and the inner-loop rework on
+`Z·P`. The `P X P` column is a measurement artifact, not a regression: the
++25% sits entirely in step 1 (415.8 -> 519.2 s) while step 2, at nearly the
+same density, got *faster* (237.3 -> 229.1 s) — and on one rank `rarh` takes
+`run_local`, which none of the round's fetch-side work even reaches. A paired
+kernel A/B (same `rarh_upper`, n=2048, deg=1500, OLD/NEW/OLD/NEW interleaved
+on a quiet machine) puts the true delta at **356.8 s vs 362.6 s (+1.6%)** —
+the paged tag table's known cost, nothing more. The step-1 whole-run sample
+was environmental. Two lessons already in this file apply: single whole-run
+phase samples carry ~25% tails even on a quiet machine, and the paired kernel
+A/B is what settles them. Note the gated, tiled halo fetch is *inactive* in
+every number above — single rank, no remote rows; its effect exists only at
+scale and is covered by the kernel-level benches recorded in the vbcsr
+commits (`352f3e7`, `35fceee`).
+
 ---
 
 ## 9. Measurement caveats
