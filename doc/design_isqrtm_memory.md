@@ -770,16 +770,34 @@ assertion, against the domain-aligned copy **100%**. Roughly half of every
 filtered matrix was on the wrong node, and every phase of the loop reads
 filtered matrices.
 
-**Still unconfirmed:** whether this accounts for the whole regression. NS time on
-4096 rose **2590.9 -> 3135.4 s (+21%)** against that
-same baseline, systematically across phases — `P X P` 1506.9 -> 1829.8 s,
-`Z·P` 150.9 -> 257.7 s, `X^2` 433.8 -> 534.0 s at matched step-1 state. `X^2`
-getting slower directly contradicts the gate widening, which measured 31% faster
-in isolation, so this is not kernel-level. CPU utilisation was healthy (43.6 of
-48 cores). The two candidates are the deferred first touch degrading NUMA
-placement (the hazard documented for VBCSR applies to BSR too) and a fragmented
-machine — a 122 GB run had been killed eight minutes earlier. **One run cannot
-separate them.** This is the first thing an auditor should ask about.
+**Resolved: there was no loop-time regression to explain.** The question as
+first written: NS time on 4096 appeared to rise **2590.9 -> 3135.4 s (+21%)**,
+systematically across phases — `P X P` 1506.9 -> 1829.8 s, `Z·P`
+150.9 -> 257.7 s, `X^2` 433.8 -> 534.0 s — with NUMA placement and a
+fragmented machine as the candidate causes. Two findings closed it:
+
+- **The 2590.9 endpoint is `diag.log`** — it is the only log that contains
+  that number — which is the same non-reproducible intermediate build this
+  section already disqualifies above ("comparisons against it should be
+  disregarded"). The per-phase "systematic" deltas came from the same
+  comparison. The +21% was never measured against the real baseline.
+- **The controlled A/B says the library got faster.** Same driver source, the
+  true baseline (`6b41b8d` + vbcsr `ebd5d4e`) against the round-2 HEAD
+  (`3732334` + vbcsr `edbe797`, clean worktrees), back to back on a quiet
+  machine, 2048 atoms at the 4096 regime (sptol 1e-4, tol 1e-7): the baseline
+  binary reproduces its own historical number (1066.3 s vs 1076.9, within 1%
+  — so machine state contributes nothing), and HEAD runs the loop in
+  **1013.1 s against 1066.3** while taking 3 steps to the baseline's 4 and
+  peaking at **31.34 GB against 46.60**. Phase totals: fused `P X P` 654.8 s
+  over 3 steps vs two-call 577.5 over 4; fused `X^2+P` 158.2 vs 231.0;
+  `Z·P` 170.5 vs 215.7; reform 27.0 (one fused kernel) vs 41.6 (two products
+  + congruence machinery).
+
+What remains true and unalarming: 4096 loop times are self-consistent across
+sound builds (3226.8 s intermediate, 3195.3 s HEAD, quiet machine both), and
+nothing sound ever put a comparable build at 2590 s. The lesson is the one
+this section already carries: a number whose build state cannot be reproduced
+is not a baseline, and it cost a round of ghost-hunting here.
 
 **4096-atom validation at the round-2 HEAD** (rsatb `0904713`, vbcsr
 `edbe797`; fused `rhar` reform, consuming updates, in-place completion,
@@ -806,10 +824,9 @@ round's savings land in every phase that no longer sets the peak. The
 applied-residual probe reports 1.4565e-3 against the propagated loop metric
 1.994e-4 — the factor-7 honesty gap, now visible on every run. On the open
 question above: this run had a quiet, unfragmented machine and still spent
-3195 s in the loop, so machine fragmentation is now the weaker of the two
-candidates for the earlier 2590.9 -> ~3200 s movement; a worktree A/B at 4096
-remains the experiment that would settle it. GNU-time cross-check: max RSS / 4
-= 82.06 GB, matching the internal profiler exactly.
+3195 s in the loop, which was the first hint that the "2590.9 s" endpoint —
+not the machine — was the problem; the resolution above settles it. GNU-time
+cross-check: max RSS / 4 = 82.06 GB, matching the internal profiler exactly.
 
 ---
 
