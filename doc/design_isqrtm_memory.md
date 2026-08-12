@@ -781,6 +781,36 @@ placement (the hazard documented for VBCSR applies to BSR too) and a fragmented
 machine — a 122 GB run had been killed eight minutes earlier. **One run cannot
 separate them.** This is the first thing an auditor should ask about.
 
+**4096-atom validation at the round-2 HEAD** (rsatb `0904713`, vbcsr
+`edbe797`; fused `rhar` reform, consuming updates, in-place completion,
+task-queue cap, receive-bounded transpose all in). Same regime and machine as
+the run above (`--supercell 2 2 1 --ns 6 --sptol 1e-4 --tol 1e-7`, 48
+threads), idle machine, log in `validation_4096/`:
+
+| | pre-round-2 (`final4096e`) | this validation |
+|---|---|---|
+| step 1 / 2 / final residual | 0.0191689 / 8.0307e-4 / 1.98072e-4 | **0.0191689** / 8.02084e-4 / 1.99403e-4 |
+| steps to plateau | 3 | 3 |
+| whole-run peak | 83.75 GB | **82.06 GB** |
+| reform phase (seed -> X) peak | 42.60 GB, two products | **31.72 GB**, one fused kernel |
+| step-2 resident | 65.09 GB | **43.67 GB** |
+| steady after release | 33.47 GB | **27.76 GB** |
+| NS loop / total | 3226.8 / 3823.3 s | 3195.3 / 3797.1 s |
+
+Reading it: the trajectory is unchanged (identical step-1 residual; the
+3rd-digit drift downstream is the fused reform's single-drop X, whose pattern
+is slightly tighter — final density 0.549 -> 0.526). The whole-run peak moves
+only 1.7 GB because it is set by step 1's `Z·P`/`P X P` sequence, whose
+operands all necessarily coexist — the structural floor §5 describes; the
+round's savings land in every phase that no longer sets the peak. The
+applied-residual probe reports 1.4565e-3 against the propagated loop metric
+1.994e-4 — the factor-7 honesty gap, now visible on every run. On the open
+question above: this run had a quiet, unfragmented machine and still spent
+3195 s in the loop, so machine fragmentation is now the weaker of the two
+candidates for the earlier 2590.9 -> ~3200 s movement; a worktree A/B at 4096
+remains the experiment that would settle it. GNU-time cross-check: max RSS / 4
+= 82.06 GB, matching the internal profiler exactly.
+
 ---
 
 ## 9. Measurement caveats
