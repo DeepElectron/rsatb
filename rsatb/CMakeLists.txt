@@ -385,7 +385,7 @@ else()
     message(STATUS "VBCSR not found, fetching from GitHub...")
     FetchContent_Declare(
         vbcsr
-        GIT_REPOSITORY https://github.com/floatingCatty/vbcsr.git
+        GIT_REPOSITORY https://github.com/DeepElectron/vbcsr.git
         GIT_TAG        main
         SOURCE_DIR     "${VBCSR_SOURCE_DIR}"
         BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/vbcsr"

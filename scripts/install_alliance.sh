@@ -633,7 +633,7 @@ fi
 ensure_git_external \
     "VBCSR" \
     "${PROJECT_DIR}/rsatb/extern/vbcsr" \
-    "https://github.com/floatingCatty/vbcsr.git" \
+    "https://github.com/DeepElectron/vbcsr.git" \
     "${RSATB_VBCSR_REF:-main}" \
     "vbcsr/core/atomic/atomic_data.hpp"
 
