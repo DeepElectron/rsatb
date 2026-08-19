@@ -569,6 +569,50 @@ TASK = Union(
                                  "legacy outputs.",
                                  choices=("kpm", "corr")), default="kpm"),
             }),
+        "ldos": Obj(
+            "Local density of states on a real-space grid, by square-root "
+            "filtered stochastic Chebyshev expansion. Needs the radial orbital "
+            "files, so an LCAO model, at a single Gamma point.\n\n"
+            "One recursion serves every energy, so a dense window costs barely "
+            "more than one energy: the marginal cost of an energy point is one "
+            "AXPY per Chebyshev step. The map is non-negative everywhere by "
+            "construction, being a mean of squares.\n\n"
+            "Written one file per rank -- <label>.rank00000.npz and so on -- "
+            "because no rank holds the whole grid. Each file carries the grid "
+            "shape, the energies, and its own points, so it is self-describing; "
+            "reassemble by scattering 'ldos' into a flat (n_energy, n_point) "
+            "array at 'point_index' and reshaping to 'shape'.",
+            {
+                "label": LABEL,
+                "energies": F(ENERGY_GRID, required=True),
+                "eta": F(_num("Gaussian broadening. The filter degree scales as "
+                              "(spectral span)/eta, so this sets the cost -- and "
+                              "the span of S^-1 H is set by the overlap's small "
+                              "eigenvalues, not by the band width.",
+                              unit="eV", exclusive_minimum=0.0), default=0.1),
+                "spacing": F(_num("Grid point separation; the realised spacing is "
+                                  "never coarser than this. Output volume grows as "
+                                  "spacing^-3.", unit="Angstrom",
+                                  exclusive_minimum=0.0), default=0.4),
+                "box_edge": F(_int("Grid box side in points. 0 picks a physical "
+                                   "(~2.4 Angstrom) box whatever the spacing, "
+                                   "which is what keeps the per-box orbital count "
+                                   "bounded on a coarse grid.", minimum=0),
+                              default=0),
+                "n_samples": F(_int("Random states in the estimator. Relative "
+                                    "noise falls as 1/sqrt(n_samples).",
+                                    minimum=1), default=64),
+                "block": F(_int("States per Chebyshev sweep, i.e. the SpMM width. "
+                                "Memory holds a few blocks of that many vectors.",
+                                minimum=1), default=16),
+                "seed": F(_int("Random seed. A run repeats exactly at the same "
+                               "seed AND the same rank count: each rank draws "
+                               "its own stream, so changing the rank count "
+                               "redraws the states and gives a statistically "
+                               "equivalent map, not an identical one -- the two "
+                               "differ by the sampling error, which falls as "
+                               "1/sqrt(n_samples).", minimum=0), default=12345),
+            }),
         "ac": Obj(
             "AC conductivity, plus the dielectric function, refractive index "
             "and absorption coefficient derived from it. Needs velocity.",
@@ -712,7 +756,10 @@ TASK = Union(
 # --- output ----------------------------------------------------------------
 
 OUTPUT = Obj(
-    "Where results go. Rank 0 writes; the other ranks write nothing.",
+    "Where results go. Rank 0 writes, and the other ranks write nothing -- "
+    "except for a result each rank holds a different piece of ('ldos'), which "
+    "every rank writes into its own <label>.rankNNNNN file rather than "
+    "gathering to one.",
     {
         "dir": F(_path("Output directory, created if missing. Relative paths are "
                        "resolved against the input file."), default="."),

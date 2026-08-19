@@ -266,8 +266,10 @@ def _run(args, resolved: dict, issues, rank: int, n_rank: int, base_dir: str) ->
     def write_now(result):
         # Each task's arrays hit disk the moment it finishes: a scheduler
         # time limit during a later task must not cost the finished ones.
-        if rank == 0:
-            task_module.write_single_result(result, resolved, base_dir, log=log)
+        # Every rank calls in: the writer keeps ordinary results on rank 0 and
+        # lets a distributed one write its own share from each rank.
+        task_module.write_single_result(result, resolved, base_dir, rank=rank,
+                                        n_rank=n_rank, log=log)
 
     try:
         results = task_module.run_tasks(calculation, task_list, options, log=log,
@@ -285,7 +287,9 @@ def _run(args, resolved: dict, issues, rank: int, n_rank: int, base_dir: str) ->
         log("")
         log(_rule("results"))
         log("")
-        task_module.write_results(results, resolved, setup, base_dir, log=log)
+    task_module.write_results(results, resolved, setup, base_dir, rank=rank,
+                              n_rank=n_rank, log=log)
+    if rank == 0:
         for result in results:
             if result.scalars:
                 log("  {}: {}".format(result.label, ", ".join(

@@ -803,7 +803,7 @@ public:
         if (orbital_paths.empty()) {
             throw std::runtime_error(
                 "Real-space contraction needs orbital files; it is defined only for a model "
-                "whose basis has radial functions (LCAO or DFTB with .orb).");
+                "whose basis has radial functions, which today means LCAO.");
         }
         evaluators_.reserve(orbital_paths.size());
         for (size_t type = 0; type < orbital_paths.size(); ++type) {

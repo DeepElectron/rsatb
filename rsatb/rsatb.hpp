@@ -318,8 +318,9 @@ public:
 
     /// Full-cell LDOS map on the real-space grid (calc/rs_ldos.hpp).
     ///
-    /// Gamma-only, and needs a model with real-space orbitals (LCAO, or DFTB
-    /// with .orb files). Bounds come from the operator set; the options'
+    /// Gamma-only, and needs a model that supplies real-space orbitals --
+    /// today that is LCAO alone, the only override of
+    /// Model::RealSpaceOrbitalFiles. Bounds come from the operator set; the options'
     /// emin/emax are overwritten. Each rank returns its own compact share of
     /// the grid -- see RealSpaceLdosResult.
     calc::RealSpaceLdosResult compute_rs_ldos(calc::RealSpaceLdosOptions options) {

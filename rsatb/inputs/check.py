@@ -47,9 +47,9 @@ _CAPABILITY_DOC = {
 _NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric")
 _NEEDS_POSITION = ("msd",)
 _NEEDS_ORTHOGONAL = ("msd",)
-_NEEDS_GAMMA_ONLY = ()
+_NEEDS_GAMMA_ONLY = ("ldos",)
 _NEEDS_GAMMA = ("msd",)
-_NEEDS_ORBITAL_FILES = ()
+_NEEDS_ORBITAL_FILES = ("ldos",)
 
 
 def capabilities(model: dict) -> Dict[str, bool]:

@@ -239,6 +239,7 @@ rather than several:
 ```json
 "tasks": [
   {"type": "dos", "dE": 0.05},
+  {"type": "ldos", "energies": {"min": -1.0, "max": 1.0, "n": 21}, "eta": 0.1},
   {"type": "dc_spectrum", "n_moments": 1024, "kernel": "costaper"},
   {"type": "msd", "n_steps": 100, "dt_fs": 10.0, "n_kpm": 1024, "axis": "x"}
 ]
@@ -285,6 +286,37 @@ The summary is the record of the run: it holds the input as resolved, the basis
 that was derived from it, the window the expansions were scaled to, every
 scalar result, and the shape and file of every array. `"format": "json"` writes
 the arrays as nested lists instead; `"none"` writes only the summary.
+
+### Results too large for one rank
+
+`ldos` is the exception to "rank 0 writes". Its output is a real-space grid,
+and each rank computes only the points it owns -- at production sizes no rank
+holds the whole map, and gathering it to one would undo the layout that makes
+the calculation possible. So every rank writes its own piece, in parallel, with
+no collective:
+
+```
+ldos.rank00000.npz  ldos.rank00001.npz  ...  ldos.rank00063.npz
+```
+
+Each file is self-describing: `shape` (the grid dimensions), `energy` (the
+energies), its own `point_index` (where its values sit in the flat grid) and
+`ldos` of shape `(n_energy, n_owned)`. The pieces are a partition, never an
+overlap, so they reassemble by **scattering**, not summing:
+
+```python
+import glob, numpy as np
+parts = [np.load(p) for p in sorted(glob.glob("results/ldos.rank*.npz"))]
+shape = tuple(parts[0]["shape"])
+rho = np.zeros((len(parts[0]["energy"]), int(np.prod(shape))))
+for part in parts:
+    rho[:, part["point_index"]] = part["ldos"]
+rho = rho.reshape((-1,) + shape)          # (n_energy, n0, n1, n2)
+```
+
+The summary marks such a result `"distributed": true` and gives its file as a
+pattern; the array shapes it records are rank 0's share, while the global point
+count is the `n_point` scalar.
 
 ## Running in parallel
 

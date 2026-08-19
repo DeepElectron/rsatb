@@ -25,6 +25,11 @@ class Result:
         self.scalars: Dict[str, Any] = {}
         self.seconds = 0.0
         self.file = ""
+        # True when every rank holds a different piece of the arrays and must
+        # write its own file. The alternative -- gathering to rank 0 -- is
+        # what the compact grid layout exists to avoid, so a distributed
+        # result is never collected just to be written.
+        self.distributed = False
 
 
 def _n_kpoint(options) -> int:
@@ -40,6 +45,30 @@ def _dos(calc, task, options, result):
     dos, energy = calc.compute_dos(task["dE"], method=task.get("method", "kpm"))
     result.arrays["energy"] = energy
     result.arrays["dos"] = np.asarray(dos).reshape(_n_kpoint(options), -1)
+
+
+def _ldos(calc, task, options, result):
+    import numpy as np
+
+    energies = build_energies(task["energies"])
+    out = calc.compute_rs_ldos(
+        energies, task["eta"], spacing=task["spacing"], box_edge=task["box_edge"],
+        n_samples=task["n_samples"], block=task["block"], seed=task["seed"])
+
+    # Compact and per-rank: 'point_index' says where this rank's values sit in
+    # the flat grid, so the pieces reassemble by scattering, never by summing.
+    # The driver also offers a dense 'grid' on serial runs; it is deliberately
+    # not written, because a format that changes shape with the rank count is
+    # worse than one that does not.
+    result.distributed = True
+    result.arrays["energy"] = np.asarray(energies)
+    result.arrays["shape"] = np.asarray(out["shape"], dtype=np.int64)
+    result.arrays["point_index"] = out["point_index"]
+    result.arrays["ldos"] = out["ldos"]
+    result.scalars["n_point"] = int(out["n_point"])
+    result.scalars["filter_degree"] = int(out["filter_degree"])
+    result.scalars["n_states"] = int(out["n_states"])
+    result.scalars["sampler_residual"] = float(out["sampler_residual"])
 
 
 def _energy_bounds(calc, task, options, result):
@@ -116,6 +145,7 @@ def _quantum_metric(calc, task, options, result):
 RUNNERS: Dict[str, Callable] = {
     "energy_bounds": _energy_bounds,
     "dos": _dos,
+    "ldos": _ldos,
     "ac": _ac,
     "dc": _dc,
     "dc_spectrum": _dc_spectrum,
@@ -196,12 +226,17 @@ def resolve_output_dir(resolved: dict, base_dir: str) -> str:
     return directory
 
 
-def write_single_result(result: Result, resolved: dict, base_dir: str, log=None) -> None:
+def write_single_result(result: Result, resolved: dict, base_dir: str, rank: int = 0,
+                        n_rank: int = 1, log=None) -> None:
     """Writes one task's arrays now. Called as each task finishes, so a
     scheduler killing the job mid-run costs only the task in flight.
 
-    Only rank 0 should call this. Idempotent with write_results below, which
-    skips results already on disk.
+    EVERY rank calls this. An ordinary result is written by rank 0 alone, as
+    before; a distributed one (result.distributed) is written by every rank
+    into its own file, with no gather and no collective -- which is the point,
+    since the arrays it holds are exactly the piece of the grid that rank
+    owns. Idempotent with write_results below, which skips results already on
+    disk.
     """
     import numpy as np
 
@@ -209,43 +244,69 @@ def write_single_result(result: Result, resolved: dict, base_dir: str, log=None)
     fmt = output.get("format", "npz")
     if not result.arrays or fmt == "none":
         return
+    if rank != 0 and not result.distributed:
+        return
     directory = resolve_output_dir(resolved, base_dir)
+    # Every rank may create it; exist_ok makes the race benign.
     os.makedirs(directory, exist_ok=True)
     prefix = output.get("prefix", "")
 
+    # Rank-tagged names, zero-padded so a directory listing sorts in rank
+    # order. The width follows the launch, so 1000 ranks do not silently
+    # collide with a 5-digit assumption.
+    if result.distributed:
+        width = max(5, len(str(max(n_rank - 1, 0))))
+        stem = "{}{}.rank{:0{}d}".format(prefix, result.label, rank, width)
+    else:
+        stem = "{}{}".format(prefix, result.label)
+
     if fmt == "npz":
-        path = os.path.join(directory, "{}{}.npz".format(prefix, result.label))
+        path = os.path.join(directory, stem + ".npz")
         np.savez_compressed(path, **{name: np.asarray(value)
                                      for name, value in result.arrays.items()})
     else:
-        path = os.path.join(directory, "{}{}.json".format(prefix, result.label))
+        path = os.path.join(directory, stem + ".json")
         with open(path, "w") as handle:
             json.dump({name: np.asarray(value).tolist()
                        for name, value in result.arrays.items()}, handle)
     result.file = os.path.relpath(path, directory)
-    if log:
+    if result.distributed:
+        # One line for the set, not one per rank: `log` is rank-0 only, so
+        # the other ranks' writes would be invisible rather than merely quiet,
+        # and a reader needs the pattern, not rank 0's own file name.
+        result.file = "{}{}.rank*{}".format(prefix, result.label,
+                                            ".npz" if fmt == "npz" else ".json")
+        if log:
+            log("  wrote {} ({} rank{})".format(
+                result.file, n_rank, "" if n_rank == 1 else "s"))
+    elif log:
         log("  wrote {}".format(_readable(path, base_dir)))
 
 
 def write_results(results: List[Result], resolved: dict, setup: dict,
-                  base_dir: str, log=None) -> str:
+                  base_dir: str, rank: int = 0, n_rank: int = 1, log=None) -> str:
     """Writes every result not already written, and the summary.
 
-    Only rank 0 should call this. Results with .file set were written
+    EVERY rank calls this, because a distributed result is written by all of
+    them; the summary is rank 0's alone. Results with .file set were written
     incrementally by write_single_result and are not rewritten.
     """
     import numpy as np
 
     output = resolved.get("output", {})
     directory = resolve_output_dir(resolved, base_dir)
-    os.makedirs(directory, exist_ok=True)
+    if rank == 0:
+        os.makedirs(directory, exist_ok=True)
     prefix = output.get("prefix", "")
 
     for result in results:
         if not result.file:
-            write_single_result(result, resolved, base_dir, log=log)
+            write_single_result(result, resolved, base_dir, rank=rank, n_rank=n_rank,
+                                log=log)
 
     summary_path = ""
+    if rank != 0:
+        return summary_path
     if output.get("summary", True):
         summary = {
             "input": resolved,
@@ -256,6 +317,11 @@ def write_results(results: List[Result], resolved: dict, setup: dict,
                     "type": result.kind,
                     "seconds": round(result.seconds, 3),
                     "scalars": result.scalars,
+                    # For a distributed result these shapes are RANK 0's
+                    # share, not the whole array, and saying so is the
+                    # difference between a summary and a wrong summary. The
+                    # global size is in scalars (n_point for the LDOS grid).
+                    "distributed": result.distributed,
                     "arrays": {
                         name: {"shape": list(np.asarray(value).shape),
                                "dtype": str(np.asarray(value).dtype)}
