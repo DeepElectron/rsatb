@@ -182,6 +182,72 @@ int main(int argc, char** argv) {
         all_ok = all_ok && ok;
     }
 
+    // 6. Operator-form dressing of an auxiliary operator.
+    //
+    // The velocity operator has to be carried into whichever representation
+    // the recursion iterates:
+    //
+    //     solve      S^-1 V c          on coefficients c
+    //     sandwich   Z^H V Z eta       on eta, with c = Z eta
+    //
+    // These are the same physical operator, so Z (Z^H V Z eta) and
+    // S^-1 V (Z eta) agree identically. Before Chebyshev recorded its form,
+    // the sandwich case was selected by "S == nullptr" -- the test an
+    // orthogonal basis also passes -- and applied a bare V, dropping the Z on
+    // both sides. The overlap below is deliberately NOT diagonal, so that
+    // failure cannot hide as a scale factor; the second number printed is the
+    // margin by which the test would catch it.
+    if (rank == 0) std::cout << "\nTesting operator-form dressing of V..." << std::endl;
+    {
+        BlockSpMat<cd> S(&graph);
+        for (int i = 0; i < (int)graph.owned_global_indices.size(); ++i) {
+            int gid = graph.owned_global_indices[i];
+            int partner = (gid % 2 == 0) ? gid + 1 : gid - 1;
+            cd diag = 1.0, off = 0.3;
+            S.add_block(gid, gid, &diag, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+            S.add_block(gid, partner, &off, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        }
+        S.assemble();
+
+        BlockSpMat<cd> Z(S.duplicate(true));
+        inverse_sqrt(S, &Z, InverseSqrtOptions{1e-12, 1e-13, 50});
+        ISQRTMPreconditioner<cd> Mz(Z, kBorrowFactor);
+
+        Chebyshev<cd> cheby_solve(H, S, Mz, PreconditionerType::Symmetric, -1.0, 1.0);
+        Chebyshev<cd> cheby_sand(H, Mz, PreconditionerType::Symmetric, -1.0, 1.0);
+        cheby_solve.solver = LinearSolver<cd>(1e-13, 2000, false);
+
+        DistVector<cd> eta(&graph), c(&graph), lhs(&graph), rhs(&graph);
+        DistVector<cd> dressed(&graph), bare(&graph);
+        for (int i = 0; i < eta.local_size; ++i) {
+            int gid = graph.owned_global_indices[i];
+            eta[i] = cd(std::sin(0.7 * gid + 0.2), std::cos(0.3 * gid + 1.1));
+        }
+        Mz.apply(eta, c);                            // c = Z eta
+
+        cheby_sand.apply_dual(Vx, eta, dressed);     // Z^H Vx Z eta
+        Mz.apply(dressed, lhs);                      // Z (Z^H Vx Z eta)
+        cheby_solve.apply_dual(Vx, c, rhs);          // S^-1 Vx (Z eta)
+        Vx.mult(eta, bare);                          // what the bug applied
+
+        double local[3] = {0.0, 0.0, 0.0};
+        for (int i = 0; i < lhs.local_size; ++i) {
+            local[0] = std::max(local[0], std::abs(lhs[i] - rhs[i]));
+            local[1] = std::max(local[1], std::abs(dressed[i] - bare[i]));
+            local[2] = std::max(local[2], std::abs(rhs[i]));
+        }
+        double g[3] = {0.0, 0.0, 0.0};
+        MPI_Allreduce(local, g, 3, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        if (rank == 0) {
+            std::cout << "  |Z (Z^H V Z eta) - S^-1 V (Z eta)| = " << g[0] << std::endl;
+            std::cout << "  |Z^H V Z eta - V eta| = " << g[1]
+                      << " (gap a dropped Z would open)" << std::endl;
+            bool ok = g[0] < 1e-9 * g[2] && g[1] > 0.1 * g[2];
+            std::cout << (ok ? "DRESSING PASSED" : "DRESSING FAILED") << std::endl;
+            all_ok = all_ok && ok;
+        }
+    }
+
     MPI_Finalize();
     return (rank == 0 && !all_ok) ? 1 : 0;
 }

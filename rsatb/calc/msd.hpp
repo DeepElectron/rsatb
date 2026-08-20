@@ -185,7 +185,7 @@ void run_explicit_position_msd(
             xpsi_out.copy_from(psi_src);
             xpsi_out.pointwise_mult(position);
         } else {
-            apply_operator_dual(cheby, position, psi_src, xpsi_out, ChebyMode::NORMAL, 1.0);
+            cheby.apply_dual(position, psi_src, xpsi_out, ChebyMode::NORMAL, 1.0);
         }
     };
 
@@ -389,7 +389,7 @@ void corr_msd(
     if (dt_fs < 0.0) {
         throw std::runtime_error("dt_fs must be non-negative");
     }
-    if (cheby.S != nullptr) {
+    if (cheby.form != ChebyOpForm::Orthogonal) {
         throw std::runtime_error("Gamma-affine MSD currently supports orthogonal systems only");
     }
 

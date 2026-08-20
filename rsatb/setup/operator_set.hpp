@@ -15,6 +15,7 @@
 // operator_assembly.hpp, and what is left matches the name.
 
 #include "../utils/profile.hpp"
+#include "../calc/cheby.hpp"
 #include "../calc/preconditioner.hpp"
 #include "../calc/eigen.hpp"
 #include "../model/setup.hpp"
@@ -119,6 +120,12 @@ public:
         std::unique_ptr<VelocityTriplet> velocity;
         std::unique_ptr<PositionTriplet> position;
         std::unique_ptr<LatticeMomentTriplet> first_lattice_moment;
+        /// Which operator the expansions iterate at this k-point, settled once
+        /// in build_preconditioner. Recorded rather than left to be re-derived
+        /// from which of overlap/preconditioner is null: the sandwich form
+        /// releases the overlap, so that test cannot tell it from an
+        /// orthogonal basis.
+        rsatb::calc::ChebyOpForm form = rsatb::calc::ChebyOpForm::Orthogonal;
     };
 
     const std::vector<std::pair<int, std::vector<double>>>& local_kpoints() const {
@@ -339,9 +346,17 @@ private:
     ) {
         Matrix* overlap = state.overlap.get();
         if (overlap == nullptr) {
-            return;
+            return;  // orthogonal basis: the form stays Orthogonal
         }
+        // Non-orthogonal from here; the sandwich branch below may upgrade it.
+        state.form = rsatb::calc::ChebyOpForm::Solve;
         if (config.target == rsatb::model::PreconditionerTarget::kNone) {
+            if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
+                throw std::runtime_error(
+                    "preconditioner.operator_form = \"sandwich\" needs a preconditioner to "
+                    "supply Z, but preconditioner.target is \"none\". Set target to "
+                    "\"overlap\", or use operator_form = \"solve\".");
+            }
             return;
         }
 
@@ -352,10 +367,13 @@ private:
         state.preconditioner = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
             *overlap, config.maxiter, config.tol, config.sptol, verbose_);
 
-        // The sandwich form propagates Z H Z and never touches S again;
-        // releasing it here is what routes MakeChebyshev to that branch.
-        // The solve form keeps S: matvecs CG-solve S y = H x instead.
+        // The sandwich form propagates Z H Z and never references S again, so
+        // the overlap is released here purely to reclaim its memory -- what
+        // routes the expansions is state.form, set alongside it. Nothing
+        // downstream may read the release as evidence of an orthogonal basis;
+        // ask OperatorSet::has_overlap() for that.
         if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
+            state.form = rsatb::calc::ChebyOpForm::Sandwich;
             state.overlap.reset();
         }
     }

@@ -68,9 +68,7 @@ TraceMoments adaptive_trace_moments(Chebyshev<T>& cheby,
     std::vector<double>& m = tm.moments;
     m.reserve(static_cast<size_t>(std::min(schedule.n_cap() + 2, 1 << 14)));
 
-    const bool hermitian =
-        (cheby.S == nullptr) &&
-        (cheby.M == nullptr || cheby.ptype == PreconditionerType::Symmetric);
+    const bool hermitian = cheby.op_is_hermitian();
 
     VectorType t0 = ZeroLike(samples);
     VectorType t1 = ZeroLike(samples);

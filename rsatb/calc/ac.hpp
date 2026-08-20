@@ -29,67 +29,6 @@ namespace calc {
 // and more adds nothing.
 inline constexpr int kAcOversample = 2;
 
-template <typename T, typename VectorType>
-void apply_operator_dual(
-    Chebyshev<T>& cheby,
-    BlockSpMat<T>& op,
-    const VectorType& psi_in,
-    VectorType& psi_out,
-    ChebyMode mode = ChebyMode::NORMAL,
-    double scale = 1.0
-) {
-    auto construct_vec = [&](DistGraph* g, int nv) {
-        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-            return VectorType(g, nv);
-        } else {
-            return VectorType(g);
-        }
-    };
-    int nv = 1;
-    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-        nv = psi_in.num_vectors;
-    }
-
-    if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
-        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-            op.mult_dense(const_cast<VectorType&>(psi_in), psi_out);
-        } else {
-            op.mult(const_cast<VectorType&>(psi_in), psi_out);
-        }
-
-        if (cheby.S) {
-            VectorType tmp = construct_vec(psi_in.graph, nv);
-            tmp.copy_from(psi_out);
-            if (cheby.M) {
-                cheby.solver.solve(*cheby.S, tmp, psi_out, *cheby.M, cheby.ptype);
-            } else {
-                cheby.solver.solve(*cheby.S, tmp, psi_out);
-            }
-        }
-    } else if (mode == ChebyMode::ADJOINT) {
-        VectorType tmp = construct_vec(psi_in.graph, nv);
-        if (cheby.S) {
-            if (cheby.M) {
-                cheby.solver.solve(*cheby.S, psi_in, tmp, *cheby.M, cheby.ptype);
-            } else {
-                cheby.solver.solve(*cheby.S, psi_in, tmp);
-            }
-        } else {
-            tmp.copy_from(psi_in);
-        }
-
-        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-            op.mult_dense(tmp, psi_out);
-        } else {
-            op.mult(tmp, psi_out);
-        }
-    } else {
-        throw std::runtime_error("apply_operator_dual only supports NORMAL, CONJUGATE, and ADJOINT modes");
-    }
-
-    psi_out.scale(T(scale));
-}
-
 // Compute Current: J = -i S^{-1} [H, R] = -S^{-1} V (if V = -i[H,R])
 // We assume Vx, Vy, Vz are the velocity operators V.
 // J = - S^{-1} V Psi
@@ -101,9 +40,9 @@ void current(Chebyshev<T>& cheby,
              const VectorType& Psi_in, 
              VectorType* J_Psi, // Array of 3
              double scale = 1.0) {
-    apply_operator_dual(cheby, Vx, Psi_in, J_Psi[0], ChebyMode::NORMAL, -scale);
-    apply_operator_dual(cheby, Vy, Psi_in, J_Psi[1], ChebyMode::NORMAL, -scale);
-    apply_operator_dual(cheby, Vz, Psi_in, J_Psi[2], ChebyMode::NORMAL, -scale);
+    cheby.apply_dual(Vx, Psi_in, J_Psi[0], ChebyMode::NORMAL, -scale);
+    cheby.apply_dual(Vy, Psi_in, J_Psi[1], ChebyMode::NORMAL, -scale);
+    cheby.apply_dual(Vz, Psi_in, J_Psi[2], ChebyMode::NORMAL, -scale);
 }
 
 // Compute Adjoint Current: J = - V S^{-1} Psi
@@ -115,9 +54,9 @@ void current_adjoint(Chebyshev<T>& cheby,
                      const VectorType& Psi_in, 
                      VectorType* J_Psi, // Array of 3
                      double scale = 1.0) {
-    apply_operator_dual(cheby, Vx, Psi_in, J_Psi[0], ChebyMode::ADJOINT, -scale);
-    apply_operator_dual(cheby, Vy, Psi_in, J_Psi[1], ChebyMode::ADJOINT, -scale);
-    apply_operator_dual(cheby, Vz, Psi_in, J_Psi[2], ChebyMode::ADJOINT, -scale);
+    cheby.apply_dual(Vx, Psi_in, J_Psi[0], ChebyMode::ADJOINT, -scale);
+    cheby.apply_dual(Vy, Psi_in, J_Psi[1], ChebyMode::ADJOINT, -scale);
+    cheby.apply_dual(Vz, Psi_in, J_Psi[2], ChebyMode::ADJOINT, -scale);
 }
 
 // AC Conductivity Correlation
