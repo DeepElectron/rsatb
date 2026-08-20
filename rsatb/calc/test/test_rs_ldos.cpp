@@ -250,7 +250,8 @@ TEST(RealSpaceLdosTest, CompleteBasisMatchesDenseDiagonalization) {
     opt.complete_basis = true;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
+        *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+        *sys.collocation, opt, MPI_COMM_WORLD);
     ASSERT_EQ(result.n_states, sys.n());
     ASSERT_EQ(result.domain.n_point(), result.grid.n_point());  // one rank owns all
     EXPECT_LT(result.sampler_residual, 1e-6);
@@ -289,6 +290,83 @@ TEST(RealSpaceLdosTest, CompleteBasisMatchesDenseDiagonalization) {
     }
 }
 
+TEST(RealSpaceLdosTest, SandwichFormMatchesSolveFormAndDenseAnswer) {
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    // The two operator forms are two representations of one pencil, not two
+    // methods: solve iterates S^-1 H on states drawn with covariance S^-1,
+    // sandwich iterates Z^H H Z on states with covariance I and applies Z once
+    // at read-out. They must land on the same map.
+    //
+    // Checking the sandwich map against the DENSE reference, not merely
+    // against the solve map, is what makes this a statement about the physics
+    // rather than about one path reproducing the other's mistakes. And the
+    // failure it guards is not subtle: dropping the read-out Z -- the shape of
+    // the bug that let the sandwich form be mistaken for an orthogonal one --
+    // is an O(1) error here, not a small one.
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = 0.05 * spread;
+    opt.energies = {ref.eps[sys.n() / 5], ref.eps[sys.n() / 2]};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.block = 32;
+    opt.complete_basis = true;
+
+    const auto solved = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+        *sys.collocation, opt, MPI_COMM_WORLD);
+    // S is not passed at all: this form never references it, which is exactly
+    // what lets setup release it.
+    const auto sandwiched = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+        *sys.collocation, opt, MPI_COMM_WORLD);
+
+    ASSERT_EQ(sandwiched.n_states, sys.n());
+    // No metric sampler is constructed here -- the seed covariance is already
+    // the identity, so there is no certificate to report.
+    EXPECT_EQ(sandwiched.sampler_residual, -1.0);
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < sandwiched.grid.n_box(); ++b) {
+        const auto box = sandwiched.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+
+    for (size_t k = 0; k < opt.energies.size(); ++k) {
+        const auto reference = ReferenceMap(sys, ref, set, sandwiched.grid,
+                                            sandwiched.domain, opt.energies[k], opt.eta);
+        double peak = 0.0;
+        for (double v : reference) peak = std::max(peak, std::abs(v));
+        ASSERT_GT(peak, 0.0);
+        double worst_ref = 0.0, worst_form = 0.0;
+        for (int64_t p = 0; p < sandwiched.domain.n_point(); ++p) {
+            worst_ref = std::max(worst_ref, std::abs(sandwiched.ldos[k][p] - reference[p]));
+            worst_form =
+                std::max(worst_form, std::abs(sandwiched.ldos[k][p] - solved.ldos[k][p]));
+        }
+        printf("  E = %+.3f eV: peak %.3e, vs dense %.3e (%.2e rel), vs solve form %.3e\n",
+               opt.energies[k], peak, worst_ref, worst_ref / peak, worst_form);
+        // Measured ~2e-13 relative against the dense answer and ~1e-13
+        // between the forms -- the same rounding floor the solve-form test
+        // reports, because the fixture purifies Zt and the metric error this
+        // form carries (design 2.4: ~||Z^H S Z - I|| * M / 4) lands below it.
+        // Same margin as the sibling test, and far under any dropped-Z
+        // regression, which would be O(1).
+        EXPECT_LT(worst_ref, 1e-10 * peak) << "energy " << opt.energies[k];
+        EXPECT_LT(worst_form, 1e-10 * peak) << "energy " << opt.energies[k];
+    }
+}
+
 TEST(RealSpaceLdosTest, StochasticConvergesAndStaysPositive) {
     int world = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &world);
@@ -309,7 +387,8 @@ TEST(RealSpaceLdosTest, StochasticConvergesAndStaysPositive) {
     opt.seed = 777;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
+        *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+        *sys.collocation, opt, MPI_COMM_WORLD);
 
     // Positivity is exact: a mean of squares cannot go below zero, whatever
     // the noise does.
@@ -443,7 +522,8 @@ TEST(RealSpaceLdosTest, DistributedRanksAssembleTheSerialAnswer) {
     opt.complete_basis = true;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
+        *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+        *sys.collocation, opt, MPI_COMM_WORLD);
     ASSERT_EQ(result.n_states, sys.n());
 
     // The reference set, written down from the geometry every rank knows.

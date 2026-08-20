@@ -158,7 +158,7 @@ struct ObservableContext {
         }
     }
 
-    /// Builds the Chebyshev driver matching which operators this k-point has.
+    /// Builds the Chebyshev driver for the operator form this k-point records.
     std::unique_ptr<Chebyshev<ObservableScalar>> MakeChebyshev(
         const setup::OperatorSet::KPointOperatorState& state) const {
         Matrix* hk = state.hamiltonian.get();
@@ -169,18 +169,24 @@ struct ObservableContext {
         if (!hk) {
             throw std::runtime_error("Hamiltonian is not available for the requested k-point.");
         }
-        if (sk && preconditioner) {
-            return std::make_unique<Chebyshev<ObservableScalar>>(
-                *hk, *sk, *preconditioner, preconditioner->get_type(), ops.emin(), ops.emax(), verbose);
+        switch (state.form) {
+            case ChebyOpForm::Orthogonal:
+                return std::make_unique<Chebyshev<ObservableScalar>>(
+                    *hk, ops.emin(), ops.emax(), verbose);
+            case ChebyOpForm::Sandwich:
+                return std::make_unique<Chebyshev<ObservableScalar>>(
+                    *hk, *preconditioner, preconditioner->get_type(), ops.emin(), ops.emax(),
+                    verbose);
+            case ChebyOpForm::Solve:
+                if (preconditioner) {
+                    return std::make_unique<Chebyshev<ObservableScalar>>(
+                        *hk, *sk, *preconditioner, preconditioner->get_type(), ops.emin(),
+                        ops.emax(), verbose);
+                }
+                return std::make_unique<Chebyshev<ObservableScalar>>(
+                    *hk, *sk, ops.emin(), ops.emax(), verbose);
         }
-        if (sk) {
-            return std::make_unique<Chebyshev<ObservableScalar>>(*hk, *sk, ops.emin(), ops.emax(), verbose);
-        }
-        if (preconditioner) {
-            return std::make_unique<Chebyshev<ObservableScalar>>(
-                *hk, *preconditioner, preconditioner->get_type(), ops.emin(), ops.emax(), verbose);
-        }
-        return std::make_unique<Chebyshev<ObservableScalar>>(*hk, ops.emin(), ops.emax(), verbose);
+        throw std::runtime_error("Unhandled Chebyshev operator form.");
     }
 
     /// Returns the global index of the Gamma point, agreed across all ranks.
@@ -1132,8 +1138,12 @@ inline vbcsr::BlockSpMat<double> PeelGammaReal(vbcsr::BlockSpMat<std::complex<do
 /// complex Gamma matrices to real, reuses the operator set's S^{-1/2} factor
 /// when one was built (falling back to a fresh isqrtm), and fills the
 /// spectral bounds the operators already measured. Box ownership needs
-/// nothing from here: the driver derives it from the atom partition. Gamma-only, and it needs an overlap: an orthogonal
-/// tight-binding model has no real-space basis to evaluate.
+/// nothing from here: the driver derives it from the atom partition.
+///
+/// Gamma-only, and it needs a non-orthogonal model: an orthogonal tight-binding
+/// model has no real-space basis to evaluate. That question is
+/// OperatorSet::has_overlap(), not whether S is still materialized -- the
+/// sandwich form releases S and is perfectly able to produce a map.
 inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context,
                                                 const std::vector<std::string>& orbital_files,
                                                 RealSpaceLdosOptions options) {
@@ -1159,14 +1169,30 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
         }
     }
     auto& state = ops.kpoint_state(kpoints.front().first);
-    if (!state.hamiltonian || !state.overlap) {
+    if (!ops.has_overlap()) {
         throw std::runtime_error(
-            "The real-space LDOS needs both H and S; an orthogonal model has no real-space "
-            "basis functions to collocate.");
+            "The real-space LDOS needs a non-orthogonal model: an orthogonal tight-binding "
+            "model has no real-space basis functions to collocate.");
+    }
+    if (!state.hamiltonian) {
+        throw std::runtime_error("The Hamiltonian is not available at the Gamma point.");
     }
 
     auto H = detail::PeelGammaReal(*state.hamiltonian, "Hamiltonian");
-    auto S = detail::PeelGammaReal(*state.overlap, "overlap");
+
+    // S is peeled for the solve form only. The sandwich form iterates Z H Z
+    // and seeds with covariance I, so it never references S -- which is what
+    // makes releasing S at setup harmless rather than a loss of capability.
+    std::unique_ptr<vbcsr::BlockSpMat<double>> s;
+    if (state.form == ChebyOpForm::Solve) {
+        if (!state.overlap) {
+            throw std::runtime_error(
+                "The solve-form real-space LDOS needs the overlap, which is not "
+                "materialized at this k-point.");
+        }
+        s = std::make_unique<vbcsr::BlockSpMat<double>>(
+            detail::PeelGammaReal(*state.overlap, "overlap"));
+    }
 
     // The S^{-1/2} factor: reuse the operator set's if it built one (its
     // quality only sets iteration counts, never the answer), else one fresh
@@ -1176,9 +1202,13 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
             state.preconditioner.get())) {
         zt = std::make_unique<vbcsr::BlockSpMat<double>>(
             detail::PeelGammaReal(isqrt->factor(), "S^{-1/2} factor"));
+    } else if (s) {
+        zt = std::make_unique<vbcsr::BlockSpMat<double>>(s->duplicate(true));
+        inverse_sqrt(*s, zt.get(), InverseSqrtOptions{});
     } else {
-        zt = std::make_unique<vbcsr::BlockSpMat<double>>(S.duplicate(true));
-        inverse_sqrt(S, zt.get(), InverseSqrtOptions{});
+        throw std::runtime_error(
+            "The sandwich-form real-space LDOS needs the Z factor held by the overlap "
+            "preconditioner, which is not present at this k-point.");
     }
 
     // Box ownership is settled inside the driver, from the atom partition
@@ -1189,7 +1219,8 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
     const OrbitalCollocation collocation(orbital_files, comm);
     options.emin = ops.emin();
     options.emax = ops.emax();
-    return ComputeRealSpaceLdos(atomic_data, H, S, *zt, collocation, options, comm);
+    return ComputeRealSpaceLdos(atomic_data, H, s.get(), *zt, state.form, collocation, options,
+                                comm);
 }
 
 }  // namespace calc

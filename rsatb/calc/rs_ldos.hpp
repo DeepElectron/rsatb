@@ -8,12 +8,24 @@
 //               = E[ |phi(r)^T chi_E|^2 ],      chi_E = F_E(S^-1 H) c0,
 //
 // with F_E = delta_eta^{1/2}(E - .) -- a Gaussian of width sqrt(2) eta -- and
-// c0 drawn with covariance E[c0 c0^H] = S^{-1} by the metric sampler. The
-// identity behind it: for A = S^-1 H with S-orthonormal eigenvectors C,
-// F(A) S^-1 F(A)^H = C F^2 C^H = A(E), the energy-resolved density matrix.
+// c0 drawn with covariance E[c0 c0^H] = S^{-1}. The identity behind it: for
+// A = S^-1 H with S-orthonormal eigenvectors C, F(A) S^-1 F(A)^H = C F^2 C^H
+// = A(E), the energy-resolved density matrix.
 // Estimating a NORM rather than a bilinear form makes every sample map
 // non-negative pointwise -- no Jackson kernel needed for positivity, so the
 // full sqrt(2) of resolution is kept (design 3.4).
+//
+// Both operator forms produce this chi; they differ only in where the metric
+// is carried, and the estimator is otherwise the same code:
+//
+//   Solve     chi = F(S^-1 H) c0,   c0 = MetricSampler(xi)   [design 5.5]
+//   Sandwich  chi = Zt F(Z^H H Z) xi,  xi Rademacher         [design 5.4]
+//
+// The sandwich line is the same quantity: with c = Zt eta the covariance
+// Zt^-1 S^-1 Zt^-H is already the identity, so the sampler collapses to the
+// raw draw, and the Zt that the solve form hides inside S^-1 reappears as one
+// SpMM per energy at the end. It is strictly the cheaper of the two -- no
+// sampler construction, no CG solve inside the M-step recursion.
 //
 // The cost structure is what makes full-cell maps affordable:
 //   - ONE Chebyshev sweep serves every energy: the energy dependence lives in
@@ -122,16 +134,22 @@ inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
 ///
 /// Args:
 ///   atomic_data: Distributed geometry; also fixes cell and boundary conditions.
-///   H, S: The pencil, in the matrix distribution of `atomic_data`'s graph.
-///   Zt: Approximate S^{-1/2} factor (isqrtm). Quality sets iteration counts
-///     -- the sampler degree and the CG preconditioning -- never the answer.
+///   H: The Hamiltonian, in the matrix distribution of `atomic_data`'s graph.
+///   S: The overlap. Required by (and only by) ChebyOpForm::Solve; pass null
+///     for ChebyOpForm::Sandwich, which never references it.
+///   Zt: Approximate S^{-1/2} factor (isqrtm). In the solve form its quality
+///     sets iteration counts -- the sampler degree and the CG preconditioning
+///     -- never the answer. In the sandwich form it defines the operator, so
+///     it must be purified (design 2.4).
+///   form: Which operator the recursion iterates; see the header note.
 ///   collocation: Orbital evaluators, one per atom type, same files as H/S.
 ///   opt: See RealSpaceLdosOptions. energies, eta, emin/emax are required.
 ///   comm: The communicator H, S and atomic_data live on.
 inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomic_data,
                                                 vbcsr::BlockSpMat<double>& H,
-                                                vbcsr::BlockSpMat<double>& S,
+                                                vbcsr::BlockSpMat<double>* S,
                                                 vbcsr::BlockSpMat<double>& Zt,
+                                                ChebyOpForm form,
                                                 const OrbitalCollocation& collocation,
                                                 const RealSpaceLdosOptions& opt,
                                                 MPI_Comm comm) {
@@ -151,6 +169,14 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
     }
     if (opt.block < 1 || (!opt.complete_basis && opt.n_samples < 1)) {
         throw std::runtime_error("Real-space LDOS needs at least one sample and block >= 1.");
+    }
+    if (form == ChebyOpForm::Orthogonal) {
+        throw std::runtime_error(
+            "The real-space LDOS needs a non-orthogonal pencil; there is no S^{-1/2} to "
+            "carry the metric in an orthogonal basis.");
+    }
+    if (form == ChebyOpForm::Solve && S == nullptr) {
+        throw std::runtime_error("The solve-form real-space LDOS needs the overlap S.");
     }
 
     int rank = 0, size = 1;
@@ -186,11 +212,22 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
     const int degree = static_cast<int>(tables.front().size());
     result.filter_degree = degree;
 
-    MetricSampler<double> sampler(S, Zt, opt.sampler);
     ISQRTMPreconditioner<double> precond(Zt, kBorrowFactor);
-    Chebyshev<double> cheb(H, S, precond, PreconditionerType::Symmetric, lo, hi);
 
-    DistGraph* graph = S.graph;
+    // The sandwich form needs neither the sampler (its seed covariance is
+    // already the identity) nor S inside the operator.
+    std::unique_ptr<MetricSampler<double>> sampler;
+    std::unique_ptr<Chebyshev<double>> cheb;
+    if (form == ChebyOpForm::Solve) {
+        sampler = std::make_unique<MetricSampler<double>>(*S, Zt, opt.sampler);
+        cheb = std::make_unique<Chebyshev<double>>(H, *S, precond,
+                                                   PreconditionerType::Symmetric, lo, hi);
+    } else {
+        cheb = std::make_unique<Chebyshev<double>>(H, precond,
+                                                   PreconditionerType::Symmetric, lo, hi);
+    }
+
+    DistGraph* graph = H.graph;
     const int n_energy = static_cast<int>(opt.energies.size());
     const int n_total = opt.complete_basis ? graph->global_scalar_rows() : opt.n_samples;
     result.n_states = n_total;
@@ -250,13 +287,13 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
         std::sort(basis_of_owned.begin(), basis_of_owned.end());
     }
 
-    if (opt.certify_sampler) {
+    if (opt.certify_sampler && sampler) {
         DistVector<double> xi(graph);
         for (int i = 0; i < xi.local_size; ++i) xi[i] = coin(gen) ? 1.0 : -1.0;
-        result.sampler_residual = sampler.Residual(xi);
+        result.sampler_residual = sampler->Residual(xi);
     }
 
-    std::unique_ptr<DistMultiVector<double>> xi, c0, v0, v1, v2;
+    std::unique_ptr<DistMultiVector<double>> xi, c0, v0, v1, v2, chi;
     std::vector<std::unique_ptr<DistMultiVector<double>>> accum(n_energy);
     std::vector<double> coeffs, values;
 
@@ -267,7 +304,8 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
                 mv = std::make_unique<DistMultiVector<double>>(graph, blk);
             }
         };
-        need(xi); need(c0); need(v0); need(v1); need(v2);
+        need(xi); need(v0); need(v1); need(v2);
+        if (sampler) need(c0); else need(chi);
         for (auto& a : accum) need(a);
 
         xi->scale(0.0);
@@ -293,22 +331,29 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
                 for (int v = 0; v < blk; ++v) r[v] = coin(gen) ? 1.0 : -1.0;
             }
         }
-        sampler.Sample(*xi, *c0);
+        // The seed the recursion starts from, in the representation the
+        // operator iterates: c0 with covariance S^-1 for the solve form, and
+        // xi itself for the sandwich form, whose covariance is already I.
+        if (sampler) {
+            sampler->Sample(*xi, *c0);
+            v0->copy_from(*c0);
+        } else {
+            v0->copy_from(*xi);
+        }
 
-        // One sweep, all energies: X_k = sum_m N c_m(E_k) T_m(Op) c0.
-        v0->copy_from(*c0);
+        // One sweep, all energies: X_k = sum_m N c_m(E_k) T_m(Op) seed.
         for (int k = 0; k < n_energy; ++k) {
             accum[k]->copy_from(*v0);
             accum[k]->scale(CoeffCast<double>::apply(tables[k][0]));
         }
         if (degree > 1) {
-            cheb.apply_op(*v0, *v1);
+            cheb->apply_op(*v0, *v1);
             for (int k = 0; k < n_energy; ++k) {
                 accum[k]->axpy(CoeffCast<double>::apply(tables[k][1]), *v1);
             }
         }
         for (int m = 2; m < degree; ++m) {
-            cheb.apply_op(*v1, *v2);
+            cheb->apply_op(*v1, *v2);
             v2->axpby(-1.0, *v0, 2.0);
             for (int k = 0; k < n_energy; ++k) {
                 accum[k]->axpy(CoeffCast<double>::apply(tables[k][m]), *v2);
@@ -326,7 +371,15 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
             opt.complete_basis ? static_cast<double>(blk)
                                : static_cast<double>(blk) / static_cast<double>(n_total);
         for (int k = 0; k < n_energy; ++k) {
-            GatherSetRows(atomic_data, *accum[k], set, plan, comm, &coeffs);
+            // chi = X_k in the solve form; Zt X_k in the sandwich form, where
+            // the metric the solve form carried inside S^-1 is applied once,
+            // here, instead of at every step of the recursion.
+            DistMultiVector<double>* chi_k = accum[k].get();
+            if (form == ChebyOpForm::Sandwich) {
+                precond.apply(*accum[k], *chi);
+                chi_k = chi.get();
+            }
+            GatherSetRows(atomic_data, *chi_k, set, plan, comm, &coeffs);
             collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk, result.grid,
                                                result.domain, &values);
             double* out = result.ldos[k].data();
