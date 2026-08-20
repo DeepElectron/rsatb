@@ -123,6 +123,7 @@ if(RSATB_BUILD_TESTS)
 
     add_executable(test_operator_set test/test_operator_set.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_operator_set PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
@@ -130,6 +131,7 @@ if(RSATB_BUILD_TESTS)
 
     add_executable(test_sktb sktb/test/test_sktb.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_sktb PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )
@@ -137,6 +139,7 @@ if(RSATB_BUILD_TESTS)
 
     add_executable(test_setup_stages ../setup/test/test_setup_stages.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_setup_stages PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../extern
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src
         ${CMAKE_CURRENT_SOURCE_DIR}/../extern/op2c/src/utils/container
     )

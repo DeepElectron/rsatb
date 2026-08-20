@@ -125,7 +125,6 @@ inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
 ///   H, S: The pencil, in the matrix distribution of `atomic_data`'s graph.
 ///   Zt: Approximate S^{-1/2} factor (isqrtm). Quality sets iteration counts
 ///     -- the sampler degree and the CG preconditioning -- never the answer.
-///   tree: The inertial cut the atoms were partitioned by; classifies boxes.
 ///   collocation: Orbital evaluators, one per atom type, same files as H/S.
 ///   opt: See RealSpaceLdosOptions. energies, eta, emin/emax are required.
 ///   comm: The communicator H, S and atomic_data live on.
@@ -133,7 +132,6 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
                                                 vbcsr::BlockSpMat<double>& H,
                                                 vbcsr::BlockSpMat<double>& S,
                                                 vbcsr::BlockSpMat<double>& Zt,
-                                                const vbcsr::atomic::InertialCut& tree,
                                                 const OrbitalCollocation& collocation,
                                                 const RealSpaceLdosOptions& opt,
                                                 MPI_Comm comm) {
@@ -166,11 +164,16 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
 
     RealSpaceLdosResult result;
     result.grid = MakeRealSpaceGrid(atomic_data.cell, opt.spacing, opt.box_edge);
-    result.domain = MakeGridDomain(result.grid,
-                                   OwnedBoxesFromAtoms(result.grid, tree, rank));
+
+    // Box ownership comes from the atom partition itself -- whatever produced
+    // it -- so nothing here needs to know how the atoms were distributed, and
+    // no rank ever walks a box outside its own share.
+    const GridOwnership ownership =
+        ResolveGridOwnership(atomic_data, result.grid, type_rcut, comm);
+    result.domain = MakeGridDomain(result.grid, ownership.boxes);
 
     OrbitalSetExchangePlan plan;
-    const OrbitalSet set = BuildOrbitalSetFromDemands(atomic_data, result.grid, tree,
+    const OrbitalSet set = BuildOrbitalSetFromDemands(atomic_data, result.grid, ownership,
                                                       type_rcut, rank, comm, &plan);
 
     // Scaled interval of the pencil, padded so the filter never samples the

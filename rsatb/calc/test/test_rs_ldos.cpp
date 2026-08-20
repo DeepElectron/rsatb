@@ -30,7 +30,6 @@
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
-#include "vbcsr/core/atomic/inertial_partition.hpp"
 
 #include <gtest/gtest.h>
 #include <mpi.h>
@@ -241,14 +240,6 @@ TEST(RealSpaceLdosTest, CompleteBasisMatchesDenseDiagonalization) {
     DenseReference ref(sys);
     const double spread = ref.eps.back() - ref.eps.front();
 
-    std::vector<double> pos(3 * ChainSystem::kAtoms);
-    for (int a = 0; a < ChainSystem::kAtoms; ++a) {
-        pos[3 * a + 0] = sys.ad->x[a];
-        pos[3 * a + 1] = sys.ad->y[a];
-        pos[3 * a + 2] = sys.ad->z[a];
-    }
-    const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, 1);
-
     rsatb::calc::RealSpaceLdosOptions opt;
     opt.eta = 0.05 * spread;
     opt.energies = {ref.eps[sys.n() / 5], ref.eps[sys.n() / 2], ref.eps[4 * sys.n() / 5]};
@@ -259,8 +250,7 @@ TEST(RealSpaceLdosTest, CompleteBasisMatchesDenseDiagonalization) {
     opt.complete_basis = true;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *part.tree, *sys.collocation, opt,
-        MPI_COMM_WORLD);
+        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
     ASSERT_EQ(result.n_states, sys.n());
     ASSERT_EQ(result.domain.n_point(), result.grid.n_point());  // one rank owns all
     EXPECT_LT(result.sampler_residual, 1e-6);
@@ -308,14 +298,6 @@ TEST(RealSpaceLdosTest, StochasticConvergesAndStaysPositive) {
     DenseReference ref(sys);
     const double spread = ref.eps.back() - ref.eps.front();
 
-    std::vector<double> pos(3 * ChainSystem::kAtoms);
-    for (int a = 0; a < ChainSystem::kAtoms; ++a) {
-        pos[3 * a + 0] = sys.ad->x[a];
-        pos[3 * a + 1] = sys.ad->y[a];
-        pos[3 * a + 2] = sys.ad->z[a];
-    }
-    const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, 1);
-
     rsatb::calc::RealSpaceLdosOptions opt;
     opt.eta = 0.05 * spread;
     opt.energies = {ref.eps[sys.n() / 2]};
@@ -327,8 +309,7 @@ TEST(RealSpaceLdosTest, StochasticConvergesAndStaysPositive) {
     opt.seed = 777;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *part.tree, *sys.collocation, opt,
-        MPI_COMM_WORLD);
+        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
 
     // Positivity is exact: a mean of squares cannot go below zero, whatever
     // the noise does.
@@ -362,6 +343,78 @@ TEST(RealSpaceLdosTest, StochasticConvergesAndStaysPositive) {
     EXPECT_LT(rel_l2, 0.5);
 }
 
+TEST(RealSpaceLdosTest, ResolvedOwnershipMatchesTheReferenceRule) {
+    // The distributed resolution against the rule stated independently of it.
+    // ResolveGridOwnership settles ownership through a claim exchange, each
+    // rank seeing only its own atoms; ResolveGridOwnershipReference applies
+    // the same BoxClaim order to every atom at once. They must agree box for
+    // box -- and because the reference needs the true atom owners, this also
+    // pins that box ownership really does follow the partition the system
+    // arrived with, whatever produced it, which is the whole point of the
+    // claim design.
+    int world = 1, rank = 0;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+
+    ChainSystem sys;
+    const auto grid = rsatb::calc::MakeRealSpaceGrid(sys.ad->cell, 1.2, 4);
+    const std::vector<double> type_rcut = {sys.rcut};
+
+    const auto ownership =
+        rsatb::calc::ResolveGridOwnership(*sys.ad, grid, type_rcut, MPI_COMM_WORLD);
+
+    // The true owner of every atom, gathered so the reference can be built.
+    // AtomicData redistributes, so an atom's owner is wherever it landed --
+    // exactly what the claim rule is supposed to be following.
+    std::vector<int> atom_owner(ChainSystem::kAtoms, 0);
+    for (int a = 0; a < sys.ad->n_atom; ++a) {
+        atom_owner[sys.ad->get_global_index(a)] = rank;
+    }
+    if (world > 1) {
+        MPI_Allreduce(MPI_IN_PLACE, atom_owner.data(), ChainSystem::kAtoms, MPI_INT,
+                      MPI_MAX, MPI_COMM_WORLD);
+    }
+    // Positions in GLOBAL index order, likewise.
+    std::vector<double> pos(3 * ChainSystem::kAtoms, 0.0);
+    for (int a = 0; a < sys.ad->n_atom; ++a) {
+        const int g = sys.ad->get_global_index(a);
+        sys.ad->get_pos(a, &pos[3 * g], &pos[3 * g + 1], &pos[3 * g + 2]);
+    }
+    if (world > 1) {
+        MPI_Allreduce(MPI_IN_PLACE, pos.data(), 3 * ChainSystem::kAtoms, MPI_DOUBLE,
+                      MPI_SUM, MPI_COMM_WORLD);
+    }
+
+    const auto reference = rsatb::calc::ResolveGridOwnershipReference(
+        grid, pos, std::vector<int>(ChainSystem::kAtoms, 0), atom_owner,
+        {ChainSystem::kNorb}, type_rcut, sys.ad->cell, sys.ad->pbc, world);
+
+    // Every box this rank owns must be a box the reference gives it...
+    for (int box : ownership.boxes) {
+        ASSERT_EQ(reference[box], rank)
+            << "np=" << world << ": rank " << rank << " owns box " << box
+            << " but the rule gives it to " << reference[box];
+    }
+    // ...and it must own every such box, so the two agree exactly rather than
+    // one merely being a subset of the other.
+    int expected = 0;
+    for (int b = 0; b < grid.n_box(); ++b) {
+        if (reference[b] == rank) ++expected;
+    }
+    EXPECT_EQ(static_cast<int>(ownership.boxes.size()), expected) << "np=" << world;
+
+    // And the cover is exact across ranks.
+    int owned_total = static_cast<int>(ownership.boxes.size());
+    if (world > 1) {
+        MPI_Allreduce(MPI_IN_PLACE, &owned_total, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    }
+    EXPECT_EQ(owned_total, grid.n_box()) << "np=" << world;
+    if (rank == 0) {
+        printf("  np=%d: %d boxes, ownership matches the reference rule exactly\n",
+               world, grid.n_box());
+    }
+}
+
 TEST(RealSpaceLdosTest, DistributedRanksAssembleTheSerialAnswer) {
     // Runs at ANY rank count -- this is the test that executes the real MPI
     // paths when launched under mpirun: the demand-set alltoallv, the
@@ -380,10 +433,6 @@ TEST(RealSpaceLdosTest, DistributedRanksAssembleTheSerialAnswer) {
     DenseReference ref(sys);
     const double spread = ref.eps.back() - ref.eps.front();
 
-    std::vector<double> pos;
-    for (int i = 0; i < ChainSystem::kAtoms; ++i) pos.insert(pos.end(), {2.0 * i, 0.0, 0.0});
-    const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, world);
-
     rsatb::calc::RealSpaceLdosOptions opt;
     opt.eta = 0.05 * spread;
     opt.energies = {ref.eps[sys.n() / 4], ref.eps[2 * sys.n() / 3]};
@@ -394,8 +443,7 @@ TEST(RealSpaceLdosTest, DistributedRanksAssembleTheSerialAnswer) {
     opt.complete_basis = true;
 
     const auto result = rsatb::calc::ComputeRealSpaceLdos(
-        *sys.ad, *sys.H, *sys.S, *sys.Zt, *part.tree, *sys.collocation, opt,
-        MPI_COMM_WORLD);
+        *sys.ad, *sys.H, *sys.S, *sys.Zt, *sys.collocation, opt, MPI_COMM_WORLD);
     ASSERT_EQ(result.n_states, sys.n());
 
     // The reference set, written down from the geometry every rank knows.

@@ -352,16 +352,20 @@ int main(int argc, char** argv) {
 // These are the two properties the whole scaling argument rests on. If boxes
 // were not a disjoint cover, the compact per-rank buffers would not
 // concatenate into the global result and the missing allreduce would be a
-// silent bug. If ownership were not derived from the atom cut, a rank's boxes
-// would need orbitals from atoms it does not hold, and the work per rank would
-// never fall no matter how many ranks were added.
+// silent bug. If ownership were not derived from the atoms themselves, a
+// rank's boxes would need orbitals from atoms it does not hold, and the work
+// per rank would never fall no matter how many ranks were added.
+//
+// These drive ResolveGridOwnershipReference -- the rule stated independently
+// of how it is communicated. The distributed resolution is checked against it
+// separately, under mpirun, in test_rs_ldos.
 
 namespace {
 
-// Atoms in two well-separated clumps, so "which region is this box in" has an
-// unambiguous answer that a test can assert against.
-vbcsr::atomic::InertialPartition TwoClumpPartition(int n_part,
-                                                   std::vector<double>* pos_out) {
+// Two well-separated clumps of carbons, and an owner per atom -- a stand-in
+// for whatever partition the system arrived with. Ownership of a box is
+// derived from THAT, so the test never needs a partitioner at all.
+void TwoClumps(std::vector<double>* pos_out, std::vector<int>* owner_out, int n_rank) {
     std::vector<double> pos;
     for (int i = 0; i < 4; ++i) {
         for (int j = 0; j < 4; ++j) {
@@ -370,102 +374,130 @@ vbcsr::atomic::InertialPartition TwoClumpPartition(int n_part,
         }
     }
     *pos_out = pos;
-    return vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+    // Round-robin inside each clump: adversarial on purpose, since a
+    // contiguous assignment would let a broken rule look right by accident.
+    const int n_atom = static_cast<int>(pos.size() / 3);
+    owner_out->resize(n_atom);
+    for (int a = 0; a < n_atom; ++a) (*owner_out)[a] = a % n_rank;
+}
+
+std::vector<int> ReferenceOwners(const rsatb::calc::RealSpaceGrid& grid,
+                                 const std::vector<double>& pos,
+                                 const std::vector<int>& owners, int n_rank,
+                                 double rcut, const std::vector<double>& cell) {
+    const std::vector<int> types(owners.size(), 0);
+    return rsatb::calc::ResolveGridOwnershipReference(
+        grid, pos, types, owners, {1}, {rcut}, cell, {false, false, false}, n_rank);
 }
 
 }  // namespace
 
 TEST(GridPartitionTest, AssignsEveryPointExactlyOnce) {
+    // The property the whole no-reduction output layout rests on: the boxes a
+    // rank owns, concatenated across ranks, cover every grid point exactly
+    // once. With ownership settled per box by a single referee this is true by
+    // construction -- the test is here to keep it true.
     const std::vector<double> cell = {10.0, 0.0, 0.0, 0.0, 9.0, 0.0, 0.0, 0.0, 8.0};
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.8, 3);
 
-    for (int n_part : {2, 3, 4, 8, 16}) {
+    for (int n_rank : {2, 3, 4, 8, 16}) {
         std::vector<double> pos;
-        const auto part = TwoClumpPartition(n_part, &pos);
+        std::vector<int> owners;
+        TwoClumps(&pos, &owners, n_rank);
+        const auto owner_of = ReferenceOwners(grid, pos, owners, n_rank, 2.0, cell);
 
         std::vector<int> seen(grid.n_point(), 0);
         int64_t total = 0;
-        for (int r = 0; r < n_part; ++r) {
-            const auto domain = rsatb::calc::MakeGridDomain(
-                grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+        for (int r = 0; r < n_rank; ++r) {
+            std::vector<int> mine;
+            for (int b = 0; b < grid.n_box(); ++b) {
+                if (owner_of[b] == r) mine.push_back(b);
+            }
+            const auto domain = rsatb::calc::MakeGridDomain(grid, mine);
             total += domain.n_point();
             for (int64_t k = 0; k < domain.n_point(); ++k) {
                 seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
             }
         }
-        EXPECT_EQ(total, grid.n_point()) << "n_part = " << n_part;
+        EXPECT_EQ(total, grid.n_point()) << "n_rank = " << n_rank;
         for (int64_t i = 0; i < grid.n_point(); ++i) {
-            ASSERT_EQ(seen[i], 1) << "point " << i << " at n_part = " << n_part;
+            ASSERT_EQ(seen[i], 1) << "point " << i << " at n_rank = " << n_rank;
         }
     }
 }
 
-TEST(GridPartitionTest, BindsPointsToTheAtomsTheyLieOn) {
-    // A box sitting inside a clump must be owned by a rank that owns atoms of
-    // that clump -- that is the point_owner == atom_owner contract. Checked by
-    // asserting the box's owner also owns the atom nearest the box centre.
+TEST(GridPartitionTest, BoxesGoToARankThatOwnsAnAtomReachingThem) {
+    // The locality guarantee, and the reason the halo stays small: whenever
+    // any orbital reaches a box, the box goes to a rank that owns one of those
+    // atoms -- never to a bystander. This is what the old cut-plane scheme
+    // could only approximate, because ParMETIS moved atoms after the planes
+    // were drawn.
     const std::vector<double> cell = {10.0, 0.0, 0.0, 0.0, 10.0, 0.0, 0.0, 0.0, 10.0};
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.8, 3);
+    const double rcut = 2.0;
 
-    for (int n_part : {2, 3, 4, 8, 16}) {
+    for (int n_rank : {2, 3, 4, 8, 16}) {
         std::vector<double> pos;
-        const auto part = TwoClumpPartition(n_part, &pos);
+        std::vector<int> owners;
+        TwoClumps(&pos, &owners, n_rank);
+        const auto owner_of = ReferenceOwners(grid, pos, owners, n_rank, rcut, cell);
         const int n_atom = static_cast<int>(pos.size() / 3);
 
-        for (int r = 0; r < n_part; ++r) {
-            for (int b : rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r)) {
-                const auto box = grid.BoxAt(b);
-                int nearest = -1;
-                double best = 0.0;
-                for (int a = 0; a < n_atom; ++a) {
-                    double d2 = 0.0;
-                    for (int x = 0; x < 3; ++x) {
-                        const double d = pos[3 * a + x] - box.center[x];
-                        d2 += d * d;
-                    }
-                    if (nearest < 0 || d2 < best) { nearest = a; best = d2; }
+        int n_reached = 0;
+        for (int b = 0; b < grid.n_box(); ++b) {
+            const auto box = grid.BoxAt(b);
+            bool owner_reaches = false, anyone_reaches = false;
+            for (int a = 0; a < n_atom; ++a) {
+                double d2 = 0.0;
+                for (int x = 0; x < 3; ++x) {
+                    const double d = pos[3 * a + x] - box.center[x];
+                    d2 += d * d;
                 }
-                // Only assert where the answer is unambiguous: a box deep
-                // inside a clump. Boxes in the vacuum between clumps fall
-                // wherever the cut planes put them, which is correct but
-                // arbitrary, and asserting there would test nothing.
-                if (std::sqrt(best) < 1.0) {
-                    EXPECT_EQ(part.owner[nearest], r)
-                        << "box " << b << " at n_part = " << n_part;
-                }
+                if (std::sqrt(d2) >= rcut + box.radius) continue;
+                anyone_reaches = true;
+                if (owners[a] == owner_of[b]) owner_reaches = true;
             }
+            if (!anyone_reaches) continue;  // vacuum: any owner will do
+            ++n_reached;
+            EXPECT_TRUE(owner_reaches)
+                << "box " << b << " at n_rank = " << n_rank
+                << " went to rank " << owner_of[b] << ", which owns no atom reaching it";
         }
+        EXPECT_GT(n_reached, 0) << "no box was reached at all; the test proved nothing";
     }
 }
 
-TEST(GridPartitionTest, IsDeterministicAndIndependentOfRankOrder) {
-    // Every rank derives the partition itself with no communication, so two
-    // independent derivations must agree exactly or the ranks disagree about
-    // who owns what.
+TEST(GridPartitionTest, ResolutionIsDeterministic) {
+    // Every rank resolves ownership from claims that may arrive in any order,
+    // so the rule has to be a total order or the ranks disagree about who owns
+    // what -- and disagreement means points written twice or not at all.
     const std::vector<double> cell = {7.0, 1.0, 0.0, 0.0, 7.0, 0.0, 0.0, 0.0, 7.0};
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.7, 4);
     std::vector<double> pos;
-    const auto a = TwoClumpPartition(4, &pos);
-    const auto b = TwoClumpPartition(4, &pos);
-    for (int r = 0; r < 4; ++r) {
-        EXPECT_EQ(rsatb::calc::OwnedBoxesFromAtoms(grid, *a.tree, r),
-                  rsatb::calc::OwnedBoxesFromAtoms(grid, *b.tree, r));
-    }
+    std::vector<int> owners;
+    TwoClumps(&pos, &owners, 4);
+    EXPECT_EQ(ReferenceOwners(grid, pos, owners, 4, 2.0, cell),
+              ReferenceOwners(grid, pos, owners, 4, 2.0, cell));
 }
 
 TEST(GridPartitionTest, SurvivesMoreRanksThanAtoms) {
-    // 32 atoms across 64 parts: bisection runs out of atoms to split, so some
-    // parts are empty. Those ranks must own no boxes rather than duplicate or
-    // drop them -- the cover has to stay exact when the partition degenerates.
+    // 32 atoms across 64 ranks: half the ranks own nothing and can claim
+    // nothing. The unclaimed boxes must still land somewhere exactly once,
+    // which is what the referee fallback is for.
     const std::vector<double> cell = {6.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0};
     const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 1.0, 3);
     std::vector<double> pos;
-    const auto part = TwoClumpPartition(64, &pos);
+    std::vector<int> owners;
+    TwoClumps(&pos, &owners, 64);
+    const auto owner_of = ReferenceOwners(grid, pos, owners, 64, 2.0, cell);
 
     std::vector<int> seen(grid.n_point(), 0);
     for (int r = 0; r < 64; ++r) {
-        const auto domain = rsatb::calc::MakeGridDomain(
-            grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+        std::vector<int> mine;
+        for (int b = 0; b < grid.n_box(); ++b) {
+            if (owner_of[b] == r) mine.push_back(b);
+        }
+        const auto domain = rsatb::calc::MakeGridDomain(grid, mine);
         for (int64_t k = 0; k < domain.n_point(); ++k) {
             seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
         }
@@ -473,57 +505,81 @@ TEST(GridPartitionTest, SurvivesMoreRanksThanAtoms) {
     for (int64_t i = 0; i < grid.n_point(); ++i) ASSERT_EQ(seen[i], 1) << "point " << i;
 }
 
-TEST(GridPartitionTest, GivesEveryAtomOwningRankBoxesWhenBoxesResolveRegions) {
-    // Ownership follows the atoms, so grid balance is not the target: a rank
-    // over vacuum legitimately gets more boxes than one over a dense clump.
-    // What must hold is that a rank owning atoms also owns grid, which needs
-    // the boxes to be finer than the regions -- see OwnedBoxesFromAtoms. Here
-    // the clumps are ~6 A across and split 4 ways gives ~3 A regions against a
-    // 0.75 A box, the same direction as production (17.8 A vs 2.4 A).
-    const std::vector<double> cell = {24.0, 0.0, 0.0, 0.0, 24.0, 0.0, 0.0, 0.0, 24.0};
-    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.25, 3);
-
-    std::vector<double> pos;
-    for (int i = 0; i < 4; ++i) {
-        for (int j = 0; j < 4; ++j) {
-            pos.insert(pos.end(), {2.0 + 2.0 * i, 2.0 + 2.0 * j, 4.0});
-            pos.insert(pos.end(), {16.0 + 2.0 * i, 16.0 + 2.0 * j, 18.0});
-        }
-    }
-    for (int n_part : {2, 4, 8}) {
-        const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
-        for (int r = 0; r < n_part; ++r) {
-            if (part.counts[r] == 0) continue;
-            EXPECT_FALSE(rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r).empty())
-                << "rank " << r << " owns atoms but no boxes, n_part = " << n_part;
-        }
-    }
-}
-
-TEST(GridPartitionTest, CoverStaysExactWhenBoxesAreCoarserThanRegions) {
-    // The other side of the same condition. With boxes coarser than the atom
-    // regions, a region can contain no box centre and that rank gets no grid;
-    // its points belong to a neighbouring rank instead, which then needs
-    // orbitals from atoms it does not own (the ghost layer's job, not the
-    // partition's). That is a resolution question and degrades gracefully --
-    // but the cover must stay exact regardless, because the compact per-rank
-    // buffers are concatenated with no reduction and a double-counted point
-    // would be silently wrong rather than merely imbalanced.
+TEST(GridPartitionTest, CoverIsExactWhateverTheBoxToRegionRatio) {
+    // The old cut-plane scheme carried a resolution condition: a region finer
+    // than a box contained no box centre and got no grid. Claiming removes the
+    // condition -- an atom claims whatever it reaches, however coarse the
+    // boxes -- but the cover must be exact in BOTH regimes regardless, since
+    // the compact buffers are concatenated with no reduction.
     const std::vector<double> cell = {6.0, 0.0, 0.0, 0.0, 6.0, 0.0, 0.0, 0.0, 6.0};
-    const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, 0.5, 4);  // 2 A boxes
     std::vector<double> pos;
-    const auto part = TwoClumpPartition(8, &pos);                    // ~0.9 A regions
+    std::vector<int> owners;
+    TwoClumps(&pos, &owners, 8);                      // ~0.9 A clump spacing
 
-    std::vector<int> seen(grid.n_point(), 0);
-    for (int r = 0; r < 8; ++r) {
-        const auto domain = rsatb::calc::MakeGridDomain(
-            grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
-        for (int64_t k = 0; k < domain.n_point(); ++k) {
-            seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+    for (double spacing : {0.5, 0.25}) {              // 2 A boxes, then 0.75 A
+        const auto grid = rsatb::calc::MakeRealSpaceGrid(cell, spacing, 4);
+        const auto owner_of = ReferenceOwners(grid, pos, owners, 8, 2.0, cell);
+        std::vector<int> seen(grid.n_point(), 0);
+        for (int r = 0; r < 8; ++r) {
+            std::vector<int> mine;
+            for (int b = 0; b < grid.n_box(); ++b) {
+                if (owner_of[b] == r) mine.push_back(b);
+            }
+            const auto domain = rsatb::calc::MakeGridDomain(grid, mine);
+            for (int64_t k = 0; k < domain.n_point(); ++k) {
+                seen[rsatb::calc::GlobalIndexOfOwnedPoint(grid, domain, k)] += 1;
+            }
+        }
+        for (int64_t i = 0; i < grid.n_point(); ++i) {
+            ASSERT_EQ(seen[i], 1) << "point " << i << " at spacing " << spacing;
         }
     }
-    for (int64_t i = 0; i < grid.n_point(); ++i) ASSERT_EQ(seen[i], 1) << "point " << i;
 }
+
+namespace {
+
+// GridOwnership for a SIMULATED rank, built from an explicit owner-per-box
+// map. The distributed resolver needs real MPI ranks; this lets a serial test
+// still drive the demand path for several ranks, which is where the
+// interesting failures live.
+rsatb::calc::GridOwnership SimulatedOwnership(const rsatb::calc::RealSpaceGrid& grid,
+                                              vbcsr::atomic::AtomicData& atomic_data,
+                                              const std::vector<int>& owner_of,
+                                              const std::vector<double>& type_rcut,
+                                              int rank) {
+    rsatb::calc::GridOwnership ownership;
+    for (int b = 0; b < grid.n_box(); ++b) {
+        if (owner_of[b] == rank) ownership.boxes.push_back(b);
+    }
+    std::vector<int> reached;
+    rsatb::calc::detail::ForEachBoxOfOwnedAtoms(
+        atomic_data, grid, type_rcut,
+        [&](int, int box, double) { reached.push_back(box); });
+    std::sort(reached.begin(), reached.end());
+    reached.erase(std::unique(reached.begin(), reached.end()), reached.end());
+    for (int b : reached) {
+        ownership.reached_box.push_back(b);
+        ownership.reached_owner.push_back(owner_of[b]);
+    }
+    return ownership;
+}
+
+// Owner per box for a chain, from the rule, given an owner per atom.
+std::vector<int> ChainOwners(const rsatb::calc::RealSpaceGrid& grid,
+                             vbcsr::atomic::AtomicData& atomic_data,
+                             const std::vector<int>& atom_owner, int n_rank,
+                             double rcut, int norb) {
+    const int n_atom = static_cast<int>(atom_owner.size());
+    std::vector<double> pos(3 * n_atom);
+    for (int a = 0; a < n_atom; ++a) {
+        atomic_data.get_pos(a, &pos[3 * a], &pos[3 * a + 1], &pos[3 * a + 2]);
+    }
+    return rsatb::calc::ResolveGridOwnershipReference(
+        grid, pos, std::vector<int>(n_atom, 0), atom_owner, {norb}, {rcut},
+        atomic_data.cell, atomic_data.pbc, n_rank);
+}
+
+}  // namespace
 
 TEST(CollocationTest, LocalOrbitalSetHoldsEveryAtomReachingItsBoxes) {
     // The no-communication claim: a rank's local set must contain every atom
@@ -818,21 +874,18 @@ TEST(CollocationTest, DistributedMapAssemblesIntoTheSerialMap) {
     ASSERT_GT(peak, 0.0) << "the reference map is identically zero";
 
     for (int n_part : {2, 3, 4, 8}) {
-        std::vector<double> pos(atomic_data->x.size() * 3);
-        for (int a = 0; a < n_atom; ++a) {
-            pos[3 * a + 0] = atomic_data->x[a];
-            pos[3 * a + 1] = atomic_data->y[a];
-            pos[3 * a + 2] = atomic_data->z[a];
-        }
-        pos.resize(3 * n_atom);
-        const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+        std::vector<int> atom_owner(n_atom);
+        for (int a = 0; a < n_atom; ++a) atom_owner[a] = a % n_part;
+        const auto owner_of =
+            ChainOwners(grid, *atomic_data, atom_owner, n_part, rcut, 13);
 
         std::vector<double> assembled(grid.n_point(), 0.0);
         std::vector<int> written(grid.n_point(), 0);
         int n_strict_subset = 0;
         for (int r = 0; r < n_part; ++r) {
-            const auto domain = rsatb::calc::MakeGridDomain(
-                grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+            const auto mine =
+                SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, r);
+            const auto domain = rsatb::calc::MakeGridDomain(grid, mine.boxes);
             if (domain.n_box() == 0) continue;
             // The local set -- no gather, and generally not the full set.
             const auto local_set =
@@ -896,9 +949,14 @@ TEST(GridPartitionTest, DemandEnumerationMatchesTheLocalSetsExactly) {
         }
 
         for (int n_part : {2, 3, 4, 8}) {
-            const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, n_part);
+            std::vector<int> atom_owner(n_atom);
+            for (int a = 0; a < n_atom; ++a) atom_owner[a] = a % n_part;
+            const auto owner_of =
+                ChainOwners(grid, *atomic_data, atom_owner, n_part, rcut, 13);
+            const auto ownership =
+                SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, 0);
             const auto demands =
-                rsatb::calc::BoxDemandsOfOwnedAtoms(*atomic_data, grid, *part.tree, {rcut});
+                rsatb::calc::BoxDemandsOfOwnedAtoms(*atomic_data, grid, ownership, {rcut});
 
             for (int r = 0; r < n_part; ++r) {
                 std::vector<int> demanded;
@@ -907,8 +965,9 @@ TEST(GridPartitionTest, DemandEnumerationMatchesTheLocalSetsExactly) {
                 }
                 std::sort(demanded.begin(), demanded.end());
 
-                const auto domain = rsatb::calc::MakeGridDomain(
-                    grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, r));
+                const auto mine =
+                    SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, r);
+                const auto domain = rsatb::calc::MakeGridDomain(grid, mine.boxes);
                 const auto local_set =
                     rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
                 EXPECT_EQ(demanded, local_set.atoms)
@@ -919,7 +978,7 @@ TEST(GridPartitionTest, DemandEnumerationMatchesTheLocalSetsExactly) {
                 // field: on a serial fixture the candidate pool is complete,
                 // so any difference is a bug in the exchange-side packing.
                 const auto demand_set = rsatb::calc::BuildOrbitalSetFromDemands(
-                    *atomic_data, grid, *part.tree, {rcut}, r, MPI_COMM_NULL);
+                    *atomic_data, grid, mine, {rcut}, r, MPI_COMM_NULL);
                 EXPECT_EQ(demand_set.atoms, local_set.atoms);
                 EXPECT_EQ(demand_set.atom_type, local_set.atom_type);
                 EXPECT_EQ(demand_set.atom_norb, local_set.atom_norb);
@@ -951,18 +1010,18 @@ TEST(GridPartitionTest, CoverageValidatorPassesAndCatchesATruncatedSet) {
         pos[3 * a + 1] = atomic_data->y[a];
         pos[3 * a + 2] = atomic_data->z[a];
     }
-    const auto part = vbcsr::atomic::PartitionByInertia(pos, {}, 1);
-    const auto domain = rsatb::calc::MakeGridDomain(
-        grid, rsatb::calc::OwnedBoxesFromAtoms(grid, *part.tree, 0));
+    const auto ownership =
+        rsatb::calc::ResolveGridOwnership(*atomic_data, grid, {rcut}, MPI_COMM_WORLD);
+    const auto domain = rsatb::calc::MakeGridDomain(grid, ownership.boxes);
     const auto set = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
     ASSERT_EQ(set.n_atom(), n_atom);
 
     EXPECT_NO_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
-        *atomic_data, grid, *part.tree, set, {rcut}, MPI_COMM_WORLD));
+        *atomic_data, grid, ownership, set, {rcut}, MPI_COMM_WORLD));
 
     auto truncated = set;
     truncated.atoms.erase(truncated.atoms.begin() + 5);
     EXPECT_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
-                     *atomic_data, grid, *part.tree, truncated, {rcut}, MPI_COMM_WORLD),
+                     *atomic_data, grid, ownership, truncated, {rcut}, MPI_COMM_WORLD),
                  std::runtime_error);
 }

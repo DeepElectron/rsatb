@@ -1130,11 +1130,9 @@ inline vbcsr::BlockSpMat<double> PeelGammaReal(vbcsr::BlockSpMat<std::complex<do
 ///
 /// Glue only -- the method lives in rs_ldos.hpp. This adapter peels the
 /// complex Gamma matrices to real, reuses the operator set's S^{-1/2} factor
-/// when one was built (falling back to a fresh isqrtm), derives the box
-/// ownership tree from the owned atoms by the same collective inertial
-/// bisection the partitioning uses (weighted by orbital count, the
-/// collocation-balance choice), and fills the spectral bounds the operators
-/// already measured. Gamma-only, and it needs an overlap: an orthogonal
+/// when one was built (falling back to a fresh isqrtm), and fills the
+/// spectral bounds the operators already measured. Box ownership needs
+/// nothing from here: the driver derives it from the atom partition. Gamma-only, and it needs an overlap: an orthogonal
 /// tight-binding model has no real-space basis to evaluate.
 inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context,
                                                 const std::vector<std::string>& orbital_files,
@@ -1183,27 +1181,15 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
         inverse_sqrt(S, zt.get(), InverseSqrtOptions{});
     }
 
-    // Box ownership follows the atoms: the same collective inertial bisection
-    // the partition layer uses, weighted by orbital count so grid work
-    // balances with collocation cost. Deterministic, so every rank holds the
-    // identical tree.
+    // Box ownership is settled inside the driver, from the atom partition
+    // itself -- nothing here re-derives how the atoms were distributed.
     vbcsr::atomic::AtomicData& atomic_data = *context.atomic_data;
     MPI_Comm comm = atomic_data.comm;
-    int comm_size = 1;
-    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &comm_size);
-    std::vector<double> positions(3 * static_cast<size_t>(atomic_data.n_atom));
-    std::vector<double> weights(atomic_data.n_atom);
-    for (int a = 0; a < atomic_data.n_atom; ++a) {
-        atomic_data.get_pos(a, &positions[3 * a], &positions[3 * a + 1], &positions[3 * a + 2]);
-        weights[a] = static_cast<double>(atomic_data.type_norb[atomic_data.atom_type[a]]);
-    }
-    const auto part = vbcsr::atomic::PartitionByInertiaDistributed(positions, weights,
-                                                                   comm_size, comm);
 
     const OrbitalCollocation collocation(orbital_files, comm);
     options.emin = ops.emin();
     options.emax = ops.emax();
-    return ComputeRealSpaceLdos(atomic_data, H, S, *zt, *part.tree, collocation, options, comm);
+    return ComputeRealSpaceLdos(atomic_data, H, S, *zt, collocation, options, comm);
 }
 
 }  // namespace calc

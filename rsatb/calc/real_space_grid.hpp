@@ -28,13 +28,13 @@
 //     columns contribute nothing; the tight per-point truth is enforced by
 //     the evaluation itself, never by this pre-filter.
 //   - Boxes are what gets partitioned, and the partition is what makes the
-//     whole thing scale (GridDomain below).
+//     whole thing scale (GridDomain below). WHO owns which box is decided
+//     in collocation.hpp, from the atoms themselves -- this file is pure
+//     geometry and knows nothing about atoms or ranks.
 //
 // Layout follows rescu++ (src/cpp/lcao_grid/orbital_grid.cpp,
 // build_grid_boxes): boxes tile the index space in x-major order, and a box
 // keeps its half-open index range so its points can be regenerated on demand.
-
-#include "vbcsr/core/atomic/inertial_partition.hpp"
 
 #include <algorithm>
 #include <array>
@@ -179,16 +179,18 @@ struct RealSpaceGrid {
         }
     }
 
-    /// Largest bounding radius over all boxes.
+    /// Largest bounding radius over all boxes, in O(1).
     ///
-    /// Every full box has the same shape, so this is BoxAt(0)'s radius unless
-    /// the grid does not divide evenly, where the trailing boxes are smaller.
-    /// Scanning is O(n_box) arithmetic and no memory, and it runs once.
+    /// Box 0 is always full -- box_edge is clamped to shape, so it spans
+    /// box_edge[d] points along every axis -- and a trailing box spans fewer.
+    /// The bounding sphere is fitted to corners (box_edge[d] - 1) steps apart,
+    /// which grows with the span, so no box can beat box 0. Scanning every box
+    /// to rediscover that cost O(n_box) per rank, i.e. O(cell volume): the one
+    /// term in this file that grew with the cell rather than with the share of
+    /// it a rank owns.
     double MaxBoxRadius() const {
-        double radius = 0.0;
-        const int total = n_box();
-        for (int b = 0; b < total; ++b) radius = std::max(radius, BoxAt(b).radius);
-        return radius;
+        if (n_box() == 0) return 0.0;
+        return BoxAt(0).radius;
     }
 };
 
@@ -266,63 +268,6 @@ inline GridDomain MakeGridDomain(const RealSpaceGrid& grid, std::vector<int> own
         domain.offset[i + 1] = domain.offset[i] + grid.BoxAt(domain.boxes[i]).n_point();
     }
     return domain;
-}
-
-/// The boxes `rank` owns, taken from the atoms' own inertial cut.
-///
-/// Ownership is decided by classifying the box centre through the same cut
-/// planes the atoms were partitioned by, so
-///
-///     point_owner == atom_owner
-///
-/// by construction. That is what lets a rank contract its boxes against
-/// coefficients it already holds: the orbitals reaching a box belong to atoms
-/// in the same region, which this rank owns or already has as graph ghosts.
-/// Partitioning the grid independently of the atoms would instead leave every
-/// rank needing every orbital, and the work per rank would never fall.
-///
-/// Communication-free and deterministic: the tree is identical on every rank
-/// (it is built by a collective in RedistributeByInertia and returned to all),
-/// and classification is a pure function of it, so the ranks agree on a
-/// disjoint cover without exchanging anything. rescu++ takes the same position
-/// for the same reason -- see GridBoxPartition::set_owned_explicit, "the
-/// caller derived box ownership from the atom partition".
-///
-/// The balance this gives is atom-balance, not point-balance: a rank owning a
-/// dense region gets fewer grid points than one owning vacuum. That is the
-/// right trade, because a box with no atoms near it costs nothing to contract
-/// (its active-orbital list is empty and it is skipped), while a box whose
-/// orbitals live on another rank would cost a halo exchange.
-///
-/// Boundary orbitals. A box is claimed whole, by where its centre falls, so a
-/// box straddling a cut plane overhangs into the neighbour's region, and
-/// atoms owned by other ranks reach into it -- across a boundary an orbital
-/// always reaches boxes it does not own. The graph ghosts cover almost all
-/// of that: a foreign atom reaching a point that any owned atom's orbital
-/// also covers is, by the triangle inequality, within the neighbour-list
-/// cutoff of that owned atom, hence already a ghost. The gap is the case
-/// with no owned atom nearby -- an overhang next to a vacuum gap wider than
-/// the neighbour-list cutoff, or a region thinner than a box -- where a
-/// reaching foreign atom is NOT a ghost and a purely local orbital set would
-/// silently drop its weight. That is why the production set is built from
-/// the demand side (BuildOrbitalSetFromDemands in collocation.hpp): each
-/// atom's owner enumerates the boxes the atom reaches and ships it to their
-/// owners, so coverage is exact by construction for any geometry, and
-/// ValidateLocalOrbitalCoverage exists to prove the cheaper local set
-/// sufficient where it is used. What never degrades is exactness of the
-/// cover itself: it is a partition at any ratio, which is what the compact
-/// no-reduction buffers depend on.
-inline std::vector<int> OwnedBoxesFromAtoms(const RealSpaceGrid& grid,
-                                            const vbcsr::atomic::InertialCut& tree,
-                                            int rank) {
-    std::vector<int> owned;
-    const int total = grid.n_box();
-    for (int b = 0; b < total; ++b) {
-        if (vbcsr::atomic::ClassifyPoint(tree, grid.BoxAt(b).center) == rank) {
-            owned.push_back(b);
-        }
-    }
-    return owned;
 }
 
 /// Global grid index of the k-th value in a domain's compact buffer.

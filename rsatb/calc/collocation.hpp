@@ -47,6 +47,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -109,9 +110,12 @@ inline int TrimZeroRows(int n_point, int n_orb, std::vector<double>* phi,
 /// taken from the atoms it already holds, with no collective. That is the only
 /// form that works for a full-cell map, because the replicated set is O(N)
 /// atoms on every rank and the block indexed by it is O(N^2) -- at 10^6 atoms
-/// the block alone would be 10^14 entries. Ownership being bound to the atoms
-/// (OwnedBoxesFromAtoms) is what makes the local set sufficient: the orbitals
-/// reaching a rank's boxes belong to atoms in the same region.
+/// the block alone would be 10^14 entries. Ownership being derived from the
+/// atoms (ResolveGridOwnership) is what makes the local set sufficient: the
+/// orbitals reaching a rank's boxes belong to atoms in the same region.
+///
+/// BuildOrbitalSetFromDemands is the production form and the only one exact
+/// for every geometry -- see its own comment.
 struct OrbitalSet {
     std::vector<int> atoms;       ///< Global atom indices, ascending.
     std::vector<int> atom_type;   ///< Type of each atom.
@@ -252,8 +256,10 @@ inline OrbitalSet BuildOrbitalSetForSpheres(vbcsr::atomic::AtomicData& atomic_da
 /// throughout a dense solid; false in vacuum, where a box may sit far from any
 /// atom. That case is not an error: such a box has no orbitals reaching it and
 /// contributes nothing, which is exactly what an empty active list produces.
-/// What would be an error is a box near foreign atoms that are not ghosts, and
-/// the resolution condition on OwnedBoxesFromAtoms is what excludes it.
+/// What would be an error is a box near foreign atoms that are not ghosts,
+/// which is why this cheap form must be certified by
+/// ValidateLocalOrbitalCoverage wherever it is used in anger; the demand-built
+/// set has no such condition.
 ///
 /// Cost is O(n_local_atom) after a bounding-sphere reject, not
 /// O(n_local_atom * n_box): the per-box test only runs for atoms that reach
@@ -361,31 +367,27 @@ inline OrbitalSet BuildLocalOrbitalSet(vbcsr::atomic::AtomicData& atomic_data,
 
 namespace detail {
 
-/// Calls `emit(owner_rank, local_atom_index)` once for every (box-owning
-/// rank, owned atom) pair where the atom's orbitals reach a box of that rank.
+/// Calls `emit(local_atom, box, distance)` for every (owned atom, box) pair
+/// whose orbitals reach the box; `distance` runs from the atom to the box
+/// centre, minimum-image.
 ///
-/// The transpose of BuildLocalOrbitalSet's question: that builder asks "which
-/// of the atoms I hold reach my boxes"; this asks "which ranks' boxes do the
-/// atoms I OWN reach". Every atom has exactly one owner, so across the
-/// communicator each pair is generated exactly once, and the overlap
-/// predicate is the same one the per-box selection uses -- which is what
-/// makes both consumers exact: the validator's check is a proof, and the
-/// demand-built set covers by construction.
-///
-/// Cost is O(n_owned_atom): the box lattice is only walked in a window around
-/// each atom, sized by the cutoff against the cell's perpendicular widths (so
-/// the bound survives shear), with the exact sphere test inside. At production
-/// spacings that is a few dozen boxes per atom.
+/// The single traversal the whole real-space path is built on: box ownership
+/// and the coefficient demands are two readings of it, so they cannot drift
+/// apart. Cost is O(n_owned_atom) -- the box lattice is walked only in a
+/// window around each atom, sized by the cutoff against the cell's
+/// perpendicular widths (so the bound survives shear), with the exact sphere
+/// test inside. At production spacings that is a few dozen boxes per atom,
+/// and it never touches a box far from this rank's atoms. That is what keeps
+/// the path O(N/P) instead of O(cell volume) per rank.
 template <class EmitFn>
-void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
-                      const vbcsr::atomic::InertialCut& tree,
-                      const std::vector<double>& type_rcut, EmitFn&& emit) {
+void ForEachBoxOfOwnedAtoms(vbcsr::atomic::AtomicData& atomic_data,
+                            const RealSpaceGrid& grid,
+                            const std::vector<double>& type_rcut, EmitFn&& emit) {
     const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
     double widths[3];
     CellWidths(atomic_data.cell, widths);
     const double max_box_radius = grid.MaxBoxRadius();
 
-    std::vector<int> owners;
     for (int local = 0; local < atomic_data.n_atom; ++local) {
         const int type = atomic_data.atom_type[local];
         if (type < 0 || type >= static_cast<int>(type_rcut.size())) {
@@ -416,7 +418,6 @@ void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGri
             }
         }
 
-        owners.clear();
         for (int bx = b_lo[0]; bx <= b_hi[0]; ++bx) {
             const int wx = ((bx % grid.box_count[0]) + grid.box_count[0]) % grid.box_count[0];
             for (int by = b_lo[1]; by <= b_hi[1]; ++by) {
@@ -424,32 +425,320 @@ void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGri
                 for (int bz = b_lo[2]; bz <= b_hi[2]; ++bz) {
                     const int wz =
                         ((bz % grid.box_count[2]) + grid.box_count[2]) % grid.box_count[2];
-                    const GridBox box =
-                        grid.BoxAt((wx * grid.box_count[1] + wy) * grid.box_count[2] + wz);
-                    if (MinimumImageDistance(box.center, ax, ay, az, atomic_data.cell,
-                                             cell_inv, atomic_data.pbc) >= rcut + box.radius) {
-                        continue;
-                    }
-                    const int owner = vbcsr::atomic::ClassifyPoint(tree, box.center);
-                    if (std::find(owners.begin(), owners.end(), owner) == owners.end()) {
-                        owners.push_back(owner);
-                    }
+                    const int index = (wx * grid.box_count[1] + wy) * grid.box_count[2] + wz;
+                    const GridBox box = grid.BoxAt(index);
+                    const double distance = MinimumImageDistance(
+                        box.center, ax, ay, az, atomic_data.cell, cell_inv, atomic_data.pbc);
+                    if (distance >= rcut + box.radius) continue;
+                    emit(local, index, distance);
                 }
             }
         }
-        for (int owner : owners) emit(owner, local);
     }
+}
+
+/// One rank's claim on one box, and the rule that settles competing claims.
+///
+/// Whoever owns a box must fetch every orbital reaching it, so handing the box
+/// to the rank that already owns most of them minimises exactly what the
+/// coefficient halo ships. Distance, then rank, break ties -- making the rule
+/// a strict total order, so the winner does not depend on the order claims
+/// arrive in and every rank derives the same answer from the same set.
+struct BoxClaim {
+    int orbitals = 0;      ///< orbitals this rank owns that reach the box
+    double distance = 0.0; ///< nearest such atom to the box centre
+    int rank = -1;         ///< negative means "no claim at all"
+
+    bool Beats(const BoxClaim& other) const {
+        if (rank < 0) return false;
+        if (other.rank < 0) return true;
+        if (orbitals != other.orbitals) return orbitals > other.orbitals;
+        if (distance != other.distance) return distance < other.distance;
+        return rank < other.rank;
+    }
+};
+
+}  // namespace detail
+
+/// Which grid boxes this rank owns, and who owns the boxes its atoms reach.
+///
+/// Box ownership is DERIVED FROM THE ATOM PARTITION ITSELF, whatever produced
+/// that partition -- inertial bisection, a ParMETIS refinement of one, or a
+/// decomposition the caller chose. Nothing here re-derives or assumes a
+/// partitioning scheme, which is what makes
+///
+///     point_owner == atom_owner
+///
+/// exact rather than approximate. An earlier design classified box centres
+/// through the atoms' inertial cut tree: correct only while the atom partition
+/// still IS that tree, which stops being true the moment ParMETIS refines it
+/// (from_points) or the caller supplies its own (from_distributed).
+///
+/// `boxes` is this rank's share. `reached_box` / `reached_owner` answer "who
+/// owns box b" for exactly the boxes this rank's atoms reach, which is all the
+/// demand side needs -- so no rank ever holds an owner entry for the whole
+/// grid.
+struct GridOwnership {
+    std::vector<int> boxes;          ///< Owned boxes, ascending.
+    std::vector<int> reached_box;    ///< Boxes this rank's atoms reach, ascending.
+    std::vector<int> reached_owner;  ///< Owner of reached_box[i].
+
+    int n_box() const { return static_cast<int>(boxes.size()); }
+
+    /// Owner of a box this rank's atoms reach; -1 if they do not reach it.
+    int OwnerOf(int box) const {
+        const auto it = std::lower_bound(reached_box.begin(), reached_box.end(), box);
+        if (it == reached_box.end() || *it != box) return -1;
+        return reached_owner[static_cast<size_t>(it - reached_box.begin())];
+    }
+};
+
+/// Settles box ownership across the communicator, in one exchange out and back.
+///
+/// Every box has exactly one referee -- `box % size`, a pure function of the
+/// index -- so the cover is a partition BY CONSTRUCTION rather than by a
+/// geometric argument about cut planes. Each rank claims the boxes its own
+/// atoms reach; the referee applies detail::BoxClaim's total order and reports
+/// the winner back along the same routing. Boxes nobody claims stay with their
+/// referee: no orbital reaches them, so they contract to exactly zero and
+/// their owner is irrelevant beyond keeping the cover complete.
+///
+/// Cost: one local walk (O(owned atoms) -- see ForEachBoxOfOwnedAtoms), one
+/// alltoallv of claims out, one of winners back. Nothing anywhere is O(n_box)
+/// per rank.
+inline GridOwnership ResolveGridOwnership(vbcsr::atomic::AtomicData& atomic_data,
+                                          const RealSpaceGrid& grid,
+                                          const std::vector<double>& type_rcut,
+                                          MPI_Comm comm) {
+    int rank = 0, size = 1;
+    if (comm != MPI_COMM_NULL) {
+        MPI_Comm_rank(comm, &rank);
+        MPI_Comm_size(comm, &size);
+    }
+
+    // 1. This rank's claim on every box its atoms reach: how many orbitals it
+    //    contributes, and its nearest contributing atom.
+    struct Reach { int box; int orbitals; double distance; };
+    std::vector<Reach> reaches;
+    detail::ForEachBoxOfOwnedAtoms(
+        atomic_data, grid, type_rcut, [&](int local, int box, double distance) {
+            reaches.push_back({box, atomic_data.type_norb[atomic_data.atom_type[local]],
+                               distance});
+        });
+    std::sort(reaches.begin(), reaches.end(),
+              [](const Reach& a, const Reach& b) { return a.box < b.box; });
+
+    std::vector<int> my_box, my_orb;
+    std::vector<double> my_dist;
+    for (size_t i = 0; i < reaches.size();) {
+        size_t j = i;
+        int orbitals = 0;
+        double nearest = reaches[i].distance;
+        while (j < reaches.size() && reaches[j].box == reaches[i].box) {
+            orbitals += reaches[j].orbitals;
+            nearest = std::min(nearest, reaches[j].distance);
+            ++j;
+        }
+        my_box.push_back(reaches[i].box);
+        my_orb.push_back(orbitals);
+        my_dist.push_back(nearest);
+        i = j;
+    }
+
+    // 2. Route each claim to its box's referee, grouped by destination.
+    const bool exchange = (comm != MPI_COMM_NULL && size > 1);
+    std::vector<int> send_counts(size, 0), recv_counts(size, 0);
+    for (int box : my_box) ++send_counts[box % size];
+    std::vector<int> sdis(size + 1, 0);
+    for (int r = 0; r < size; ++r) sdis[r + 1] = sdis[r] + send_counts[r];
+
+    const size_t n_send = my_box.size();
+    std::vector<int> s_box(n_send), s_orb(n_send);
+    std::vector<double> s_dist(n_send);
+    {
+        std::vector<int> cursor(sdis.begin(), sdis.end() - 1);
+        for (size_t i = 0; i < n_send; ++i) {
+            const int at = cursor[my_box[i] % size]++;
+            s_box[at] = my_box[i];
+            s_orb[at] = my_orb[i];
+            s_dist[at] = my_dist[i];
+        }
+    }
+
+    std::vector<int> r_box, r_orb, r_src;
+    std::vector<double> r_dist;
+    std::vector<int> rdis(size + 1, 0);
+    if (exchange) {
+        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm);
+        for (int r = 0; r < size; ++r) rdis[r + 1] = rdis[r] + recv_counts[r];
+        r_box.assign(rdis[size], 0);
+        r_orb.assign(rdis[size], 0);
+        r_dist.assign(rdis[size], 0.0);
+        MPI_Alltoallv(s_box.data(), send_counts.data(), sdis.data(), MPI_INT,
+                      r_box.data(), recv_counts.data(), rdis.data(), MPI_INT, comm);
+        MPI_Alltoallv(s_orb.data(), send_counts.data(), sdis.data(), MPI_INT,
+                      r_orb.data(), recv_counts.data(), rdis.data(), MPI_INT, comm);
+        MPI_Alltoallv(s_dist.data(), send_counts.data(), sdis.data(), MPI_DOUBLE,
+                      r_dist.data(), recv_counts.data(), rdis.data(), MPI_DOUBLE, comm);
+    } else {
+        recv_counts[0] = static_cast<int>(n_send);
+        rdis[size] = static_cast<int>(n_send);
+        r_box = s_box;
+        r_orb = s_orb;
+        r_dist = s_dist;
+    }
+    r_src.assign(r_box.size(), 0);
+    for (int r = 0; r < size; ++r) {
+        for (int i = rdis[r]; i < rdis[r + 1]; ++i) r_src[i] = r;
+    }
+
+    // 3. Referee: the best claim wins each of its boxes.
+    std::unordered_map<int, detail::BoxClaim> best;
+    best.reserve(r_box.size() * 2 + 1);
+    for (size_t i = 0; i < r_box.size(); ++i) {
+        const detail::BoxClaim claim{r_orb[i], r_dist[i], r_src[i]};
+        auto slot = best.find(r_box[i]);
+        if (slot == best.end()) {
+            best.emplace(r_box[i], claim);
+        } else if (claim.Beats(slot->second)) {
+            slot->second = claim;
+        }
+    }
+    std::vector<int> r_winner(r_box.size(), -1);
+    for (size_t i = 0; i < r_box.size(); ++i) r_winner[i] = best[r_box[i]].rank;
+
+    // 4. The winners travel back along the reversed routing, so they land in
+    //    the order the claims left in and pair off with s_box.
+    std::vector<int> s_winner(n_send, -1);
+    if (exchange) {
+        MPI_Alltoallv(r_winner.data(), recv_counts.data(), rdis.data(), MPI_INT,
+                      s_winner.data(), send_counts.data(), sdis.data(), MPI_INT, comm);
+    } else {
+        s_winner = r_winner;
+    }
+
+    GridOwnership ownership;
+    std::vector<int> order(n_send);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return s_box[a] < s_box[b]; });
+    ownership.reached_box.reserve(n_send);
+    ownership.reached_owner.reserve(n_send);
+    for (int i : order) {
+        if (s_winner[i] < 0 || s_winner[i] >= size) {
+            throw std::runtime_error("Grid box ownership resolved to a rank outside the "
+                                     "communicator; the claim exchange is inconsistent.");
+        }
+        ownership.reached_box.push_back(s_box[i]);
+        ownership.reached_owner.push_back(s_winner[i]);
+        if (s_winner[i] == rank) ownership.boxes.push_back(s_box[i]);
+    }
+
+    // 5. Boxes this rank referees that nobody claimed. Walking them is
+    //    O(n_box / size) -- this rank's share of the index space, not the
+    //    whole grid.
+    for (int box = rank; box < grid.n_box(); box += size) {
+        if (best.find(box) == best.end()) ownership.boxes.push_back(box);
+    }
+    std::sort(ownership.boxes.begin(), ownership.boxes.end());
+    ownership.boxes.erase(std::unique(ownership.boxes.begin(), ownership.boxes.end()),
+                          ownership.boxes.end());
+    return ownership;
+}
+
+/// The ownership rule stated independently of how it is communicated: given
+/// every atom and who owns it, which rank owns each box.
+///
+/// This is the specification ResolveGridOwnership must reproduce, written the
+/// obvious way -- every box against every atom -- so the two share the rule
+/// (detail::BoxClaim) and nothing else. O(n_box * n_atom), for tests and small
+/// systems, never for production.
+inline std::vector<int> ResolveGridOwnershipReference(
+    const RealSpaceGrid& grid, const std::vector<double>& positions,
+    const std::vector<int>& types, const std::vector<int>& owners,
+    const std::vector<int>& type_norb, const std::vector<double>& type_rcut,
+    const std::vector<double>& cell, const std::vector<bool>& pbc, int n_rank) {
+    const int n_atom = static_cast<int>(owners.size());
+    const auto cell_inv = vbcsr::atomic::InvertCell3x3(cell.data());
+    std::vector<int> owner_of(grid.n_box(), -1);
+
+    for (int box_index = 0; box_index < grid.n_box(); ++box_index) {
+        const GridBox box = grid.BoxAt(box_index);
+        std::vector<detail::BoxClaim> claims(n_rank);
+        for (int r = 0; r < n_rank; ++r) claims[r].rank = -1;
+        for (int a = 0; a < n_atom; ++a) {
+            const double rcut = type_rcut[types[a]];
+            const double distance = detail::MinimumImageDistance(
+                box.center, positions[3 * a], positions[3 * a + 1], positions[3 * a + 2],
+                cell, cell_inv, pbc);
+            if (distance >= rcut + box.radius) continue;
+            detail::BoxClaim& claim = claims[owners[a]];
+            if (claim.rank < 0) {
+                claim.rank = owners[a];
+                claim.orbitals = 0;
+                claim.distance = distance;
+            }
+            claim.orbitals += type_norb[types[a]];
+            claim.distance = std::min(claim.distance, distance);
+        }
+        detail::BoxClaim winner;
+        for (const detail::BoxClaim& claim : claims) {
+            if (claim.Beats(winner)) winner = claim;
+        }
+        owner_of[box_index] = (winner.rank >= 0) ? winner.rank : (box_index % n_rank);
+    }
+    return owner_of;
+}
+
+namespace detail {
+
+/// Calls `emit(owner_rank, local_atom)` once per (rank whose boxes this atom
+/// reaches, owned atom) pair -- the demand side, read off the ownership the
+/// same traversal produced.
+///
+/// Deduplication is free: ForEachBoxOfOwnedAtoms groups its emissions by atom,
+/// so the owners of one atom's boxes arrive consecutively and a short running
+/// list collapses them.
+template <class EmitFn>
+void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
+                      const GridOwnership& ownership, const std::vector<double>& type_rcut,
+                      EmitFn&& emit) {
+    std::vector<int> owners;
+    int current = -1;
+    const auto flush = [&]() {
+        if (current < 0) return;
+        for (int owner : owners) emit(owner, current);
+        owners.clear();
+    };
+    ForEachBoxOfOwnedAtoms(atomic_data, grid, type_rcut,
+                           [&](int local, int box, double) {
+        if (local != current) {
+            flush();
+            current = local;
+        }
+        const int owner = ownership.OwnerOf(box);
+        if (owner < 0) {
+            throw std::runtime_error(
+                "A box this rank's atoms reach has no resolved owner; the ownership was "
+                "built from a different geometry than the one being contracted.");
+        }
+        if (std::find(owners.begin(), owners.end(), owner) == owners.end()) {
+            owners.push_back(owner);
+        }
+    });
+    flush();
 }
 
 }  // namespace detail
 
 /// (box-owner rank, atom global index) demand pairs from THIS rank's owned
-/// atoms. See detail::ForEachBoxDemand for the enumeration and its cost.
+/// atoms -- the transpose of "which atoms reach my boxes", read off the same
+/// traversal that settled ownership.
 inline std::vector<std::pair<int, int>> BoxDemandsOfOwnedAtoms(
     vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
-    const vbcsr::atomic::InertialCut& tree, const std::vector<double>& type_rcut) {
+    const GridOwnership& ownership, const std::vector<double>& type_rcut) {
     std::vector<std::pair<int, int>> demands;
-    detail::ForEachBoxDemand(atomic_data, grid, tree, type_rcut,
+    detail::ForEachBoxDemand(atomic_data, grid, ownership, type_rcut,
                              [&](int owner, int local) {
                                  demands.emplace_back(owner,
                                                       atomic_data.get_global_index(local));
@@ -485,8 +774,7 @@ struct OrbitalSetExchangePlan {
 /// owner enumerates the boxes the atom reaches (the same windowed walk and
 /// the same overlap predicate as everywhere else) and ships the atom -- index,
 /// type and position -- to those boxes' owners. Nothing needs to be near
-/// anything for that to work, so coverage is exact by construction, not by a
-/// geometric argument with a resolution condition attached.
+/// anything for that to work, so coverage is exact by construction.
 ///
 /// The received set equals what BuildLocalOrbitalSet builds whenever the
 /// ghosts do suffice (same predicate, complete candidates), so this is the
@@ -495,11 +783,10 @@ struct OrbitalSetExchangePlan {
 ///
 /// `rank` selects whose boxes the set is for; with a real communicator it
 /// must be this process's rank in it. With MPI_COMM_NULL or one rank the
-/// exchange degenerates to keeping own demands, which is what lets a serial
-/// test drive simulated multi-rank cuts.
+/// exchange degenerates to keeping own demands.
 inline OrbitalSet BuildOrbitalSetFromDemands(vbcsr::atomic::AtomicData& atomic_data,
                                              const RealSpaceGrid& grid,
-                                             const vbcsr::atomic::InertialCut& tree,
+                                             const GridOwnership& ownership,
                                              const std::vector<double>& type_rcut,
                                              int rank, MPI_Comm comm,
                                              OrbitalSetExchangePlan* plan = nullptr) {
@@ -516,7 +803,7 @@ inline OrbitalSet BuildOrbitalSetFromDemands(vbcsr::atomic::AtomicData& atomic_d
     std::vector<std::vector<double>> pos_out(exchange ? size : 0);
     std::vector<std::vector<int>> local_out(exchange ? size : 0);
     detail::ForEachBoxDemand(
-        atomic_data, grid, tree, type_rcut, [&](int owner, int local) {
+        atomic_data, grid, ownership, type_rcut, [&](int owner, int local) {
             double ax = 0.0, ay = 0.0, az = 0.0;
             atomic_data.get_pos(local, &ax, &ay, &az);
             const int gid = atomic_data.get_global_index(local);
@@ -723,8 +1010,8 @@ inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
 /// contains every atom whose orbitals reach a box the rank owns.
 ///
 /// BuildLocalOrbitalSet documents the geometric argument for why the graph
-/// ghosts suffice, and the resolution condition attached to it. This enforces
-/// the condition instead of assuming it: each atom's owner computes which
+/// ghosts suffice. This enforces that argument instead of assuming it: each
+/// atom's owner computes which
 /// ranks need the atom, the demands travel to those ranks, and each rank
 /// checks membership in its own set. A failure means grid contributions WOULD
 /// have been silently dropped -- the partition is finer than the ghost layer
@@ -736,20 +1023,20 @@ inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
 /// set, not per contraction.
 inline void ValidateLocalOrbitalCoverage(vbcsr::atomic::AtomicData& atomic_data,
                                          const RealSpaceGrid& grid,
-                                         const vbcsr::atomic::InertialCut& tree,
+                                         const GridOwnership& ownership,
                                          const OrbitalSet& set,
                                          const std::vector<double>& type_rcut,
                                          MPI_Comm comm) {
     int size = 1;
     if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
 
-    const auto demands = BoxDemandsOfOwnedAtoms(atomic_data, grid, tree, type_rcut);
+    const auto demands = BoxDemandsOfOwnedAtoms(atomic_data, grid, ownership, type_rcut);
     std::vector<int> send_counts(size, 0);
     for (const auto& demand : demands) {
         if (demand.first < 0 || demand.first >= size) {
             throw std::runtime_error(
-                "A grid box classified to a rank outside the communicator; the cut tree and "
-                "the communicator disagree on the rank count.");
+                "A grid box resolved to an owner outside the communicator; the ownership "
+                "and the communicator disagree on the rank count.");
         }
         ++send_counts[demand.first];
     }
@@ -829,8 +1116,8 @@ public:
     /// Phi buffer and one GEMM.
     ///
     /// The output is COMPACT -- one value per owned point, in the domain's box
-    /// order -- not a full grid with holes. Owned boxes are disjoint
-    /// (OwnedBoxesFromAtoms returns a partition), so the global result is the
+    /// order -- not a full grid with holes. Owned boxes are disjoint (one
+    /// referee settles each box, see ResolveGridOwnership), so the global result is the
     /// concatenation of the ranks' buffers and no reduction is needed at all.
     /// A full-grid buffer would instead cost every rank the whole result: ~5.6
     /// GB per rank at 10^6 atoms and 0.2 A, plus a grid-sized allreduce, to
