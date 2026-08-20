@@ -106,16 +106,11 @@ inline int TrimZeroRows(int n_point, int n_orb, std::vector<double>* phi,
 /// a small region -- a few spheres, a handful of atoms, and the block indexed
 /// by it is small -- and it is what the deterministic region LDOS wants.
 ///
-/// BuildLocalOrbitalSet is per-rank: the atoms reaching THIS rank's boxes,
-/// taken from the atoms it already holds, with no collective. That is the only
+/// BuildOrbitalSetFromDemands is per-rank and is the production form: each
+/// atom's owner ships it to the ranks whose boxes it reaches. That is the only
 /// form that works for a full-cell map, because the replicated set is O(N)
 /// atoms on every rank and the block indexed by it is O(N^2) -- at 10^6 atoms
-/// the block alone would be 10^14 entries. Ownership being derived from the
-/// atoms (ResolveGridOwnership) is what makes the local set sufficient: the
-/// orbitals reaching a rank's boxes belong to atoms in the same region.
-///
-/// BuildOrbitalSetFromDemands is the production form and the only one exact
-/// for every geometry -- see its own comment.
+/// the block alone would be 10^14 entries.
 struct OrbitalSet {
     std::vector<int> atoms;       ///< Global atom indices, ascending.
     std::vector<int> atom_type;   ///< Type of each atom.
@@ -236,132 +231,6 @@ inline OrbitalSet BuildOrbitalSetForSpheres(vbcsr::atomic::AtomicData& atomic_da
             "No orbital reaches any of the requested evaluation points. Check that the points "
             "lie inside or near the cell.");
     }
-    return set;
-}
-
-/// Atoms whose orbitals reach any box this rank owns.
-///
-/// No communication at all. The candidates are the atoms this rank already
-/// holds -- owned plus the graph ghosts, which AtomicData stores contiguously
-/// after them -- and the test is against this rank's own boxes. Nothing is
-/// gathered, so the set is O(atoms in this region) rather than O(N), and the
-/// matrix block indexed by it is O((N/P)^2) rather than O(N^2).
-///
-/// Whether the ghosts are ENOUGH is a geometric condition, checked here rather
-/// than assumed. Graph ghosts reach 2*r_max between atom centres; a box needs
-/// atoms within r_cut of its points. For a point whose nearest owned atom is
-/// at distance d, a foreign atom reaching it lies within d + r_cut of that
-/// owned atom, so the ghosts cover it whenever d <= r_max -- i.e. whenever
-/// every owned grid point is within one orbital cutoff of an owned atom. True
-/// throughout a dense solid; false in vacuum, where a box may sit far from any
-/// atom. That case is not an error: such a box has no orbitals reaching it and
-/// contributes nothing, which is exactly what an empty active list produces.
-/// What would be an error is a box near foreign atoms that are not ghosts,
-/// which is why this cheap form must be certified by
-/// ValidateLocalOrbitalCoverage wherever it is used in anger; the demand-built
-/// set has no such condition.
-///
-/// Cost is O(n_local_atom) after a bounding-sphere reject, not
-/// O(n_local_atom * n_box): the per-box test only runs for atoms that reach
-/// the domain at all.
-inline OrbitalSet BuildLocalOrbitalSet(vbcsr::atomic::AtomicData& atomic_data,
-                                       const RealSpaceGrid& grid,
-                                       const GridDomain& domain,
-                                       const std::vector<double>& type_rcut) {
-    OrbitalSet set;
-    if (domain.n_box() == 0) {
-        set.orb_offset.assign(1, 0);
-        return set;
-    }
-    if (atomic_data.graph == nullptr) {
-        throw std::runtime_error(
-            "The local orbital set needs the neighbour graph: its ghost atoms are what make "
-            "the local candidate pool sufficient. Build the AtomicData through from_points, "
-            "from_file or from_distributed, which construct it.");
-    }
-
-    // Boxes of this rank, and one sphere around all of them for the cheap
-    // reject. Derived once; the boxes themselves are not stored by the grid.
-    std::vector<GridBox> boxes;
-    boxes.reserve(domain.n_box());
-    double lo[3] = {0, 0, 0}, hi[3] = {0, 0, 0};
-    for (int slot = 0; slot < domain.n_box(); ++slot) {
-        boxes.push_back(grid.BoxAt(domain.boxes[slot]));
-        const GridBox& b = boxes.back();
-        for (int x = 0; x < 3; ++x) {
-            if (slot == 0) {
-                lo[x] = b.center[x] - b.radius;
-                hi[x] = b.center[x] + b.radius;
-            } else {
-                lo[x] = std::min(lo[x], b.center[x] - b.radius);
-                hi[x] = std::max(hi[x], b.center[x] + b.radius);
-            }
-        }
-    }
-    double hull_center[3], hull_radius = 0.0;
-    for (int x = 0; x < 3; ++x) hull_center[x] = 0.5 * (lo[x] + hi[x]);
-    for (int x = 0; x < 3; ++x) {
-        const double half = 0.5 * (hi[x] - lo[x]);
-        hull_radius += half * half;
-    }
-    hull_radius = std::sqrt(hull_radius);
-
-    const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
-    const int n_ghost = static_cast<int>(atomic_data.graph->ghost_global_indices.size());
-    const int n_candidate = atomic_data.n_atom + n_ghost;
-
-    std::vector<int> meta;      // (global index, type, norb)
-    std::vector<double> pos;
-    for (int local = 0; local < n_candidate; ++local) {
-        const int type = atomic_data.atom_type[local];
-        if (type < 0 || type >= static_cast<int>(type_rcut.size())) {
-            throw std::runtime_error("Orbital-set selection was given no cutoff for an atom type.");
-        }
-        const double rcut = type_rcut[type];
-        double ax = 0.0, ay = 0.0, az = 0.0;
-        atomic_data.get_pos(local, &ax, &ay, &az);
-
-        if (detail::MinimumImageDistance(hull_center, ax, ay, az, atomic_data.cell,
-                                         cell_inv, atomic_data.pbc) >= rcut + hull_radius) {
-            continue;
-        }
-        bool reaches = false;
-        for (size_t b = 0; b < boxes.size() && !reaches; ++b) {
-            reaches = detail::MinimumImageDistance(boxes[b].center, ax, ay, az,
-                                                   atomic_data.cell, cell_inv,
-                                                   atomic_data.pbc) < rcut + boxes[b].radius;
-        }
-        if (!reaches) continue;
-
-        meta.push_back(atomic_data.get_global_index(local));
-        meta.push_back(type);
-        meta.push_back(atomic_data.type_norb[type]);
-        pos.insert(pos.end(), {ax, ay, az});
-    }
-
-    const size_t n_found = meta.size() / 3;
-    std::vector<int> order(n_found);
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(),
-              [&](int a, int b) { return meta[3 * a] < meta[3 * b]; });
-
-    set.atoms.reserve(n_found);
-    set.atom_type.reserve(n_found);
-    set.atom_norb.reserve(n_found);
-    set.positions.reserve(3 * n_found);
-    for (int index : order) {
-        set.atoms.push_back(meta[3 * index + 0]);
-        set.atom_type.push_back(meta[3 * index + 1]);
-        set.atom_norb.push_back(meta[3 * index + 2]);
-        set.positions.insert(set.positions.end(),
-                             {pos[3 * index + 0], pos[3 * index + 1], pos[3 * index + 2]});
-    }
-    set.orb_offset.assign(set.atoms.size() + 1, 0);
-    for (size_t i = 0; i < set.atoms.size(); ++i) {
-        set.orb_offset[i + 1] = set.orb_offset[i] + set.atom_norb[i];
-    }
-    // An empty set is legitimate here, unlike the replicated builder: a rank
-    // whose region is vacuum owns boxes that no orbital reaches.
     return set;
 }
 
@@ -731,21 +600,6 @@ void ForEachBoxDemand(vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGri
 
 }  // namespace detail
 
-/// (box-owner rank, atom global index) demand pairs from THIS rank's owned
-/// atoms -- the transpose of "which atoms reach my boxes", read off the same
-/// traversal that settled ownership.
-inline std::vector<std::pair<int, int>> BoxDemandsOfOwnedAtoms(
-    vbcsr::atomic::AtomicData& atomic_data, const RealSpaceGrid& grid,
-    const GridOwnership& ownership, const std::vector<double>& type_rcut) {
-    std::vector<std::pair<int, int>> demands;
-    detail::ForEachBoxDemand(atomic_data, grid, ownership, type_rcut,
-                             [&](int owner, int local) {
-                                 demands.emplace_back(owner,
-                                                      atomic_data.get_global_index(local));
-                             });
-    return demands;
-}
-
 /// How the demand-built set's atoms travel: the routing of the one alltoallv
 /// that built the set, kept so the SAME routing can later ship data that
 /// lives on the atoms -- coefficient rows of a Chebyshev-filtered state,
@@ -765,9 +619,9 @@ struct OrbitalSetExchangePlan {
 /// The orbital set for this rank's boxes, built from the DEMAND side: exact
 /// for any geometry, at the cost of one alltoall.
 ///
-/// BuildLocalOrbitalSet finds the reaching atoms among those this rank
-/// already holds, which is sufficient only while the graph ghosts cover every
-/// box overhang -- and there are honest geometries where they do not: a box
+/// Reading the atoms a rank already holds -- owned plus graph ghosts -- would
+/// be cheaper, but is sufficient only while those ghosts cover every box
+/// overhang, and there are honest geometries where they do not: a box
 /// straddling a cut plane next to a vacuum gap wider than the neighbour-list
 /// cutoff is reached by foreign atoms that are nobody's ghosts. This builder
 /// closes that hole by inverting the direction of knowledge: each atom's
@@ -775,11 +629,6 @@ struct OrbitalSetExchangePlan {
 /// the same overlap predicate as everywhere else) and ships the atom -- index,
 /// type and position -- to those boxes' owners. Nothing needs to be near
 /// anything for that to work, so coverage is exact by construction.
-///
-/// The received set equals what BuildLocalOrbitalSet builds whenever the
-/// ghosts do suffice (same predicate, complete candidates), so this is the
-/// production default and the local builder remains for contexts proven safe
-/// by ValidateLocalOrbitalCoverage.
 ///
 /// `rank` selects whose boxes the set is for; with a real communicator it
 /// must be this process's rank in it. With MPI_COMM_NULL or one rank the
@@ -1003,78 +852,6 @@ inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
                   recv_buf.begin() + at + static_cast<size_t>(norb) * n_vec,
                   coeffs_out->begin() + static_cast<size_t>(set.orb_offset[slot]) * n_vec);
         at += static_cast<size_t>(norb) * n_vec;
-    }
-}
-
-/// Verifies, collectively and exactly, that every rank's local orbital set
-/// contains every atom whose orbitals reach a box the rank owns.
-///
-/// BuildLocalOrbitalSet documents the geometric argument for why the graph
-/// ghosts suffice. This enforces that argument instead of assuming it: each
-/// atom's owner computes which
-/// ranks need the atom, the demands travel to those ranks, and each rank
-/// checks membership in its own set. A failure means grid contributions WOULD
-/// have been silently dropped -- the partition is finer than the ghost layer
-/// covers -- and the error says what to change. Passing is a proof, not an
-/// indicator, because the demand side enumerates every (atom, box) overlap
-/// under the same predicate the contraction selects by.
-///
-/// One alltoall of boundary-atom indices; call it once after building the
-/// set, not per contraction.
-inline void ValidateLocalOrbitalCoverage(vbcsr::atomic::AtomicData& atomic_data,
-                                         const RealSpaceGrid& grid,
-                                         const GridOwnership& ownership,
-                                         const OrbitalSet& set,
-                                         const std::vector<double>& type_rcut,
-                                         MPI_Comm comm) {
-    int size = 1;
-    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
-
-    const auto demands = BoxDemandsOfOwnedAtoms(atomic_data, grid, ownership, type_rcut);
-    std::vector<int> send_counts(size, 0);
-    for (const auto& demand : demands) {
-        if (demand.first < 0 || demand.first >= size) {
-            throw std::runtime_error(
-                "A grid box resolved to an owner outside the communicator; the ownership "
-                "and the communicator disagree on the rank count.");
-        }
-        ++send_counts[demand.first];
-    }
-    std::vector<int> send_displs(size + 1, 0);
-    for (int r = 0; r < size; ++r) send_displs[r + 1] = send_displs[r] + send_counts[r];
-    std::vector<int> send_gids(demands.size());
-    {
-        std::vector<int> cursor(send_displs.begin(), send_displs.end() - 1);
-        for (const auto& demand : demands) send_gids[cursor[demand.first]++] = demand.second;
-    }
-
-    std::vector<int> recv_gids;
-    if (comm != MPI_COMM_NULL && size > 1) {
-        std::vector<int> recv_counts(size, 0);
-        MPI_Alltoall(send_counts.data(), 1, MPI_INT, recv_counts.data(), 1, MPI_INT, comm);
-        std::vector<int> recv_displs(size + 1, 0);
-        for (int r = 0; r < size; ++r) recv_displs[r + 1] = recv_displs[r] + recv_counts[r];
-        recv_gids.assign(recv_displs[size], 0);
-        MPI_Alltoallv(send_gids.data(), send_counts.data(), send_displs.data(), MPI_INT,
-                      recv_gids.data(), recv_counts.data(), recv_displs.data(), MPI_INT, comm);
-    } else {
-        recv_gids = std::move(send_gids);
-    }
-
-    int missing = 0;
-    for (int gid : recv_gids) {
-        if (!std::binary_search(set.atoms.begin(), set.atoms.end(), gid)) ++missing;
-    }
-    int missing_total = missing;
-    if (comm != MPI_COMM_NULL && size > 1) {
-        MPI_Allreduce(MPI_IN_PLACE, &missing_total, 1, MPI_INT, MPI_SUM, comm);
-    }
-    if (missing_total > 0) {
-        throw std::runtime_error(
-            "Local orbital sets are insufficient: " + std::to_string(missing_total) +
-            " (rank, atom) demands are uncovered, so grid contributions would be silently "
-            "dropped. The rank regions are finer than the grid boxes resolve -- use a finer "
-            "grid or smaller box edge, or fewer ranks.");
     }
 }
 

@@ -581,55 +581,6 @@ std::vector<int> ChainOwners(const rsatb::calc::RealSpaceGrid& grid,
 
 }  // namespace
 
-TEST(CollocationTest, LocalOrbitalSetHoldsEveryAtomReachingItsBoxes) {
-    // The no-communication claim: a rank's local set must contain every atom
-    // the replicated set would have contributed for the same boxes. If it
-    // missed one, the contraction would silently drop that orbital's weight
-    // rather than fail, so this compares against the gathered answer directly.
-    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
-    const double rcut = collocation.rcut_angstrom(0);
-    auto atomic_data = BuildLoneAtom(rcut);
-    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
-
-    std::vector<int> all_boxes(grid.n_box());
-    std::iota(all_boxes.begin(), all_boxes.end(), 0);
-    const auto domain = rsatb::calc::MakeGridDomain(grid, all_boxes);
-
-    const auto local = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
-
-    // The replicated reference over the same box centres.
-    std::vector<double> centers, radii;
-    for (int b = 0; b < grid.n_box(); ++b) {
-        const auto box = grid.BoxAt(b);
-        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
-        radii.push_back(box.radius);
-    }
-    const auto gathered = rsatb::calc::BuildOrbitalSetForSpheres(
-        *atomic_data, centers, radii, {rcut}, MPI_COMM_WORLD);
-
-    EXPECT_EQ(local.atoms, gathered.atoms);
-    EXPECT_EQ(local.n_orb(), gathered.n_orb());
-}
-
-TEST(CollocationTest, LocalOrbitalSetIsEmptyForBoxesNoOrbitalReaches) {
-    // A rank whose region is vacuum owns boxes that nothing reaches. That is
-    // legitimate and must not throw -- unlike the replicated builder, which
-    // treats an empty result as a caller error because it means the requested
-    // probe region found nothing anywhere.
-    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
-    const double rcut = collocation.rcut_angstrom(0);
-    auto atomic_data = BuildLoneAtom(rcut);
-    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.5, 4);
-
-    // One box, and a cutoff far too short for the atom to reach it.
-    const auto domain = rsatb::calc::MakeGridDomain(grid, {grid.n_box() - 1});
-    const auto set = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {1e-6});
-    EXPECT_EQ(set.n_atom(), 0);
-    EXPECT_EQ(set.n_orb(), 0);
-}
-
-// --- route (5.3b): square-on-grid ----------------------------------------
-
 TEST(CollocationTest, SquaringOneVectorMatchesItsOuterProductBlock) {
     // The identity the whole route rests on:
     //   sum_ij (c_i c_j) phi_i phi_j == ( sum_i c_i phi_i )^2
@@ -887,9 +838,10 @@ TEST(CollocationTest, DistributedMapAssemblesIntoTheSerialMap) {
                 SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, r);
             const auto domain = rsatb::calc::MakeGridDomain(grid, mine.boxes);
             if (domain.n_box() == 0) continue;
-            // The local set -- no gather, and generally not the full set.
-            const auto local_set =
-                rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
+            // The production builder on this rank's share: generally NOT the
+            // full set, which is what makes the agreement below meaningful.
+            const auto local_set = rsatb::calc::BuildOrbitalSetFromDemands(
+                *atomic_data, grid, mine, {rcut}, r, MPI_COMM_NULL);
             if (local_set.n_atom() < full_set.n_atom()) ++n_strict_subset;
             if (local_set.n_orb() == 0) {
                 for (int64_t k = 0; k < domain.n_point(); ++k) {
@@ -923,105 +875,3 @@ TEST(CollocationTest, DistributedMapAssemblesIntoTheSerialMap) {
 }
 
 // --- coverage: the demand side proves the local sets sufficient -----------
-
-TEST(GridPartitionTest, DemandEnumerationMatchesTheLocalSetsExactly) {
-    // BoxDemandsOfOwnedAtoms walks a WINDOW of the box lattice around each
-    // atom; BuildLocalOrbitalSet scans every owned box against every held
-    // atom. Same overlap predicate, opposite sides. On a serial fixture the
-    // candidate pool is complete, so the atoms demanded of a rank must equal
-    // its local set exactly -- a window sized too small, a wrap handled
-    // wrong, or a bound that fails under the periodic images would each show
-    // up as a set difference. Both boundary conditions are run because they
-    // take different code paths through the window arithmetic.
-    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
-    const double rcut = collocation.rcut_angstrom(0);
-    const int n_atom = 12;
-
-    for (bool periodic : {false, true}) {
-        auto atomic_data = BuildChain(rcut, n_atom, periodic);
-        const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.2, 4);
-
-        std::vector<double> pos(3 * n_atom);
-        for (int a = 0; a < n_atom; ++a) {
-            pos[3 * a + 0] = atomic_data->x[a];
-            pos[3 * a + 1] = atomic_data->y[a];
-            pos[3 * a + 2] = atomic_data->z[a];
-        }
-
-        for (int n_part : {2, 3, 4, 8}) {
-            std::vector<int> atom_owner(n_atom);
-            for (int a = 0; a < n_atom; ++a) atom_owner[a] = a % n_part;
-            const auto owner_of =
-                ChainOwners(grid, *atomic_data, atom_owner, n_part, rcut, 13);
-            const auto ownership =
-                SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, 0);
-            const auto demands =
-                rsatb::calc::BoxDemandsOfOwnedAtoms(*atomic_data, grid, ownership, {rcut});
-
-            for (int r = 0; r < n_part; ++r) {
-                std::vector<int> demanded;
-                for (const auto& demand : demands) {
-                    if (demand.first == r) demanded.push_back(demand.second);
-                }
-                std::sort(demanded.begin(), demanded.end());
-
-                const auto mine =
-                    SimulatedOwnership(grid, *atomic_data, owner_of, {rcut}, r);
-                const auto domain = rsatb::calc::MakeGridDomain(grid, mine.boxes);
-                const auto local_set =
-                    rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
-                EXPECT_EQ(demanded, local_set.atoms)
-                    << "rank " << r << " at n_part = " << n_part
-                    << (periodic ? " (periodic)" : " (open)");
-
-                // The demand-BUILT set must reproduce the local one field for
-                // field: on a serial fixture the candidate pool is complete,
-                // so any difference is a bug in the exchange-side packing.
-                const auto demand_set = rsatb::calc::BuildOrbitalSetFromDemands(
-                    *atomic_data, grid, mine, {rcut}, r, MPI_COMM_NULL);
-                EXPECT_EQ(demand_set.atoms, local_set.atoms);
-                EXPECT_EQ(demand_set.atom_type, local_set.atom_type);
-                EXPECT_EQ(demand_set.atom_norb, local_set.atom_norb);
-                EXPECT_EQ(demand_set.positions, local_set.positions);
-                EXPECT_EQ(demand_set.orb_offset, local_set.orb_offset);
-            }
-        }
-    }
-}
-
-TEST(GridPartitionTest, CoverageValidatorPassesAndCatchesATruncatedSet) {
-    // The MPI wrapper around the demands. Serial communicator: every demand
-    // is this rank's own, so the full local set must pass, and a set with one
-    // reaching atom removed must be reported as insufficient -- that is the
-    // "silently dropped contribution" the validator exists to make loud.
-    int world = 1;
-    MPI_Comm_size(MPI_COMM_WORLD, &world);
-    if (world != 1) GTEST_SKIP() << "fixture is serial; the wrapper is exercised at np=1";
-
-    OrbitalCollocation collocation({DiamondOrbitalFile()}, MPI_COMM_WORLD);
-    const double rcut = collocation.rcut_angstrom(0);
-    const int n_atom = 12;
-    auto atomic_data = BuildChain(rcut, n_atom);
-    const auto grid = rsatb::calc::MakeRealSpaceGrid(atomic_data->cell, 1.2, 4);
-
-    std::vector<double> pos(3 * n_atom);
-    for (int a = 0; a < n_atom; ++a) {
-        pos[3 * a + 0] = atomic_data->x[a];
-        pos[3 * a + 1] = atomic_data->y[a];
-        pos[3 * a + 2] = atomic_data->z[a];
-    }
-    const auto ownership =
-        rsatb::calc::ResolveGridOwnership(*atomic_data, grid, {rcut}, MPI_COMM_WORLD);
-    const auto domain = rsatb::calc::MakeGridDomain(grid, ownership.boxes);
-    const auto set = rsatb::calc::BuildLocalOrbitalSet(*atomic_data, grid, domain, {rcut});
-    ASSERT_EQ(set.n_atom(), n_atom);
-
-    EXPECT_NO_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
-        *atomic_data, grid, ownership, set, {rcut}, MPI_COMM_WORLD));
-
-    auto truncated = set;
-    truncated.atoms.erase(truncated.atoms.begin() + 5);
-    EXPECT_THROW(rsatb::calc::ValidateLocalOrbitalCoverage(
-                     *atomic_data, grid, ownership, truncated, {rcut}, MPI_COMM_WORLD),
-                 std::runtime_error);
-}
