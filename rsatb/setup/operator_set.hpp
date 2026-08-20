@@ -32,6 +32,8 @@
 #include <complex>
 #include <map>
 #include <memory>
+#include <iostream>
+#include <sstream>
 #include <stdexcept>
 #include <utility>
 #include <vector>
@@ -364,8 +366,53 @@ private:
         // reports only the preconditioner's own overhead -- if it is ever large,
         // that is news.
         RSATB_PHASE("setup/preconditioner");
-        state.preconditioner = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
+        auto factor = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
             *overlap, config.maxiter, config.tol, config.sptol, verbose_);
+
+        // What a non-converged S^{-1/2} costs depends on what it is used for,
+        // so the verdict is taken here rather than inside the factorisation.
+        //
+        // Preconditioning the CG solve of the solve form, a bad factor only
+        // slows the iteration: the operator is still S^-1 H and the answer is
+        // unchanged. Defining the sandwich, the factor IS the operator -- the
+        // expansions propagate Z^H H Z and the spectrum moves with Z. Silicon
+        // at 4x4x4 returned a factor with ||Z^H S Z - I|| = 3.6e3 and, because
+        // nobody read the report, went on to announce spectral bounds of
+        // (-737, 9230) eV in place of the true (-6.3, 208). That must not be a
+        // silent result.
+        //
+        // `converged` is the iteration's own verdict, and it is false for two
+        // different reasons: the residual never reached tol, or the divergence
+        // guard in inverse_sqrt (residual > 100) broke the loop. Silicon is the
+        // second -- Newton-Schulz starts outside its convergence radius and
+        // gives up on step one, which is why sptol and maxiter cannot rescue
+        // it. Either way the factor is not S^{-1/2} and must not pass as one.
+        const auto& report = factor->report();
+        if (!report.converged) {
+            std::ostringstream detail;
+            detail << "the S^{-1/2} factor did not converge: ||Z^H S Z - I|| = "
+                   << report.applied_residual << " after " << report.steps
+                   << " Newton-Schulz step(s), against a tolerance of " << config.tol
+                   << (report.hit_maxiter ? " (stopped on the iteration cap)" : "");
+            if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
+                throw std::runtime_error(
+                    "operator_form = \"sandwich\" propagates Z H Z, so " + detail.str() +
+                    ". Newton-Schulz needs its seed inside ||Z^H S Z - I|| < 1 and this "
+                    "one starts outside it, so the iteration trips its divergence guard "
+                    "on the first step. That is a property of the seed, not of the "
+                    "refinement: preconditioner.sptol and preconditioner.maxiter were "
+                    "measured to leave the residual bit-identical, so raising them will "
+                    "not help. Use operator_form = \"solve\", which applies S^-1 H and "
+                    "uses Z only to precondition the CG solve, where a poor factor costs "
+                    "iterations and not accuracy.");
+            }
+            if (rsatb::util::Log::enabled(rsatb::util::LogLevel::kSummary)) {
+                std::cerr << "rsatb: warning: " << detail.str()
+                          << ". The solve form is still exact -- Z only preconditions the "
+                             "CG solve -- but expect slow convergence." << std::endl;
+            }
+        }
+        state.preconditioner = std::move(factor);
 
         // The sandwich form propagates Z H Z and never references S again, so
         // the overlap is released here purely to reclaim its memory -- what

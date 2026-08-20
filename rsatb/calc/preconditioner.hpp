@@ -168,7 +168,19 @@ private:
 template <typename T>
 class ISQRTMPreconditioner : public Preconditioner<T> {
 public:
-    /// Computes and owns S^{-1/2}.
+    /// Computes and owns S^{-1/2}, and keeps what the iteration reported.
+    ///
+    /// The report is not optional bookkeeping. inverse_sqrt can return a
+    /// factor that did not converge -- silicon at 4x4x4 starts outside the
+    /// Newton-Schulz convergence radius, trips the divergence guard on step
+    /// one, and comes back with ||Z^H S Z - I|| = 3.6e3 against a target of
+    /// 1e-7. Passing nullptr here
+    /// threw that verdict away, and every consumer then used the factor as if
+    /// it were S^{-1/2}. What that costs depends on the caller, so the
+    /// judgement belongs to them (see OperatorSet::build_preconditioner):
+    /// preconditioning a CG solve, a bad factor is merely slow; defining the
+    /// Z^H H Z sandwich, it silently replaces the spectrum -- the same silicon
+    /// cell reported spectral bounds of (-737, 9230) eV instead of (-6.3, 208).
     ISQRTMPreconditioner(BlockSpMat<T>& S, int max_iter = 10, double tol = 1e-5,
                          double sptol = 1e-5, bool verbose = false)
         : owned_(std::make_unique<BlockSpMat<T>>(S.graph)), factor_(owned_.get()) {
@@ -176,7 +188,7 @@ public:
         options.tol = tol;
         options.sptol = sptol;
         options.maxit = max_iter;
-        inverse_sqrt(S, owned_.get(), options, verbose);
+        inverse_sqrt(S, owned_.get(), options, verbose, &report_);
     }
 
     /// Borrows a factor owned elsewhere, which must outlive this.
@@ -186,6 +198,15 @@ public:
     /// The factor being applied, owned or borrowed.
     BlockSpMat<T>& factor() { return *factor_; }
     const BlockSpMat<T>& factor() const { return *factor_; }
+
+    /// What the Newton-Schulz iteration reported, or a default-constructed
+    /// report (converged == false, residuals 0) for a borrowed factor, whose
+    /// quality this object never measured.
+    const InverseSqrtReport& report() const { return report_; }
+
+    /// True when this object computed the factor itself, so `report()` is a
+    /// measurement rather than a placeholder.
+    bool owns_factor() const { return owned_ != nullptr; }
 
     PreconditionerType get_type() const override { return PreconditionerType::Symmetric; }
 
@@ -215,6 +236,7 @@ private:
     // which a member held by value would not.
     std::unique_ptr<BlockSpMat<T>> owned_;
     BlockSpMat<T>* factor_;  // -> *owned_, or the caller's
+    InverseSqrtReport report_{};
 };
 
 // Wrapper for Symmetric Preconditioning: P * A * P
