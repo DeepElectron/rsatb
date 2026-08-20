@@ -855,6 +855,31 @@ inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
     }
 }
 
+/// What the box loop actually did, for diagnosing scaling.
+///
+/// Linear scaling rests on a claim about per-box work: the orbital count
+/// reaching a box is set by the cutoff and the density, so it must stay flat
+/// as the cell grows. That is not visible in a timing -- a run that slowly
+/// drifts to O(N) per box looks like a run that is merely slow -- so the loop
+/// reports the sizes it saw and a scaling study can watch them directly.
+struct GridWorkStats {
+    int64_t boxes_contracted = 0;  ///< Boxes with a non-empty active set.
+    int64_t boxes_empty = 0;       ///< Boxes no orbital reached; skipped.
+    int max_box_orbitals = 0;      ///< Largest local orbital count over boxes.
+    int64_t sum_box_orbitals = 0;  ///< Total, for the mean per contracted box.
+    int64_t points_kept = 0;       ///< Rows surviving the exact-zero trim.
+    int64_t points_total = 0;      ///< Rows before it.
+
+    void Merge(const GridWorkStats& other) {
+        boxes_contracted += other.boxes_contracted;
+        boxes_empty += other.boxes_empty;
+        max_box_orbitals = std::max(max_box_orbitals, other.max_box_orbitals);
+        sum_box_orbitals += other.sum_box_orbitals;
+        points_kept += other.points_kept;
+        points_total += other.points_total;
+    }
+};
+
 /// Evaluates numerical atomic orbitals on points and contracts blocks onto them.
 ///
 /// One OrbitalEvaluator is built per atom type, which splines every radial
@@ -1026,7 +1051,8 @@ public:
                                 int n_vec,
                                 const RealSpaceGrid& grid,
                                 const GridDomain& domain,
-                                std::vector<double>* values_out) const {
+                                std::vector<double>* values_out,
+                                GridWorkStats* stats = nullptr) const {
         if (values_out == nullptr) {
             throw std::runtime_error("SquareVectorsOntoBoxes needs an output pointer.");
         }
@@ -1053,6 +1079,7 @@ public:
         {
             std::vector<double> points, phi, local_coeff, psi, relative;
             std::vector<int> active, kept;
+            GridWorkStats mine;
 
 #pragma omp for schedule(dynamic)
             for (int slot = 0; slot < domain.n_box(); ++slot) {
@@ -1064,7 +1091,14 @@ public:
                 const LocalView local =
                     ViewForSphere(atomic_data, set, box.center, box.radius, cell_inv);
                 const int n_local_orb = static_cast<int>(local.orbitals.size());
-                if (n_local_orb == 0) continue;  // vacuum box: stays zero
+                if (n_local_orb == 0) {  // vacuum box: stays zero
+                    ++mine.boxes_empty;
+                    continue;
+                }
+                ++mine.boxes_contracted;
+                mine.max_box_orbitals = std::max(mine.max_box_orbitals, n_local_orb);
+                mine.sum_box_orbitals += n_local_orb;
+                mine.points_total += n_box_point;
 
                 // Gather this box's rows of the coefficient array.
                 local_coeff.resize(static_cast<size_t>(n_local_orb) * n_vec);
@@ -1082,6 +1116,7 @@ public:
                 EvaluatePhi(atomic_data, set, local, points, n_box_point, cell_inv, &relative,
                             &active, phi.data());
                 const int n_kept = detail::TrimZeroRows(n_box_point, n_local_orb, &phi, &kept);
+                mine.points_kept += n_kept;
                 if (n_kept == 0) continue;
                 psi.resize(static_cast<size_t>(n_kept) * n_vec);
 
@@ -1104,6 +1139,10 @@ public:
                     for (int v = 0; v < n_vec; ++v) sum += row[v] * row[v];
                     out[kept[q]] = sum * inv_n_vec * per_angstrom_cubed;
                 }
+            }
+            if (stats != nullptr) {
+#pragma omp critical
+                stats->Merge(mine);
             }
         }
     }

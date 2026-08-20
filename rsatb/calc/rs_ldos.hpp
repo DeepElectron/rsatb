@@ -47,6 +47,8 @@
 // identity instead of random draws and the estimator becomes exact up to the
 // filter truncation and the sampler certificate.
 
+#include "../utils/profile.hpp"
+
 #include "cheby.hpp"
 #include "collocation.hpp"
 #include "kpm.hpp"
@@ -90,6 +92,48 @@ struct RealSpaceLdosOptions {
     MetricSamplerOptions sampler;  ///< Options of the S^{-1}-covariance sampler.
 };
 
+/// The sizes a scaling study needs, measured rather than assumed.
+///
+/// Timings alone cannot separate "slow" from "not scaling": a per-rank cost
+/// drifting toward O(N) and one that is merely large look the same on a clock.
+/// These are the quantities the linear-scaling argument actually rests on, so
+/// a run at two sizes shows directly which of them moved.
+///
+/// The ones to watch, and what they should do as atoms and ranks grow together
+/// at fixed density:
+///   owned_atoms, owned_boxes, owned_points   flat  (that is what O(N/P) means)
+///   set_atoms / owned_atoms                  flat-ish; this ratio IS the halo,
+///                                            and it grows only as surface area
+///   max_box_orbitals                         FLAT. Set by cutoff and density,
+///                                            not by cell size. If it climbs,
+///                                            the box loop is not linear.
+///   sweep seconds / matvecs                  flat per matvec
+/// Anything here that tracks the total atom count instead is the bug.
+struct RealSpaceLdosProfile {
+    // Per rank, as measured on this one.
+    int64_t owned_atoms = 0;
+    int64_t owned_boxes = 0;
+    int64_t owned_points = 0;
+    int64_t set_atoms = 0;        ///< Atoms the orbital set carries: owned + halo.
+    int64_t set_orbitals = 0;
+    int64_t demand_records = 0;   ///< (rank, atom) pairs this rank shipped out.
+    int64_t coeff_halo_doubles = 0;  ///< Coefficients gathered per sweep, all energies.
+    GridWorkStats grid_work;      ///< Per-box sizes; see GridWorkStats.
+
+    // Identical on every rank.
+    int64_t global_points = 0;
+    int shape[3] = {0, 0, 0};
+    int box_edge[3] = {0, 0, 0};
+    double spacing = 0.0;
+    int n_energy = 0;
+    int n_states = 0;
+    int block = 0;
+    int filter_degree = 0;
+    int64_t matvecs = 0;          ///< filter_degree * number of blocks.
+    double span_ev = 0.0;
+    double eta_ev = 0.0;
+};
+
 struct RealSpaceLdosResult {
     RealSpaceGrid grid;
     GridDomain domain;                       ///< This rank's boxes.
@@ -97,6 +141,7 @@ struct RealSpaceLdosResult {
     int filter_degree = 0;                   ///< Chebyshev terms per sweep.
     int n_states = 0;                        ///< States actually swept.
     double sampler_residual = -1.0;          ///< ||W q(W)^2 xi - xi||/||xi||, or -1.
+    RealSpaceLdosProfile profile;            ///< Sizes; see RealSpaceLdosProfile.
 };
 
 namespace detail {
@@ -129,6 +174,76 @@ inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
 }
 
 }  // namespace detail
+
+/// Prints the profile, reduced across ranks, on the logging rank.
+///
+/// Every per-rank row is min / mean / max with the imbalance max/mean beside
+/// it, because for a distributed run the spread is the interesting part: a
+/// mean that halves when ranks double proves nothing if one rank kept all the
+/// work. Collective -- every rank must call it.
+inline void ReportRealSpaceLdosProfile(const RealSpaceLdosProfile& p, MPI_Comm comm) {
+    int size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
+
+    // Order fixed here and mirrored below; nine per-rank quantities.
+    double local[9] = {
+        static_cast<double>(p.owned_atoms),
+        static_cast<double>(p.owned_boxes),
+        static_cast<double>(p.owned_points),
+        static_cast<double>(p.set_atoms),
+        static_cast<double>(p.set_orbitals),
+        static_cast<double>(p.demand_records),
+        static_cast<double>(p.coeff_halo_doubles),
+        static_cast<double>(p.grid_work.boxes_contracted),
+        static_cast<double>(p.grid_work.max_box_orbitals),
+    };
+    double lo[9], hi[9], sum[9];
+    double box_orb_sum = static_cast<double>(p.grid_work.sum_box_orbitals);
+    double kept = static_cast<double>(p.grid_work.points_kept);
+    double total_rows = static_cast<double>(p.grid_work.points_total);
+    if (comm != MPI_COMM_NULL && size > 1) {
+        MPI_Allreduce(local, lo, 9, MPI_DOUBLE, MPI_MIN, comm);
+        MPI_Allreduce(local, hi, 9, MPI_DOUBLE, MPI_MAX, comm);
+        MPI_Allreduce(local, sum, 9, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &box_orb_sum, 1, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &kept, 1, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &total_rows, 1, MPI_DOUBLE, MPI_SUM, comm);
+    } else {
+        for (int i = 0; i < 9; ++i) { lo[i] = hi[i] = sum[i] = local[i]; }
+    }
+    if (!util::Log::enabled(util::LogLevel::kSummary)) return;
+
+    const double inv = 1.0 / size;
+    const char* names[9] = {"atoms", "boxes", "points", "set atoms", "set orbitals",
+                            "demands out", "halo doubles", "boxes done", "max box orb"};
+    std::printf("\n  real-space LDOS profile\n");
+    std::printf("    grid          %d x %d x %d = %lld points, spacing %.3f A, "
+                "box edge %d/%d/%d\n",
+                p.shape[0], p.shape[1], p.shape[2],
+                static_cast<long long>(p.global_points), p.spacing,
+                p.box_edge[0], p.box_edge[1], p.box_edge[2]);
+    std::printf("    spectrum      span %.3f eV, eta %.4f eV -> filter degree %d\n",
+                p.span_ev, p.eta_ev, p.filter_degree);
+    std::printf("    work          %d states x %d energies, block %d, %lld matvecs\n",
+                p.n_states, p.n_energy, p.block, static_cast<long long>(p.matvecs));
+    std::printf("    per rank (%d)   %12s %12s %12s   imbalance\n", size, "min", "mean", "max");
+    for (int i = 0; i < 9; ++i) {
+        const double mean = sum[i] * inv;
+        const double imb = (mean > 0.0) ? hi[i] / mean : 1.0;
+        std::printf("      %-13s %12.0f %12.1f %12.0f   %6.2f\n",
+                    names[i], lo[i], mean, hi[i], imb);
+    }
+    const double halo_ratio = (sum[0] > 0.0) ? sum[3] / sum[0] : 0.0;
+    const double mean_box_orb =
+        (sum[7] > 0.0) ? box_orb_sum / sum[7] : 0.0;
+    const double trim = (total_rows > 0.0) ? kept / total_rows : 1.0;
+    std::printf("    halo ratio    %.3f set atoms per owned atom  (surface/volume; "
+                "must not track N)\n", halo_ratio);
+    std::printf("    box orbitals  %.1f mean, %.0f max  (cutoff x density; must be "
+                "flat in N)\n", mean_box_orb, hi[8]);
+    std::printf("    trim kept     %.3f of box rows\n", trim);
+    std::fflush(stdout);
+}
 
 /// Computes the LDOS map on this rank's share of the grid.
 ///
@@ -194,13 +309,34 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
     // Box ownership comes from the atom partition itself -- whatever produced
     // it -- so nothing here needs to know how the atoms were distributed, and
     // no rank ever walks a box outside its own share.
-    const GridOwnership ownership =
-        ResolveGridOwnership(atomic_data, result.grid, type_rcut, comm);
+    GridOwnership ownership;
+    {
+        RSATB_PHASE("rs_ldos/ownership");
+        ownership = ResolveGridOwnership(atomic_data, result.grid, type_rcut, comm);
+    }
     result.domain = MakeGridDomain(result.grid, ownership.boxes);
 
     OrbitalSetExchangePlan plan;
-    const OrbitalSet set = BuildOrbitalSetFromDemands(atomic_data, result.grid, ownership,
-                                                      type_rcut, rank, comm, &plan);
+    OrbitalSet set;
+    {
+        RSATB_PHASE("rs_ldos/orbital_set");
+        set = BuildOrbitalSetFromDemands(atomic_data, result.grid, ownership,
+                                         type_rcut, rank, comm, &plan);
+    }
+
+    RealSpaceLdosProfile& prof = result.profile;
+    prof.owned_atoms = atomic_data.n_atom;
+    prof.owned_boxes = result.domain.n_box();
+    prof.owned_points = result.domain.n_point();
+    prof.set_atoms = set.n_atom();
+    prof.set_orbitals = set.n_orb();
+    for (int c : plan.send_counts) prof.demand_records += c;
+    prof.global_points = result.grid.n_point();
+    for (int d = 0; d < 3; ++d) {
+        prof.shape[d] = result.grid.shape[d];
+        prof.box_edge[d] = result.grid.box_edge[d];
+    }
+    prof.spacing = opt.spacing;
 
     // Scaled interval of the pencil, padded so the filter never samples the
     // polynomial outside its fitted range.
@@ -233,6 +369,7 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
     result.n_states = n_total;
     result.ldos.assign(n_energy, std::vector<double>(result.domain.n_point(), 0.0));
 
+    int64_t n_blocks = 0;
     std::mt19937_64 gen(opt.seed + 977 * static_cast<unsigned long>(rank));
     std::bernoulli_distribution coin(0.5);
 
@@ -342,24 +479,27 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
         }
 
         // One sweep, all energies: X_k = sum_m N c_m(E_k) T_m(Op) seed.
-        for (int k = 0; k < n_energy; ++k) {
-            accum[k]->copy_from(*v0);
-            accum[k]->scale(CoeffCast<double>::apply(tables[k][0]));
-        }
-        if (degree > 1) {
-            cheb->apply_op(*v0, *v1);
+        {
+            RSATB_PHASE("rs_ldos/sweep");
             for (int k = 0; k < n_energy; ++k) {
-                accum[k]->axpy(CoeffCast<double>::apply(tables[k][1]), *v1);
+                accum[k]->copy_from(*v0);
+                accum[k]->scale(CoeffCast<double>::apply(tables[k][0]));
             }
-        }
-        for (int m = 2; m < degree; ++m) {
-            cheb->apply_op(*v1, *v2);
-            v2->axpby(-1.0, *v0, 2.0);
-            for (int k = 0; k < n_energy; ++k) {
-                accum[k]->axpy(CoeffCast<double>::apply(tables[k][m]), *v2);
+            if (degree > 1) {
+                cheb->apply_op(*v0, *v1);
+                for (int k = 0; k < n_energy; ++k) {
+                    accum[k]->axpy(CoeffCast<double>::apply(tables[k][1]), *v1);
+                }
             }
-            v0->swap(*v1);
-            v1->swap(*v2);
+            for (int m = 2; m < degree; ++m) {
+                cheb->apply_op(*v1, *v2);
+                v2->axpby(-1.0, *v0, 2.0);
+                for (int k = 0; k < n_energy; ++k) {
+                    accum[k]->axpy(CoeffCast<double>::apply(tables[k][m]), *v2);
+                }
+                v0->swap(*v1);
+                v1->swap(*v2);
+            }
         }
 
         // Grid stage: halo the filtered block onto the set's numbering, square
@@ -376,18 +516,48 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
             // here, instead of at every step of the recursion.
             DistMultiVector<double>* chi_k = accum[k].get();
             if (form == ChebyOpForm::Sandwich) {
+                RSATB_PHASE("rs_ldos/metric_apply");
                 precond.apply(*accum[k], *chi);
                 chi_k = chi.get();
             }
-            GatherSetRows(atomic_data, *chi_k, set, plan, comm, &coeffs);
-            collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk, result.grid,
-                                               result.domain, &values);
+            {
+                RSATB_PHASE("rs_ldos/coeff_halo");
+                GatherSetRows(atomic_data, *chi_k, set, plan, comm, &coeffs);
+            }
+            prof.coeff_halo_doubles += static_cast<int64_t>(coeffs.size());
+            {
+                RSATB_PHASE("rs_ldos/grid_contract");
+                collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk,
+                                                   result.grid, result.domain, &values,
+                                                   &prof.grid_work);
+            }
             double* out = result.ldos[k].data();
             for (int64_t p = 0; p < result.domain.n_point(); ++p) {
                 out[p] += weight * values[p];
             }
         }
+        ++n_blocks;
     }
+
+    prof.n_energy = n_energy;
+    prof.n_states = n_total;
+    prof.block = opt.block;
+    prof.filter_degree = degree;
+    prof.matvecs = static_cast<int64_t>(degree) * n_blocks;
+    prof.span_ev = opt.emax - opt.emin;
+    prof.eta_ev = opt.eta;
+    // The grid stats accumulate over every (block, energy) pass; report the
+    // per-pass sizes, which are what the scaling claim is about.
+    const int64_t passes = static_cast<int64_t>(n_blocks) * std::max(1, n_energy);
+    if (passes > 1) {
+        prof.grid_work.boxes_contracted /= passes;
+        prof.grid_work.boxes_empty /= passes;
+        prof.grid_work.sum_box_orbitals /= passes;
+        prof.grid_work.points_kept /= passes;
+        prof.grid_work.points_total /= passes;
+    }
+    prof.coeff_halo_doubles /= std::max<int64_t>(1, n_blocks);
+    ReportRealSpaceLdosProfile(prof, comm);
     return result;
 }
 
