@@ -98,6 +98,11 @@ struct BoundsKPointView {
     Matrix* hamiltonian = nullptr;
     Matrix* overlap = nullptr;                 // null for an orthogonal basis
     Preconditioner* preconditioner = nullptr;  // null when none was built
+    // Identifier per owned block that survives repartitioning -- for atomic
+    // data, the atom's input index. Keys the solver's pinned starting vector,
+    // so the same system starts the same solve at any rank count. Null falls
+    // back to the graph's global block index, which ParMETIS renumbers.
+    const int* stable_block_ids = nullptr;
 };
 
 inline std::string KPointToString(const KPoint& kpoint) {
@@ -327,48 +332,65 @@ inline void ExtremalEigenvalues(const BoundsKPointView& view,
         return;
     }
 
-    // KNOWN: this window is not decomposition-invariant. Measured on diamond
-    // sc444, emax = 271.1921 / 271.2007 / 271.2051 at 1 / 2 / 4 ranks, and
-    // emin likewise; each is reproducible to 12 digits at a FIXED rank count,
-    // so the estimate is deterministic, just not the same across partitions.
+    // Two things are pinned here, because both were measured to float.
     //
-    // Two causes compound. No initial basis is supplied below, so PRIMME
-    // builds its own, and it seeds that from the rank -- extern/primme
-    // src/eigs/primme_c.c:341, `iseed[0] = procID % 4096`. Each rank also
-    // fills only its own local rows, so pinning iseed would NOT fix it: the
-    // assembled global vector still depends on how rows were partitioned.
-    // A different start gives a different Krylov space, and the 1e-3 tolerance
-    // below is loose enough for that to show through -- PRIMME stops as soon
-    // as the residual clears eps*||A||, about 0.27 eV here, and the Ritz-value
-    // error of a Hermitian problem is bounded by that residual. The observed
-    // 0.013 eV spread is comfortably inside its own specification.
+    // The START. PRIMME left to itself draws it from a rank-seeded generator
+    // (extern/primme src/eigs/primme_c.c:341, iseed[0] = procID % 4096) over
+    // rank-local rows, so the assembled vector depends on the partition and
+    // the window was not decomposition-invariant: on diamond sc444, emax =
+    // 271.1921 / 271.2007 / 271.2051 at 1 / 2 / 4 ranks. The counter-based
+    // draw keyed on stable block ids is the same vector at any rank count.
     //
-    // Not a correctness problem: bound_pad adds ~2.8 eV of margin at this
-    // scale, two orders of magnitude above the spread, so the window never
-    // clips the spectrum -- which WOULD be serious, since a Chebyshev
-    // expansion diverges outside [-1, 1]. It is a reproducibility problem, and
-    // since the sample vectors became decomposition-invariant (vbcsr
-    // random_vectors.hpp) this is the largest remaining source of run-to-run
-    // variation in the DOS: 7.9e-4 relative, against 1.1e-10 once the bounds
-    // are pinned by hand.
+    // The METHOD (pinned in PrimmeEigenSolver::solve, story there): PRIMME's
+    // default picks GD+k or JDQMR from wall-clock measurements, and on a
+    // noisy cluster that flipped between two bit-identical 6-rank runs --
+    // 142s in one, 1633s in the other, and emax 232.4959 vs 232.5012. The
+    // values are both inside spec: at eps 1e-3 the stop is a residual under
+    // ~0.23 eV here, Ritz values approach the top from below, and the slower
+    // path simply stopped closer. bound_pad covers the spread either way; the
+    // 11x on setup's most expensive phase is what could not stand.
     //
-    // To close it: hand PRIMME an explicit initial basis drawn with the
-    // counter-based sampler (DistVector::set_random keyed on the atom's input
-    // index) via primme.initSize/initBasis. Tightening eps shrinks the spread
-    // but cannot remove it, and costs matvecs in the most expensive part of
-    // setup. Deliberately not done here -- it is a separate mechanism that
-    // deserves its own before/after measurement.
+    // What is NOT pinned: floating-point summation order still differs across
+    // rank counts, so cross-partition agreement is to roundoff-amplified
+    // precision, not bitwise. At a fixed rank count the solve is now a fixed
+    // computation with a fixed start -- no timing branch, no entropy.
+    //
+    // The remaining honest cost is the problem itself. This is the pencil
+    // (H, S), and its top edge is basis conditioning rather than physics: 232
+    // eV against carbon bands that end near 35, because lambda scales as
+    // h/s_min and a moire LCAO overlap has near-dependent functions. A
+    // cluster of such artifacts is flat, flat tops converge slowly, and every
+    // preconditioner application is a CG solve of the same ill-conditioned S.
+    // The stats line under verbose is there so this phase's price stays on
+    // the record next to the window it bought.
     rsatb::calc::PrimmeEigenSolver<Scalar> esolver;
     std::vector<double> evals_min;
     std::vector<double> evals_max;
     std::vector<vbcsr::DistVector<Scalar>> evecs;
     const auto pc_type = view.preconditioner ? view.preconditioner->get_type()
                                              : rsatb::calc::PreconditionerType::Left;
+    // The pinned start; see the block comment above. The seed is arbitrary
+    // and fixed; both ends may share one start, since each solve builds its
+    // own subspace from it.
+    vbcsr::DistVector<Scalar> start(view.hamiltonian->graph);
+    start.set_random(/*seed=*/2, /*normalize=*/true, view.stable_block_ids);
+    const int rank0 = view.hamiltonian->graph->rank;
     try {
         esolver.solve(*view.hamiltonian, view.overlap, view.preconditioner, 1, primme_smallest,
-                      1e-3, evals_min, evecs, verbose, pc_type, options.max_matvecs);
+                      1e-3, evals_min, evecs, verbose, pc_type, options.max_matvecs, &start);
+        const auto stats_min = esolver.last_stats;
         esolver.solve(*view.hamiltonian, view.overlap, view.preconditioner, 1, primme_largest,
-                      1e-3, evals_max, evecs, verbose, pc_type, options.max_matvecs);
+                      1e-3, evals_max, evecs, verbose, pc_type, options.max_matvecs, &start);
+        if (verbose && rank0 == 0) {
+            const auto& stats_max = esolver.last_stats;
+            std::cout << "spectral_bounds: k " << KPointToString(view.kpoint) << " emin "
+                      << (evals_min.empty() ? 0.0 : evals_min[0]) << " ("
+                      << stats_min.matvecs << " matvecs, " << stats_min.preconds
+                      << " preconds, " << stats_min.seconds << "s), emax "
+                      << (evals_max.empty() ? 0.0 : evals_max[0]) << " ("
+                      << stats_max.matvecs << " matvecs, " << stats_max.preconds
+                      << " preconds, " << stats_max.seconds << "s)" << std::endl;
+        }
     } catch (const std::exception& error) {
         // Without an overlap or a preconditioner the Frobenius norm is a
         // valid, if loose, bound on the spectrum. With either one present

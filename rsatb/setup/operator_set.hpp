@@ -310,6 +310,9 @@ private:
             view.hamiltonian = state.hamiltonian.get();
             view.overlap = state.overlap.get();
             view.preconditioner = state.preconditioner.get();
+            // Atom input indices key the solver's pinned start, so the
+            // estimate no longer moves with the partition.
+            view.stable_block_ids = atomic_data_->atom_index.data();
             views.push_back(std::move(view));
         }
 

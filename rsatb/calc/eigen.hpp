@@ -30,6 +30,16 @@ class PrimmeEigenSolver {
 public:
     using Real = typename ScalarTraits<T>::real_type;
 
+    /// What the last solve cost, so a caller can put the price next to the
+    /// answer. A bounds estimate that silently swallows a third of setup is
+    /// exactly the failure mode this exists to expose.
+    struct SolveStats {
+        long long matvecs = 0;
+        long long preconds = 0;
+        double seconds = 0.0;
+    };
+    SolveStats last_stats;
+
     // Context to pass to PRIMME callbacks
     struct Context {
         BlockSpMat<T>* H = nullptr;
@@ -67,7 +77,8 @@ public:
                std::vector<DistVector<T>>& evectors = {},
                bool verbose = false,
                PreconditionerType pc_type = PreconditionerType::Left,
-               int max_matvecs = 0) {
+               int max_matvecs = 0,
+               const DistVector<T>* initial = nullptr) {
         
         DistGraph* graph = H.graph;
         const bool mpi_ready = comm_is_usable(graph->comm);
@@ -146,10 +157,40 @@ public:
             primme.commInfo = &graph->comm;
         }
 
+        // Pin the method. Left unset, PRIMME runs DYNAMIC, which picks
+        // between GD+k and JDQMR from wall-clock measurements taken as it
+        // goes (main_iter.c, primme_CostModel) -- the one input that differs
+        // between two otherwise bit-identical runs. On a production moire
+        // step the same 6-rank bounds solve took 142s in one run and 1633s in
+        // the next, with the operators, partition and seed all identical;
+        // timing noise flipped the switch, nothing else had changed.
+        //
+        // MIN_MATVECS (GD+k with Olsen) rather than pinning JDQMR: our matvec
+        // is a distributed SpMV and, on the generalized path, every
+        // preconditioner application is itself a CG solve of S y = x. JDQMR
+        // applies the preconditioner once per INNER step, so it multiplies
+        // precisely the expensive thing; GD+k applies it once per outer
+        // iteration.
+        //
+        // AFTER the operator wiring above, not before: set_method reads
+        // applyPreconditioner to decide correctionParams.precondition, and
+        // calling it early silently disabled preconditioning -- visible as
+        // preconds=0 in the stats where the generalized path was in use.
+        primme_set_method(PRIMME_DEFAULT_MIN_MATVECS, &primme);
+
         // Allocate result arrays
         std::vector<T> evecs_buf(n_local * num_eigenvalues);
         std::vector<Real> evals_buf(num_eigenvalues);
         std::vector<Real> res_norms_buf(num_eigenvalues);
+
+        // A caller-supplied start. Without one PRIMME draws its own from a
+        // rank-seeded generator over rank-local rows, which bakes the
+        // decomposition into the answer twice over.
+        if (initial != nullptr) {
+            std::memcpy(evecs_buf.data(), initial->local_data(),
+                        static_cast<size_t>(n_local) * sizeof(T));
+            primme.initSize = 1;
+        }
 
         int ret = 0;
         if constexpr (std::is_same_v<T, double>) {
@@ -159,6 +200,10 @@ public:
         } else {
             throw std::runtime_error("PrimmeEigenSolver only supports double and complex<double>");
         }
+
+        last_stats.matvecs = static_cast<long long>(primme.stats.numMatvecs);
+        last_stats.preconds = static_cast<long long>(primme.stats.numPreconds);
+        last_stats.seconds = primme.stats.elapsedTime;
 
         if (ret != 0) {
             primme_free(&primme);
