@@ -529,6 +529,13 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: test_cheby - the Chebyshev operator shapes and application
+    # modes. Was present in the tree but registered nowhere, so its adjoint
+    # check had never been compiled, let alone run.
+    add_executable(test_cheby calc/test/test_cheby.cpp)
+    target_include_directories(test_cheby PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_cheby PRIVATE ${RSATB_LINK_LIBS})
+
     # Executable: test_preconditioner
     add_executable(test_preconditioner calc/test/test_preconditioner.cpp)
     target_include_directories(test_preconditioner PRIVATE ${RSATB_INCLUDE_DIRS})

@@ -19,9 +19,53 @@ using namespace vbcsr;
 namespace rsatb {
 namespace calc {
 
-enum class ChebyMode { NORMAL, ADJOINT, CONJUGATE };
+// HOW the operator is applied -- an application style, not an operator.
+//
+// NORMAL applies A. ADJOINT applies A^H, which is what a left (bra) sequence
+// propagates: the correlators store the left vector as an ordinary ket and
+// conjugate only at the final contraction (fftcheb_transport.hpp,
+// `conj(left) * right`), so advancing <L|A means advancing the stored ket by
+// A^H. Applying A^T there instead would be wrong for any complex H, and the
+// transport tests would catch it: their reference-checked fixture is complex
+// Hermitian, where A^H = A but A^T = conj(A) differs.
+//
+// A^H is reached WITHOUT the transposed matrix kernel. H is Hermitian (see
+// the class note), so every per-factor adjoint is an identity and only the
+// ORDER of the factors turns around; see apply_form.
+//
+// That is worth doing because BlockSpMat::mult_adjoint is not uniformly
+// cheap. Measured on a 32^3 lattice of 4-orbital sites, complex Hermitian,
+// mult_dense_adjoint against the forward mult_dense (nv = 8), ms per apply:
+//
+//   threads          1      4      8     16
+//   BSR  (uniform  15.5    9.4   11.5   17.8    <- gets SLOWER with threads
+//         blocks)
+//   VBCSR (varying 25.7    6.6    2.2    1.4
+//         blocks)
+//
+// The VBCSR kernel gathers by column from a cached plan and scales; the BSR
+// kernel gives each thread a private full-size copy of Y and reduces them
+// afterwards, so both its time and its memory grow with the thread count
+// (measured +threads x |Y|: 7.8 MB at 4 threads, 33.9 MB at 16, against a
+// flat 3.8 MB for the VBCSR plan). Uniform orbital counts -- an all-carbon
+// cell, say -- select BSR, so the large real-space runs land on the bad one.
+// Until that kernel is fixed, a recurrence that applied the operator through
+// it once per Chebyshev order would forfeit the thread scaling of the whole
+// calculation.
+//
+enum class ChebyMode { NORMAL, ADJOINT };
 
-// Which operator the recurrence iterates.
+// WHICH operator the recurrence iterates -- an operator shape, not a style.
+//
+// These three are the entire configurable space, and they are exactly the
+// forms the input layer accepts (model/setup.hpp OperatorForm, which parses
+// only "solve" and "sandwich"). A caller selects the physics -- is there a
+// metric, and is it carried by a solve or by a congruence -- never an order
+// of application.
+//
+// H S^-1 is deliberately NOT a fourth choice. It is what the solve form
+// becomes under ChebyMode::ADJOINT and is reachable only that way; see
+// apply_form, which derives it instead of naming it.
 //
 // Chosen at construction, never inferred from which of H/S/M happen to be
 // present. "S was released because the sandwich form does not reference it"
@@ -77,6 +121,21 @@ struct CoeffCast<std::complex<R>> {
 // Chebyshev Recurrence
 // Computes T_n(H_scaled) * v
 // H_scaled = (H - center) / half_width
+//
+// H MUST BE HERMITIAN, and so must any auxiliary operator handed to
+// apply_dual. This is a precondition of the method, not an assumption of
+// convenience: the recurrence expands a function over the REAL interval
+// [emin, emax], which presupposes a real spectrum, and the sandwich
+// constructor below already refuses one-sided preconditioners on exactly
+// that ground ("not similar to a Hermitian matrix and has no spectral
+// expansion"). Every form is H itself, a congruence of H, or a similarity
+// transform of H; the velocity operators V = -i[H, R] that apply_dual
+// dresses are Hermitian whenever H is.
+//
+// The adjoint path leans on this: H^H = H, so ADJOINT reverses the order of
+// the factors and nothing else. Handing this class a non-Hermitian H would
+// not merely make ADJOINT wrong, it would leave the expansion itself
+// undefined.
 template <typename T>
 class Chebyshev {
 public:
@@ -85,7 +144,13 @@ public:
     Preconditioner<T>* M = nullptr;
     rsatb::calc::PreconditionerType ptype = rsatb::calc::PreconditionerType::Left;
     /// What apply_op applies. Read it instead of testing S or M: see ChebyOpForm.
-    ChebyOpForm form = ChebyOpForm::Orthogonal;
+    ///
+    /// const because the constructors are what pair a form with the operands
+    /// it needs -- Solve with an S to solve against, Sandwich with a
+    /// Symmetric Z. A writable form let a caller move to Solve on an object
+    /// built without an overlap, and the null S surfaced as a segfault inside
+    /// CG rather than as the configuration error it was.
+    const ChebyOpForm form = ChebyOpForm::Orthogonal;
     LinearSolver<T> solver;
     double center;
     double half_width;
@@ -148,153 +213,63 @@ public:
     // Symmetric-sandwich configuration this gate accepts.
     bool op_is_hermitian() const { return form != ChebyOpForm::Solve; }
 
-    // Apply the scaled operator Op * x -> y, Op = (G - center) / half_width
-    // with G the form's operator: H, S^-1 H, or Z^H H Z.
-    //
-    // ADJOINT applies G^H, CONJUGATE applies G conjugated elementwise. Only
-    // the solve form distinguishes them -- H and Z^H H Z are Hermitian, so
-    // there G^H = G and the mode is not consulted:
-    //   Op = (S^-1 H - center) / half_width   (NORMAL)
-    //   Op = (H^* S^-1^* - center) / half_width   (CONJUGATE)
-    //   Op = (H S^-1 - center) / half_width   (ADJOINT)
+    /// y = A x (NORMAL) or A^H x (ADJOINT), for the operator this was built for.
+    ///
+    /// `mode` is reduced to a single bool here and nowhere else, so the kernel
+    /// below states each form once and reads no mode at all.
     void apply_op(const DistVector<T>& x, DistVector<T>& y, ChebyMode mode = ChebyMode::NORMAL) {
-        if (!v_tmp) v_tmp = std::make_unique<DistVector<T>>(x.graph);
-        if (mode == ChebyMode::CONJUGATE) {
-            if (!v_x_conj) v_x_conj = std::make_unique<DistVector<T>>(x.graph);
-            v_x_conj->copy_from(x);
-            v_x_conj->conjugate();
-            apply_op_internal(*v_x_conj, y, mode);
-            y.conjugate();
-        } else {
-            apply_op_internal(x, y, mode);
-        }
+        apply_form(mode == ChebyMode::ADJOINT, x, y);
     }
 
-    // we assume H and S is hermitian here.
-    void apply_op_internal(const DistVector<T>& x, DistVector<T>& y, ChebyMode mode) {
-        switch (form) {
-            case ChebyOpForm::Orthogonal:
-                // y = (H - center) x
-                H.mult(const_cast<DistVector<T>&>(x), y);
-                y.axpy(-center, x);
-                break;
-            case ChebyOpForm::Sandwich:
-                // y = (Z^H H Z - center) x. Hermitian for Hermitian H and any
-                // Z, so it is its own adjoint and `mode` does not enter.
-                M->apply(x, y);
-                H.mult(y, *v_tmp);
-                M->apply_adjoint(*v_tmp, y);
-                y.axpy(-center, x);
-                break;
-            case ChebyOpForm::Solve:
-                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
-                    // y = S^-1 (H - center*S) x
-                    H.mult(const_cast<DistVector<T>&>(x), *v_tmp);
-                    if (M) solver.solve(*S, *v_tmp, y, *M, ptype);
-                    else solver.solve(*S, *v_tmp, y);
-                } else {
-                    // y = (H - center*S) S^-1 x
-                    if (M) solver.solve(*S, x, *v_tmp, *M, ptype);
-                    else solver.solve(*S, x, *v_tmp);
-                    H.mult_adjoint(*v_tmp, y);
-                }
-                y.axpy(-center, x);
-                break;
-        }
-        y.scale(1.0 / half_width);
-    }
-
-    void apply_op(const DistMultiVector<T>& X, DistMultiVector<T>& Y, ChebyMode mode = ChebyMode::NORMAL) {
-        if (!mv_tmp || mv_tmp->num_vectors != X.num_vectors) {
-            mv_tmp = std::make_unique<DistMultiVector<T>>(X.graph, X.num_vectors);
-        }
-        if (mode == ChebyMode::CONJUGATE) {
-            if (!mv_x_conj || mv_x_conj->num_vectors != X.num_vectors) {
-                mv_x_conj = std::make_unique<DistMultiVector<T>>(X.graph, X.num_vectors);
-            }
-            mv_x_conj->copy_from(X);
-            mv_x_conj->conjugate();
-            apply_op_dense_internal(*mv_x_conj, Y, mode);
-            Y.conjugate();
-        } else {
-            apply_op_dense_internal(X, Y, mode);
-        }
-    }
-
-    void apply_op_dense_internal(const DistMultiVector<T>& X, DistMultiVector<T>& Y, ChebyMode mode) {
-        switch (form) {
-            case ChebyOpForm::Orthogonal:
-                H.mult_dense(const_cast<DistMultiVector<T>&>(X), Y);
-                Y.axpy(-center, X);
-                break;
-            case ChebyOpForm::Sandwich:
-                M->apply(X, Y);
-                H.mult_dense(Y, *mv_tmp);
-                M->apply_adjoint(*mv_tmp, Y);
-                Y.axpy(-center, X);
-                break;
-            case ChebyOpForm::Solve:
-                if (mode == ChebyMode::NORMAL || mode == ChebyMode::CONJUGATE) {
-                    H.mult_dense(const_cast<DistMultiVector<T>&>(X), *mv_tmp);
-                    if (M) solver.solve(*S, *mv_tmp, Y, *M, ptype);
-                    else solver.solve(*S, *mv_tmp, Y);
-                } else {
-                    if (M) solver.solve(*S, X, *mv_tmp, *M, ptype);
-                    else solver.solve(*S, X, *mv_tmp);
-                    H.mult_dense_adjoint(*mv_tmp, Y);
-                }
-                Y.axpy(-center, X);
-                break;
-        }
-        Y.scale(1.0 / half_width);
+    void apply_op(const DistMultiVector<T>& X, DistMultiVector<T>& Y,
+                  ChebyMode mode = ChebyMode::NORMAL) {
+        apply_form(mode == ChebyMode::ADJOINT, X, Y);
     }
 
     // Applies an auxiliary operator V in the representation this Chebyshev
     // iterates: y = scale * (dressed V) x. Was the free apply_operator_dual().
     //
-    //   Orthogonal   V                 -- no metric to carry
-    //   Solve        S^-1 V  (NORMAL)  /  V S^-1  (ADJOINT)
-    //   Sandwich     Z^H V Z           -- both modes
+    //   Orthogonal   V           Solve   S^-1 V      Sandwich   Z^H V Z
     //
-    // ADJOINT applies the conjugate transpose of what NORMAL applies, which is
-    // what the left/bra sequences of the transport correlators propagate. The
-    // sandwich representation is orthonormal, so a Hermitian V dresses to a
-    // Hermitian operator and the two modes coincide -- the same reason
-    // apply_op does not consult `mode` in that form.
-    //
-    // Dressing V by the form rather than by `S != nullptr` is the whole point:
-    // the sandwich case reached the orthogonal branch under the old test and
-    // applied a bare V, dropping the Z on either side.
+    // ADJOINT reverses the factors by the same rule and in the same order as
+    // apply_form -- V is Hermitian here, as the class note explains -- so the
+    // operator and its dual cannot disagree about what "the adjoint of this
+    // representation" means. Dressing V by the form rather than by
+    // `S != nullptr` is the whole point: the sandwich case reached the
+    // orthogonal branch under the old test and applied a bare V, dropping the
+    // Z on either side.
     template <typename VectorType>
     void apply_dual(BlockSpMat<T>& V, const VectorType& x, VectorType& y,
                     ChebyMode mode = ChebyMode::NORMAL, double scale = 1.0) {
-        const bool adjoint = (mode == ChebyMode::ADJOINT);
+        const bool dagger = (mode == ChebyMode::ADJOINT);
         switch (form) {
             case ChebyOpForm::Orthogonal:
+                // No scratch: taking dual_tmp() here would make every
+                // orthogonal-basis caller (all of ac.hpp and msd.hpp on such a
+                // basis) carry a full Nbasis x nv buffer it never reads.
                 mult_by(V, x, y);
                 break;
             case ChebyOpForm::Sandwich: {
                 VectorType& tmp = dual_tmp(x);
-                M->apply(x, y);        // y   = Z x
-                mult_by(V, y, tmp);    // tmp = V Z x
+                M->apply(x, y);      // y   = Z x
+                mult_by(V, y, tmp);  // tmp = V Z x
                 M->apply_adjoint(tmp, y);
                 break;
             }
             case ChebyOpForm::Solve: {
-                // The solve target doubles as the CG initial guess, as it did
-                // when this lived in ac.hpp: V x on the way in, zero on the
-                // way out. Only the allocation is cached, not the contents.
                 VectorType& tmp = dual_tmp(x);
-                if (!adjoint) {
-                    mult_by(V, x, y);      // y = V x, and the initial guess
-                    tmp.copy_from(y);
-                    if (M) solver.solve(*S, tmp, y, *M, ptype);
-                    else solver.solve(*S, tmp, y);
-                } else {
+                if (dagger) {
+                    // y = V S^-1 x
                     tmp.set_constant(T(0.0));
-                    if (M) solver.solve(*S, x, tmp, *M, ptype);
-                    else solver.solve(*S, x, tmp);
+                    solve_with_S(x, tmp);
                     mult_by(V, tmp, y);
+                } else {
+                    // y = S^-1 V x. The solve target doubles as the CG initial
+                    // guess, as it did when this lived in ac.hpp: V x on the
+                    // way in. Only the allocation is cached, not the contents.
+                    mult_by(V, x, y);
+                    tmp.copy_from(y);
+                    solve_with_S(tmp, y);
                 }
                 break;
             }
@@ -457,13 +432,111 @@ private:
         half_width = (emax - emin) / 2.0;
     }
 
-    /// mult / mult_dense, picked by vector kind so apply_dual is written once.
+    /// The scaled operator, applied to a vector or a multivector; A^H when
+    /// `dagger`. Written once over both vector kinds, so the vector and
+    /// multivector paths cannot drift.
+    ///
+    /// There is no table of adjoint shapes to keep in step with the forms:
+    /// the adjoint of a product is the product of the adjoints in REVERSED
+    /// order, and since H is Hermitian (see the class note) and S^-1 is
+    /// self-adjoint for a Hermitian overlap, every per-factor adjoint is an
+    /// identity. `dagger` collapses to the reversal alone:
+    ///
+    ///   (H)^H       = H         one factor; nothing to reverse
+    ///   (S^-1 H)^H  = H S^-1    the solve moves to the other side
+    ///   (Z^H H Z)^H = Z^H H Z   reverses onto itself
+    ///
+    /// Two consequences. Only the solve form has an adjoint distinct from
+    /// itself, which is why the other two ignore `dagger` rather than
+    /// checking it. And no branch applies H, S or V through the transposed
+    /// kernel, so a left sequence costs exactly a right sequence and threads
+    /// like one (see the ChebyMode note).
+    ///
+    /// The sandwich branch is the one exception, and it is not about `dagger`:
+    /// Z^H H Z needs a genuine Z^H in BOTH modes, and Preconditioner::
+    /// apply_adjoint reaches it through mult_adjoint (preconditioner.hpp,
+    /// ISQRTMPreconditioner). So one of that form's three applies pays the
+    /// scatter kernel per matvec whichever mode is asked for. isqrtm builds Z
+    /// Hermitian by construction (isqrtm.hpp: "every route that forms it
+    /// mirrors"), so Z^H = Z and that apply COULD use the forward kernel --
+    /// an optimisation belonging to the preconditioner, not here, since this
+    /// class must not assume a Preconditioner is self-adjoint.
+    ///
+    /// H S^-1 is derived here rather than named in ChebyOpForm: it is what
+    /// asking the solve form for its adjoint means, not a shape a caller can
+    /// configure.
+    template <typename VectorType>
+    void apply_form(bool dagger, const VectorType& x, VectorType& y) {
+        VectorType& tmp = op_tmp(x);
+        switch (form) {
+            case ChebyOpForm::Orthogonal:
+                // y = (H - center) x, its own adjoint
+                mult_by(H, x, y);
+                break;
+            case ChebyOpForm::Sandwich:
+                // y = (Z^H H Z - center) x, its own adjoint
+                M->apply(x, y);
+                mult_by(H, y, tmp);
+                M->apply_adjoint(tmp, y);
+                break;
+            case ChebyOpForm::Solve:
+                if (dagger) {
+                    // y = (H - center S) S^-1 x
+                    //
+                    // tmp is the solve target, so it is also the unpreconditioned
+                    // CG initial guess. Zeroed rather than left holding whatever
+                    // the previous matvec parked there: that is scratch-reuse
+                    // detail, and letting it steer CG makes the result depend on
+                    // it. The NORMAL branch solves into the caller's y, whose
+                    // prior contents are a genuine warm start.
+                    tmp.set_constant(T(0.0));
+                    solve_with_S(x, tmp);
+                    mult_by(H, tmp, y);
+                } else {
+                    // y = S^-1 (H - center S) x
+                    mult_by(H, x, tmp);
+                    solve_with_S(tmp, y);
+                }
+                break;
+        }
+        y.axpy(-center, x);
+        y.scale(1.0 / half_width);
+    }
+
+    /// A x, by the forward row-gather kernel. Picked by vector kind so the
+    /// shape kernel and apply_dual are each written once over both.
+    ///
+    /// There is no adjoint counterpart on purpose: A^H = A for every matrix
+    /// this class applies, so mult_adjoint would buy nothing and cost the
+    /// thread scaling measured in the ChebyMode note.
     template <typename VectorType>
     static void mult_by(BlockSpMat<T>& A, const VectorType& in, VectorType& out) {
         if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
             A.mult_dense(const_cast<VectorType&>(in), out);
         } else {
             A.mult(const_cast<VectorType&>(in), out);
+        }
+    }
+
+    /// Solves S out = in, preconditioned when a preconditioner was supplied.
+    /// `ptype` governs this solve alone -- it does not select an operator.
+    template <typename VectorType>
+    void solve_with_S(const VectorType& in, VectorType& out) {
+        if (M) solver.solve(*S, const_cast<VectorType&>(in), out, *M, ptype);
+        else solver.solve(*S, const_cast<VectorType&>(in), out);
+    }
+
+    /// Scratch for the shape kernel, shaped like `like`.
+    template <typename VectorType>
+    VectorType& op_tmp(const VectorType& like) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            if (!mv_tmp || mv_tmp->num_vectors != like.num_vectors) {
+                mv_tmp = std::make_unique<DistMultiVector<T>>(like.graph, like.num_vectors);
+            }
+            return *mv_tmp;
+        } else {
+            if (!v_tmp) v_tmp = std::make_unique<DistVector<T>>(like.graph);
+            return *v_tmp;
         }
     }
 
@@ -483,8 +556,8 @@ private:
         }
     }
 
-    std::unique_ptr<DistVector<T>> v_tmp, v_x_conj, v_t0, v_t1, v_t2, v_dual_tmp;
-    std::unique_ptr<DistMultiVector<T>> mv_tmp, mv_x_conj, mv_t0, mv_t1, mv_t2, mv_dual_tmp;
+    std::unique_ptr<DistVector<T>> v_tmp, v_t0, v_t1, v_t2, v_dual_tmp;
+    std::unique_ptr<DistMultiVector<T>> mv_tmp, mv_t0, mv_t1, mv_t2, mv_dual_tmp;
 };
 
 } // namespace calc
