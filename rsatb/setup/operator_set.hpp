@@ -127,7 +127,17 @@ public:
         /// from which of overlap/preconditioner is null: the sandwich form
         /// releases the overlap, so that test cannot tell it from an
         /// orthogonal basis.
-        rsatb::calc::ChebyOpForm form = rsatb::calc::ChebyOpForm::Orthogonal;
+        ///
+        /// Read-only outside OperatorSet, for the same reason Chebyshev::form
+        /// is const: the form and the operands it requires -- Solve an
+        /// overlap, Sandwich a preconditioner -- are only ever set together,
+        /// in build_preconditioner. A caller able to retarget the form alone
+        /// could leave MakeChebyshev holding a null.
+        rsatb::calc::ChebyOpForm form() const { return form_; }
+
+    private:
+        friend class OperatorSet;
+        rsatb::calc::ChebyOpForm form_ = rsatb::calc::ChebyOpForm::Orthogonal;
     };
 
     const std::vector<std::pair<int, std::vector<double>>>& local_kpoints() const {
@@ -351,7 +361,7 @@ private:
             return;  // orthogonal basis: the form stays Orthogonal
         }
         // Non-orthogonal from here; the sandwich branch below may upgrade it.
-        state.form = rsatb::calc::ChebyOpForm::Solve;
+        state.form_ = rsatb::calc::ChebyOpForm::Solve;
         if (config.target == rsatb::model::PreconditionerTarget::kNone) {
             if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
                 throw std::runtime_error(
@@ -420,7 +430,7 @@ private:
         // downstream may read the release as evidence of an orthogonal basis;
         // ask OperatorSet::has_overlap() for that.
         if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
-            state.form = rsatb::calc::ChebyOpForm::Sandwich;
+            state.form_ = rsatb::calc::ChebyOpForm::Sandwich;
             state.overlap.reset();
         }
     }

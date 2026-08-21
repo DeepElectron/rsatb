@@ -526,6 +526,116 @@ TEST(MSDTest, GammaAffineRepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     }
 }
 
+// The diagonal-position overload applies X as a plain elementwise product,
+// which is the position operator only in an orthonormal basis. Handed a
+// Solve- or Sandwich-form Chebyshev it would iterate a dressed operator
+// against an undressed X. Production never did, but only because
+// observables.hpp routes overlap-bearing models to the matrix overload; the
+// guard makes it a stated precondition rather than a routing accident.
+TEST(MSDTest, DiagonalPositionOverloadRejectsNonOrthogonalForms) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph);
+    Matrix S(&graph);
+    fill_matrix(H, {
+        {Scalar(-0.4, 0.0), Scalar(0.15, 0.2)},
+        {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}
+    });
+    fill_matrix(S, {
+        {Scalar(1.2, 0.0), Scalar(0.1, 0.0)},
+        {Scalar(0.1, 0.0), Scalar(0.9, 0.0)}
+    });
+
+    Vector sample(&graph);
+    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
+    Vector diagonal_position(&graph);
+    fill_vector(diagonal_position, {Scalar(-0.7, 0.0), Scalar(1.1, 0.0)});
+
+    std::vector<double> msd;
+    std::vector<double> energy;
+
+    Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
+    EXPECT_THROW(corr_msd(cheby_solve, diagonal_position, sample, 2, 0.5, 16, msd, energy),
+                 std::runtime_error);
+
+    // The guard is targeted: the orthogonal form this overload exists for
+    // still runs.
+    Chebyshev<Scalar> cheby_orth(H, -1.0, 1.0);
+    EXPECT_NO_THROW(corr_msd(cheby_orth, diagonal_position, sample, 2, 0.5, 16, msd, energy));
+}
+
+// The overlap-form MSD, on a fixture that can actually see the dressing.
+//
+// CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap above cannot: it is
+// built on a graph with no off-diagonal blocks, so everything commutes, the
+// expected spectrum is identically zero, and S^-1 X, X S^-1 and a bare
+// undressed X all reproduce it. Here H and X are complex Hermitian and do not
+// commute, and the overlap is a multiple of the identity so that the solve
+// form (S^-1 H, dressing X to S^-1 X) and an orthogonal run on H/s with X/s
+// are the SAME operator and the same dressed X -- so the two must agree while
+// reaching that answer by different code. The conj(X) run is the margin a
+// conjugation slip would have to clear.
+TEST(MSDTest, OverlapFormMatchesEquivalentOrthogonalRun) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    const double s_ovl = 2.0;
+
+    Matrix H(&graph), X(&graph), S(&graph), Hs(&graph), Xs(&graph), Xconj(&graph);
+    fill_matrix(H, {
+        {Scalar(-0.4, 0.0), Scalar(0.15, 0.2)},
+        {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}
+    });
+    fill_matrix(X, {
+        {Scalar(-0.7, 0.0), Scalar(0.3, 0.1)},
+        {Scalar(0.3, -0.1), Scalar(1.1, 0.0)}
+    });
+    fill_matrix(S, {
+        {Scalar(s_ovl, 0.0), Scalar(0.0, 0.0)},
+        {Scalar(0.0, 0.0), Scalar(s_ovl, 0.0)}
+    });
+    fill_matrix(Hs, {
+        {Scalar(-0.4 / s_ovl, 0.0), Scalar(0.15 / s_ovl, 0.2 / s_ovl)},
+        {Scalar(0.15 / s_ovl, -0.2 / s_ovl), Scalar(0.35 / s_ovl, 0.0)}
+    });
+    fill_matrix(Xs, {
+        {Scalar(-0.7 / s_ovl, 0.0), Scalar(0.3 / s_ovl, 0.1 / s_ovl)},
+        {Scalar(0.3 / s_ovl, -0.1 / s_ovl), Scalar(1.1 / s_ovl, 0.0)}
+    });
+    fill_matrix(Xconj, {
+        {Scalar(-0.7 / s_ovl, 0.0), Scalar(0.3 / s_ovl, -0.1 / s_ovl)},
+        {Scalar(0.3 / s_ovl, 0.1 / s_ovl), Scalar(1.1 / s_ovl, 0.0)}
+    });
+
+    Vector sample(&graph);
+    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
+
+    const int n_steps = 3, n_kpm = 32;
+    const double dt = 0.5;
+    std::vector<double> msd_solve, msd_orth, msd_conj, e_solve, e_orth, e_conj;
+
+    Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
+    corr_msd(cheby_solve, X, sample, n_steps, dt, n_kpm, msd_solve, e_solve);
+
+    Chebyshev<Scalar> cheby_orth(Hs, -1.0, 1.0);
+    corr_msd(cheby_orth, Xs, sample, n_steps, dt, n_kpm, msd_orth, e_orth);
+
+    Chebyshev<Scalar> cheby_conj(Hs, -1.0, 1.0);
+    corr_msd(cheby_conj, Xconj, sample, n_steps, dt, n_kpm, msd_conj, e_conj);
+
+    ASSERT_EQ(msd_solve.size(), msd_orth.size());
+    double scale = 0.0, gap_conj = 0.0;
+    for (size_t i = 0; i < msd_orth.size(); ++i) {
+        scale = std::max(scale, std::abs(msd_orth[i]));
+        gap_conj = std::max(gap_conj, std::abs(msd_orth[i] - msd_conj[i]));
+    }
+    // Not the zero spectrum: this fixture actually exercises the dressing.
+    EXPECT_GT(scale, 1e-6);
+    // ... and it can tell X from conj(X).
+    EXPECT_GT(gap_conj, 1e-3 * scale);
+
+    for (size_t i = 0; i < msd_solve.size(); ++i) {
+        EXPECT_NEAR(msd_solve[i], msd_orth[i], 1e-8 * std::max(1.0, scale));
+    }
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);

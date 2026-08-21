@@ -355,6 +355,14 @@ void corr_msd(
     if (dt_fs < 0.0) {
         throw std::runtime_error("dt_fs must be non-negative");
     }
+    if (cheby.form != ChebyOpForm::Orthogonal) {
+        throw std::runtime_error(
+            "Diagonal-position MSD needs an orthogonal basis. This overload applies X as a "
+            "plain elementwise product, which is the position operator only when the basis "
+            "is orthonormal; with S^-1 H or Z^H H Z the recurrence would iterate a dressed "
+            "operator against an undressed X. Pass the explicit position MATRIX instead -- "
+            "that overload routes X through apply_dual, which dresses it by the form.");
+    }
 
     detail::run_explicit_position_msd(
         cheby,

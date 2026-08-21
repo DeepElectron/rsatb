@@ -169,15 +169,28 @@ struct ObservableContext {
         if (!hk) {
             throw std::runtime_error("Hamiltonian is not available for the requested k-point.");
         }
-        switch (state.form) {
+        // Each form names the operands it needs; check them rather than
+        // dereferencing on trust. build_preconditioner sets the form and those
+        // operands together, so a null here is a broken invariant upstream --
+        // worth saying so, instead of segfaulting inside the constructor.
+        switch (state.form()) {
             case ChebyOpForm::Orthogonal:
                 return std::make_unique<Chebyshev<ObservableScalar>>(
                     *hk, ops.emin(), ops.emax(), verbose);
             case ChebyOpForm::Sandwich:
+                if (!preconditioner) {
+                    throw std::runtime_error(
+                        "The sandwich form needs a preconditioner to supply Z, but this "
+                        "k-point has none.");
+                }
                 return std::make_unique<Chebyshev<ObservableScalar>>(
                     *hk, *preconditioner, preconditioner->get_type(), ops.emin(), ops.emax(),
                     verbose);
             case ChebyOpForm::Solve:
+                if (!sk) {
+                    throw std::runtime_error(
+                        "The solve form needs the overlap S, but this k-point has none.");
+                }
                 if (preconditioner) {
                     return std::make_unique<Chebyshev<ObservableScalar>>(
                         *hk, *sk, *preconditioner, preconditioner->get_type(), ops.emin(),
@@ -1184,7 +1197,7 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
     // and seeds with covariance I, so it never references S -- which is what
     // makes releasing S at setup harmless rather than a loss of capability.
     std::unique_ptr<vbcsr::BlockSpMat<double>> s;
-    if (state.form == ChebyOpForm::Solve) {
+    if (state.form() == ChebyOpForm::Solve) {
         if (!state.overlap) {
             throw std::runtime_error(
                 "The solve-form real-space LDOS needs the overlap, which is not "
@@ -1219,7 +1232,7 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
     const OrbitalCollocation collocation(orbital_files, comm);
     options.emin = ops.emin();
     options.emax = ops.emax();
-    return ComputeRealSpaceLdos(atomic_data, H, s.get(), *zt, state.form, collocation, options,
+    return ComputeRealSpaceLdos(atomic_data, H, s.get(), *zt, state.form(), collocation, options,
                                 comm);
 }
 

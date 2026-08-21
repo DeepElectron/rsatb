@@ -246,6 +246,152 @@ int main(int argc, char** argv) {
             std::cout << (ok ? "DRESSING PASSED" : "DRESSING FAILED") << std::endl;
             all_ok = all_ok && ok;
         }
+
+        // The ADJOINT dressing, which current_adjoint() rides on and which no
+        // test reached before: apply_dual(..., ADJOINT) must be the adjoint of
+        // apply_dual(..., NORMAL). S here is NOT diagonal, so the solve form's
+        // two orders (S^-1 V and V S^-1) are different operators and the
+        // identity is not vacuous -- the gap between them is printed too. V is
+        // complex Hermitian, so V^T != V and a conjugation slip fails as well.
+        BlockSpMat<cd> Vc(&graph);
+        for (int i = 0; i < (int)graph.owned_global_indices.size(); ++i) {
+            const int gid = graph.owned_global_indices[i];
+            const bool even = (gid % 2 == 0);
+            const int partner = even ? gid + 1 : gid - 1;
+            cd zero(0.0, 0.0);
+            cd off = even ? cd(std::cos(0.6), std::sin(0.6)) : cd(std::cos(0.6), -std::sin(0.6));
+            Vc.add_block(gid, gid, &zero, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+            Vc.add_block(gid, partner, &off, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        }
+        Vc.assemble();
+
+        DistVector<cd> u(&graph), w(&graph), Du(&graph), Dhu(&graph), Dhw(&graph);
+        for (int i = 0; i < u.local_size; ++i) {
+            const int gid = graph.owned_global_indices[i];
+            u[i] = cd(std::sin(0.5 * gid + 0.3), std::cos(0.9 * gid));
+            w[i] = cd(std::cos(0.4 * gid + 1.7), std::sin(0.2 * gid + 0.8));
+        }
+
+        // Whether the dual has an adjoint distinct from itself. S^-1 V and
+        // V S^-1 differ once S is not diagonal, so the solve form must show a
+        // gap; Z^H V Z is its own adjoint for Hermitian V, so the sandwich
+        // form must show none. Both directions are assertions: a sandwich
+        // branch that "did something" for ADJOINT would fail the second.
+        struct FormCase { const char* name; Chebyshev<cd>* cheby; bool orders_differ; };
+        const FormCase form_cases[] = {{"Solve   ", &cheby_solve, true},
+                                       {"Sandwich", &cheby_sand, false}};
+        for (const FormCase& fc : form_cases) {
+            fc.cheby->apply_dual(Vc, u, Du, ChebyMode::NORMAL);
+            fc.cheby->apply_dual(Vc, w, Dhw, ChebyMode::ADJOINT);
+            fc.cheby->apply_dual(Vc, u, Dhu, ChebyMode::ADJOINT);
+            const cd lhs = w.dot(Du);
+            const cd rhs = Dhw.dot(u);
+            double order_gap = 0.0, scale = 0.0;
+            for (int i = 0; i < Du.local_size; ++i) {
+                order_gap = std::max(order_gap, std::abs(Du[i] - Dhu[i]));
+                scale = std::max(scale, std::abs(Du[i]));
+            }
+            double gg[2] = {0.0, 0.0};
+            double loc[2] = {order_gap, scale};
+            MPI_Allreduce(loc, gg, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            if (rank == 0) {
+                const double err = std::abs(lhs - rhs) / std::max(1e-30, std::abs(lhs));
+                std::cout << "  " << fc.name << " <w,Du> vs <D^H w,u> rel err " << err
+                          << " ; |dual_N u - dual_A u| = " << gg[0]
+                          << (fc.orders_differ ? " (must be > 0)" : " (must be 0)") << std::endl;
+                const bool gap_ok = fc.orders_differ ? (gg[0] > 1e-3 * gg[1])
+                                                     : (gg[0] < 1e-12 * gg[1]);
+                const bool dok = err < 1e-8 && gap_ok;
+                std::cout << (dok ? "  ADJOINT DRESSING PASSED" : "  ADJOINT DRESSING FAILED")
+                          << std::endl;
+                all_ok = all_ok && dok;
+            }
+        }
+    }
+
+    // The correlator itself in every operator form. Until now corr_ac only
+    // ever ran Orthogonal, where ADJOINT is a no-op by construction, so the
+    // ADJOINT x {Solve, Sandwich} paths through propagate() and the Fermi
+    // operator were never executed at all.
+    //
+    // Construction: with a SCALAR overlap S = s I the three forms iterate the
+    // same operator -- H/s directly, S^-1 H, and Z^H H Z with Z = I/sqrt(s) --
+    // and dress V identically to V/s. So the three correlators must agree
+    // element for element, while the code paths through them differ (a CG
+    // solve per matvec, a two-sided congruence, or neither).
+    //
+    // H and V are complex Hermitian, so A^H = A but A^T = conj(A) does not:
+    // the run with conj(V) at the end measures the gap a conjugation slip
+    // anywhere in these paths would have to clear. The main fixture above is
+    // real-valued and cannot see any of this.
+    if (rank == 0) std::cout << "\nTesting AC correlator across operator forms..." << std::endl;
+    {
+        const double s_ovl = 2.5;
+        const double rt_s = std::sqrt(s_ovl);
+        const double h_hop = 0.3, phi = 0.7, theta = 0.6;
+
+        BlockSpMat<cd> H2(&graph), V2(&graph), Hs(&graph), Vs(&graph), Vconj(&graph);
+        BlockSpMat<cd> Sc(&graph), Zsrc(&graph);
+        for (int i = 0; i < (int)graph.owned_global_indices.size(); ++i) {
+            const int gid = graph.owned_global_indices[i];
+            const bool even = (gid % 2 == 0);
+            const int partner = even ? gid + 1 : gid - 1;
+            const double sgn = even ? 1.0 : -1.0;
+            cd d = even ? cd(-0.75, 0.0) : cd(0.75, 0.0);
+            cd hop(h_hop * std::cos(phi), sgn * h_hop * std::sin(phi));
+            cd vel(std::cos(theta), sgn * std::sin(theta));
+            cd zero(0.0, 0.0), sdiag(s_ovl, 0.0), zdiag(rt_s, 0.0);
+            cd ds = d / s_ovl, hs = hop / s_ovl, vls = vel / s_ovl, vlc = std::conj(vel) / s_ovl;
+            const auto ins = AssemblyMode::INSERT;
+            const auto cm = MatrixLayout::ColMajor;
+            H2.add_block(gid, gid, &d, 1, 1, ins, cm);
+            H2.add_block(gid, partner, &hop, 1, 1, ins, cm);
+            Hs.add_block(gid, gid, &ds, 1, 1, ins, cm);
+            Hs.add_block(gid, partner, &hs, 1, 1, ins, cm);
+            V2.add_block(gid, gid, &zero, 1, 1, ins, cm);
+            V2.add_block(gid, partner, &vel, 1, 1, ins, cm);
+            Vs.add_block(gid, gid, &zero, 1, 1, ins, cm);
+            Vs.add_block(gid, partner, &vls, 1, 1, ins, cm);
+            Vconj.add_block(gid, gid, &zero, 1, 1, ins, cm);
+            Vconj.add_block(gid, partner, &vlc, 1, 1, ins, cm);
+            Sc.add_block(gid, gid, &sdiag, 1, 1, ins, cm);
+            Zsrc.add_block(gid, gid, &zdiag, 1, 1, ins, cm);
+        }
+        H2.assemble(); V2.assemble(); Hs.assemble(); Vs.assemble();
+        Vconj.assemble(); Sc.assemble(); Zsrc.assemble();
+
+        Chebyshev<cd> ch_orth(Hs, -1.0, 1.0);
+        Chebyshev<cd> ch_solve(H2, Sc, -1.0, 1.0);
+        // Default tolerance on purpose: S is a multiple of the identity, so CG
+        // lands exactly on the first step. Asking for 1e-14 makes it take a
+        // second step on an already-zero residual and report a breakdown.
+        BlockJacobianPreconditioner<cd> Zj(Zsrc);  // applies 1/sqrt(s)
+        Chebyshev<cd> ch_sand(H2, Zj, PreconditionerType::Symmetric, -1.0, 1.0);
+
+        const int nt2 = 12, nk2 = 200;
+        const double temp2 = 300.0;
+        const int ns2 = nt2 * kAcOversample;
+        std::vector<cd> c_orth, c_solve, c_sand, c_conj;
+        corr_ac(ch_orth, Vs, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_orth);
+        corr_ac(ch_solve, V2, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_solve);
+        corr_ac(ch_sand, V2, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_sand);
+        corr_ac(ch_orth, Vconj, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_conj);
+
+        if (rank == 0) {
+            const double d_solve = max_component_diff(c_orth, c_solve, ns2, 1, 1);
+            const double d_sand = max_component_diff(c_orth, c_sand, ns2, 1, 1);
+            const double d_conj = max_component_diff(c_orth, c_conj, ns2, 1, 1);
+            double scale = 0.0;
+            for (int k = 0; k <= ns2; ++k) scale = std::max(scale, std::abs(c_orth[(size_t)k * 6]));
+            std::cout << "  |orthogonal - solve|    = " << d_solve << std::endl;
+            std::cout << "  |orthogonal - sandwich| = " << d_sand << std::endl;
+            std::cout << "  |V - conj(V)| response  = " << d_conj
+                      << " (gap a conjugation slip would open)" << std::endl;
+            const bool ok = d_solve < 1e-8 * scale && d_sand < 1e-8 * scale &&
+                            d_conj > 1e-2 * scale;
+            std::cout << (ok ? "FORM EQUIVALENCE PASSED" : "FORM EQUIVALENCE FAILED") << std::endl;
+            all_ok = all_ok && ok;
+        }
     }
 
     MPI_Finalize();
