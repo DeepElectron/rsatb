@@ -776,7 +776,6 @@ TEST(SKTBTest, OrthogonalProviderBuildsVelocityAndFallbackPosition) {
     auto model = MakeSktbModel(native_input);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
     rsatb::setup::OperatorRuntimeContext runtime;
@@ -792,19 +791,19 @@ TEST(SKTBTest, OrthogonalProviderBuildsVelocityAndFallbackPosition) {
     ASSERT_TRUE(operators->has_position());
 
     const auto& velocity = operators->velocity_state(0);
-    EXPECT_GT(velocity.x->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.y->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.z->local_block_nnz(), 0u);
-    const auto vx_block = block_values(*velocity.x, 0, 1);
+    EXPECT_GT(velocity.x.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.y.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.z.matrix->local_block_nnz(), 0u);
+    const auto vx_block = block_values(*velocity.x.matrix, 0, 1);
     ASSERT_EQ(vx_block.size(), 9u);
     EXPECT_NEAR(vx_block[0].real(), 0.0, 1e-12);
     EXPECT_NEAR(vx_block[4].real(), 0.0, 1e-12);
     EXPECT_NEAR(vx_block[8].real(), 0.0, 1e-12);
-    EXPECT_NEAR(vx_block[0].imag(), 0.5 / 0.6582119569, 1e-12);
-    EXPECT_NEAR(vx_block[4].imag(), 0.5 / 0.6582119569, 1e-12);
-    EXPECT_NEAR(vx_block[8].imag(), 2.0 / 0.6582119569, 1e-12);
-    const auto vy_block = block_values(*velocity.y, 0, 1);
-    const auto vz_block = block_values(*velocity.z, 0, 1);
+    EXPECT_NEAR(vx_block[0].imag(), 0.5, 1e-12);
+    EXPECT_NEAR(vx_block[4].imag(), 0.5, 1e-12);
+    EXPECT_NEAR(vx_block[8].imag(), 2.0, 1e-12);
+    const auto vy_block = block_values(*velocity.y.matrix, 0, 1);
+    const auto vz_block = block_values(*velocity.z.matrix, 0, 1);
     ASSERT_EQ(vy_block.size(), 9u);
     ASSERT_EQ(vz_block.size(), 9u);
     for (const auto& value : vy_block) {
@@ -830,7 +829,6 @@ TEST(SKTBTest, OverlapPresentProviderBuildsOverlapWithoutVelocity) {
     auto model = MakeSktbModel(native_input);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
     rsatb::setup::OperatorRuntimeContext runtime;
@@ -863,7 +861,6 @@ TEST(SKTBTest, PeriodicOrthogonalModelBuildsFirstLatticeMoment) {
     auto model = MakeSktbModel(config);
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = false;
 
     rsatb::setup::OperatorRuntimeContext runtime;

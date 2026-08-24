@@ -217,7 +217,8 @@ PYBIND11_MODULE(_rsatb, m) {
 
     py::class_<rsatb::model::PseudopotentialFiles>(m, "PseudopotentialFiles",
         "Pseudopotential files, in the same order as the orbital files.\n\n"
-        "Optional: supplying them enables the velocity operator.")
+        "Optional: kept for the explicit-integral cross-check velocity; the "
+        "production commutator velocity needs no pseudopotentials.")
         .def(py::init([](std::vector<std::string> names, std::string dir) {
                  return rsatb::model::PseudopotentialFiles{std::move(names), std::move(dir)};
              }),
@@ -227,18 +228,15 @@ PYBIND11_MODULE(_rsatb, m) {
 
     py::class_<rsatb::model::PreconditionerOptions>(m, "PreconditionerOptions",
         "Preconditioner settings for the iterative solvers.")
-        .def(py::init([](const std::string& target,
-                         const std::string& operator_form,
+        .def(py::init([](const std::string& operator_form,
                          double tol, double sptol, int maxiter) {
                  rsatb::model::PreconditionerOptions options;
-                 options.target = rsatb::model::ParsePreconditionerTarget(target);
                  options.operator_form = rsatb::model::ParseOperatorForm(operator_form);
                  options.tol = tol;
                  options.sptol = sptol;
                  options.maxiter = maxiter;
                  return options;
              }),
-             py::arg("target") = "overlap",
              py::arg("operator_form") = "solve",
              py::arg("tol") = 1e-7,
              py::arg("sptol") = 1e-5,
@@ -255,22 +253,11 @@ PYBIND11_MODULE(_rsatb, m) {
         .def_readwrite("tol", &rsatb::model::PreconditionerOptions::tol)
         .def_readwrite("sptol", &rsatb::model::PreconditionerOptions::sptol)
         .def_readwrite("maxiter", &rsatb::model::PreconditionerOptions::maxiter)
-        .def_property(
-            "target",
-            [](const rsatb::model::PreconditionerOptions& self) {
-                return self.target == rsatb::model::PreconditionerTarget::kNone ? "none" : "overlap";
-            },
-            [](rsatb::model::PreconditionerOptions& self, const std::string& value) {
-                self.target = rsatb::model::ParsePreconditionerTarget(value);
-            })
         .def("__repr__", [](const rsatb::model::PreconditionerOptions& self) {
-            const std::string target =
-                self.target == rsatb::model::PreconditionerTarget::kNone ? "none" : "overlap";
             const std::string form =
                 self.operator_form == rsatb::model::OperatorForm::kSandwich
                     ? "sandwich" : "solve";
-            return "<PreconditionerOptions target='" + target + "' operator_form='" +
-                   form + "'>";
+            return "<PreconditionerOptions operator_form='" + form + "'>";
         });
 
     py::class_<rsatb::model::SetupOptions>(m, "SetupOptions",

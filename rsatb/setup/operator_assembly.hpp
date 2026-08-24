@@ -20,6 +20,7 @@
 #include "../model/model.hpp"
 #include "../model/operator_source.hpp"
 #include "../operator/builders.hpp"
+#include "../operator/nonorthogonal_velocity.hpp"
 
 #include <memory>
 #include <stdexcept>
@@ -87,8 +88,27 @@ inline std::unique_ptr<OperatorSet> BuildOperatorSet(
             };
             break;
         case OperatorSource::kGeneric:
-            parts.velocity_builder = op::MakeCommutatorVelocityBuilder(
-                parts.hamiltonian_images.get());
+            // The commutator velocity, in whichever dress the basis needs:
+            // the bare bond moment of H when orthogonal, the section-4
+            // overlap-dressed composite when not. The composite captures the
+            // model for its dipole matrices; Validate() has already
+            // guaranteed a position exists whenever an overlap does.
+            if (parts.overlap_images) {
+                parts.velocity_builder =
+                    [&model, h_images = parts.hamiltonian_images.get(),
+                     s_images = parts.overlap_images.get()](
+                        vbcsr::atomic::AtomicData& atomic_data, const op::KPoint& kpoint) {
+                        auto position = model.BuildPosition(atomic_data, kpoint);
+                        std::unique_ptr<op::VelocityTriplet::Matrix> overlap_k(
+                            s_images->sample_k(kpoint,
+                                               vbcsr::atomic::PhaseConvention::R_AND_POSITION));
+                        return op::BuildNonorthogonalCommutatorVelocity(
+                            atomic_data, *h_images, *s_images, *position, *overlap_k, kpoint);
+                    };
+            } else {
+                parts.velocity_builder = op::MakeCommutatorVelocityBuilder(
+                    parts.hamiltonian_images.get());
+            }
             break;
         case OperatorSource::kUnavailable:
             break;

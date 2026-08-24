@@ -68,7 +68,7 @@ def spectral_half_width(positions, numbers, cell, model, supercell=(1, 1, 1)):
         structure,
         model,
         SetupOptions(kpoints=[[0.0, 0.0, 0.0]], nsamples=1,
-                     preconditioner=PreconditionerOptions(target="none")),
+                     preconditioner=PreconditionerOptions()),
         npar=1,
     )
     emin, emax = calculation.energy_bounds()

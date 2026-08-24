@@ -59,7 +59,7 @@ try:
         model,
         SetupOptions(
             kpoints=[[0.0, 0.0, 0.0]],
-            preconditioner=PreconditionerOptions(target="none"),
+            preconditioner=PreconditionerOptions(),
         ),
         npar=1,
         )
@@ -67,6 +67,44 @@ try:
 except Exception as e:
     print(f"Verification failed during SKTB binding smoke test: {e}")
     sys.exit(1)
+
+
+def test_lcao_periodic_msd_runs_through_the_commutator_route():
+    """The non-orthogonal periodic MSD, end to end.
+
+    An LCAO model without pseudopotential files still carries the commutator
+    velocity (the dipole integrals suffice), and the periodic MSD runs on it
+    through the section-4 composite driver with metric-weighted spectra
+    (doc/position_commutator.md section 8). The commutator state is zero at
+    t = 0 by construction, so the first row must vanish identically -- a
+    structural signature no misrouted position representation reproduces.
+    """
+    data = os.path.join(os.path.dirname(__file__), "data", "diamond")
+    orb = "C_gga_7au_100Ry_2s2p1d.orb"
+    h5 = os.path.join(data, "C2.0", "hamiltonians.h5")
+    if not (os.path.exists(h5) and os.path.exists(os.path.join(data, orb))):
+        import pytest
+        pytest.skip("diamond LCAO fixture not present")
+
+    model = LcaoModel(
+        hamiltonian=HamiltonianFile(h5),
+        orbitals=OrbitalFiles(dir=data + os.sep, names=[orb]),
+    )
+    assert model.capabilities.velocity, "LCAO velocity must not require pseudopotentials"
+
+    structure = Structure.from_file(os.path.join(data, "diamond_sc111.vasp"))
+    rs = RSATB(structure, model,
+               SetupOptions(kpoints=[[0.0, 0.0, 0.0]],
+                            preconditioner=PreconditionerOptions()),
+               npar=1)
+    n_steps, n_kpm = 3, 24
+    msd, energy, time = rs.compute_msd_spectrum(n_steps, 0.5, n_kpm, "x")
+
+    import numpy as np
+    m = np.asarray(msd).reshape(-1, n_steps + 1, n_kpm)[0]
+    assert np.all(np.abs(m[0]) < 1e-10), "commutator state must vanish at t=0"
+    assert np.all(np.isfinite(m)), "MSD must stay finite"
+    assert np.abs(m[1:]).max() > 1e-3, "wavepacket must actually spread"
 
 
 def test_structure_supercell_is_metadata_until_expanded():

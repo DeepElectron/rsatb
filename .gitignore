@@ -3,6 +3,8 @@ test*.ipynb
 # it hid every examples/*.json and kept them out of both git and the wheel.
 # Ignore generated JSON outputs only.
 **/time.json
+pub_exp/
+scaling/
 .vscode/
 *.npy
 test/data/diamond/C2.0

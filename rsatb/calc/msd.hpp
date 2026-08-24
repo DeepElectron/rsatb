@@ -68,6 +68,68 @@ std::vector<cd> compute_density_moments(
     }
 }
 
+// KPM moments of delta(E - A) on |v>, weighted by the metric the form
+// implies (doc/position_commutator.md section 5): the density operator is
+// self-adjoint in the S inner product, so
+//
+//   Solve       mu_n = <v| S T_n(A~) |v>     (A~ = scaled S^-1 H)
+//   Sandwich    mu_n = <v| T_n(A~) |v>       (eta-space dots ARE the S metric)
+//   Orthogonal  mu_n = <v| T_n(A~) |v>
+//
+// The plain compute_moments covers the last two; this adds the S-weighted
+// left vector for the Solve form and is what every non-orthogonal spectral
+// readout in this file goes through.
+template <typename T, typename VectorType>
+std::vector<cd> metric_density_moments(
+    Chebyshev<T>& cheby,
+    const VectorType& v,
+    int n_kpm
+) {
+    if (cheby.form != ChebyOpForm::Solve) {
+        return compute_density_moments(cheby, v, n_kpm);
+    }
+
+    VectorType left = ZeroLike(v);
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        cheby.S->mult_dense(const_cast<VectorType&>(v), left);
+    } else {
+        cheby.S->mult(const_cast<VectorType&>(v), left);
+    }
+
+    VectorType t0 = ZeroLike(v);
+    VectorType t1 = ZeroLike(v);
+    VectorType t2 = ZeroLike(v);
+    t0.copy_from(v);
+
+    auto record = [&](const VectorType& tn, std::vector<cd>& out) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            std::vector<T> per_column(static_cast<size_t>(v.num_vectors));
+            left.dot(tn, per_column);
+            cd accum = 0.0;
+            for (const auto& value : per_column) accum += static_cast<cd>(value);
+            out.push_back(accum / static_cast<double>(v.num_vectors));
+        } else {
+            out.push_back(static_cast<cd>(left.dot(tn)));
+        }
+    };
+
+    std::vector<cd> moments;
+    moments.reserve(static_cast<size_t>(n_kpm));
+    record(t0, moments);
+    if (n_kpm > 1) {
+        cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+        record(t1, moments);
+    }
+    for (int n = 2; n < n_kpm; ++n) {
+        cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+        t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
+        record(t2, moments);
+        std::swap(t0, t1);
+        std::swap(t1, t2);
+    }
+    return moments;
+}
+
 inline void write_msd_row(
     const std::vector<cd>& density_spectrum,
     const std::vector<cd>& msd_spectrum,
@@ -173,7 +235,7 @@ void run_explicit_position_msd(
     std::vector<cd> coeffs;
     timeprop_coeff(tau, 1e-14, true, coeffs);
 
-    std::vector<cd> density_moments = compute_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
@@ -220,7 +282,7 @@ void run_explicit_position_msd(
         comm_state.copy_from(xpsi_curr);
         comm_state.axpy(static_cast<T>(-1.0), xpsi0_prop);
 
-        std::vector<cd> msd_moments = compute_density_moments(cheby, comm_state, n_kpm);
+        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
@@ -247,7 +309,7 @@ void run_gamma_affine_msd(
     std::vector<cd> coeffs;
     timeprop_coeff(tau, 1e-14, true, coeffs);
 
-    std::vector<cd> density_moments = compute_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
@@ -284,7 +346,106 @@ void run_gamma_affine_msd(
         comm_state.copy_from(xpsi_curr);
         comm_state.axpy(static_cast<T>(-1.0), state_curr.affine);
 
-        std::vector<cd> msd_moments = compute_density_moments(cheby, comm_state, n_kpm);
+        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm);
+        std::vector<cd> msd_spectrum;
+        reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
+        write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
+    }
+}
+
+
+// The periodic MSD for ANY basis and form: the section-2a derivation
+// recursion, driven by the commutator velocity.
+//
+// The pair (phi, psi) with phi_m = [X, T_m(A~)] psi is propagated under the
+// block generator [[A~, C~],[0, A~]] with C~ = [X, A~] = (i / half_width) *
+// (form-dressed V) -- exactly what apply_dual computes for the operator set's
+// velocity, bare or composite. phi(0) = 0, and phi(t) IS the commutator state
+// [X, U(t)] |psi>: no position operator, no diagonal split, no gauge choice.
+// In the orthogonal limit this is the same physics as run_gamma_affine_msd in
+// the other gauge (driver -M[H] against coupling H1 plus the diagonal split);
+// both are kept because the affine split is cheaper per step there.
+template <typename T, typename VectorType>
+void run_commutator_msd(
+    Chebyshev<T>& cheby,
+    VelocityOp<T> velocity,
+    const VectorType& psi_in,
+    int n_steps,
+    double dt_fs,
+    int n_kpm,
+    std::vector<double>& msd_out,
+    std::vector<double>& energy_out
+) {
+    const double hbar_ev_fs = 0.6582119569;
+    const double tau = cheby.half_width * dt_fs / hbar_ev_fs;
+    std::vector<cd> coeffs;
+    timeprop_coeff(tau, 1e-14, true, coeffs);
+    const int n_coeff = static_cast<int>(coeffs.size());
+
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_spectrum;
+    reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
+    energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
+
+    msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm), 0.0);
+
+    // driver(x) = C~ x = (i / half_width) * apply_dual(V, x)
+    VectorType driver_tmp = ZeroLike(psi_in);
+    auto add_driver = [&](const VectorType& x, VectorType& into) {
+        cheby.apply_dual(velocity, x, driver_tmp, ChebyMode::NORMAL, 1.0 / cheby.half_width);
+        into.axpy(static_cast<T>(cd(0.0, 1.0)), driver_tmp);
+    };
+
+    GammaAffineState<VectorType> curr{ZeroLike(psi_in), ZeroLike(psi_in)};
+    GammaAffineState<VectorType> next{ZeroLike(psi_in), ZeroLike(psi_in)};
+    GammaAffineState<VectorType> t0{ZeroLike(psi_in), ZeroLike(psi_in)};
+    GammaAffineState<VectorType> t1{ZeroLike(psi_in), ZeroLike(psi_in)};
+    GammaAffineState<VectorType> t2{ZeroLike(psi_in), ZeroLike(psi_in)};
+
+    curr.periodic.copy_from(psi_in);   // psi;  curr.affine = phi = 0
+
+    auto apply_pair = [&](const GammaAffineState<VectorType>& in,
+                          GammaAffineState<VectorType>& out) {
+        cheby.apply_op(in.affine, out.affine, ChebyMode::NORMAL);
+        cheby.apply_op(in.periodic, out.periodic, ChebyMode::NORMAL);
+        add_driver(in.periodic, out.affine);
+    };
+
+    for (int step = 0; step <= n_steps; ++step) {
+        ::rsatb::util::throw_if_interrupted(psi_in.graph->comm);
+        if (step > 0) {
+            // One Chebyshev time step of the pair, the same recurrence
+            // propagate_affine runs, written against apply_pair.
+            t0.affine.copy_from(curr.affine);
+            t0.periodic.copy_from(curr.periodic);
+            next.affine.copy_from(t0.affine);
+            next.periodic.copy_from(t0.periodic);
+            next.affine.scale(static_cast<T>(coeffs[0]));
+            next.periodic.scale(static_cast<T>(coeffs[0]));
+            if (n_coeff > 1) {
+                apply_pair(t0, t1);
+                next.affine.axpy(static_cast<T>(coeffs[1]), t1.affine);
+                next.periodic.axpy(static_cast<T>(coeffs[1]), t1.periodic);
+            }
+            for (int n = 2; n < n_coeff; ++n) {
+                apply_pair(t1, t2);
+                t2.affine.axpby(static_cast<T>(-1.0), t0.affine, static_cast<T>(2.0));
+                t2.periodic.axpby(static_cast<T>(-1.0), t0.periodic, static_cast<T>(2.0));
+                next.affine.axpy(static_cast<T>(coeffs[n]), t2.affine);
+                next.periodic.axpy(static_cast<T>(coeffs[n]), t2.periodic);
+                std::swap(t0, t1);
+                std::swap(t1, t2);
+            }
+            curr.affine.copy_from(next.affine);
+            curr.periodic.copy_from(next.periodic);
+        }
+
+        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
+            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
+                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
+        }
+
+        std::vector<cd> msd_moments = metric_density_moments(cheby, curr.affine, n_kpm);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
@@ -294,9 +455,10 @@ void run_gamma_affine_msd(
 } // namespace detail
 
 // Route selection is done by overload, not by a runtime mode switch in this file:
-//   corr_msd(cheby, X_matrix, ...)         -> explicit position matrix route
-//   corr_msd(cheby, x_diagonal, ...)       -> explicit orthogonal diagonal route
-//   corr_msd(cheby, H1, x_diagonal, ...)   -> periodic Gamma affine route
+//   corr_msd(cheby, X_matrix, ...)         -> explicit position matrix route (OBC)
+//   corr_msd(cheby, x_diagonal, ...)       -> explicit orthogonal diagonal route (OBC)
+//   corr_msd(cheby, H1, x_diagonal, ...)   -> periodic Gamma affine route (orthogonal)
+//   corr_msd(cheby, velocity, ...)         -> periodic commutator route (any basis)
 // The caller decides once which data is available and then invokes the matching
 // overload directly.
 
@@ -373,6 +535,49 @@ void corr_msd(
         n_kpm,
         msd_out,
         energy_out);
+}
+
+// periodic boundary condition MSD driven by the commutator velocity: valid for
+// every basis and every operator form, because the driver is apply_dual's
+// form-dressed velocity and the spectral readout is metric-weighted. This is
+// the non-orthogonal periodic route doc/position_commutator.md section 8
+// staged; on an orthogonal basis it computes the same physics as the affine
+// overload above in the other gauge.
+template <typename T, typename VectorType>
+void corr_msd(
+    Chebyshev<T>& cheby,
+    VelocityOp<T> velocity,
+    const VectorType& psi_in,
+    int n_steps,
+    double dt_fs,
+    int n_kpm,
+    std::vector<double>& msd_out,
+    std::vector<double>& energy_out
+) {
+    if (n_steps < 0) {
+        throw std::runtime_error("n_steps must be non-negative");
+    }
+    if (n_kpm <= 0) {
+        throw std::runtime_error("n_kpm must be positive");
+    }
+    if (dt_fs < 0.0) {
+        throw std::runtime_error("dt_fs must be non-negative");
+    }
+    if constexpr (std::is_floating_point_v<T>) {
+        throw std::runtime_error(
+            "The commutator MSD carries an explicit i in its driver and needs a "
+            "complex scalar type.");
+    } else {
+    detail::run_commutator_msd(
+        cheby,
+        velocity,
+        psi_in,
+        n_steps,
+        dt_fs,
+        n_kpm,
+        msd_out,
+        energy_out);
+    }
 }
 
 // periodic boundary condition MSD for Gamma-point calculations on orthogonal systems, using the affine translation-covariant representation.

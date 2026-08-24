@@ -108,11 +108,18 @@ public:
     /// in the working basis. Velocity additionally needs the pseudopotential
     /// projectors, so without `.upf` files it is honestly unavailable rather
     /// than silently wrong.
+    /// The velocity the operator set serves is the section-4 commutator
+    /// (kGeneric), built from the images plus this model's dipole matrices --
+    /// available unconditionally, since the position integrals need no
+    /// pseudopotentials. BuildVelocity below (op2c's explicit gradient +
+    /// projector integrals) remains callable on the model as a cross-check
+    /// operator; it is deliberately NOT what production propagates
+    /// (doc/position_commutator.md section 7).
     OperatorSources operator_sources() const override {
         return OperatorSources{
             /*hamiltonian=*/OperatorSource::kModel,
             /*overlap=*/OperatorSource::kModel,
-            /*velocity=*/has_velocity_ ? OperatorSource::kModel : OperatorSource::kUnavailable,
+            /*velocity=*/OperatorSource::kGeneric,
             /*position=*/OperatorSource::kModel,
         };
     }
@@ -141,12 +148,12 @@ public:
 
         vbcsr::DistGraph* graph = integrals_->velocity_graph(atomic_data);
         auto triplet = std::make_unique<VelocityTriplet>();
-        triplet->x = std::make_unique<VelocityTriplet::Matrix>(graph);
-        triplet->y = std::make_unique<VelocityTriplet::Matrix>(graph);
-        triplet->z = std::make_unique<VelocityTriplet::Matrix>(graph);
+        triplet->x.matrix = std::make_unique<VelocityTriplet::Matrix>(graph);
+        triplet->y.matrix = std::make_unique<VelocityTriplet::Matrix>(graph);
+        triplet->z.matrix = std::make_unique<VelocityTriplet::Matrix>(graph);
 
         integrals_->build_overlap_velocity(
-            triplet->x.get(), triplet->y.get(), triplet->z.get(),
+            triplet->x.matrix.get(), triplet->y.matrix.get(), triplet->z.matrix.get(),
             atomic_data, kpoint[0], kpoint[1], kpoint[2]);
         return triplet;
     }

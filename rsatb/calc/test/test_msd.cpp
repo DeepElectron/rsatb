@@ -456,6 +456,167 @@ TEST(MSDTest, GammaAffineRouteMatchesDenseReference) {
     }
 }
 
+// The commutator (non-orthogonal periodic) route against a dense reference.
+//
+// A 2x2 non-orthogonal fixture: S non-trivial, H Hermitian, and arbitrary
+// sparse pieces {bond, xbar, delta} standing in for the section-4 assembly --
+// the route only requires that the driver it is handed IS the operator the
+// dense reference exponentiates, so the pieces need no geometric meaning here.
+// The dense side builds V = i(bond - xbar S^-1 H + H S^-1 delta), the
+// coefficient driver C = i S^-1 V, propagates the pair generator
+// [[A, C], [0, A]] exactly (A = S^-1 H), reads out phi(t) = [X, U(t)] psi, and
+// takes S-WEIGHTED Chebyshev moments of the scaled A -- everything the
+// production route must reproduce through CG solves and apply_dual.
+TEST(MSDTest, CommutatorRouteMatchesDenseReferenceWithOverlap) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H0(&graph), S0(&graph), Bond(&graph), Xbar(&graph), Delta(&graph);
+
+    fill_matrix(H0, {
+        {Scalar(-0.25, 0.0), Scalar(0.3, 0.05)},
+        {Scalar(0.3, -0.05), Scalar(0.15, 0.0)}
+    });
+    fill_matrix(S0, {
+        {Scalar(1.0, 0.0), Scalar(0.2, 0.0)},
+        {Scalar(0.2, 0.0), Scalar(1.0, 0.0)}
+    });
+    fill_matrix(Bond, {
+        {Scalar(0.0, 0.0), Scalar(0.0, 0.22)},
+        {Scalar(0.0, 0.22), Scalar(0.0, 0.0)}
+    });
+    fill_matrix(Xbar, {
+        {Scalar(0.05, 0.0), Scalar(0.12, 0.0)},
+        {Scalar(0.12, 0.0), Scalar(0.4, 0.0)}
+    });
+    fill_matrix(Delta, {
+        {Scalar(0.03, 0.0), Scalar(0.07, 0.02)},
+        {Scalar(0.07, -0.02), Scalar(-0.05, 0.0)}
+    });
+
+    Vector sample(&graph);
+    fill_vector(sample, {Scalar(0.8, 0.0), Scalar(0.0, 0.6)});
+
+    // Solve form: the route must metric-weight its moments and dress the
+    // driver with S^-1 through CG. Window generous around spec(S^-1 H).
+    Chebyshev<Scalar> cheby(H0, S0, -1.2, 1.2);
+
+    std::vector<double> msd, energy;
+    const int n_steps = 2;
+    const double dt_fs = 0.4;
+    const int n_kpm = 48;
+    corr_msd(cheby, VelocityOp<Scalar>(Bond, Xbar, Delta), sample,
+             n_steps, dt_fs, n_kpm, msd, energy);
+
+    // ---- dense reference ----
+    const Dense2 h0 = {Scalar(-0.25, 0.0), Scalar(0.3, 0.05),
+                       Scalar(0.3, -0.05), Scalar(0.15, 0.0)};
+    const Dense2 s0 = {Scalar(1.0, 0.0), Scalar(0.2, 0.0),
+                       Scalar(0.2, 0.0), Scalar(1.0, 0.0)};
+    const Dense2 bond = {Scalar(0.0, 0.0), Scalar(0.0, 0.22),
+                         Scalar(0.0, 0.22), Scalar(0.0, 0.0)};
+    const Dense2 xbar = {Scalar(0.05, 0.0), Scalar(0.12, 0.0),
+                         Scalar(0.12, 0.0), Scalar(0.4, 0.0)};
+    const Dense2 delta = {Scalar(0.03, 0.0), Scalar(0.07, 0.02),
+                          Scalar(0.07, -0.02), Scalar(-0.05, 0.0)};
+
+    // NOTE: fill_matrix fills ROW-major rows above; Dense2 helpers here index
+    // {a00, a01, a10, a11}, consistent with the listings.
+    auto inv2 = [](const Dense2& m) {
+        const Scalar det = m[0] * m[3] - m[1] * m[2];
+        return Dense2{m[3] / det, -m[1] / det, -m[2] / det, m[0] / det};
+    };
+    const Dense2 s_inv = inv2(s0);
+    const Dense2 a0 = dense2_mul(s_inv, h0);                     // A = S^-1 H
+    // V = i (bond - xbar A + H S^-1 delta)
+    Dense2 v{};
+    {
+        const Dense2 t1 = dense2_mul(xbar, a0);
+        const Dense2 t2 = dense2_mul(h0, dense2_mul(s_inv, delta));
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0)
+                * (bond[static_cast<size_t>(i)] - t1[static_cast<size_t>(i)]
+                   + t2[static_cast<size_t>(i)]);
+        }
+    }
+    const Dense2 c_driver_raw = dense2_mul(s_inv, v);
+    Dense2 c_driver{};
+    for (int i = 0; i < 4; ++i) {
+        c_driver[static_cast<size_t>(i)] = Scalar(0.0, 1.0) * c_driver_raw[static_cast<size_t>(i)];
+    }
+
+    // Pair generator exp(-i t [[A, C],[0, A]]) acting on (phi, psi), phi(0)=0.
+    const double hbar_ev_fs = 0.6582119569;
+    const double time = dt_fs / hbar_ev_fs;
+    Dense4 gen = {
+        a0[0], a0[1], c_driver[0], c_driver[1],
+        a0[2], a0[3], c_driver[2], c_driver[3],
+        Scalar(0.0, 0.0), Scalar(0.0, 0.0), a0[0], a0[1],
+        Scalar(0.0, 0.0), Scalar(0.0, 0.0), a0[2], a0[3]
+    };
+    for (auto& value : gen) value *= Scalar(0.0, -1.0);
+
+    const DenseVec2 psi = {Scalar(0.8, 0.0), Scalar(0.0, 0.6)};
+    const DenseVec4 initial = {Scalar(0.0, 0.0), Scalar(0.0, 0.0), psi[0], psi[1]};
+
+    // S-weighted dense moments of the scaled A.
+    const Dense2 a_scaled = dense2_scale(
+        dense2_add(a0, dense2_scale(dense2_identity(), Scalar(-cheby.center, 0.0))),
+        Scalar(1.0 / cheby.half_width, 0.0));
+    auto weighted_moments = [&](const DenseVec2& phi) {
+        const DenseVec2 left = dense2_mul_vec(s0, phi);
+        std::vector<Scalar> moments(static_cast<size_t>(n_kpm), Scalar(0.0, 0.0));
+        auto dot = [](const DenseVec2& l, const DenseVec2& r) {
+            Scalar sum = 0.0;
+            for (int i = 0; i < 2; ++i) sum += std::conj(l[static_cast<size_t>(i)]) * r[static_cast<size_t>(i)];
+            return sum;
+        };
+        DenseVec2 t0 = phi;
+        moments[0] = dot(left, t0);
+        if (n_kpm > 1) {
+            DenseVec2 t1 = dense2_mul_vec(a_scaled, t0);
+            moments[1] = dot(left, t1);
+            for (int n = 2; n < n_kpm; ++n) {
+                DenseVec2 t2 = dense2_mul_vec(a_scaled, t1);
+                for (int i = 0; i < 2; ++i)
+                    t2[static_cast<size_t>(i)] = Scalar(2.0, 0.0) * t2[static_cast<size_t>(i)]
+                        - t0[static_cast<size_t>(i)];
+                moments[static_cast<size_t>(n)] = dot(left, t2);
+                t0 = t1;
+                t1 = t2;
+            }
+        }
+        return moments;
+    };
+
+    std::vector<cd> density_moments = to_complex_moments(weighted_moments(psi));
+    std::vector<cd> density_spectrum;
+    reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
+
+    ASSERT_EQ(msd.size(), static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm));
+
+    for (int step = 0; step <= n_steps; ++step) {
+        const Dense4 propagator =
+            dense4_expm(dense4_scale(gen, Scalar(time * static_cast<double>(step), 0.0)));
+        const DenseVec4 propagated = dense4_mul_vec(propagator, initial);
+        const DenseVec2 phi = {propagated[0], propagated[1]};
+
+        std::vector<cd> msd_moments = to_complex_moments(weighted_moments(phi));
+        std::vector<cd> msd_spectrum;
+        reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
+
+        for (int k = 0; k < n_kpm; ++k) {
+            const double rho = density_spectrum[static_cast<size_t>(k)].real();
+            double expected = 0.0;
+            if (std::abs(rho) > 1e-12) {
+                expected = msd_spectrum[static_cast<size_t>(k)].real() / rho;
+            }
+            EXPECT_NEAR(
+                msd[static_cast<size_t>(step) * static_cast<size_t>(n_kpm) + static_cast<size_t>(k)],
+                expected,
+                1e-6);
+        }
+    }
+}
+
 TEST(MSDTest, GammaAffineRepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
     Matrix H0(&graph);

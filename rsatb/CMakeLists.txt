@@ -529,6 +529,20 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # TEMPORARY: velocity-gauge diagnostic, doc/position_commutator.md §7.
+    # Delete with the file once the question is settled.
+    add_executable(probe_velocity_gauge calc/test/probe_velocity_gauge.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(probe_velocity_gauge PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(probe_velocity_gauge PRIVATE ${RSATB_LINK_LIBS})
+
+    # Executable: test_velocity_units - the cross-family velocity unit lock:
+    # every builder stores hbar * velocity in eV*Angstrom
+    # (commutator_velocity.hpp UNITS), asserted against dE/dk on SK and the
+    # f-sum rule on LCAO diamond with the same constant.
+    add_executable(test_velocity_units calc/test/test_velocity_units.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_velocity_units PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_velocity_units PRIVATE ${RSATB_LINK_LIBS})
+
     # Executable: test_cheby - the Chebyshev operator shapes and application
     # modes. Was present in the tree but registered nowhere, so its adjoint
     # check had never been compiled, let alone run.

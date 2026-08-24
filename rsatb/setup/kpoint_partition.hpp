@@ -16,6 +16,9 @@
 namespace rsatb {
 namespace setup {
 
+// The same type op::KPoint names (operator/types.hpp), spelled locally so
+// this header keeps its no-operator-includes property; it must stay a plain
+// std::vector<double> for the two to interconvert.
 using KPoint = std::vector<double>;
 
 /// The k-points owned by one rank, and the global count they came from.

@@ -123,6 +123,77 @@ int main(int argc, char** argv) {
     const double ratio = report.applied_residual / independent;
     assert(ratio > 0.1 && ratio < 10.0);
 
+    // Not reaching tol and DIVERGING are different failures, and the caller
+    // acts differently on each: build_preconditioner warns on the first for
+    // either operator form and refuses on the second for both. That only works
+    // if the report tells them apart, so pin it here -- `converged == false`
+    // alone used to be the whole verdict.
+    {
+        auto run_chain = [&](double off, int maxit, double tol,
+                             rsatb::calc::InverseSqrtReport& rep) {
+            const int n = 24;
+            std::vector<int> bs(n, 1);
+            std::vector<std::vector<int>> adj(n);
+            for (int i = 0; i < n; ++i) {
+                adj[i].push_back(i);
+                if (i > 0) adj[i].push_back(i - 1);
+                if (i + 1 < n) adj[i].push_back(i + 1);
+            }
+            DistGraph g(MPI_COMM_WORLD);
+            g.construct_serial(n, bs, adj);
+            BlockSpMat<double> S(&g);
+            for (int i = 0; i < n; ++i) {
+                double d = 1.0;
+                S.add_block(i, i, &d, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+                if (i > 0)
+                    S.add_block(i, i - 1, &off, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+                if (i + 1 < n)
+                    S.add_block(i, i + 1, &off, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+            }
+            S.assemble();
+            BlockSpMat<double> Z(S.duplicate(true));
+            rsatb::calc::InverseSqrtOptions opt;
+            opt.tol = tol;
+            opt.sptol = 1e-12;
+            opt.maxit = maxit;
+            rsatb::calc::inverse_sqrt(S, &Z, opt, /*verbose=*/false, &rep);
+        };
+
+        // Off-diagonal 0.6 on a unit diagonal puts the chain's spectrum at
+        // 1 + 2*0.6*cos(k pi/(n+1)), which reaches -0.2: not positive definite,
+        // so S^{-1/2} does not exist and Newton-Schulz leaves its radius. The
+        // guard must say DIVERGED, not merely "did not converge".
+        rsatb::calc::InverseSqrtReport diverging;
+        run_chain(0.60, 20, 1e-10, diverging);
+        assert(!diverging.converged);
+        assert(diverging.diverged);
+
+        // The same chain at 0.49 stays positive definite (spectrum from 0.02)
+        // and converges -- so 0.6 diverging is the indefiniteness, not the
+        // fixture being hard.
+        rsatb::calc::InverseSqrtReport healthy;
+        run_chain(0.49, 20, 1e-10, healthy);
+        assert(healthy.converged);
+        assert(!healthy.diverged);
+
+        // Capped before it can reach an unreachable tol: above tolerance, but
+        // the factor in hand is a perfectly usable approximate S^{-1/2}. This
+        // is the case that must stay a warning for BOTH operator forms.
+        rsatb::calc::InverseSqrtReport capped;
+        run_chain(0.49, 1, 1e-16, capped);
+        assert(!capped.converged);
+        assert(!capped.diverged);
+        assert(capped.hit_maxiter);
+
+        if (rank == 0) {
+            std::printf("  diverged: converged=%d diverged=%d resid=%.3e\n",
+                        (int)diverging.converged, (int)diverging.diverged, diverging.residual);
+            std::printf("  capped  : converged=%d diverged=%d maxiter=%d resid=%.3e\n",
+                        (int)capped.converged, (int)capped.diverged, (int)capped.hit_maxiter,
+                        capped.residual);
+        }
+    }
+
     if (rank == 0) std::printf("test_isqrtm PASSED\n");
     MPI_Finalize();
     return 0;

@@ -21,7 +21,7 @@
   },
 
   "run": {
-    "_comment": "A short path through the Brillouin zone. The preconditioner target defaults to 'auto', which picks 'overlap' here because the model is non-orthogonal; releasing S afterwards saves memory.",
+    "_comment": "A short path through the Brillouin zone. The model is non-orthogonal, so an S^-1/2 preconditioner is always built; releasing S afterwards saves memory.",
     "npar": 1,
     "nsamples": 200,
     "kpoints": {"line": [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0]], "points_per_segment": 11},

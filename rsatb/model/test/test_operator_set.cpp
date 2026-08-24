@@ -215,19 +215,19 @@ rsatb::op::VelocityBuilder counting_velocity_builder(int* calls) {
     return [calls](AtomicData& atomic_data, const rsatb::op::KPoint&) {
         ++(*calls);
         auto triplet = std::make_unique<VelocityTriplet>();
-        triplet->x = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
-        triplet->y = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
-        triplet->z = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
+        triplet->x.matrix = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
+        triplet->y.matrix = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
+        triplet->z.matrix = std::make_unique<VelocityTriplet::Matrix>(atomic_data.get_graph());
 
         const std::complex<double> vx(1.0, 0.0);
         const std::complex<double> vy(2.0, 0.0);
         const std::complex<double> vz(3.0, 0.0);
-        triplet->x->add_block(0, 0, &vx, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-        triplet->y->add_block(0, 0, &vy, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-        triplet->z->add_block(0, 0, &vz, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-        triplet->x->assemble();
-        triplet->y->assemble();
-        triplet->z->assemble();
+        triplet->x.matrix->add_block(0, 0, &vx, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        triplet->y.matrix->add_block(0, 0, &vy, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        triplet->z.matrix->add_block(0, 0, &vz, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        triplet->x.matrix->assemble();
+        triplet->y.matrix->assemble();
+        triplet->z.matrix->assemble();
         return triplet;
     };
 }
@@ -235,7 +235,6 @@ rsatb::op::VelocityBuilder counting_velocity_builder(int* calls) {
 rmodel::SetupOptions make_options(bool compute_bounds = false) {
     rmodel::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
-    options.preconditioner.target = rmodel::PreconditionerTarget::kNone;
     options.compute_bounds = compute_bounds;
     return options;
 }
@@ -330,15 +329,18 @@ TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacement
     ASSERT_TRUE(operators->has_velocity());
 
     const auto& velocity = operators->velocity_state(0);
-    ASSERT_GT(velocity.x->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.y->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.z->local_block_nnz(), 0u);
+    ASSERT_TRUE(velocity.x.matrix);
+    ASSERT_GT(velocity.x.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.y.matrix->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.z.matrix->local_block_nnz(), 0u);
 
-    const std::complex<double> expected_vx(0.0, 3.0 * (0.75 - 0.25) / 0.6582119569);
-    EXPECT_NEAR(first_block_value(*velocity.x).real(), expected_vx.real(), 1e-10);
-    EXPECT_NEAR(first_block_value(*velocity.x).imag(), expected_vx.imag(), 1e-10);
-    EXPECT_NEAR(std::abs(first_block_value(*velocity.y)), 0.0, 1e-12);
-    EXPECT_NEAR(std::abs(first_block_value(*velocity.z)), 0.0, 1e-12);
+    // Canonical units (commutator_velocity.hpp UNITS): i * displacement * H,
+    // no hbar division.
+    const std::complex<double> expected_vx(0.0, 3.0 * (0.75 - 0.25));
+    EXPECT_NEAR(first_block_value(*velocity.x.matrix).real(), expected_vx.real(), 1e-10);
+    EXPECT_NEAR(first_block_value(*velocity.x.matrix).imag(), expected_vx.imag(), 1e-10);
+    EXPECT_NEAR(std::abs(first_block_value(*velocity.y.matrix)), 0.0, 1e-12);
+    EXPECT_NEAR(std::abs(first_block_value(*velocity.z.matrix)), 0.0, 1e-12);
 }
 
 TEST(OperatorSetTest, ManualArtifactsBuildCachedVelocityLazily) {
@@ -379,9 +381,9 @@ TEST(OperatorSetTest, ManualArtifactsBuildCachedVelocityLazily) {
     const auto& velocity_second = operators->velocity_state(0);
     EXPECT_EQ(&velocity_first, &velocity_second);
     EXPECT_EQ(velocity_calls, 1);
-    EXPECT_EQ(first_block_value(*velocity_first.x), std::complex<double>(1.0, 0.0));
-    EXPECT_EQ(first_block_value(*velocity_first.y), std::complex<double>(2.0, 0.0));
-    EXPECT_EQ(first_block_value(*velocity_first.z), std::complex<double>(3.0, 0.0));
+    EXPECT_EQ(first_block_value(*velocity_first.x.matrix), std::complex<double>(1.0, 0.0));
+    EXPECT_EQ(first_block_value(*velocity_first.y.matrix), std::complex<double>(2.0, 0.0));
+    EXPECT_EQ(first_block_value(*velocity_first.z.matrix), std::complex<double>(3.0, 0.0));
 
     EXPECT_FALSE(operators->has_position());
 }
@@ -509,10 +511,17 @@ TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     ASSERT_TRUE(operators->has_position());
     ASSERT_NE(operators->overlap_k(0), nullptr);
 
+    // A non-orthogonal model's velocity is the section-4 commutator: the
+    // composite pieces, not a bare matrix (whose exact form contains S^-1 and
+    // cannot be materialized sparsely).
     const auto& velocity = operators->velocity_state(0);
-    EXPECT_GT(velocity.x->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.y->local_block_nnz(), 0u);
-    EXPECT_GT(velocity.z->local_block_nnz(), 0u);
+    ASSERT_TRUE(velocity.x.composite());
+    EXPECT_FALSE(velocity.x.matrix);
+    EXPECT_GT(velocity.x.bond->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.x.xbar->local_block_nnz(), 0u);
+    EXPECT_GT(velocity.x.delta->local_block_nnz(), 0u);
+    EXPECT_TRUE(velocity.y.composite());
+    EXPECT_TRUE(velocity.z.composite());
 
     // Exactly one representation, which is what PositionAxisData documents.
     // An LCAO basis is non-orthogonal, so position is the explicit matrix and

@@ -280,9 +280,9 @@ inline void store_axis_rows(
 template <typename T, typename VectorType>
 void accumulate_fftcheb_block(
     Chebyshev<T>& cheby,
-    BlockSpMat<T>& Vx,
-    BlockSpMat<T>& Vy,
-    BlockSpMat<T>& Vz,
+    VelocityOp<T> Vx,
+    VelocityOp<T> Vy,
+    VelocityOp<T> Vz,
     const VectorType& samples,
     int n_moments,
     DCFormulation formulation,
@@ -553,9 +553,9 @@ void accumulate_fftcheb_block(
 template <typename T>
 void dc_spectrum_fftcheb(
     Chebyshev<T>& cheby,
-    BlockSpMat<T>& Vx,
-    BlockSpMat<T>& Vy,
-    BlockSpMat<T>& Vz,
+    VelocityOp<T> Vx,
+    VelocityOp<T> Vy,
+    VelocityOp<T> Vz,
     DistMultiVector<T>& psi_samples, // we should not assert the input is a multivector
     int n_moments,
     DCFormulation formulation,
@@ -692,9 +692,9 @@ void dc_spectrum_fftcheb(
 template <typename T, typename VectorType>
 void accumulate_qe_block(
     Chebyshev<T>& cheby,
-    BlockSpMat<T>& Vx,
-    BlockSpMat<T>& Vy,
-    BlockSpMat<T>& Vz,
+    VelocityOp<T> Vx,
+    VelocityOp<T> Vy,
+    VelocityOp<T> Vz,
     const VectorType& samples,
     int n_moments,
     const std::vector<int>& src_nodes,
@@ -886,9 +886,9 @@ void accumulate_qe_block(
 template <typename T>
 void dc_spectrum_qe(
     Chebyshev<T>& cheby,
-    BlockSpMat<T>& Vx,
-    BlockSpMat<T>& Vy,
-    BlockSpMat<T>& Vz,
+    VelocityOp<T> Vx,
+    VelocityOp<T> Vy,
+    VelocityOp<T> Vz,
     DistMultiVector<T>& psi_samples,
     int n_moments,
     double prefactor,

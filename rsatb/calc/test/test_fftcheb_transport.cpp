@@ -16,6 +16,7 @@ using Scalar = std::complex<double>;
 using Matrix = BlockSpMat<Scalar>;
 using Vector = DistVector<Scalar>;
 using MultiVector = DistMultiVector<Scalar>;
+using VOp = rsatb::calc::VelocityOp<Scalar>;
 
 DistGraph make_dense_graph(MPI_Comm comm, int n) {
     std::vector<int> block_sizes(n, 1);
@@ -176,7 +177,7 @@ void build_reference_sequences(
     std::array<Vector, 3> left_axes = {Vector(sample.graph), Vector(sample.graph), Vector(sample.graph)};
     const double velocity_scale = 1.0 / (2.0 * cheby.half_width);
 
-    current(cheby, Vx, Vy, Vz, sample, right_init.data(), velocity_scale);
+    current(cheby, VOp(Vx), VOp(Vy), VOp(Vz), sample, right_init.data(), velocity_scale);
     for (int axis = 0; axis < 3; ++axis) {
         right_seq[axis][0].copy_from(right_init[axis]);
     }
@@ -185,7 +186,7 @@ void build_reference_sequences(
     Vector left_base_curr(sample.graph);
     Vector left_base_next(sample.graph);
     left_base_prev.copy_from(sample);
-    current_adjoint(cheby, Vx, Vy, Vz, left_base_prev, left_axes.data(), velocity_scale);
+    current_adjoint(cheby, VOp(Vx), VOp(Vy), VOp(Vz), left_base_prev, left_axes.data(), velocity_scale);
     for (int axis = 0; axis < 3; ++axis) {
         left_seq[axis][0].copy_from(left_axes[axis]);
     }
@@ -198,7 +199,7 @@ void build_reference_sequences(
     if (n_moments > 1) {
         cheby.apply_op(right_prev, right_curr, ChebyMode::NORMAL);
         cheby.apply_op(left_base_prev, left_base_curr, ChebyMode::ADJOINT);
-        current_adjoint(cheby, Vx, Vy, Vz, left_base_curr, left_axes.data(), velocity_scale);
+        current_adjoint(cheby, VOp(Vx), VOp(Vy), VOp(Vz), left_base_curr, left_axes.data(), velocity_scale);
 
         for (int axis = 0; axis < 3; ++axis) {
             right_seq[axis][1].copy_from(right_curr.get_col(axis));
@@ -212,7 +213,7 @@ void build_reference_sequences(
 
         cheby.apply_op(left_base_curr, left_base_next, ChebyMode::ADJOINT);
         left_base_next.axpby(Scalar(-1.0), left_base_prev, Scalar(2.0));
-        current_adjoint(cheby, Vx, Vy, Vz, left_base_next, left_axes.data(), velocity_scale);
+        current_adjoint(cheby, VOp(Vx), VOp(Vy), VOp(Vz), left_base_next, left_axes.data(), velocity_scale);
 
         for (int axis = 0; axis < 3; ++axis) {
             right_seq[axis][moment].copy_from(right_next.get_col(axis));
@@ -382,13 +383,13 @@ std::vector<double> run_fftcheb(
     if (problem.S) {
         Chebyshev<Scalar> cheby(problem.H, *problem.S, -1.0, 1.0);
         dc_spectrum_fftcheb(
-            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            cheby, VOp(problem.Vx), VOp(problem.Vy), VOp(problem.Vz), sample_mv, n_moments,
             formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy
         );
     } else {
         Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
         dc_spectrum_fftcheb(
-            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            cheby, VOp(problem.Vx), VOp(problem.Vy), VOp(problem.Vz), sample_mv, n_moments,
             formulation, 1.0, partition_sections, max_workspace_mb, sigma, energy
         );
     }
@@ -414,13 +415,13 @@ std::vector<double> run_qe(
     if (problem.S) {
         Chebyshev<Scalar> cheby(problem.H, *problem.S, -1.0, 1.0);
         dc_spectrum_qe(
-            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            cheby, VOp(problem.Vx), VOp(problem.Vy), VOp(problem.Vz), sample_mv, n_moments,
             1.0, sigma, energy, kernel, nodes
         );
     } else {
         Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
         dc_spectrum_qe(
-            cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+            cheby, VOp(problem.Vx), VOp(problem.Vy), VOp(problem.Vz), sample_mv, n_moments,
             1.0, sigma, energy, kernel, nodes
         );
     }
@@ -444,7 +445,7 @@ std::vector<double> run_fftcheb_kernel(
 
     Chebyshev<Scalar> cheby(problem.H, -1.0, 1.0);
     dc_spectrum_fftcheb(
-        cheby, problem.Vx, problem.Vy, problem.Vz, sample_mv, n_moments,
+        cheby, VOp(problem.Vx), VOp(problem.Vy), VOp(problem.Vz), sample_mv, n_moments,
         DCFormulation::Greenwood, 1.0, 1, 0, sigma, energy, kernel
     );
     return sigma;

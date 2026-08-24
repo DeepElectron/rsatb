@@ -245,6 +245,11 @@ struct InverseSqrtReport {
     int steps = 0;             // Newton-Schulz steps taken
     bool converged = false;    // residual reached tol
     bool hit_maxiter = false;  // stopped on the step count
+    // The iteration left its convergence radius and the guard broke the loop.
+    // A DIFFERENT failure from simply not reaching tol, and callers must be
+    // able to tell them apart: a run that stalls just above tol still holds a
+    // usable Z, while a diverged one holds nothing that approximates S^-1/2.
+    bool diverged = false;
     // Whether the last X came from P X P rather than a reform, which is what
     // says whether `residual` below is exact or propagated.
     bool last_advance_propagated = false;
@@ -608,6 +613,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     double norm = residual_norm(tmp2);
     double norm_pre = 0.0;
     int count = 0;
+    bool diverged = false;
     // Whether the last X in hand came from P X P rather than a reform.
     bool last_advance_propagated = false;
 
@@ -632,6 +638,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
             if (rank == 0 && util::fault()) {
                 std::cerr << "inverse_sqrt: diverged, residual " << norm << "\n";
             }
+            diverged = true;
             break;
         }
         norm_pre = norm;
@@ -843,6 +850,7 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
         report->steps = count;
         report->converged = hit_tol;
         report->hit_maxiter = hit_maxiter;
+        report->diverged = diverged;
         report->last_advance_propagated = last_advance_propagated;
         report->residual = norm;
     }
@@ -871,7 +879,10 @@ void inverse_sqrt(BlockSpMat<T>& S_mat, BlockSpMat<T>* S_inv_sqrt,
     MPI_Bcast(&merged[1], 1, MPI_LONG_LONG, peak_out.rank, graph->comm);
 
     if (rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
-        std::cout << "inverse_sqrt: " << (hit_tol ? "converged" : (hit_maxiter ? "stopped at maxiter" : "plateaued"))
+        std::cout << "inverse_sqrt: "
+                  << (hit_tol ? "converged"
+                              : (diverged ? "diverged"
+                                          : (hit_maxiter ? "stopped at maxiter" : "plateaued")))
                   << " at max block residual " << norm << ", density "
                   << final_density << " (" << count << " Newton-Schulz steps, "
                   << (MPI_Wtime() - t_ns0) << "s)" << std::endl;

@@ -405,6 +405,12 @@ public:
         ad.get_vertex_range_local(&nstart, &nend);
         
         std::complex<double> IMAG_UNIT(0, 1);
+        // erfactor = Ha->eV / (A->Bohr) = 14.399647 = (hbar^2/m_e) x
+        // (Bohr^-1 -> A^-1): it turns the gradient integrals (Bohr^-1) into
+        // hbar * velocity in eV*Angstrom -- the canonical velocity convention
+        // of the codebase (see commutator_velocity.hpp UNITS). Do NOT divide
+        // by hbar here: the correlators step time in 1/eV and the SI constant
+        // in observables.hpp assumes exactly these units.
         std::complex<double> erfactor = 27.211386245981 / 1.8897259886;
 
         // As in build_overlap: an add_block failure cannot propagate out of the

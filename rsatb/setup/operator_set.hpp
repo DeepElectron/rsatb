@@ -362,16 +362,6 @@ private:
         }
         // Non-orthogonal from here; the sandwich branch below may upgrade it.
         state.form_ = rsatb::calc::ChebyOpForm::Solve;
-        if (config.target == rsatb::model::PreconditionerTarget::kNone) {
-            if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
-                throw std::runtime_error(
-                    "preconditioner.operator_form = \"sandwich\" needs a preconditioner to "
-                    "supply Z, but preconditioner.target is \"none\". Set target to "
-                    "\"overlap\", or use operator_form = \"solve\".");
-            }
-            return;
-        }
-
         // Wraps the seed and refinement phases nested inside it, so this row
         // reports only the preconditioner's own overhead -- if it is ever large,
         // that is news.
@@ -379,47 +369,67 @@ private:
         auto factor = std::make_unique<rsatb::calc::ISQRTMPreconditioner<Scalar>>(
             *overlap, config.maxiter, config.tol, config.sptol, verbose_);
 
-        // What a non-converged S^{-1/2} costs depends on what it is used for,
-        // so the verdict is taken here rather than inside the factorisation.
+        // Two different failures wear the same `converged == false`, and they
+        // want different handling -- keyed on WHICH failure it is, not on which
+        // form happened to ask.
         //
-        // Preconditioning the CG solve of the solve form, a bad factor only
-        // slows the iteration: the operator is still S^-1 H and the answer is
-        // unchanged. Defining the sandwich, the factor IS the operator -- the
-        // expansions propagate Z^H H Z and the spectrum moves with Z. Silicon
-        // at 4x4x4 returned a factor with ||Z^H S Z - I|| = 3.6e3 and, because
-        // nobody read the report, went on to announce spectral bounds of
-        // (-737, 9230) eV in place of the true (-6.3, 208). That must not be a
-        // silent result.
+        // STALLED or CAPPED: the residual sits above tol but the iteration is
+        // still inside its convergence radius, so Z remains a usable
+        // approximate S^{-1/2}. Setting tol = 1e-4 on a system that plateaus
+        // near 1e-3 is the ordinary case, not a fault: the sandwich form then
+        // carries a spectral error of that order and the solve form carries
+        // none at all, only a few more CG iterations. A warning, for either
+        // form.
         //
-        // `converged` is the iteration's own verdict, and it is false for two
-        // different reasons: the residual never reached tol, or the divergence
-        // guard in inverse_sqrt (residual > 100) broke the loop. Silicon is the
-        // second -- Newton-Schulz starts outside its convergence radius and
-        // gives up on step one, which is why sptol and maxiter cannot rescue
-        // it. Either way the factor is not S^{-1/2} and must not pass as one.
+        // DIVERGED: inverse_sqrt's guard broke the loop because the residual
+        // left the convergence radius entirely, and what is in hand no longer
+        // approximates S^{-1/2} in any sense. Fatal for either form. The
+        // sandwich would propagate an operator not similar to H -- silicon at
+        // 4x4x4 returned ||Z^H S Z - I|| = 3.6e3 and, because nobody read the
+        // report, went on to announce spectral bounds of (-737, 9230) eV in
+        // place of the true (-6.3, 208) -- and the solve form would hand CG a
+        // preconditioner worse than none. Neither should be left to produce a
+        // plausible-looking number.
         const auto& report = factor->report();
         if (!report.converged) {
+            const bool sandwich =
+                config.operator_form == rsatb::model::OperatorForm::kSandwich;
             std::ostringstream detail;
-            detail << "the S^{-1/2} factor did not converge: ||Z^H S Z - I|| = "
-                   << report.applied_residual << " after " << report.steps
-                   << " Newton-Schulz step(s), against a tolerance of " << config.tol
-                   << (report.hit_maxiter ? " (stopped on the iteration cap)" : "");
-            if (config.operator_form == rsatb::model::OperatorForm::kSandwich) {
+            detail << "||Z^H S Z - I|| = " << report.applied_residual << " after "
+                   << report.steps << " Newton-Schulz step(s), against a tolerance of "
+                   << config.tol;
+
+            if (report.diverged) {
                 throw std::runtime_error(
-                    "operator_form = \"sandwich\" propagates Z H Z, so " + detail.str() +
-                    ". Newton-Schulz needs its seed inside ||Z^H S Z - I|| < 1 and this "
+                    "the S^{-1/2} iteration DIVERGED: " + detail.str() +
+                    ". Newton-Schulz needs its seed inside ||Z^H S Z - I|| < 1, and this "
                     "one starts outside it, so the iteration trips its divergence guard "
-                    "on the first step. That is a property of the seed, not of the "
+                    "instead of refining. That is a property of the seed, not of the "
                     "refinement: preconditioner.sptol and preconditioner.maxiter were "
                     "measured to leave the residual bit-identical, so raising them will "
-                    "not help. Use operator_form = \"solve\", which applies S^-1 H and "
-                    "uses Z only to precondition the CG solve, where a poor factor costs "
-                    "iterations and not accuracy.");
+                    "not help. " +
+                    (sandwich ? std::string("operator_form = \"sandwich\" propagates "
+                                            "Z H Z, so this factor would BE the operator.")
+                              : std::string("operator_form = \"solve\" would precondition "
+                                            "its CG with this factor, which converges worse "
+                                            "than no preconditioner at all.")) +
+                    " Set preconditioner.maxiter = 0 to keep the sparse graph seed and skip "
+                    "the refinement that diverges; the seed is only subgraph-accurate, but "
+                    "it is a genuine approximate inverse square root.");
             }
+
             if (rsatb::util::Log::enabled(rsatb::util::LogLevel::kSummary)) {
-                std::cerr << "rsatb: warning: " << detail.str()
-                          << ". The solve form is still exact -- Z only preconditions the "
-                             "CG solve -- but expect slow convergence." << std::endl;
+                std::cerr << "rsatb: warning: the S^{-1/2} factor stopped above tolerance: "
+                          << detail.str()
+                          << (report.hit_maxiter ? " (stopped on the iteration cap)"
+                                                 : " (the residual stopped improving)")
+                          << ". "
+                          << (sandwich
+                                  ? "The sandwich form propagates Z H Z, so expect a "
+                                    "spectral error of about this size."
+                                  : "The solve form is still exact -- Z only preconditions "
+                                    "the CG solve -- but expect slower convergence.")
+                          << std::endl;
             }
         }
         state.preconditioner = std::move(factor);

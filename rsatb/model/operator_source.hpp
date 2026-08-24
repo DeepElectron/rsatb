@@ -7,11 +7,21 @@
 // at the operator level, and every model makes it in its own file:
 //
 //   family              H              S              v              r
-//   LCAO                file           op2c           op2c           op2c
+//   LCAO                file           op2c           generic        op2c
 //   SKTB (orthogonal)   SK tables      --             generic        generic
 //   SKTB (+ overlap)    SK tables      SK tables      --             --
 //   DFTB                SK tables      SK tables      --             --
 //   tb_file             file           --             generic        generic
+//
+// "generic" velocity means the commutator i[H, x] built in operator/ -- the
+// bare bond moment when the basis is orthogonal, the section-4 overlap-dressed
+// composite when it is not. The composite needs the model's position matrix
+// (the dipole integrals), which is why a non-orthogonal family without a
+// position stays velocity-less: doc/position_commutator.md section 7 measures
+// that the dipole term cannot be dropped. op2c's explicit-integral velocity
+// remains available on the model itself as a cross-check, but it is not what
+// the operator set serves: the commutator is the convention every spectral
+// consumer propagates.
 //
 // It replaces a `bool ProvidesOperatorBuilders()` that selected between two
 // whole implementations of velocity and position without naming either, and
@@ -32,8 +42,11 @@ enum class OperatorSource {
     kUnavailable,
     /// The model's own integrals -- op2c for LCAO, the SK tables for SKTB/DFTB.
     kModel,
-    /// Built from H(R) and the geometry alone: the commutator velocity and the
-    /// diagonal position in operator/. Correct only in an orthogonal basis.
+    /// Built in operator/ from the model's images and geometry: the commutator
+    /// velocity (plus the model's position matrix when an overlap dresses it)
+    /// and the diagonal position. The generic POSITION is correct only in an
+    /// orthogonal basis; the generic VELOCITY is correct whenever its dipole
+    /// ingredient exists.
     kGeneric,
 };
 
@@ -88,15 +101,18 @@ struct OperatorSources {
         if (!non_orthogonal) {
             return;
         }
-        for (const auto& entry : {std::make_pair("velocity", velocity),
-                                  std::make_pair("position", position)}) {
-            if (entry.second == OperatorSource::kGeneric) {
-                throw std::runtime_error(
-                    family + " names the generic " + entry.first + " together with an "
-                    "overlap. The generic route is built from H(R) and the atom "
-                    "coordinates, which is correct only in an orthogonal basis; a "
-                    "non-orthogonal model must supply its own.");
-            }
+        if (position == OperatorSource::kGeneric) {
+            throw std::runtime_error(
+                family + " names the generic position together with an overlap. The "
+                "diagonal position is correct only in an orthogonal basis; a "
+                "non-orthogonal model must supply its own.");
+        }
+        if (velocity == OperatorSource::kGeneric && position == OperatorSource::kUnavailable) {
+            throw std::runtime_error(
+                family + " names the generic velocity together with an overlap but "
+                "supplies no position. The overlap-dressed commutator needs the "
+                "model's dipole matrix; without it there is no velocity -- the dipole "
+                "term is not droppable (doc/position_commutator.md section 7).");
         }
     }
 };

@@ -4,11 +4,13 @@
 #include "vbcsr/core/block_csr.hpp"
 #include "vbcsr/core/dist_vector.hpp"
 #include "vbcsr/core/dist_multivector.hpp"
+#include "../operator/velocity_op.hpp"
 #include "preconditioner.hpp"
 #include "solver.hpp"
 #include "bessel.hpp"
 #include <vector>
 #include <cmath>
+#include <array>
 #include <complex>
 #include <memory>
 #include <stdexcept>
@@ -117,6 +119,12 @@ struct CoeffCast<std::complex<R>> {
         return static_cast<std::complex<R>>(c);
     }
 };
+
+// The velocity operator apply_dual consumes is the non-owning view
+// op::VelocityOp (operator/velocity_op.hpp), aliased into this namespace so
+// the engines and their tests keep the short spelling. Its owner is
+// op::VelocityAxis (operator/types.hpp), whose view() is the one conversion.
+using op::VelocityOp;
 
 // Chebyshev Recurrence
 // Computes T_n(H_scaled) * v
@@ -239,20 +247,25 @@ public:
     // orthogonal branch under the old test and applied a bare V, dropping the
     // Z on either side.
     template <typename VectorType>
-    void apply_dual(BlockSpMat<T>& V, const VectorType& x, VectorType& y,
+    void apply_dual(VelocityOp<T> V, const VectorType& x, VectorType& y,
                     ChebyMode mode = ChebyMode::NORMAL, double scale = 1.0) {
+        if (V.composite()) {
+            apply_dual_composite(V, x, y, mode, scale);
+            return;
+        }
+        BlockSpMat<T>& Vm = *V.matrix;
         const bool dagger = (mode == ChebyMode::ADJOINT);
         switch (form) {
             case ChebyOpForm::Orthogonal:
                 // No scratch: taking dual_tmp() here would make every
                 // orthogonal-basis caller (all of ac.hpp and msd.hpp on such a
                 // basis) carry a full Nbasis x nv buffer it never reads.
-                mult_by(V, x, y);
+                mult_by(Vm, x, y);
                 break;
             case ChebyOpForm::Sandwich: {
                 VectorType& tmp = dual_tmp(x);
-                M->apply(x, y);      // y   = Z x
-                mult_by(V, y, tmp);  // tmp = V Z x
+                M->apply(x, y);       // y   = Z x
+                mult_by(Vm, y, tmp);  // tmp = V Z x
                 M->apply_adjoint(tmp, y);
                 break;
             }
@@ -262,12 +275,12 @@ public:
                     // y = V S^-1 x
                     tmp.set_constant(T(0.0));
                     solve_with_S(x, tmp);
-                    mult_by(V, tmp, y);
+                    mult_by(Vm, tmp, y);
                 } else {
                     // y = S^-1 V x. The solve target doubles as the CG initial
                     // guess, as it did when this lived in ac.hpp: V x on the
                     // way in. Only the allocation is cached, not the contents.
-                    mult_by(V, x, y);
+                    mult_by(Vm, x, y);
                     tmp.copy_from(y);
                     solve_with_S(tmp, y);
                 }
@@ -275,6 +288,80 @@ public:
             }
         }
         y.scale(T(scale));
+    }
+
+    /// The section-4 commutator velocity, applied through the form.
+    ///
+    /// The composite exists exactly when the basis has an overlap, so the
+    /// Orthogonal form cannot meet it; both remaining forms own an S^-1 --
+    /// CG for Solve, Z Z^H for Sandwich -- and the same inner application
+    ///
+    ///   V u = i * ( bond u - xbar S^-1 H u + H S^-1 delta u )
+    ///
+    /// serves both, with only the outer dressing differing. Velocity
+    /// applications happen once per correlator sample, not once per Chebyshev
+    /// moment, so the two extra metric solves are noise next to the recursion.
+    template <typename VectorType>
+    void apply_dual_composite(const VelocityOp<T>& V, const VectorType& x, VectorType& y,
+                              ChebyMode mode, double scale) {
+        // The commutator velocity carries an explicit i; a real scalar type
+        // cannot represent it. if-constexpr rather than static_assert so that
+        // real-T recursions still compile as long as nobody hands them one.
+        if constexpr (std::is_floating_point_v<T>) {
+            (void)V; (void)x; (void)y; (void)mode; (void)scale;
+            throw std::runtime_error(
+                "The composite (commutator) velocity needs a complex scalar type.");
+        } else {
+        if (form == ChebyOpForm::Orthogonal) {
+            throw std::runtime_error(
+                "A composite (non-orthogonal) velocity reached an Orthogonal-form "
+                "Chebyshev. The operator set that built the velocity and the one that "
+                "built this recursion disagree about the overlap.");
+        }
+        const bool dagger = (mode == ChebyMode::ADJOINT);
+
+        // out = S^-1 in, by whichever inverse this form owns.
+        auto metric_inverse = [&](const VectorType& in, VectorType& out) {
+            if (form == ChebyOpForm::Solve) {
+                out.set_constant(T(0.0));
+                solve_with_S(in, out);
+            } else {
+                VectorType& zt = dual_scratch(in, 3);
+                M->apply_adjoint(in, zt);   // Z^H in
+                M->apply(zt, out);          // Z Z^H in = S^-1 in
+            }
+        };
+        // out = V in. `in` must be distinct from every scratch it uses.
+        auto apply_V = [&](const VectorType& in, VectorType& out) {
+            VectorType& t = dual_scratch(in, 1);
+            VectorType& s = dual_scratch(in, 2);
+            mult_by(*V.bond, in, out);       // out = bond in
+            mult_by(H, in, t);               // t   = H in
+            metric_inverse(t, s);            // s   = S^-1 H in
+            mult_by(*V.xbar, s, t);          // t   = xbar S^-1 H in
+            out.axpy(T(-1.0), t);
+            mult_by(*V.delta, in, t);        // t   = delta in
+            metric_inverse(t, s);            // s   = S^-1 delta in
+            mult_by(H, s, t);                // t   = H S^-1 delta in
+            out.axpy(T(1.0), t);
+        };
+
+        VectorType& u = dual_tmp(x);
+        if (form == ChebyOpForm::Solve) {
+            if (dagger) {                    // y = V S^-1 x
+                metric_inverse(x, u);
+                apply_V(u, y);
+            } else {                         // y = S^-1 V x
+                apply_V(x, u);
+                metric_inverse(u, y);
+            }
+        } else {                             // y = Z^H V Z x, self-adjoint
+            M->apply(x, y);                  // y = Z x
+            apply_V(y, u);                   // u = V Z x
+            M->apply_adjoint(u, y);          // y = Z^H V Z x
+        }
+        y.scale(T(std::complex<double>(0.0, 1.0)) * T(scale));
+        }
     }
 
     // Propagate vector: v_out = sum c_n T_n(Op) v_in
@@ -556,8 +643,28 @@ private:
         }
     }
 
+    /// Extra scratch for the composite velocity, indexed so its temporaries
+    /// can never alias each other or dual_tmp. Allocated only on first use, so
+    /// bare-matrix callers pay nothing.
+    template <typename VectorType>
+    VectorType& dual_scratch(const VectorType& like, int idx) {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            auto& slot = mv_dual_scratch[idx];
+            if (!slot || slot->num_vectors != like.num_vectors) {
+                slot = std::make_unique<DistMultiVector<T>>(like.graph, like.num_vectors);
+            }
+            return *slot;
+        } else {
+            auto& slot = v_dual_scratch[idx];
+            if (!slot) slot = std::make_unique<DistVector<T>>(like.graph);
+            return *slot;
+        }
+    }
+
     std::unique_ptr<DistVector<T>> v_tmp, v_t0, v_t1, v_t2, v_dual_tmp;
     std::unique_ptr<DistMultiVector<T>> mv_tmp, mv_t0, mv_t1, mv_t2, mv_dual_tmp;
+    std::array<std::unique_ptr<DistVector<T>>, 4> v_dual_scratch;
+    std::array<std::unique_ptr<DistMultiVector<T>>, 4> mv_dual_scratch;
 };
 
 } // namespace calc

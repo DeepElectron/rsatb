@@ -69,9 +69,10 @@ error: model.spin: 'colinear' is not a supported value
 so an SKTB model with no `overlap` is orthogonal and one with an `overlap` is
 not — there is no shape to guess at.
 
-**Options say what they do.** `preconditioner.target` defaults to `"auto"`,
-which resolves from the model's own capabilities: `overlap` for a
-non-orthogonal model, `none` for an orthogonal one.
+**Options say what they do.** There is no knob for *whether* to precondition:
+an orthogonal model has nothing to precondition and a non-orthogonal one always
+wants it, so it follows from the model. `preconditioner.maxiter` is what costs
+money — `0` keeps the sparse graph seed and skips the Newton-Schulz refinement.
 
 **An input can explain itself.** Any key starting with an underscore —
 `_comment` and the like — is carried through uninterpreted, at any level.
@@ -147,10 +148,10 @@ Three kinds of problem, in three passes:
 3. **Sections that disagree** — each is valid, but together they are not:
 
 ```
-error: tasks[1]: 'ac' needs the velocity operator, which the 'lcao' model with
+error: tasks[1]: 'msd' needs the position operator, which the 'sktb' model with
                  these inputs does not supply
-    hint: LCAO is always non-orthogonal; velocity additionally needs the
-          pseudopotential files
+    hint: a non-orthogonal Slater-Koster model carries no dipole integrals, so
+          neither position nor the commutator velocity exists for it
 error: tasks[2]: 'ldos' currently requires a single Gamma point, but run.kpoints has 8
 warning: run.npar: npar is 4 but there are only 2 k-points, so 2 sub-communicators
                    have nothing to do
@@ -165,7 +166,7 @@ as a machine-readable document.
 | your input | `model.type` | |
 |---|---|---|
 | Slater-Koster parameters you write | `sktb` | orthogonal unless `overlap` is given |
-| Hamiltonian file + `.orb` + `.upf` | `lcao` | always non-orthogonal |
+| Hamiltonian file + `.orb` (+ optional `.upf`) | `lcao` | always non-orthogonal |
 | a directory of DFTB `.skf` files | `dftb` | always non-orthogonal |
 | a Hamiltonian file, already orthogonal | `tb_file` | must be told its basis |
 
@@ -179,12 +180,20 @@ before anything runs:
 |---|---|---|---|
 | `sktb`, no `overlap` | — | yes | yes |
 | `sktb` with `overlap` | yes | — | — |
-| `lcao` | yes | with `.upf` | yes |
+| `lcao` | yes | yes | yes |
 | `dftb` | yes | — | — |
 | `tb_file` | — | yes | yes |
 
+The velocity is the commutator `i[H, x]`, built from the model's images and —
+in a non-orthogonal basis — its dipole integrals (doc/position_commutator.md).
+LCAO therefore has it unconditionally: the `.upf` pseudopotential files are
+only needed for the explicit-integral cross-check velocity, never for
+production. A non-orthogonal `sktb` or `dftb` model has no dipole integrals,
+so it has neither position nor velocity.
+
 `ac`, `dc`, `dc_spectrum` and `quantum_metric` need velocity. `msd` needs
-position, an orthogonal basis, and the Gamma point. `ldos` needs the radial
+position and the Gamma point — any basis, orthogonal or not; the periodic
+route runs the commutator machinery either way. `ldos` needs the radial
 orbital files, so LCAO, at a single Gamma point.
 
 ## Structures

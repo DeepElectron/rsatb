@@ -23,6 +23,7 @@ using namespace rsatb::calc;
 namespace {
 
 using cd = std::complex<double>;
+using VOp = rsatb::calc::VelocityOp<cd>;
 
 // The sine transform ComputeAc applies, at one frequency.
 double sine_transform(double omega, const std::vector<cd>& cac, int ns,
@@ -110,17 +111,17 @@ int main(int argc, char** argv) {
 
     // 1. Sequential baseline (now also at the Nyquist step pi/2).
     std::vector<cd> cac_seq;
-    corr_ac(cheby, Vx, Vy, Vz, psi_in, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, &cac_seq);
+    corr_ac(cheby, VOp(Vx), VOp(Vy), VOp(Vz), psi_in, nt, temp, mu, 1.0, 0.0, n_kpm, 1e-14, &cac_seq);
 
     // 2. Concurrent, one full block: same estimator, same sampling -- must
     // agree with sequential to rounding + expansion truncation.
     std::vector<cd> cac_conc;
-    corr_ac_concurrent(cheby, Vx, Vy, Vz, psi_in, nt, temp, mu, n_kpm, 1e-14, &cac_conc,
+    corr_ac_concurrent(cheby, VOp(Vx), VOp(Vy), VOp(Vz), psi_in, nt, temp, mu, n_kpm, 1e-14, &cac_conc,
                        /*block=*/0);
     // 3. Concurrent with a block size that does not divide nt: exercises the
     // block-restart path.
     std::vector<cd> cac_cb;
-    corr_ac_concurrent(cheby, Vx, Vy, Vz, psi_in, nt, temp, mu, n_kpm, 1e-14, &cac_cb,
+    corr_ac_concurrent(cheby, VOp(Vx), VOp(Vy), VOp(Vz), psi_in, nt, temp, mu, n_kpm, 1e-14, &cac_cb,
                        /*block=*/7);
 
     if (rank == 0) {
@@ -172,7 +173,7 @@ int main(int argc, char** argv) {
         for (int v = 0; v < num_vecs; ++v) row_data[v] = data[i];
     }
     std::vector<cd> cac_mv;
-    corr_ac_concurrent(cheby, Vx, Vy, Vz, psi_mv, nt, temp, mu, n_kpm, 1e-14, &cac_mv,
+    corr_ac_concurrent(cheby, VOp(Vx), VOp(Vy), VOp(Vz), psi_mv, nt, temp, mu, n_kpm, 1e-14, &cac_mv,
                        /*block=*/0);
     if (rank == 0) {
         double d_mv = max_component_diff(cac_conc, cac_mv, ns, 1, 1);
@@ -372,10 +373,10 @@ int main(int argc, char** argv) {
         const double temp2 = 300.0;
         const int ns2 = nt2 * kAcOversample;
         std::vector<cd> c_orth, c_solve, c_sand, c_conj;
-        corr_ac(ch_orth, Vs, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_orth);
-        corr_ac(ch_solve, V2, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_solve);
-        corr_ac(ch_sand, V2, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_sand);
-        corr_ac(ch_orth, Vconj, Vy, Vz, psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_conj);
+        corr_ac(ch_orth, VOp(Vs), VOp(Vy), VOp(Vz), psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_orth);
+        corr_ac(ch_solve, VOp(V2), VOp(Vy), VOp(Vz), psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_solve);
+        corr_ac(ch_sand, VOp(V2), VOp(Vy), VOp(Vz), psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_sand);
+        corr_ac(ch_orth, VOp(Vconj), VOp(Vy), VOp(Vz), psi_in, nt2, temp2, mu, 1.0, 0.0, nk2, 1e-14, &c_conj);
 
         if (rank == 0) {
             const double d_solve = max_component_diff(c_orth, c_solve, ns2, 1, 1);

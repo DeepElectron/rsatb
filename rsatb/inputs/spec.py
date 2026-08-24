@@ -444,10 +444,6 @@ BOUNDS = Obj(
 PRECONDITIONER = Obj(
     "How S is preconditioned for the iterative solves.",
     {
-        "target": F(_str("'auto' follows the model: overlap for a non-orthogonal "
-                         "one, none for an orthogonal one, so there is nothing to "
-                         "set for the common case. 'none' skips it entirely.",
-                         choices=("auto", "overlap", "none")), default="auto"),
         "operator_form": F(_str(
             "Which operator the Chebyshev expansions apply. 'sandwich' is "
             "Z H Z with Z = S^-1/2: exactly Hermitian, two SpMVs per matvec, "

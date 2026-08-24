@@ -35,7 +35,8 @@ from .nodes import Issue, Node, Obj, WARNING, join_path
 _CAPABILITY_DOC = {
     "sktb": "an SKTB model is orthogonal unless 'overlap' is given, and an "
             "orthogonal Slater-Koster model supplies velocity and position for free",
-    "lcao": "LCAO is always non-orthogonal; velocity additionally needs the "
+    "lcao": "LCAO is always non-orthogonal; the velocity is the commutator "
+            "built from H, S and the dipole integrals, so it needs no "
             "pseudopotential files",
     "dftb": "DFTB carries both H and S, and neither velocity nor position is "
             "available for a non-orthogonal Slater-Koster model yet",
@@ -46,7 +47,6 @@ _CAPABILITY_DOC = {
 # Which tasks need which operator, and which need the Gamma point.
 _NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric")
 _NEEDS_POSITION = ("msd",)
-_NEEDS_ORTHOGONAL = ("msd",)
 _NEEDS_GAMMA_ONLY = ("ldos",)
 _NEEDS_GAMMA = ("msd",)
 _NEEDS_ORBITAL_FILES = ("ldos",)
@@ -59,8 +59,9 @@ def capabilities(model: dict) -> Dict[str, bool]:
         orthogonal = "overlap" not in model
         return {"overlap": not orthogonal, "velocity": orthogonal, "position": orthogonal}
     if family == "lcao":
-        has_upf = bool(model.get("pseudopotentials", {}).get("names"))
-        return {"overlap": True, "velocity": has_upf, "position": True}
+        # The velocity is the section-4 commutator, assembled from the images
+        # and the orbital dipole integrals -- available unconditionally.
+        return {"overlap": True, "velocity": True, "position": True}
     if family == "dftb":
         return {"overlap": True, "velocity": False, "position": False}
     if family == "tb_file":
@@ -238,10 +239,6 @@ def check_consistency(document: dict) -> List[Issue]:
                 where, "'{}' needs the position operator, which the '{}' model with "
                        "these inputs does not supply".format(kind, family),
                 hint=why))
-        if kind in _NEEDS_ORTHOGONAL and caps["overlap"]:
-            issues.append(Issue(
-                where, "'{}' supports orthogonal systems only, and this model is "
-                       "non-orthogonal".format(kind)))
         if kind in _NEEDS_ORBITAL_FILES and family != "lcao":
             issues.append(Issue(
                 where, "'{}' needs the radial orbital files, which only an LCAO model "
@@ -259,20 +256,6 @@ def check_consistency(document: dict) -> List[Issue]:
             issues.append(Issue(
                 where, "'{}' is evaluated at Gamma, which is not in "
                        "run.kpoints".format(kind)))
-
-    target = run.get("preconditioner", {}).get("target", "auto")
-    if target == "overlap" and not caps["overlap"]:
-        issues.append(Issue(
-            "run.preconditioner.target",
-            "there is no overlap to precondition: this model is orthogonal",
-            severity=WARNING,
-            hint="'auto' picks 'none' here"))
-    if target == "none" and caps["overlap"]:
-        issues.append(Issue(
-            "run.preconditioner.target",
-            "a non-orthogonal model without a preconditioner converges slowly",
-            severity=WARNING,
-            hint="'auto' picks 'overlap' here"))
 
     npar = run.get("npar", 1)
     if npar > n_kpoint:

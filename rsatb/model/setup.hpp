@@ -18,12 +18,6 @@
 namespace rsatb {
 namespace model {
 
-/// Which operator the iterative solvers are preconditioned against.
-enum class PreconditionerTarget {
-    kNone,      // no preconditioner
-    kOverlap,   // approximate S^{-1/2}
-};
-
 /// Which form of the non-orthogonal operator the Chebyshev expansions apply.
 enum class OperatorForm {
     kSolve,     // S^{-1} H: S is kept, each matvec CG-solves S y = H x with
@@ -37,8 +31,6 @@ enum class OperatorForm {
 };
 
 struct PreconditionerOptions {
-    PreconditionerTarget target = PreconditionerTarget::kOverlap;
-
     /// Selects between the S^{-1}H and Z H Z forms above. Formerly the bool
     /// release_overlap_after_build (false = kSolve), named for its memory
     /// side effect rather than for the operator it selects.
@@ -49,16 +41,6 @@ struct PreconditionerOptions {
     int maxiter = 20;
 
 };
-
-/// Parses a user-facing preconditioner target name.
-inline PreconditionerTarget ParsePreconditionerTarget(const std::string& raw_name) {
-    const std::string name = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(raw_name));
-    if (name == "none") return PreconditionerTarget::kNone;
-    if (name == "s" || name == "overlap") return PreconditionerTarget::kOverlap;
-    throw std::runtime_error(
-        "Unsupported preconditioner target '" + raw_name + "'. Supported: none, overlap. "
-        "The former \"H\" mode is now preconditioner.operator_form = \"sandwich\".");
-}
 
 /// Parses a user-facing operator form name.
 inline OperatorForm ParseOperatorForm(const std::string& raw_name) {

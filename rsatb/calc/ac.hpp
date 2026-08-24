@@ -34,9 +34,9 @@ inline constexpr int kAcOversample = 2;
 // J = - S^{-1} V Psi
 template <typename T, typename VectorType>
 void current(Chebyshev<T>& cheby, 
-             BlockSpMat<T>& Vx, 
-             BlockSpMat<T>& Vy, 
-             BlockSpMat<T>& Vz, 
+             VelocityOp<T> Vx, 
+             VelocityOp<T> Vy, 
+             VelocityOp<T> Vz, 
              const VectorType& Psi_in, 
              VectorType* J_Psi, // Array of 3
              double scale = 1.0) {
@@ -48,9 +48,9 @@ void current(Chebyshev<T>& cheby,
 // Compute Adjoint Current: J = - V S^{-1} Psi
 template <typename T, typename VectorType>
 void current_adjoint(Chebyshev<T>& cheby, 
-                     BlockSpMat<T>& Vx, 
-                     BlockSpMat<T>& Vy, 
-                     BlockSpMat<T>& Vz, 
+                     VelocityOp<T> Vx, 
+                     VelocityOp<T> Vy, 
+                     VelocityOp<T> Vz, 
                      const VectorType& Psi_in, 
                      VectorType* J_Psi, // Array of 3
                      double scale = 1.0) {
@@ -72,9 +72,9 @@ void current_adjoint(Chebyshev<T>& cheby,
 //                broadening; see benchmarks/fermi_dirac/METHOD.md.
 template <typename T, typename VectorType>
 void corr_ac(Chebyshev<T>& cheby,
-             BlockSpMat<T>& Vx,
-             BlockSpMat<T>& Vy,
-             BlockSpMat<T>& Vz,
+             VelocityOp<T> Vx,
+             VelocityOp<T> Vy,
+             VelocityOp<T> Vz,
              const VectorType& Psi_in,
              int nt,
              double temp,
@@ -280,9 +280,9 @@ void corr_ac(Chebyshev<T>& cheby,
 // corr_ac, so the two routes are interchangeable sample for sample.
 template <typename T, typename VectorType>
 void corr_ac_concurrent(Chebyshev<T>& cheby,
-                        BlockSpMat<T>& Vx,
-                        BlockSpMat<T>& Vy,
-                        BlockSpMat<T>& Vz,
+                        VelocityOp<T> Vx,
+                        VelocityOp<T> Vy,
+                        VelocityOp<T> Vz,
                         const VectorType& Psi_in,
                         int nt,
                         double temp,

@@ -60,7 +60,6 @@ rsatb::model::SetupOptions make_file_setup_options(
     options.kpoints = kpoints;
     options.nsamples = nsamples;
     options.compute_bounds = compute_bounds;
-    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
     return options;
 }
 
@@ -161,7 +160,6 @@ rsatb::model::SetupOptions make_pairwise_setup_options(bool compute_bounds) {
     rsatb::model::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
     options.compute_bounds = compute_bounds;
-    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
     return options;
 }
 
@@ -283,7 +281,6 @@ TEST(RSATBOperatorApiTest, SetupUsesExplicitEnergyBounds) {
     rsatb::model::SetupOptions options;
     options.kpoints = {{0.0, 0.0, 0.0}};
     options.energy_bounds = std::make_pair(-3.0, 4.0);
-    options.preconditioner.target = rsatb::model::PreconditionerTarget::kNone;
 
     rsatb::RSATB rsatb_inst(structure, *model, options, 1, MPI_COMM_WORLD);
 
@@ -354,9 +351,10 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyWithoutGammaKPoint) {
     std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForOverlapSystems) {
-    // An overlap-present model has no orthogonal-diagonal position, so MSD must
-    // refuse rather than silently use the wrong representation.
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForOverlapWithoutDipoles) {
+    // The periodic MSD runs on non-orthogonal bases through the commutator
+    // velocity -- which a non-orthogonal Slater-Koster model cannot supply,
+    // since it has no dipole integrals. The refusal must say so by name.
     auto rsatb_inst = make_sktb_points_rsatb(make_sktb_pz_config(true));
 
     std::vector<double> msd;
@@ -365,10 +363,10 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForOverlapSystems) {
 
     try {
         rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "x");
-        FAIL() << "compute_msd_spectrum should reject overlap-present MSD in this pass";
+        FAIL() << "compute_msd_spectrum should reject a velocity-less non-orthogonal model";
     } catch (const std::runtime_error& error) {
         const std::string message = error.what();
-        EXPECT_TRUE(message.find("orthogonal") != std::string::npos ||
+        EXPECT_TRUE(message.find("commutator velocity") != std::string::npos ||
                     message.find("position-capable") != std::string::npos)
             << message;
     }

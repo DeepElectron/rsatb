@@ -209,16 +209,14 @@ def build_model(config: dict):
 def build_options(config: dict, model) -> Any:
     """Builds SetupOptions from the 'run' section.
 
-    `preconditioner.target` defaults to 'auto', which is resolved here from the
-    model's own capabilities: there is nothing to precondition in an orthogonal
-    basis, and a non-orthogonal one always wants it.
+    There is no knob for whether to precondition: an orthogonal model has
+    nothing to precondition and a non-orthogonal one always wants it, so the
+    answer follows from the model. `preconditioner.maxiter` is what controls
+    the cost -- 0 keeps the sparse graph seed and skips the refinement.
     """
     from .. import PreconditionerOptions, SetupOptions
 
     precondition = dict(config.get("preconditioner", {}))
-    target = precondition.pop("target", "auto")
-    if target == "auto":
-        target = "overlap" if model.capabilities.overlap else "none"
 
     bounds = config.get("bounds", {})
     fixed = bounds.get("mode") == "fixed"
@@ -230,7 +228,7 @@ def build_options(config: dict, model) -> Any:
         energy_bounds=list(bounds["energy"]) if fixed else None,
         bounds_zero_tol=bounds.get("zero_tol", 1e-12),
         bounds_max_matvecs=bounds.get("max_matvecs", 10000),
-        preconditioner=PreconditionerOptions(target=target, **precondition),
+        preconditioner=PreconditionerOptions(**precondition),
     )
 
 

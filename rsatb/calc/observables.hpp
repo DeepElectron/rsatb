@@ -478,14 +478,14 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
 
             if (concurrent) {
                 if (context.samples->nsamples == 1) {
-                    rsatb::calc::corr_ac_concurrent(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
+                    rsatb::calc::corr_ac_concurrent(*cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), *context.samples->sample_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
                 } else {
-                    rsatb::calc::corr_ac_concurrent(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
+                    rsatb::calc::corr_ac_concurrent(*cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), *context.samples->sample_multi_vec, nt, temp, mu, n_kpm, 1e-14, &cac, block);
                 }
             } else if (context.samples->nsamples == 1) {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
+                rsatb::calc::corr_ac(*cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), *context.samples->sample_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             } else {
-                rsatb::calc::corr_ac(*cheby, *velocity.x, *velocity.y, *velocity.z, *context.samples->sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
+                rsatb::calc::corr_ac(*cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), *context.samples->sample_multi_vec, nt, temp, mu, scale, shift, n_kpm, 1e-14, &cac);
             }
 
 
@@ -600,12 +600,12 @@ inline void ComputeDcSpectrum(
             std::vector<double> energy_k;
             if (method == "qe") {
                 rsatb::calc::dc_spectrum_qe(
-                    *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments,
+                    *cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), sample_mv, n_moments,
                     transport_prefactor, sigma_k, energy_k, parse_kpm_kernel(kernel), qe_nodes
                 );
             } else {
                 rsatb::calc::dc_spectrum_fftcheb(
-                    *cheby, *velocity.x, *velocity.y, *velocity.z, sample_mv, n_moments, dc_formulation,
+                    *cheby, velocity.x.view(), velocity.y.view(), velocity.z.view(), sample_mv, n_moments, dc_formulation,
                     transport_prefactor, partition_sections, max_workspace_mb,
                     sigma_k, energy_k, parse_kpm_kernel(kernel)
                 );
@@ -736,8 +736,31 @@ inline void ComputeMsdSpectrum(
             auto run_msd_for_sample = [&](const auto& sample) {
                 if (periodic_axis) {
                     if (ops.has_overlap()) {
-                        throw std::runtime_error(
-                            "compute_msd_spectrum periodic MSD currently supports orthogonal systems only.");
+                        // Non-orthogonal periodic MSD: the commutator route,
+                        // driven by the same section-4 velocity every other
+                        // spectral consumer propagates. Needs the velocity
+                        // (i.e. the dipole integrals); a non-orthogonal model
+                        // without one is refused by has_velocity.
+                        if (!ops.has_velocity()) {
+                            throw std::runtime_error(
+                                "compute_msd_spectrum on a periodic non-orthogonal system needs "
+                                "the commutator velocity, which this model cannot supply: it has "
+                                "no position/dipole integrals (doc/position_commutator.md "
+                                "section 7 -- the dipole term is not droppable).");
+                        }
+                        const auto& velocity = ops.velocity_state(gamma_k_idx);
+                        const auto& velocity_axis =
+                            axis_idx == 0 ? velocity.x : (axis_idx == 1 ? velocity.y : velocity.z);
+                        rsatb::calc::corr_msd(
+                            *cheby,
+                            velocity_axis.view(),
+                            sample,
+                            n_steps,
+                            dt_fs,
+                            n_kpm,
+                            local_msd,
+                            local_energy);
+                        return;
                     }
                     const auto& position = ops.position_state(gamma_k_idx);
                     const auto& position_axis = SelectAxisData(position, axis_idx);
@@ -854,6 +877,11 @@ inline void ComputeQuantumMetric(
         const int nk = ops.global_nk();
         const size_t n_omega = static_cast<size_t>(nt + 1);
 
+        // e^2 / (hbar * Angstrom) in S/m: the exact SI conversion for a
+        // conductivity assembled from velocities in the canonical eV*Angstrom
+        // (hbar = 1) convention, energies in eV and volumes in Angstrom^3
+        // (commutator_velocity.hpp UNITS). Both velocity builders store that
+        // convention, so this constant is valid for every model family.
         constexpr double sigma_au_to_si = 2.4341348e6;
         constexpr double hbar_ev_s = 6.582119569e-16;
         constexpr double h_si = 6.62607015e-34;

@@ -105,7 +105,6 @@ def test_defaults_are_filled_in():
     assert resolved["run"]["npar"] == 1
     assert resolved["run"]["kpoints"] == [[0.0, 0.0, 0.0]]
     assert resolved["run"]["bounds"]["mode"] == "auto"
-    assert resolved["run"]["preconditioner"]["target"] == "auto"
     assert resolved["run"]["preconditioner"]["maxiter"] == 20
     assert resolved["output"]["format"] == "npz"
     assert resolved["tasks"] == []
@@ -215,7 +214,7 @@ def test_capabilities_follow_the_model_family():
     assert check.capabilities({"type": "sktb", "overlap": {}})["velocity"] is False
     assert check.capabilities({"type": "dftb"}) == {"overlap": True, "velocity": False,
                                                     "position": False}
-    assert check.capabilities({"type": "lcao"})["velocity"] is False
+    assert check.capabilities({"type": "lcao"})["velocity"] is True
     assert check.capabilities(
         {"type": "lcao", "pseudopotentials": {"names": ["C.upf"]}})["velocity"] is True
 
@@ -227,11 +226,25 @@ def test_a_task_needing_velocity_is_refused_when_the_model_has_none():
     assert any("velocity operator" in issue.message for issue in errors(issues))
 
 
-def test_msd_is_refused_on_a_non_orthogonal_model():
+def test_msd_is_refused_on_a_non_orthogonal_model_without_position():
+    # The periodic MSD now runs on non-orthogonal bases through the commutator
+    # route -- but that route needs the position/dipole integrals, which a
+    # non-orthogonal Slater-Koster model does not have. So the refusal moves
+    # from "orthogonal only" to the position capability.
     model = copy.deepcopy(MINIMAL["model"])
     model["overlap"] = {"onsite": {"C": {"pz": 1.0}}}
     _, issues = resolve({"model": model, "tasks": [{"type": "msd"}]})
-    assert any("orthogonal systems only" in issue.message for issue in errors(issues))
+    assert any("position operator" in issue.message for issue in errors(issues))
+
+
+def test_msd_is_allowed_on_lcao():
+    # LCAO carries the dipole integrals, so the non-orthogonal periodic MSD is
+    # available (doc/position_commutator.md section 8).
+    lcao = {"type": "lcao", "hamiltonian": {"path": "h.h5"},
+            "orbitals": {"names": ["C.orb"]}}
+    _, issues = resolve({"model": lcao, "tasks": [{"type": "msd"}]})
+    assert not any("position operator" in issue.message or "orthogonal" in issue.message
+                   for issue in errors(issues))
 
 
 def test_duplicate_result_names_are_refused():
@@ -254,12 +267,6 @@ def test_deeptb_tiling_is_allowed_for_a_file_backed_hamiltonian():
     }
     _, issues = check.resolve(document, check_paths=False)
     assert errors(issues) == []
-
-
-def test_a_preconditioner_target_that_disagrees_with_the_model_warns():
-    _, issues = resolve({"run": {"preconditioner": {"target": "overlap"}}})
-    assert errors(issues) == []
-    assert any("orthogonal" in issue.message for issue in warnings(issues))
 
 
 def test_bounds_mode_fixed_needs_an_energy_window():
