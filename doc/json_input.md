@@ -193,8 +193,10 @@ so it has neither position nor velocity.
 
 `ac`, `dc`, `dc_spectrum` and `quantum_metric` need velocity. `msd` needs
 position and the Gamma point — any basis, orthogonal or not; the periodic
-route runs the commutator machinery either way. `ldos` needs the radial
-orbital files, so LCAO, at a single Gamma point.
+route runs the commutator machinery either way, and its `method: "spectral"`
+estimator (which `"auto"` selects on non-orthogonal setups) additionally
+needs the velocity. `ldos` needs the radial orbital files, so LCAO, at a
+single Gamma point.
 
 ## Structures
 

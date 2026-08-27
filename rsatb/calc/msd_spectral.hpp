@@ -53,7 +53,10 @@
 //                 so high-q tiles restrict to their late-block suffix.
 //   grid points   d^s_q = sum_m c_m(block offset) G_{q,m} and the j-fold to
 //                 C_p(u) are pure scalar work, cache-contiguous, OpenMP over
-//                 grid points. No per-grid-point vector work exists at all.
+//                 grid points and dealt round-robin across MPI ranks (the
+//                 vector work above scales with ranks; without the deal this
+//                 scalar floor would not). No per-grid-point vector work
+//                 exists at all.
 //   time          num_p(t) = 2/hw^2 int_0^t (t - u) C_p(u) du by cardinal
 //                 (Kaiser-windowed sinc) quadrature in closed form: an
 //                 interior sample's kernel integral is exactly
@@ -466,6 +469,10 @@ void msd_spectral_accumulate(
         }
 
         // ---- scalar assembly: d^s_q(delta), then the j-fold to C_p(u) -------
+        // gtab is identical on every rank (the tile GEMMs end in an
+        // Allreduce), so the grid points are dealt round-robin across ranks
+        // and cre_accum holds partial sums until reduce_correlator; the
+        // scalar floor then scales with ranks like the vector work above.
         std::vector<std::pair<int, int>> points;  // (block index, offset k)
         for (int b = s0; b < s1; ++b) {
             const int k_lo = (blocks[static_cast<size_t>(b)].seed_point == 0) ? 0 : 1;
@@ -473,11 +480,13 @@ void msd_spectral_accumulate(
                 points.emplace_back(b, k);
             }
         }
+        const size_t rank_stride = static_cast<size_t>(graph->size);
 #pragma omp parallel
         {
             std::vector<cd> cfwd, bwd, d_row(static_cast<size_t>(n_q));
 #pragma omp for schedule(dynamic, 4)
-            for (size_t ip = 0; ip < points.size(); ++ip) {
+            for (size_t ip = static_cast<size_t>(rank); ip < points.size();
+                 ip += rank_stride) {
                 const Block& blk = blocks[static_cast<size_t>(points[ip].first)];
                 const int k = points[ip].second;
                 const int u = blk.seed_point + k;
@@ -541,6 +550,15 @@ void msd_spectral_accumulate(
     // Density moments of the same sample, for the shared normalisation.
     const std::vector<cd> rho = metric_density_moments(cheby, r, n_kpm);
     for (int p = 0; p < n_kpm; ++p) rho_accum[static_cast<size_t>(p)] += rho[static_cast<size_t>(p)];
+}
+
+// The assembly above leaves each rank its round-robin share of the
+// correlator samples; one reduction after the last sample makes them whole.
+// (The density moments are already global: metric_density_moments dots
+// reduce internally.)
+inline void reduce_correlator(std::vector<double>& cre_accum, MPI_Comm comm) {
+    MPI_Allreduce(MPI_IN_PLACE, cre_accum.data(),
+                  static_cast<int>(cre_accum.size()), MPI_DOUBLE, MPI_SUM, comm);
 }
 
 // `n_acc` is the accumulated moment count; when it is below `n_kpm_out` the
@@ -651,6 +669,7 @@ void corr_msd_spectral(
         std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
         detail::msd_spectral_accumulate(cheby, velocity, psi_in, nc, grid,
                                         block_substeps, segment_scaled, cre, rho);
+        detail::reduce_correlator(cre, psi_in.graph->comm);
         detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm, 1.0, grid, quad, cre,
                                       rho, msd_out, energy_out);
     }
@@ -695,6 +714,7 @@ void corr_msd_spectral(
             detail::msd_spectral_accumulate(cheby, velocity, r, nc, grid,
                                             block_substeps, segment_scaled, cre, rho);
         }
+        detail::reduce_correlator(cre, psi_in.graph->comm);
         detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm,
                                       1.0 / static_cast<double>(psi_in.num_vectors),
                                       grid, quad, cre, rho, msd_out, energy_out);

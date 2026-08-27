@@ -730,6 +730,23 @@ TASK = Union(
                            default=1000),
                 "axis": F(_str("Direction the displacement is measured along.",
                                choices=("x", "y", "z")), default="x"),
+                "method": F(_str("Estimator. 'stepwise' re-expands the energy "
+                                 "resolution at every output time (n_steps * "
+                                 "n_kpm applies -- right for cheap orthogonal "
+                                 "matvecs). 'spectral' runs the segmented "
+                                 "single-chain route: cost linear in the "
+                                 "evolution window and independent of the "
+                                 "output grid; needs a periodic axis with "
+                                 "velocity data. 'auto' picks spectral "
+                                 "whenever applies are expensive "
+                                 "(non-orthogonal forms) and the velocity "
+                                 "exists.",
+                                 choices=("auto", "stepwise", "spectral")),
+                            default="auto"),
+                "n_kpm_compute": F(_int("Compute only this many moments and "
+                                        "extend to n_kpm by linear "
+                                        "prediction; 0 disables.", minimum=0),
+                                   default=0),
             }),
         "quantum_metric": Obj(
             "Longitudinal quantum metric Gxx, from the AC conductivity. Needs "

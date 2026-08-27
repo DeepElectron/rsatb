@@ -98,13 +98,26 @@ def test_lcao_periodic_msd_runs_through_the_commutator_route():
                             preconditioner=PreconditionerOptions()),
                npar=1)
     n_steps, n_kpm = 3, 24
-    msd, energy, time = rs.compute_msd_spectrum(n_steps, 0.5, n_kpm, "x")
+    msd, energy, time = rs.compute_msd_spectrum(n_steps, 0.5, n_kpm, "x",
+                                                method="stepwise")
 
     import numpy as np
     m = np.asarray(msd).reshape(-1, n_steps + 1, n_kpm)[0]
     assert np.all(np.abs(m[0]) < 1e-10), "commutator state must vanish at t=0"
     assert np.all(np.isfinite(m)), "MSD must stay finite"
     assert np.abs(m[1:]).max() > 1e-3, "wavepacket must actually spread"
+
+    # The spectral route (which method="auto" picks on this Solve-form
+    # setup) is a different unbiased estimator of the same trace: per sample
+    # the values differ, but the structural signatures are shared -- the
+    # time-zero row is an empty integral, hence exactly zero.
+    msd_sp, energy_sp, _ = rs.compute_msd_spectrum(n_steps, 0.5, n_kpm, "x",
+                                                   method="spectral")
+    s = np.asarray(msd_sp).reshape(-1, n_steps + 1, n_kpm)[0]
+    assert np.all(s[0] == 0.0), "spectral MSD at t=0 is an empty integral"
+    assert np.all(np.isfinite(s)), "spectral MSD must stay finite"
+    assert np.abs(s[1:]).max() > 1e-3, "spectral wavepacket must actually spread"
+    assert np.allclose(energy_sp, energy), "both routes share the energy grid"
 
 
 def test_structure_supercell_is_metadata_until_expanded():

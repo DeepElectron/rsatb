@@ -126,7 +126,8 @@ def _fermi_level(calc, task, options, result):
 
 def _msd(calc, task, options, result):
     msd, diffusion, energy, times = calc.compute_diffusion_spectrum(
-        task["n_steps"], task["dt_fs"], task["n_kpm"], axis=task["axis"])
+        task["n_steps"], task["dt_fs"], task["n_kpm"], axis=task["axis"],
+        method=task["method"], n_kpm_compute=task["n_kpm_compute"])
     result.arrays["msd"] = msd
     result.arrays["diffusion"] = diffusion
     result.arrays["energy"] = energy

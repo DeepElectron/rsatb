@@ -247,6 +247,21 @@ def test_msd_is_allowed_on_lcao():
                    for issue in errors(issues))
 
 
+def test_msd_spectral_method_is_refused_without_velocity():
+    # The spectral estimator integrates velocity correlations, so the velocity
+    # requirement follows the method, not the task kind; 'auto' on the same
+    # model is fine because it falls back to the stepwise route.
+    model = copy.deepcopy(MINIMAL["model"])
+    model["overlap"] = {"onsite": {"C": {"pz": 1.0}}}
+    _, issues = resolve({"model": model,
+                         "tasks": [{"type": "msd", "method": "spectral"}]})
+    assert any("commutator velocity" in issue.message for issue in errors(issues))
+
+    _, issues = resolve({"model": model,
+                         "tasks": [{"type": "msd", "method": "auto"}]})
+    assert not any("commutator velocity" in issue.message for issue in errors(issues))
+
+
 def test_duplicate_result_names_are_refused():
     _, issues = resolve({"tasks": [{"type": "dos"}, {"type": "dos", "dE": 0.05}]})
     assert any("already used" in issue.message for issue in errors(issues))

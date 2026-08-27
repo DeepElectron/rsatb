@@ -239,6 +239,14 @@ def check_consistency(document: dict) -> List[Issue]:
                 where, "'{}' needs the position operator, which the '{}' model with "
                        "these inputs does not supply".format(kind, family),
                 hint=why))
+        # The spectral MSD estimator integrates velocity correlations, so
+        # the velocity requirement follows the method, not the task kind.
+        if kind == "msd" and task.get("method") == "spectral" and not caps["velocity"]:
+            issues.append(Issue(
+                join_path(where, "method"),
+                "msd method 'spectral' runs on the commutator velocity, which the "
+                "'{}' model with these inputs does not supply".format(family),
+                hint="use method 'stepwise' (or 'auto', which falls back)"))
         if kind in _NEEDS_ORBITAL_FILES and family != "lcao":
             issues.append(Issue(
                 where, "'{}' needs the radial orbital files, which only an LCAO model "

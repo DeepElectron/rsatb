@@ -372,6 +372,65 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumFailsClearlyForOverlapWithoutDipole
     }
 }
 
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumSpectralMethodRunsOnThePeriodicVelocityFallback) {
+    // The spectral route on the generic commutator velocity an orthogonal
+    // periodic model falls back to. One site per cell means every operator
+    // commutes, so the spectrum must vanish like the stepwise routes'.
+    const std::string path = make_periodic_hdf5_hamiltonian_file(1, std::complex<double>(0.0, 0.0), std::complex<double>(0.2, 0.0));
+    auto rsatb_inst = make_periodic_single_atom_rsatb(path, 1, {{0.0, 0.0, 0.0}});
+
+    std::vector<double> msd;
+    std::vector<double> energy;
+    std::vector<double> time;
+    rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "x", "spectral");
+
+    ASSERT_EQ(msd.size(), 3u * 16u);
+    ASSERT_EQ(energy.size(), 16u);
+    ASSERT_EQ(time.size(), 3u);
+    for (double value : msd) {
+        EXPECT_NEAR(value, 0.0, 1e-10);
+    }
+
+    std::remove(path.c_str());
+}
+
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumRejectsUnknownMethod) {
+    const std::string path = make_periodic_hdf5_hamiltonian_file(1, std::complex<double>(0.0, 0.0), std::complex<double>(0.2, 0.0));
+    auto rsatb_inst = make_periodic_single_atom_rsatb(path, 1, {{0.0, 0.0, 0.0}});
+
+    std::vector<double> msd;
+    std::vector<double> energy;
+    std::vector<double> time;
+    try {
+        rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "x", "concurrent");
+        FAIL() << "compute_msd_spectrum should reject an unknown method";
+    } catch (const std::runtime_error& error) {
+        EXPECT_NE(std::string(error.what()).find("method"), std::string::npos);
+    }
+
+    std::remove(path.c_str());
+}
+
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumSpectralRefusesNonPeriodicAxis) {
+    // The spectral estimator integrates velocity correlations, so it lives
+    // where the commutator velocity does; a non-periodic axis must be
+    // refused by name rather than silently rerouted.
+    const std::string path = make_periodic_hdf5_hamiltonian_file(1, std::complex<double>(0.0, 0.0), std::complex<double>(0.2, 0.0));
+    auto rsatb_inst = make_periodic_single_atom_rsatb(path, 1, {{0.0, 0.0, 0.0}});
+
+    std::vector<double> msd;
+    std::vector<double> energy;
+    std::vector<double> time;
+    try {
+        rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "z", "spectral");
+        FAIL() << "method 'spectral' should refuse a non-periodic axis";
+    } catch (const std::runtime_error& error) {
+        EXPECT_NE(std::string(error.what()).find("non-periodic axis"), std::string::npos);
+    }
+
+    std::remove(path.c_str());
+}
+
 TEST(RSATBOperatorApiTest, SktbGraphCutoffIsDerivedFromThePairCutoff) {
     // This replaces SetupRejectsSKTBWhenStoredCutoffIsTooSmall. That test
     // checked a cross-check between a caller-supplied graph cutoff and the

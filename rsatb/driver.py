@@ -413,12 +413,29 @@ class RSATB:
         return self._cpp_obj.find_fermi_level(n_electrons, temp, indicator_threshold, n_max,
                                               mu_guess)
 
-    def compute_msd_spectrum(self, n_steps, dt_fs, n_kpm, axis="x"):
+    def compute_msd_spectrum(self, n_steps, dt_fs, n_kpm, axis="x", method="auto",
+                             n_kpm_compute=0):
         """
         Compute the mean-square displacement spectrum DeltaX^2(E, t).
 
         MSD is evaluated from the configured Gamma-point state. The returned
         array therefore always has a singleton leading k-axis.
+
+        Args:
+            method (str): "stepwise" re-expands the energy resolution at
+                every output time (n_steps * n_kpm operator applies -- the
+                right choice for cheap orthogonal tight-binding matvecs).
+                "spectral" runs the segmented single-chain route at
+                resolution-plus-evolution cost, linear in the evolution
+                window and independent of the output grid density; it needs
+                a periodic axis with velocity data. "auto" (default) picks
+                spectral whenever operator applies are expensive
+                (non-orthogonal S^-1 H or Z^H H Z forms) and the velocity
+                exists, stepwise otherwise. See doc/design_msd_spectral.md.
+            n_kpm_compute (int): 0 = off. Compute only this many Chebyshev
+                moments and extend to n_kpm by linear prediction, cutting
+                the resolution cost by n_kpm / n_kpm_compute on either
+                method.
 
         Returns:
             tuple: (msd, energy, time)
@@ -426,17 +443,22 @@ class RSATB:
                 energy.shape == (n_kpm,)
                 time.shape == (n_steps + 1,)
         """
-        msd_out, energy_out, time_out = self._cpp_obj.compute_msd_spectrum(n_steps, dt_fs, n_kpm, axis)
+        msd_out, energy_out, time_out = self._cpp_obj.compute_msd_spectrum(
+            n_steps, dt_fs, n_kpm, axis, method, n_kpm_compute)
         msd_out = np.array(msd_out, dtype=np.float64).reshape(-1, n_steps + 1, n_kpm)
         energy_out = np.array(energy_out, dtype=np.float64)
         time_out = np.array(time_out, dtype=np.float64)
         return msd_out, energy_out, time_out
 
-    def compute_diffusion_spectrum(self, n_steps, dt_fs, n_kpm, axis="x"):
+    def compute_diffusion_spectrum(self, n_steps, dt_fs, n_kpm, axis="x", method="auto",
+                                   n_kpm_compute=0):
         """
         Compute DeltaX^2(E, t) and D(E, t) = 0.5 d_t DeltaX^2(E, t).
+
+        Same knobs as compute_msd_spectrum.
         """
-        msd, energy, time = self.compute_msd_spectrum(n_steps, dt_fs, n_kpm, axis=axis)
+        msd, energy, time = self.compute_msd_spectrum(
+            n_steps, dt_fs, n_kpm, axis=axis, method=method, n_kpm_compute=n_kpm_compute)
         diffusion = 0.5 * np.gradient(msd, time, axis=1, edge_order=1)
         return msd, diffusion, energy, time
 

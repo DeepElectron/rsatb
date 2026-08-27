@@ -311,9 +311,10 @@ public:
 
     void compute_msd_spectrum(int n_steps, double dt_fs, int n_kpm, std::vector<double>& msd_out,
                               std::vector<double>& energy_out, std::vector<double>& time_out,
-                              std::string axis = "x") {
+                              std::string axis = "x", const std::string& method = "auto",
+                              int n_kpm_compute = 0) {
         calc::ComputeMsdSpectrum(observable_context(), n_steps, dt_fs, n_kpm, msd_out, energy_out,
-                                 time_out, axis);
+                                 time_out, axis, method, n_kpm_compute);
     }
 
     /// Full-cell LDOS map on the real-space grid (calc/rs_ldos.hpp).

@@ -23,6 +23,7 @@
 #include "fft.hpp"
 #include "fftcheb_transport.hpp"
 #include "msd.hpp"
+#include "msd_spectral.hpp"
 #include "occupation.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
@@ -257,6 +258,14 @@ inline const op::LatticeMomentAxis& SelectAxisData(
     if (axis_idx == 0) return first_lattice_moment.x;
     if (axis_idx == 1) return first_lattice_moment.y;
     if (axis_idx == 2) return first_lattice_moment.z;
+    throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
+}
+
+inline const op::VelocityAxis& SelectAxisData(
+    const op::VelocityTriplet& velocity, int axis_idx) {
+    if (axis_idx == 0) return velocity.x;
+    if (axis_idx == 1) return velocity.y;
+    if (axis_idx == 2) return velocity.z;
     throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
 }
 
@@ -696,6 +705,28 @@ inline void ComputeDc(
         }
     }
 
+// Diffusion spectrum DeltaX^2(E, t). Two estimators sit behind the `method`
+// knob, both delivering the same [n_steps + 1, n_kpm] density-normalised
+// contract on the same energy grid:
+//
+//   method "stepwise" -- the msd.hpp routes: propagate, then re-expand
+//                        delta(E - A~) at every output time. n_steps * n_kpm
+//                        operator applies; the right choice when applies are
+//                        cheap (orthogonal TB), whose matvecs undercut the
+//                        spectral route's ~10 n_kpm dot-flops-per-row floor.
+//   method "spectral" -- the segmented single-chain route
+//                        (msd_spectral.hpp): resolution-plus-evolution cost,
+//                        linear in the window, output grid free. Runs on the
+//                        commutator velocity, so it needs a periodic axis
+//                        with velocity data.
+//   method "auto"     -- spectral wherever operator applies are expensive
+//                        (the Solve and Sandwich forms) and the velocity
+//                        exists; stepwise otherwise. A form-based dispatch,
+//                        measured parity-at-worst for the expensive forms
+//                        (doc/design_msd_spectral.md section 6).
+//
+// `n_kpm_compute` (0 = off) applies to both methods: compute that many
+// moments and extend to n_kpm by linear prediction (moment_extrapolation.hpp).
 inline void ComputeMsdSpectrum(
     const ObservableContext& context,
         int n_steps,
@@ -704,7 +735,9 @@ inline void ComputeMsdSpectrum(
         std::vector<double>& msd_out,
         std::vector<double>& energy_out,
         std::vector<double>& time_out,
-        std::string axis = "x"
+        std::string axis = "x",
+        const std::string& method = "auto",
+        int n_kpm_compute = 0
     ) {
         RSATB_PHASE("task/msd");
         util::InterruptGuard interrupt_guard;
@@ -718,6 +751,10 @@ inline void ComputeMsdSpectrum(
         }
         if (!ops.has_hamiltonian()) {
             throw std::runtime_error("compute_msd_spectrum requires a Hamiltonian-capable model/operator setup.");
+        }
+        if (method != "auto" && method != "stepwise" && method != "spectral") {
+            throw std::runtime_error(
+                "msd method must be 'auto', 'stepwise' or 'spectral', got '" + method + "'");
         }
 
         const size_t per_k_size = static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm);
@@ -733,7 +770,44 @@ inline void ComputeMsdSpectrum(
             const auto& moment_axis = SelectAxisData(first_lattice_moment, axis_idx);
             const bool periodic_axis = static_cast<bool>(moment_axis.first_moment);
 
+            // The spectral route exists exactly where the commutator route
+            // does: it integrates velocity correlations, so it needs the
+            // commutator velocity on a periodic axis.
+            const bool spectral_capable = periodic_axis && ops.has_velocity();
+            bool use_spectral = false;
+            if (method == "spectral") {
+                if (!spectral_capable) {
+                    throw std::runtime_error(
+                        std::string("msd method 'spectral' runs on the commutator velocity "
+                                    "and needs a periodic axis with velocity data; this "
+                                    "setup has ") +
+                        (periodic_axis ? "no velocity-capable model/operator path"
+                                       : "a non-periodic axis") +
+                        ". Use method 'stepwise'.");
+                }
+                use_spectral = true;
+            } else if (method == "auto") {
+                use_spectral = spectral_capable && cheby->form != ChebyOpForm::Orthogonal;
+            }
+
             auto run_msd_for_sample = [&](const auto& sample) {
+                if (use_spectral) {
+                    const auto& velocity_axis =
+                        SelectAxisData(ops.velocity_state(gamma_k_idx), axis_idx);
+                    rsatb::calc::corr_msd_spectral(
+                        *cheby,
+                        velocity_axis.view(),
+                        sample,
+                        n_steps,
+                        dt_fs,
+                        n_kpm,
+                        local_msd,
+                        local_energy,
+                        /*time_oversample=*/2,
+                        /*block_substeps=*/0,
+                        n_kpm_compute);
+                    return;
+                }
                 if (periodic_axis) {
                     if (ops.has_overlap()) {
                         // Non-orthogonal periodic MSD: the commutator route,
@@ -748,9 +822,8 @@ inline void ComputeMsdSpectrum(
                                 "no position/dipole integrals (doc/position_commutator.md "
                                 "section 7 -- the dipole term is not droppable).");
                         }
-                        const auto& velocity = ops.velocity_state(gamma_k_idx);
                         const auto& velocity_axis =
-                            axis_idx == 0 ? velocity.x : (axis_idx == 1 ? velocity.y : velocity.z);
+                            SelectAxisData(ops.velocity_state(gamma_k_idx), axis_idx);
                         rsatb::calc::corr_msd(
                             *cheby,
                             velocity_axis.view(),
@@ -759,7 +832,8 @@ inline void ComputeMsdSpectrum(
                             dt_fs,
                             n_kpm,
                             local_msd,
-                            local_energy);
+                            local_energy,
+                            n_kpm_compute);
                         return;
                     }
                     const auto& position = ops.position_state(gamma_k_idx);
@@ -781,7 +855,8 @@ inline void ComputeMsdSpectrum(
                         dt_fs,
                         n_kpm,
                         local_msd,
-                        local_energy);
+                        local_energy,
+                        n_kpm_compute);
                     return;
                 }
 
@@ -805,7 +880,8 @@ inline void ComputeMsdSpectrum(
                         dt_fs,
                         n_kpm,
                         local_msd,
-                        local_energy);
+                        local_energy,
+                        n_kpm_compute);
                     return;
                 }
 
@@ -824,7 +900,8 @@ inline void ComputeMsdSpectrum(
                     dt_fs,
                     n_kpm,
                     local_msd,
-                    local_energy);
+                    local_energy,
+                    n_kpm_compute);
             };
 
             if (context.samples->nsamples == 1) {

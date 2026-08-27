@@ -709,17 +709,20 @@ PYBIND11_MODULE(_rsatb, m) {
          py::arg("indicator_threshold") = 1e-4,
          py::arg("n_max") = 1 << 16,
          py::arg("mu_guess") = std::numeric_limits<double>::quiet_NaN())
-        .def("compute_msd_spectrum", [](rsatb::RSATB& self, int n_steps, double dt_fs, int n_kpm, std::string axis) {
+        .def("compute_msd_spectrum", [](rsatb::RSATB& self, int n_steps, double dt_fs, int n_kpm, std::string axis, std::string method, int n_kpm_compute) {
              std::vector<double> msd_out;
              std::vector<double> energy_out;
              std::vector<double> time_out;
-             self.compute_msd_spectrum(n_steps, dt_fs, n_kpm, msd_out, energy_out, time_out, axis);
+             self.compute_msd_spectrum(n_steps, dt_fs, n_kpm, msd_out, energy_out, time_out, axis,
+                                       method, n_kpm_compute);
              return py::make_tuple(msd_out, energy_out, time_out);
          },
          py::arg("n_steps"),
          py::arg("dt_fs"),
          py::arg("n_kpm"),
-         py::arg("axis") = "x")
+         py::arg("axis") = "x",
+         py::arg("method") = "auto",
+         py::arg("n_kpm_compute") = 0)
         .def("compute_quantum_metric", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis, double omega_min_ev) {
              std::vector<double> gxx_out;
              std::vector<double> sigma_xx_out;

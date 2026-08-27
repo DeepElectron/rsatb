@@ -168,7 +168,11 @@ suffix.
 
 **Grid points.** $d_q(u) = \sum_m c_m(u - u_b)\, G_{qm}$ and the $j$-fold to
 $C_p(u)$ are cache-contiguous scalar loops, OpenMP-parallel over grid points
-with thread-local coefficient builds.
+with thread-local coefficient builds. Because the dot table is identical on
+every rank after the tile reductions, the grid points are additionally dealt
+round-robin across MPI ranks and the correlator samples reduced once at the
+end — the scalar floor then scales with ranks like the vector work, instead
+of becoming the Amdahl term of a large run.
 
 **Memory.** Per rank, $\approx 1.3\, \min(\tilde L, \tilde T)\,
 N_{\mathrm{local}} \times 16\,\mathrm{B}$ of *segment-local* stored
@@ -264,6 +268,14 @@ route (with doubling and the LP knob) stays ahead. That dispatch is decided
 by the operator form at setup, not tuned per input. For full diffusion
 tensors the chain anchor is axis-independent: $x/y/z$ share the anchor
 trajectory and chains against three $g$-trajectories.
+
+The task layer exposes exactly this dispatch: `compute_msd_spectrum` takes
+`method = "auto" | "stepwise" | "spectral"`, where `"auto"` (the default)
+selects the spectral route whenever the operator form is expensive-apply
+(Solve or Sandwich) and the commutator velocity exists, and stepwise
+otherwise. The spectral estimator integrates velocity correlations, so an
+explicit `method = "spectral"` requires a periodic axis with velocity data
+and refuses anything else by name.
 
 ## 7. Moment extrapolation (the `n_kpm_compute` knob)
 
@@ -366,8 +378,14 @@ and multivector batching of the sample loop.
   Output contract identical to `corr_msd` ($[n_t{+}1,\, n_{\mathrm{kpm}}]$
   density-normalised rows on the ascending Chebyshev grid).
 - `rsatb/calc/moment_extrapolation.hpp` — `extrapolate_moments_lp`.
+- `rsatb/calc/observables.hpp` — `ComputeMsdSpectrum(..., method,
+  n_kpm_compute)`: the `"auto" | "stepwise" | "spectral"` dispatch above,
+  surfaced through `rsatb.hpp`, the pybind layer, and
+  `driver.py::compute_msd_spectrum` / `compute_diffusion_spectrum`.
 - Validation: `test_msd.cpp` (dense complete-basis fixtures for both forms,
   multi-segment long-window regression, segment/single-segment equality, LP
-  recovery); benchmark:
+  recovery); `test_operator_api.cpp` and `test/test_binding.py` (method-knob
+  dispatch, refusals, and the spectral route end-to-end on the LCAO
+  fixture); benchmark:
   `benchmark_msd_moments.cpp` (route timings, dt sweep, noise-floor and
   moment-SNR diagnostics).
