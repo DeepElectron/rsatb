@@ -159,6 +159,63 @@ applies to both.
   per-column breakdown guard, so any all-zero column (the commutator MSD's
   affine seed) poisoned the whole block with NaN.
 
+## Pushing further: a cross-field survey (2026-08)
+
+The route's cost has three independent axes -- resolution (the chain),
+evolution (K applies), and stochastic samples -- and different fields have
+attacked each. Ranked by expected value for rsatb:
+
+1. IMPLEMENTED -- resolution axis: linear-prediction moment extrapolation
+   (moment_extrapolation.hpp, the `n_kpm_compute` knob on both routes). The
+   DMRG community's resolution multiplier for Chebyshev spectral functions:
+   Ganahl et al., PRB 90, 045144 (2014); Wolf et al., PRB 91, 115144 (2015);
+   White & Affleck, PRB 77, 134437 (2008). Covariance least squares +
+   companion eigenvalues clipped to the unit circle -- NOT Burg, whose
+   greedy fit biases undamped-sinusoid poles to ~0.999 and wrecks long
+   extrapolations (measured O(1) at 5x where least squares is 1e-8 at 50x).
+   Measured: exact recovery on dense fixtures (5x extension, 2e-9); on a
+   semicircle-plus-sharp-Lorentzian test measure, 300 computed moments
+   extrapolated to 1200 reconstruct with 0.1% error where plain truncation
+   at 300 errs 12.8%, robust to 1e-3 relative moment noise. Practical
+   criterion for n_compute: moments are worth computing while their
+   band-wise signal-to-noise (readable from the seed-to-seed difference of
+   two sample sets) stays above ~1; beyond that the computed tail is noise
+   and the model tail is at least as physical. On the small benchmark
+   fixture that crossover sits near q ~ 60 of 300 -- the tail there is
+   noise-dominated and LP-vs-full deviations just read that noise; at
+   production N x nsamples the crossover moves out by orders of magnitude
+   and the 3-4x apply saving is real signal-for-signal.
+
+2. Sampling axis (the multiplier after this work): deflated / structured
+   trace estimators from randomized numerical linear algebra -- Hutch++
+   (Meyer, Musco, Musco, Woodruff, 2021), XTrace/XNysTrace (Epperly, Tropp,
+   Webber, SIMAX 2024), and especially Krylov-aware stochastic trace
+   estimation (Chen & Hallman, SIMAX 44, 1218 (2023)), which builds the
+   deflation basis from the SAME Krylov information the chain already
+   generates -- the T_q r states -- at zero extra applies. Connects
+   directly to the in-house local-coherence deflation program
+   (design_stochastic_ldos.md lineage); gains hinge on spectral
+   concentration of the traced operator and need the same kind of measured
+   evaluation that program uses.
+
+3. Few-energy-window regime: sqrt-filtered wavepackets. Since
+   Tr[delta C^H C] = E || C delta^{1/2} r ||^2, applying the half-filter
+   once (n_kpm applies) and evolving the filtered state gives a per-sample
+   POSITIVE estimator with per-window cost ~ n_kpm + 3K and much lower
+   variance (only in-window states contribute). The right tool when the
+   question is "D(E, t) near E_F", not the full spectrum; same family as
+   polynomial spectrum slicing (EVSL, Li, Xi, Erlandson, Saad, SISC 2019).
+
+4. Precision axis: KITE and GPUQT run KPM chains in single precision;
+   moments are dot-product-averaged, so FP32 chains with FP64 accumulation
+   would roughly double SpMM and GEMM throughput. Engineering, vbcsr-wide.
+
+5. GEMM axis (cheap-matvec regimes): the d-table columns can be randomly
+   subsampled with importance weights (the (t - u) kernel), cutting the
+   dot table and velocity applies without touching the evolution; only
+   worth it where the GEMM dominates, i.e. the regimes currently left to
+   the stepwise route.
+
 ## Implementation map
 
 - `rsatb/calc/msd_spectral.hpp` -- `corr_msd_spectral(...)`: the left chain,

@@ -1268,6 +1268,103 @@ TEST(MSDTest, SpectralRouteMatchesDenseWithOverlap) {
     EXPECT_LT(max_err_spec, 1e-6 * std::max(1.0, scale_ref));
 }
 
+// Burg linear prediction on a dense moment sequence: a 2x2 spectrum is two
+// cosines in p, exactly the AR model class, so extrapolating 5x from 40
+// computed moments must reproduce the directly computed sequence.
+TEST(MSDTest, LinearPredictionRecoversDenseMoments) {
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 a_s = dense2_scale(h, Scalar(1.0 / 1.2, 0.0));
+    const int n_full = 200, n_short = 40;
+    const std::vector<Dense2> tfam = dense2_chebyshev_family(a_s, n_full);
+
+    std::vector<cd> full(static_cast<size_t>(n_full));
+    for (int p = 0; p < n_full; ++p) {
+        full[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(tfam[static_cast<size_t>(p)]));
+    }
+    std::vector<cd> shortm(full.begin(), full.begin() + n_short);
+    const std::vector<cd> predicted = extrapolate_moments_lp(shortm, n_full);
+
+    ASSERT_EQ(predicted.size(), static_cast<size_t>(n_full));
+    double max_err = 0.0;
+    for (int p = 0; p < n_full; ++p) {
+        max_err = std::max(max_err, std::abs(predicted[static_cast<size_t>(p)] -
+                                             full[static_cast<size_t>(p)]));
+    }
+    std::cout << "lp extrapolation max err " << max_err << std::endl;
+    EXPECT_LT(max_err, 1e-8);
+}
+
+// The n_kpm_compute knob end to end: both routes at quarter order plus
+// linear prediction against their own full-order runs. On the 2x2 fixture
+// the moment sequences are exact AR signals, so the knob must cost nothing.
+TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), X(&graph), V(&graph);
+
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 x = {Scalar(-0.7, 0.0), Scalar(0.3, 0.1),
+                      Scalar(0.3, -0.1), Scalar(1.1, 0.0)};
+    Dense2 v{};
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    const int n_steps = 3, n_kpm = 64, n_compute = 16;
+    const double dt_fs = 1.5;
+    const double emin = -1.2, emax = 1.2;
+
+    Vector e0(&graph), e1(&graph);
+    fill_vector(e0, {Scalar(1.0, 0.0), Scalar(0.0, 0.0)});
+    fill_vector(e1, {Scalar(0.0, 0.0), Scalar(1.0, 0.0)});
+    MultiVector samples(&graph, 2);
+    samples.set_col(0, e0);
+    samples.set_col(1, e1);
+
+    std::vector<double> full_step, lp_step, full_spec, lp_spec, energy;
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, full_step, energy);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, lp_step, energy, n_compute);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                          full_spec, energy);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                          lp_spec, energy, 2, 0, n_compute);
+    }
+
+    ASSERT_EQ(full_step.size(), lp_step.size());
+    ASSERT_EQ(full_spec.size(), lp_spec.size());
+    double err_step = 0.0, err_spec = 0.0, scale = 0.0;
+    for (size_t i = 0; i < full_step.size(); ++i) {
+        scale = std::max(scale, std::abs(full_step[i]));
+        err_step = std::max(err_step, std::abs(full_step[i] - lp_step[i]));
+        err_spec = std::max(err_spec, std::abs(full_spec[i] - lp_spec[i]));
+    }
+    std::cout << "lp stepwise err " << err_step << ", lp spectral err " << err_spec
+              << ", scale " << scale << std::endl;
+    EXPECT_GT(scale, 1e-3);
+    EXPECT_LT(err_step, 1e-6 * std::max(1.0, scale));
+    EXPECT_LT(err_spec, 1e-6 * std::max(1.0, scale));
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);

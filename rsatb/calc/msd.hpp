@@ -6,6 +6,7 @@
 #include "utils/profile.hpp"
 #include "ac.hpp"
 #include "kpm.hpp"
+#include "moment_extrapolation.hpp"
 
 #include <cmath>
 #include <complex>
@@ -72,13 +73,20 @@ struct GammaAffineState {
 // state where AC needs one dot per sample. Whenever tau > 1 -- every
 // physical MSD run -- stepping in time IS the compressed representation,
 // and the halving above is what remains.
+// `n_compute` (0 = off) runs the recurrence only to that order and extends
+// the sequence to n_kpm by Burg linear prediction
+// (moment_extrapolation.hpp): the DMRG community's resolution multiplier for
+// Chebyshev spectral functions, here cutting the dominant per-step apply
+// count by n_kpm / n_compute. An explicit opt-in knob, never inferred.
 template <typename T, typename VectorType>
 std::vector<cd> metric_density_moments(
     Chebyshev<T>& cheby,
     const VectorType& v,
-    int n_kpm
+    int n_kpm,
+    int n_compute = 0
 ) {
     const bool weighted = (cheby.form == ChebyOpForm::Solve);
+    const int n_run = (n_compute > 0 && n_compute < n_kpm) ? n_compute : n_kpm;
 
     auto dot_avg = [&](const VectorType& a, const VectorType& b) -> cd {
         if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
@@ -116,32 +124,33 @@ std::vector<cd> metric_density_moments(
         return *wbuf;
     };
 
-    std::vector<cd> moments(static_cast<size_t>(std::max(n_kpm, 0)), cd(0.0, 0.0));
-    if (n_kpm <= 0) return moments;
+    std::vector<cd> moments(static_cast<size_t>(std::max(n_run, 0)), cd(0.0, 0.0));
+    if (n_run <= 0) return moments;
 
     t0.copy_from(v);
     moments[0] = dot_avg(weight(t0), t0);
-    if (n_kpm == 1) return moments;
+    if (n_run > 1) {
+        cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+        moments[1] = dot_avg(weight(t0), t1);
 
-    cheby.apply_op(t0, t1, ChebyMode::NORMAL);
-    moments[1] = dot_avg(weight(t0), t1);
-
-    for (int n = 1;; ++n) {
-        ::rsatb::util::throw_if_interrupted(v.graph->comm);
-        // t1 = T_n v, t0 = T_{n-1} v
-        VectorType& wt = weight(t1);
-        if (2 * n - 1 < n_kpm && 2 * n - 1 > 1) {
-            moments[static_cast<size_t>(2 * n - 1)] = 2.0 * dot_avg(wt, t0) - moments[1];
+        for (int n = 1;; ++n) {
+            ::rsatb::util::throw_if_interrupted(v.graph->comm);
+            // t1 = T_n v, t0 = T_{n-1} v
+            VectorType& wt = weight(t1);
+            if (2 * n - 1 < n_run && 2 * n - 1 > 1) {
+                moments[static_cast<size_t>(2 * n - 1)] = 2.0 * dot_avg(wt, t0) - moments[1];
+            }
+            if (2 * n < n_run) {
+                moments[static_cast<size_t>(2 * n)] = 2.0 * dot_avg(wt, t1) - moments[0];
+            }
+            if (2 * n + 1 >= n_run) break;
+            cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+            t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
+            t0.swap(t1);
+            t1.swap(t2);
         }
-        if (2 * n < n_kpm) {
-            moments[static_cast<size_t>(2 * n)] = 2.0 * dot_avg(wt, t1) - moments[0];
-        }
-        if (2 * n + 1 >= n_kpm) break;
-        cheby.apply_op(t1, t2, ChebyMode::NORMAL);
-        t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
-        t0.swap(t1);
-        t1.swap(t2);
     }
+    if (n_run < n_kpm) return extrapolate_moments_lp(moments, n_kpm);
     return moments;
 }
 
@@ -251,7 +260,8 @@ void run_explicit_position_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute
 ) {
     // This helper backs both explicit-position entry points below. The route is
     // already decided by overload selection; the only difference here is whether
@@ -261,7 +271,7 @@ void run_explicit_position_msd(
     std::vector<cd> coeffs;
     timeprop_coeff(tau, 1e-14, true, coeffs);
 
-    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm, n_kpm_compute);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
@@ -305,7 +315,7 @@ void run_explicit_position_msd(
         comm_state.copy_from(xpsi_curr);
         comm_state.axpy(static_cast<T>(-1.0), xpsi0_prop);
 
-        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm);
+        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm, n_kpm_compute);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
@@ -322,7 +332,8 @@ void run_gamma_affine_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute
 ) {
     // This is the periodic/Gamma route. The caller supplies the first-moment
     // coupling H1 and the cell-periodic diagonal part of X, and we propagate the
@@ -332,7 +343,7 @@ void run_gamma_affine_msd(
     std::vector<cd> coeffs;
     timeprop_coeff(tau, 1e-14, true, coeffs);
 
-    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm, n_kpm_compute);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
@@ -366,7 +377,7 @@ void run_gamma_affine_msd(
         comm_state.copy_from(xpsi_curr);
         comm_state.axpy(static_cast<T>(-1.0), state_curr.affine);
 
-        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm);
+        std::vector<cd> msd_moments = metric_density_moments(cheby, comm_state, n_kpm, n_kpm_compute);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
@@ -394,7 +405,8 @@ void run_commutator_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute
 ) {
     const double hbar_ev_fs = 0.6582119569;
     const double tau = cheby.half_width * dt_fs / hbar_ev_fs;
@@ -402,7 +414,7 @@ void run_commutator_msd(
     timeprop_coeff(tau, 1e-14, true, coeffs);
     const int n_coeff = static_cast<int>(coeffs.size());
 
-    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm);
+    std::vector<cd> density_moments = metric_density_moments(cheby, psi_in, n_kpm, n_kpm_compute);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
@@ -462,7 +474,7 @@ void run_commutator_msd(
 
         log_msd_step(psi_in.graph->rank, step, n_steps);
 
-        std::vector<cd> msd_moments = metric_density_moments(cheby, curr.affine, n_kpm);
+        std::vector<cd> msd_moments = metric_density_moments(cheby, curr.affine, n_kpm, n_kpm_compute);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
@@ -490,7 +502,8 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -510,7 +523,8 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out);
+        energy_out,
+        n_kpm_compute);
 }
 
 // open-boundary condition MSD with an explicit position operator, for orthogonal systems where only the diagonal of X is needed.
@@ -523,7 +537,8 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -551,7 +566,8 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out);
+        energy_out,
+        n_kpm_compute);
 }
 
 // periodic boundary condition MSD driven by the commutator velocity: valid for
@@ -569,7 +585,8 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -593,7 +610,8 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out);
+        energy_out,
+        n_kpm_compute);
     }
 }
 
@@ -608,7 +626,8 @@ void corr_msd(
     double dt_fs,
     int n_kpm,
     std::vector<double>& msd_out,
-    std::vector<double>& energy_out
+    std::vector<double>& energy_out,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -632,7 +651,8 @@ void corr_msd(
         dt_fs,
         n_kpm,
         msd_out,
-        energy_out);
+        energy_out,
+        n_kpm_compute);
 }
 
 } // namespace calc

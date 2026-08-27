@@ -316,6 +316,82 @@ int main(int argc, char** argv) {
             }
             std::printf("  stepwise seed-to-seed noise floor:         %.3f\n", floor_rel);
         }
+        // Moment-level LP fidelity at lattice scale: extrapolate the density
+        // moments 100 -> 300 and compare against the directly computed tail
+        // (same seeds; per-moment stochastic noise is percent-level, unlike
+        // the per-bin spectra, so this isolates the model error).
+        {
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            std::vector<std::complex<double>> full300 =
+                rsatb::calc::detail::metric_density_moments(cheby, psi, 300);
+            std::vector<std::complex<double>> head(full300.begin(), full300.begin() + 100);
+            // Signal vs noise in the tail itself: an independent sample
+            // set's moments differ from these by pure stochastic noise, so
+            // band-wise |difference| / |mean| reads the noise fraction.
+            {
+                DistMultiVector<Scalar> psi3(&graph, 2);
+                fill_samples(psi3, 987651u);
+                std::vector<std::complex<double>> alt300 =
+                    rsatb::calc::detail::metric_density_moments(cheby, psi3, 300);
+                for (int q0 : {10, 60, 120, 200, 260}) {
+                    double sig = 0.0, noi = 0.0;
+                    for (int q = q0; q < q0 + 30; ++q) {
+                        sig += std::norm(0.5 * (full300[static_cast<size_t>(q)] + alt300[static_cast<size_t>(q)]));
+                        noi += std::norm(full300[static_cast<size_t>(q)] - alt300[static_cast<size_t>(q)]);
+                    }
+                    std::printf("  moment band q=%3d..%3d: |mean| %.3e, seed-diff %.3e\n",
+                                q0, q0 + 29, std::sqrt(sig / 30), std::sqrt(noi / 30));
+                }
+            }
+            for (int order : {25, 40}) {
+                std::vector<std::complex<double>> lp =
+                    extrapolate_moments_lp(head, 300, order);
+                double num = 0.0, den = 0.0;
+                for (int q = 100; q < 300; ++q) {
+                    num += std::norm(lp[static_cast<size_t>(q)] - full300[static_cast<size_t>(q)]);
+                    den += std::norm(full300[static_cast<size_t>(q)]);
+                }
+                std::printf("  density-moment LP tail (order %d): rel err %.4f\n",
+                            order, std::sqrt(num / den));
+            }
+        }
+        // Linear-prediction knob at lattice scale, same seeds as the full
+        // runs above, so the deviation IS the model error (no stochastic
+        // confound): compute a third of the moments per step, extrapolate.
+        {
+            const int n_compute = 100;
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            std::vector<double> msd_lp;
+            const double t0 = rsatb::util::wall_time();
+            corr_msd(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm, msd_lp, energy,
+                     n_compute);
+            const double t_lp = rsatb::util::wall_time() - t0;
+            double dev = 0.0;
+            for (int i = n_kpm / 4; i < 3 * n_kpm / 4; ++i) {
+                const size_t idx = static_cast<size_t>(n_steps) * n_kpm + static_cast<size_t>(i);
+                const double denom = std::max(std::abs(msd_a[idx]), std::abs(msd_lp[idx]));
+                if (denom > 1e-8) dev = std::max(dev, std::abs(msd_a[idx] - msd_lp[idx]) / denom);
+            }
+            std::printf("  stepwise + LP (compute %d of %d)  %8.2f s   mid-spectrum dev vs full %.4f   speedup %.2fx\n",
+                        n_compute, n_kpm, t_lp, dev, t_step / t_lp);
+        }
+        {
+            const int n_compute = 100;
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            std::vector<double> msd_lp;
+            const double t0 = rsatb::util::wall_time();
+            corr_msd_spectral(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm, msd_lp,
+                              energy, 2, 0, n_compute);
+            const double t_lp = rsatb::util::wall_time() - t0;
+            double dev = 0.0;
+            for (int i = n_kpm / 4; i < 3 * n_kpm / 4; ++i) {
+                const size_t idx = static_cast<size_t>(n_steps) * n_kpm + static_cast<size_t>(i);
+                const double denom = std::max(std::abs(msd_b[idx]), std::abs(msd_lp[idx]));
+                if (denom > 1e-8) dev = std::max(dev, std::abs(msd_b[idx] - msd_lp[idx]) / denom);
+            }
+            std::printf("  spectral + LP (compute %d of %d)  %8.2f s   mid-spectrum dev vs full %.4f   speedup %.2fx\n",
+                        n_compute, n_kpm, t_lp, dev, t_spec / t_lp);
+        }
     }
 
     MPI_Finalize();

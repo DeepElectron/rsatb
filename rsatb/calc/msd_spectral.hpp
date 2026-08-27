@@ -42,6 +42,7 @@
 // what the dense unit tests compare.
 
 #include "msd.hpp"
+#include "moment_extrapolation.hpp"
 #include "lapack_isqrt.hpp"
 
 #include <mpi.h>
@@ -344,33 +345,45 @@ struct SpectralGrid {
     }
 };
 
+// `n_acc` is the accumulated moment count; when it is below `n_kpm_out` the
+// rows are extended by Burg linear prediction (moment_extrapolation.hpp)
+// before the shared Jackson reconstruction, exactly as in the stepwise
+// route's n_compute knob.
 template <typename T>
 void msd_spectral_finalize(
     Chebyshev<T>& cheby,
     int n_steps,
-    int n_kpm,
+    int n_acc,
+    int n_kpm_out,
     double inv_samples,
     const std::vector<double>& num_accum,
     const std::vector<cd>& rho_accum,
     std::vector<double>& msd_out,
     std::vector<double>& energy_out
 ) {
-    std::vector<cd> rho(static_cast<size_t>(n_kpm));
-    for (int p = 0; p < n_kpm; ++p) rho[static_cast<size_t>(p)] = rho_accum[static_cast<size_t>(p)] * inv_samples;
+    auto extend = [&](std::vector<cd>& m) {
+        if (n_acc < n_kpm_out) m = extrapolate_moments_lp(m, n_kpm_out);
+    };
+
+    std::vector<cd> rho(static_cast<size_t>(n_acc));
+    for (int p = 0; p < n_acc; ++p) rho[static_cast<size_t>(p)] = rho_accum[static_cast<size_t>(p)] * inv_samples;
+    extend(rho);
     std::vector<cd> density_spectrum;
     reconstruct_spectrum_from_moments(rho, density_spectrum, nullptr, true);
-    energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
+    energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm_out, true);
 
-    msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm), 0.0);
-    std::vector<cd> num(static_cast<size_t>(n_kpm));
+    msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm_out), 0.0);
+    std::vector<cd> num(static_cast<size_t>(n_acc));
     for (int k = 0; k <= n_steps; ++k) {
-        for (int p = 0; p < n_kpm; ++p) {
+        num.assign(static_cast<size_t>(n_acc), cd(0.0, 0.0));
+        for (int p = 0; p < n_acc; ++p) {
             num[static_cast<size_t>(p)] =
-                cd(num_accum[static_cast<size_t>(k) * n_kpm + p] * inv_samples, 0.0);
+                cd(num_accum[static_cast<size_t>(k) * n_acc + p] * inv_samples, 0.0);
         }
+        extend(num);
         std::vector<cd> msd_spectrum;
         reconstruct_spectrum_from_moments(num, msd_spectrum, nullptr, true);
-        write_msd_row(density_spectrum, msd_spectrum, k, n_kpm, msd_out);
+        write_msd_row(density_spectrum, msd_spectrum, k, n_kpm_out, msd_out);
     }
 }
 
@@ -393,7 +406,8 @@ void corr_msd_spectral(
     std::vector<double>& msd_out,
     std::vector<double>& energy_out,
     int time_oversample = 2,
-    int block_substeps = 0
+    int block_substeps = 0,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) throw std::runtime_error("n_steps must be non-negative");
     if (n_kpm <= 0) throw std::runtime_error("n_kpm must be positive");
@@ -401,14 +415,15 @@ void corr_msd_spectral(
     if constexpr (!std::is_same_v<T, std::complex<double>>) {
         throw std::runtime_error("corr_msd_spectral needs complex double scalars");
     } else {
+        const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
         detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
         detail::SincQuadWeights quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
                                      detail::SpectralGrid::kKernelHalfWidth);
-        std::vector<double> num(static_cast<size_t>(n_steps + 1) * n_kpm, 0.0);
-        std::vector<cd> rho(static_cast<size_t>(n_kpm), cd(0.0, 0.0));
-        detail::msd_spectral_accumulate(cheby, velocity, psi_in, n_steps, dt_fs, n_kpm,
+        std::vector<double> num(static_cast<size_t>(n_steps + 1) * nc, 0.0);
+        std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
+        detail::msd_spectral_accumulate(cheby, velocity, psi_in, n_steps, dt_fs, nc,
                                         quad, block_substeps, num, rho);
-        detail::msd_spectral_finalize(cheby, n_steps, n_kpm, 1.0, num, rho, msd_out,
+        detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm, 1.0, num, rho, msd_out,
                                       energy_out);
     }
 }
@@ -429,7 +444,8 @@ void corr_msd_spectral(
     std::vector<double>& msd_out,
     std::vector<double>& energy_out,
     int time_oversample = 2,
-    int block_substeps = 0
+    int block_substeps = 0,
+    int n_kpm_compute = 0
 ) {
     if (n_steps < 0) throw std::runtime_error("n_steps must be non-negative");
     if (n_kpm <= 0) throw std::runtime_error("n_kpm must be positive");
@@ -437,18 +453,19 @@ void corr_msd_spectral(
     if constexpr (!std::is_same_v<T, std::complex<double>>) {
         throw std::runtime_error("corr_msd_spectral needs complex double scalars");
     } else {
+        const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
         detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
         detail::SincQuadWeights quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
                                      detail::SpectralGrid::kKernelHalfWidth);
-        std::vector<double> num(static_cast<size_t>(n_steps + 1) * n_kpm, 0.0);
-        std::vector<cd> rho(static_cast<size_t>(n_kpm), cd(0.0, 0.0));
+        std::vector<double> num(static_cast<size_t>(n_steps + 1) * nc, 0.0);
+        std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
         DistMultiVector<T>& samples = const_cast<DistMultiVector<T>&>(psi_in);
         for (int col = 0; col < psi_in.num_vectors; ++col) {
             DistVector<T> r = samples.get_col(col);
-            detail::msd_spectral_accumulate(cheby, velocity, r, n_steps, dt_fs, n_kpm,
+            detail::msd_spectral_accumulate(cheby, velocity, r, n_steps, dt_fs, nc,
                                             quad, block_substeps, num, rho);
         }
-        detail::msd_spectral_finalize(cheby, n_steps, n_kpm,
+        detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm,
                                       1.0 / static_cast<double>(psi_in.num_vectors),
                                       num, rho, msd_out, energy_out);
     }
