@@ -2,9 +2,12 @@
 
 This note derives and specifies `corr_msd_spectral` (rsatb/calc/msd_spectral.hpp):
 the energy-resolved mean-square displacement $\mathrm{MSD}(E,t)$ computed at
-*resolution-plus-evolution* cost, with every output time obtained by scalar
-post-processing. It replaces, wherever its regime applies, the stepwise route
-whose cost is *resolution × number of time steps*.
+*resolution-plus-evolution* cost, linear in the evolution window through
+segmented anchoring, with every output time obtained by scalar
+post-processing. For the expensive-apply operator forms it is at least on
+par with the stepwise route in every regime measured and up to an order of
+magnitude faster; the stepwise route (msd.hpp) remains the tool for cheap
+orthogonal tight-binding matvecs, where the spectral dot table dominates.
 
 Throughout, $\tilde A$ is the scaled operator the Chebyshev engine iterates
 (`cheby.apply_op`; $\tilde A = (S^{-1}H - c)/\lambda$ in the Solve form, with
@@ -100,6 +103,35 @@ route a product. A symmetric split of the Heisenberg factor,
 $v(u/2)\,v(-u/2)$, was checked and trades the halved chain exactly into a
 second half-evolution — the arrangement above is optimal within its family.
 
+**Segmented anchoring.** Expanding $U(u)^{-1}$ from the time origin spreads
+it over $\sim u$ coefficients, which makes the dot table quadratic in the
+window — the flaw that confined the original formulation to short windows.
+The cure is to re-anchor the expansion every segment of scaled length
+$\tilde L$: for $u = \tilde u_s + \delta$ inside segment $s$,
+metric-unitarity moves $U^{-1}(\tilde u_s)$ onto the bra, where — because
+$U$ commutes with polynomials of $\tilde A$ — the evolved chain family *is*
+the chain of the evolved seed, $U(\tilde u_s)\, T_q(\tilde A)\, r =
+T_q(\tilde A)\, r_s$ with $r_s = U(\tilde u_s)\, r$. Hence
+
+$$
+C_p(\tilde u_s + \delta) = \sum_j c_j(\delta)^{*}\; \tfrac12
+\big[ d^{s}_{p+j}(\delta) + d^{s}_{|p-j|}(\delta) \big],
+\qquad
+d^{s}_q(\delta) = \big\langle W\, T_q(\tilde A)\, r_s \,\big|\, D\, g(\tilde u_s + \delta) \big\rangle,
+$$
+
+with $\delta \le \tilde L$: coefficients never spread beyond a segment.
+The cost becomes two evolved trajectories ($g$ and the anchor $r_s$, together
+$\sim 2$ applies per unit scaled time), a chain of $n_{\mathrm{kpm}} +
+M(\tilde L)$ per segment (amortised to $\sim n_{\mathrm{kpm}}/\tilde L$
+per unit time), and dots linear in the window; memory is bounded by the
+segment, $O(\tilde L\, N_{\mathrm{local}})$, not the window. Every
+rearrangement is an operator identity on the same quadratic form, so the
+segmented estimator equals the single-segment one per sample to rounding
+(unit-tested at $2\times 10^{-12}$ relative), and a window short enough for
+one segment reproduces the original formulation exactly. `segment_scaled`
+sets $\tilde L$ (auto: $\max(192, \min(768, n_{\mathrm{kpm}}))$).
+
 **Metric–velocity cancellation.** In the Solve form with a non-composite
 velocity the dressing of the second velocity cancels against the metric,
 
@@ -138,12 +170,10 @@ suffix.
 $C_p(u)$ are cache-contiguous scalar loops, OpenMP-parallel over grid points
 with thread-local coefficient builds.
 
-**Memory.** Per rank, $\approx 0.8\, n_{\mathrm{cols}}\, N_{\mathrm{local}}
-\times 16\,\mathrm{B}$ of stored columns, $n_{\mathrm{cols}}$ being the
-window at $\le \pi/4$ scaled spacing. `memory_tiles` $> 1$ splits the grid
-into groups: the evolution still runs once, the chain re-runs per group —
-applies scale with the tile count, memory divides by it. Tiled and untiled
-runs agree to $2\times 10^{-12}$ (unit test).
+**Memory.** Per rank, $\approx 1.3\, \min(\tilde L, \tilde T)\,
+N_{\mathrm{local}} \times 16\,\mathrm{B}$ of *segment-local* stored
+columns plus scalar tables — bounded by the segment length regardless of
+the window.
 
 ## 4. The time integral: cardinal quadrature in closed form
 
@@ -203,47 +233,37 @@ production system sizes.
 
 ## 6. When each route wins
 
-The choice hinges on two dimensionless numbers: the output sampling in
-scaled time, $\tau_{\mathrm{step}} = \lambda\,\Delta t/\hbar$, and the
-computed resolution degree $n_c$. Per sample and axis,
+With segmented anchoring the spectral cost is linear in the window and
+independent of the output grid: per unit scaled time, roughly
+$2 + n_{\mathrm{kpm}}/\tilde L$ applies plus $\sim 10\, n_{\mathrm{kpm}}$
+dot-flops per matrix row-element. The stepwise route pays
+$\tfrac12 n_{\mathrm{kpm}}$ applies *per output time* plus its propagation.
+Measured on the Solve lattice fixture (1728 sites, CG per apply,
+$n_{\mathrm{kpm}} = 300$, $\lambda = 13$ eV):
 
-$$
-\text{stepwise: } \tfrac12 n_t n_c + 2 n_t (\tau_{\mathrm{step}} + \text{tail}),
-\qquad
-\text{spectral: } n_c + 2.3\,K \ (+\ \text{GEMM}),
-\qquad K = n_t \tau_{\mathrm{step}} + \text{tail},
-$$
+| window | output grid | stepwise | spectral (segmented) | ratio |
+|---|---|---|---|---|
+| 12 fs | 48 steps @ 0.25 fs | 34.9 s | 4.7 s | 7.5× |
+| 12 fs | 12 steps @ 1.0 fs | 12.4 s | 5.5 s | 2.2× |
+| 12 fs | 3 steps @ 4.0 fs | 5.5 s | 5.1 s | 1.1× |
+| 192 fs | 48 steps @ 4.0 fs | 81.8 s | 74.3 s | 1.1× |
+| 192 fs | 192 steps @ 1.0 fs | 212.4 s | 76.3 s | 2.8× |
 
-so the spectral route wins on applies iff roughly
-$n_c \gtrsim 5\,\tau_{\mathrm{step}}$, i.e.
+Two structural facts show in the table: the spectral time depends only on
+the window (74.3 s vs 76.3 s for the same 192 fs at 4× different sampling),
+and it never falls below parity — the long-coarse case that lost under the
+origin-anchored formulation (0.96×) now wins. For the expensive-apply forms
+(Solve, Sandwich — rsatb's LCAO/DFTB targets) the segmented spectral route
+is therefore the *default*: parity at worst, up to an order of magnitude
+otherwise, with fine and log-spaced output grids free.
 
-$$
-\Delta t \;\lesssim\; \Delta t^{*} \;\sim\; \frac{n_c\, \hbar}{5\, \lambda}
-$$
-
-— output sampling finer than about a fifth of the resolution's Heisenberg
-time. Crucially the spectral cost does not depend on $n_t$ at fixed physical
-window. Measured on the Solve lattice fixture (1728 sites, CG per apply,
-fixed 12 fs window, $n_{\mathrm{kpm}} = 300$, $\lambda = 13$ eV, so
-$\Delta t^{*} \approx 3$ fs):
-
-| output grid | stepwise | spectral | ratio |
-|---|---|---|---|
-| 48 steps @ 0.25 fs | 37.2 s | 5.3 s | 7.0× |
-| 12 steps @ 1.0 fs | 13.3 s | 5.5 s | 2.4× |
-| 3 steps @ 4.0 fs | 5.4 s | 5.3 s | 1.0× |
-
-The spectral column is constant across the sweep, as the model requires; at
-the crossover the routes cost the same, so choosing spectral whenever
-$\Delta t < \Delta t^{*}$ never loses. Historical inputs chose coarse
-$\Delta t$ partly *because* the stepwise route priced every extra sample at
-$n_{\mathrm{kpm}}$ applies; with sampling free, the fine grids that
-$d\,\mathrm{MSD}/dt$ extraction actually wants stop being a luxury.
-Cheap-matvec systems (orthogonal tight binding) add the GEMM flops
-($8 (n_c + K)\, n_{\mathrm{cols}}$ per matrix row-element) to the spectral
-side of the ledger and keep the stepwise route longer. For full diffusion
-tensors the chain is axis-independent: $x/y/z$ share one chain against three
-evolutions, where the stepwise route triples everything.
+The one remaining regime distinction is *structural, not parametric*: for
+cheap orthogonal tight-binding matvecs the $\sim 10\,n_{\mathrm{kpm}}$
+dot-flops per unit time dominate the few-flop applies, and the stepwise
+route (with doubling and the LP knob) stays ahead. That dispatch is decided
+by the operator form at setup, not tuned per input. For full diffusion
+tensors the chain anchor is axis-independent: $x/y/z$ share the anchor
+trajectory and chains against three $g$-trajectories.
 
 ## 7. Moment extrapolation (the `n_kpm_compute` knob)
 
@@ -342,11 +362,12 @@ and multivector batching of the sample loop.
 
 - `rsatb/calc/msd_spectral.hpp` — `corr_msd_spectral(...)`: blocks, chain,
   tiled GEMMs, scalar assembly, cardinal quadrature; knobs
-  `time_oversample`, `block_substeps`, `n_kpm_compute`, `memory_tiles`.
+  `time_oversample`, `block_substeps`, `n_kpm_compute`, `segment_scaled`.
   Output contract identical to `corr_msd` ($[n_t{+}1,\, n_{\mathrm{kpm}}]$
   density-normalised rows on the ascending Chebyshev grid).
 - `rsatb/calc/moment_extrapolation.hpp` — `extrapolate_moments_lp`.
 - Validation: `test_msd.cpp` (dense complete-basis fixtures for both forms,
-  long-window regression, memory-tiles equality, LP recovery); benchmark:
+  multi-segment long-window regression, segment/single-segment equality, LP
+  recovery); benchmark:
   `benchmark_msd_moments.cpp` (route timings, dt sweep, noise-floor and
   moment-SNR diagnostics).
