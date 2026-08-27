@@ -269,13 +269,33 @@ by the operator form at setup, not tuned per input. For full diffusion
 tensors the chain anchor is axis-independent: $x/y/z$ share the anchor
 trajectory and chains against three $g$-trajectories.
 
+One corner of the expensive-apply regime does admit a stepwise win: *very
+sparse output sampling of very long windows*. Per unit scaled time the
+stepwise route pays $2$ applies of propagation plus $\tfrac12
+n_{\mathrm{kpm}}$ per output row, while the spectral route pays $\approx 3 +
+n_{\mathrm{kpm}}/\tilde L$; when the output step exceeds $\sim 2\tilde
+L\,\hbar/\lambda$ (with $\tilde L$ memory-capped at 768), the moment runs
+amortise away and the chain term does not — e.g. a 10 ps window sampled at
+50 points loses $\approx 1.9\times$. Because both routes' dominant cost
+there is applies of the *same* operator, the comparison is
+machine-independent — an apply *count*, not a flop model — and
+`spectral_msd_cheaper` evaluates it exactly (Bessel expansion lengths
+included). Checked against the table above, it predicts $0.9\times$ and
+$2.7\times$ where $1.10\times$ and $2.78\times$ were measured.
+
 The task layer exposes exactly this dispatch: `compute_msd_spectrum` takes
 `method = "auto" | "stepwise" | "spectral"`, where `"auto"` (the default)
 selects the spectral route whenever the operator form is expensive-apply
-(Solve or Sandwich) and the commutator velocity exists, and stepwise
-otherwise. The spectral estimator integrates velocity correlations, so an
-explicit `method = "spectral"` requires a periodic axis with velocity data
-and refuses anything else by name.
+(Solve or Sandwich), the commutator velocity exists, *and* the apply-count
+estimate favours it — which is everywhere outside the sparse-sampling
+corner. The orthogonal side stays a structural rule: there the applies are
+cheap and the decision would compare bandwidth-bound SpMVs against
+compute-bound GEMM dots, which no machine-independent count settles.
+The spectral estimator integrates velocity correlations, so an explicit
+`method = "spectral"` requires a periodic axis with velocity data and
+refuses anything else by name. The two methods are different unbiased
+estimators of one trace (§5), so a parameter sweep that must not switch
+estimators mid-sweep should pin the method explicitly.
 
 ## 7. Moment extrapolation (the `n_kpm_compute` knob)
 
@@ -382,8 +402,11 @@ and multivector batching of the sample loop.
   n_kpm_compute)`: the `"auto" | "stepwise" | "spectral"` dispatch above,
   surfaced through `rsatb.hpp`, the pybind layer, and
   `driver.py::compute_msd_spectrum` / `compute_diffusion_spectrum`.
-- Validation: `test_msd.cpp` (dense complete-basis fixtures for both forms,
-  multi-segment long-window regression, segment/single-segment equality, LP
+- Validation: `test_msd.cpp` (dense complete-basis fixtures for all three
+  operator forms — Orthogonal, Solve, and Sandwich, the last against a
+  dense reference written in its own $Z^H H Z$ variables — plus
+  multi-segment long-window regression, segment/single-segment equality,
+  the apply-count dispatch model pinned to the measured sweep, and LP
   recovery); `test_operator_api.cpp` and `test/test_binding.py` (method-knob
   dispatch, refusals, and the spectral route end-to-end on the LCAO
   fixture); benchmark:

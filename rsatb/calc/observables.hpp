@@ -720,10 +720,18 @@ inline void ComputeDc(
 //                        commutator velocity, so it needs a periodic axis
 //                        with velocity data.
 //   method "auto"     -- spectral wherever operator applies are expensive
-//                        (the Solve and Sandwich forms) and the velocity
-//                        exists; stepwise otherwise. A form-based dispatch,
-//                        measured parity-at-worst for the expensive forms
-//                        (doc/design_msd_spectral.md section 6).
+//                        (the Solve and Sandwich forms), the velocity
+//                        exists, AND the apply-count estimate favours it
+//                        (spectral_msd_cheaper, machine-independent: both
+//                        routes' dominant cost there is applies of the same
+//                        operator); stepwise otherwise. The estimate only
+//                        ever picks stepwise in the sparse-output-sampling
+//                        corner of very long windows -- everywhere measured
+//                        the spectral route is parity-at-worst
+//                        (doc/design_msd_spectral.md section 6). Note the
+//                        two methods are different unbiased estimators of
+//                        one trace: a parameter sweep that must not switch
+//                        estimators mid-sweep should pin the method.
 //
 // `n_kpm_compute` (0 = off) applies to both methods: compute that many
 // moments and extend to n_kpm by linear prediction (moment_extrapolation.hpp).
@@ -787,7 +795,9 @@ inline void ComputeMsdSpectrum(
                 }
                 use_spectral = true;
             } else if (method == "auto") {
-                use_spectral = spectral_capable && cheby->form != ChebyOpForm::Orthogonal;
+                use_spectral = spectral_capable && cheby->form != ChebyOpForm::Orthogonal &&
+                               rsatb::calc::spectral_msd_cheaper(*cheby, n_steps, dt_fs,
+                                                                 n_kpm, n_kpm_compute);
             }
 
             auto run_msd_for_sample = [&](const auto& sample) {

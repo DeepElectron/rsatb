@@ -632,6 +632,49 @@ void msd_spectral_finalize(
 
 }  // namespace detail
 
+// Apply-count comparison for the auto route dispatch on expensive-apply
+// forms. Both routes' dominant cost there is applies of the SAME operator,
+// so the counts compare machine-independently -- no flop rates, no
+// bandwidth model. Dots and S-multiplies are left out on purpose: they
+// decide the route only when applies are cheap, which is the orthogonal
+// case the caller dispatches structurally and never sends here.
+//
+//   stepwise  two propagated states (the commutator pair) per output step
+//             plus one doubled moment run per output row;
+//   spectral  the g and anchor trajectories plus the chain amortised over
+//             segments, ~(3 + n_kpm / L) applies per unit scaled time.
+//
+// The model reproduces the measured sweep in doc/design_msd_spectral.md
+// section 6 (predicting 0.9x and 2.7x where 1.10x and 2.78x were measured).
+// The regime it exists for is sparse output sampling of very long windows
+// -- dt_step beyond ~2 L / lambda in scaled units -- where the per-output
+// moment runs amortise away while the chain term does not.
+template <typename T>
+bool spectral_msd_cheaper(
+    const Chebyshev<T>& cheby,
+    int n_steps,
+    double dt_fs,
+    int n_kpm,
+    int n_kpm_compute = 0,
+    int time_oversample = 2,
+    double segment_scaled = 0.0
+) {
+    if (n_steps <= 0 || dt_fs <= 0.0 || n_kpm <= 0) return false;
+    const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
+    const double hbar_ev_fs = 0.6582119569;
+    const double tau_step = cheby.half_width * dt_fs / hbar_ev_fs;
+    std::vector<cd> probe;
+    timeprop_coeff(tau_step, 1e-14, true, probe);
+    const double stepwise = 2.0 * n_steps * static_cast<double>(probe.size()) +
+                            (n_steps + 2) * 0.5 * nc;
+    double seg = segment_scaled;
+    if (seg <= 0.0) seg = std::max(192.0, std::min(768.0, static_cast<double>(nc)));
+    const detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
+    const double window = grid.n_cols * grid.h;  // includes the kernel pad
+    const double spectral = window * (3.0 + static_cast<double>(nc) / seg);
+    return spectral < stepwise;
+}
+
 // Spectral-route periodic/any-basis MSD: same contract as the commutator
 // overload of corr_msd ([n_steps + 1, n_kpm] density-normalised rows on the
 // ascending Chebyshev grid), computed at resolution-plus-evolution cost,

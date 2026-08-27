@@ -739,8 +739,10 @@ TASK = Union(
                                  "output grid; needs a periodic axis with "
                                  "velocity data. 'auto' picks spectral "
                                  "whenever applies are expensive "
-                                 "(non-orthogonal forms) and the velocity "
-                                 "exists.",
+                                 "(non-orthogonal forms), the velocity "
+                                 "exists, and the apply-count estimate "
+                                 "favours it; pin the method for sweeps "
+                                 "that must not switch estimators.",
                                  choices=("auto", "stepwise", "spectral")),
                             default="auto"),
                 "n_kpm_compute": F(_int("Compute only this many moments and "
