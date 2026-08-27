@@ -167,11 +167,30 @@ void msd_spectral_accumulate(
         cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
     };
 
+    // Velocity placement: the second velocity pairs with the metric, and for
+    // the Solve form the dressing cancels exactly,
+    //   < S T_q r | S^-1 V g > = < T_q r | V g >,
+    // so the per-grid-point apply is the BARE V SpMV and the chain needs no
+    // S product: n_u CG solves and n_q S applies vanish. Composite
+    // velocities keep their inner metric solves (only the outer dressing
+    // cancels, which apply_dual cannot skip today) and the Sandwich form has
+    // no such pairing -- both keep the dressed path. The seed w = D r is
+    // physical and stays dressed in every form.
+    const bool bare_velocity =
+        !velocity.composite() && cheby.form != ChebyOpForm::Sandwich;
+    auto apply_velocity_paired = [&](DistVector<T>& in, DistVector<T>& out) {
+        if (bare_velocity) {
+            velocity.matrix->mult(in, out);
+        } else {
+            cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
+        }
+    };
+
     // ---- evolution: y(u) = D U(u) D r on the grid, block-concurrent -------
     DistMultiVector<T> Y(graph, n_cols);
     DistVector<T> w(graph), g(graph), tmp(graph), yv(graph);
-    apply_velocity(r, w);       // w = D r, the evolving seed
-    apply_velocity(w, yv);      // y(0) = D w
+    apply_velocity(r, w);              // w = D r, the evolving seed
+    apply_velocity_paired(w, yv);      // y(0), metric-paired velocity
     Y.set_col(0, yv);
 
     int b_sub = block_substeps;
@@ -209,7 +228,7 @@ void msd_spectral_accumulate(
             for (size_t m = 1; m < c.size(); ++m) {
                 tmp.axpy(CoeffCast<T>::apply(c[m]), X[m]);
             }
-            apply_velocity(tmp, yv);
+            apply_velocity_paired(tmp, yv);
             Y.set_col(done + k - 1, yv);
             if (k == b) g.copy_from(tmp);  // block-end state seeds the next block
         }
@@ -221,7 +240,8 @@ void msd_spectral_accumulate(
     }
 
     // ---- left chain + dot table d_q(u) = <W T_q r | y(u)> ------------------
-    const bool weighted = (cheby.form == ChebyOpForm::Solve);
+    // (plain <T_q r | V g(u)> when the metric cancelled into the velocity)
+    const bool weighted = (cheby.form == ChebyOpForm::Solve) && !bare_velocity;
     const int tile_w = 32;
     DistMultiVector<T> ltile(graph, tile_w);
     DistVector<T> t0(graph), t1(graph), t2(graph), wq(graph);
@@ -229,10 +249,26 @@ void msd_spectral_accumulate(
                          cd(0.0, 0.0));
     std::vector<cd> tile_buf(static_cast<size_t>(tile_w) * static_cast<size_t>(n_cols));
 
+    // The d-table is trapezoidal: the assembly below reads d_{p+j}(u) only
+    // for p < n_kpm and j < M(u), so rows q >= n_kpm are needed only from
+    // the first grid point whose expansion reaches them. High-q tiles
+    // restrict the GEMM to that column suffix.
+    std::vector<int> u_first(static_cast<size_t>(n_q), 0);
+    for (int q = n_kpm; q < n_q; ++q) {
+        int u = u_first[static_cast<size_t>(q - 1)];
+        while (u < n_cols &&
+               n_kpm - 1 + static_cast<int>(bwd[static_cast<size_t>(u)].size()) - 1 < q) {
+            ++u;
+        }
+        u_first[static_cast<size_t>(q)] = u;
+    }
+
     auto flush_tile = [&](int q_start, int width) {
         using isqrt::vbcsr_complex_double;
+        const int u0 = u_first[static_cast<size_t>(q_start)];
+        if (u0 >= n_cols) return;
         const vbcsr_lapack_int m_ = width;
-        const vbcsr_lapack_int n_ = n_cols;
+        const vbcsr_lapack_int n_ = n_cols - u0;
         const vbcsr_lapack_int k_ = ltile.local_rows;
         const vbcsr_lapack_int lda_ = ltile.ld;
         const vbcsr_lapack_int ldb_ = Y.ld;
@@ -244,15 +280,15 @@ void msd_spectral_accumulate(
         isqrt::zgemm_("N", "C", &m_, &n_, &k_,
                       reinterpret_cast<const vbcsr_complex_double*>(&one),
                       reinterpret_cast<const vbcsr_complex_double*>(ltile.data.data()), &lda_,
-                      reinterpret_cast<const vbcsr_complex_double*>(Y.data.data()), &ldb_,
+                      reinterpret_cast<const vbcsr_complex_double*>(Y.data.data()) + u0, &ldb_,
                       reinterpret_cast<const vbcsr_complex_double*>(&zero),
                       reinterpret_cast<vbcsr_complex_double*>(tile_buf.data()), &ldc_);
-        MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(), 2 * width * n_cols, MPI_DOUBLE,
-                      MPI_SUM, graph->comm);
+        MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(),
+                      2 * width * static_cast<int>(n_), MPI_DOUBLE, MPI_SUM, graph->comm);
         for (int q = 0; q < width; ++q) {
             cd* row = dtab.data() + static_cast<size_t>(q_start + q) * n_cols;
-            for (int u = 0; u < n_cols; ++u) {
-                row[u] = std::conj(tile_buf[static_cast<size_t>(u) * width + q]);
+            for (int u = u0; u < n_cols; ++u) {
+                row[u] = std::conj(tile_buf[static_cast<size_t>(u - u0) * width + q]);
             }
         }
     };

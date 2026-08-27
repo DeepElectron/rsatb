@@ -392,6 +392,33 @@ int main(int argc, char** argv) {
             std::printf("  spectral + LP (compute %d of %d)  %8.2f s   mid-spectrum dev vs full %.4f   speedup %.2fx\n",
                         n_compute, n_kpm, t_lp, dev, t_spec / t_lp);
         }
+
+        // Sampling-density sweep at the same fixed physical window (12 fs):
+        // the stepwise cost scales with the number of output samples, the
+        // spectral cost is set by window + resolution alone. This is the
+        // input dependence the route choice hinges on -- the crossover sits
+        // near dt ~ n_kpm * hbar / (5 * half_width).
+        for (const auto& cfg : {std::pair<int, double>{12, 1.0},
+                                std::pair<int, double>{3, 4.0}}) {
+            const int ns = cfg.first;
+            const double dt = cfg.second;
+            std::vector<double> ma, mb;
+            double ta, tb;
+            {
+                Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+                const double t0 = rsatb::util::wall_time();
+                corr_msd(cheby, VelocityOp<Scalar>(V), psi, ns, dt, n_kpm, ma, energy);
+                ta = rsatb::util::wall_time() - t0;
+            }
+            {
+                Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+                const double t0 = rsatb::util::wall_time();
+                corr_msd_spectral(cheby, VelocityOp<Scalar>(V), psi, ns, dt, n_kpm, mb, energy);
+                tb = rsatb::util::wall_time() - t0;
+            }
+            std::printf("  sweep steps=%2d dt=%.2ffs: stepwise %7.2f s, spectral %7.2f s, ratio %.2fx\n",
+                        ns, dt, ta, tb, ta / tb);
+        }
     }
 
     MPI_Finalize();

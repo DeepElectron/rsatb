@@ -159,6 +159,55 @@ applies to both.
   per-column breakdown guard, so any all-zero column (the commutator MSD's
   affine seed) poisoned the whole block with NaN.
 
+## When the spectral route wins: the input dependence, quantified
+
+The route choice hinges on two dimensionless numbers: tau_step = half_width
+* dt / hbar (the output sampling in scaled time) and the computed resolution
+degree n_c. Per sample and axis,
+
+    stepwise:  n_t * n_c / 2  +  n_t * 2 (tau_step + tail)     applies
+    spectral:  n_c + 2.3 K  (+ GEMM),   K = n_t * tau_step + tail
+
+so the spectral route wins on applies iff roughly n_c > 5 tau_step,
+equivalently
+
+    dt  <  dt* ~ n_c * hbar / (5 * half_width)
+
+-- output sampling finer than about a fifth of the resolution's Heisenberg
+time. Crucially the spectral cost does not depend on n_t at fixed physical
+window: finer time grids are free. Measured on the Solve lattice fixture
+(fixed 12 fs window, n_kpm = 300, half_width = 13 eV, so dt* ~ 3 fs):
+
+    48 steps @ 0.25 fs   stepwise 40.2 s   spectral 6.2 s   6.5x
+    12 steps @ 1.0  fs   stepwise 13.7 s   spectral 6.2 s   2.2x
+     3 steps @ 4.0  fs   stepwise  6.4 s   spectral 6.2 s   1.0x
+
+The spectral time is constant across the sweep, as the model says. Two
+practical consequences. First, historical inputs chose coarse dt (10 fs)
+partly BECAUSE the stepwise route priced every extra sample at n_kpm
+applies; with sampling free, fine grids -- what d(MSD)/dt extraction
+actually wants -- stop being a luxury. Second, at the crossover the two
+routes cost the same, so choosing spectral whenever dt < dt* never loses
+much and often wins big. Cheap-matvec systems (orthogonal TB) add the GEMM
+overhead to the spectral side of the ledger and keep the stepwise route
+longer, as before.
+
+Two further accelerations landed with this analysis, both pure structure:
+
+- Metric-velocity cancellation (Solve, non-composite velocity): the
+  per-grid-point velocity pairs with the metric, <S T_q r | S^-1 V g> =
+  <T_q r | V g>, so the ~1.3 K dressed applies (one CG each) collapse to
+  bare SpMVs and the chain loses its S products -- about a quarter of the
+  route's CG cost. Composite velocities keep their inner solves (only the
+  outer dressing cancels; skipping it inside apply_dual is follow-up work).
+- Trapezoidal dot table: d_q(u) is read only for q <= n_c - 1 + M(u), so
+  high-q GEMM tiles restrict to their late-u column suffix -- up to ~2x off
+  the GEMM when K >> n_c.
+
+A free structural bonus for full diffusion tensors: the left chain depends
+only on the sample, not the axis, so x/y/z share one chain against three
+evolutions where the stepwise route triples everything.
+
 ## Pushing further: a cross-field survey (2026-08)
 
 The route's cost has three independent axes -- resolution (the chain),
@@ -186,7 +235,7 @@ attacked each. Ranked by expected value for rsatb:
    production N x nsamples the crossover moves out by orders of magnitude
    and the 3-4x apply saving is real signal-for-signal.
 
-2. Sampling axis (the multiplier after this work): deflated / structured
+2. NOT PURSUED -- sampling axis: deflated / structured
    trace estimators from randomized numerical linear algebra -- Hutch++
    (Meyer, Musco, Musco, Woodruff, 2021), XTrace/XNysTrace (Epperly, Tropp,
    Webber, SIMAX 2024), and especially Krylov-aware stochastic trace
@@ -196,7 +245,9 @@ attacked each. Ranked by expected value for rsatb:
    directly to the in-house local-coherence deflation program
    (design_stochastic_ldos.md lineage); gains hinge on spectral
    concentration of the traced operator and need the same kind of measured
-   evaluation that program uses.
+   evaluation that program uses. Set aside on the owner's assessment: MSD is
+   a trace observable, self-averaging makes one or few samples sufficient at
+   production system sizes, so the sampling axis is not the bottleneck.
 
 3. Few-energy-window regime: sqrt-filtered wavepackets. Since
    Tr[delta C^H C] = E || C delta^{1/2} r ||^2, applying the half-filter
@@ -206,9 +257,8 @@ attacked each. Ranked by expected value for rsatb:
    question is "D(E, t) near E_F", not the full spectrum; same family as
    polynomial spectrum slicing (EVSL, Li, Xi, Erlandson, Saad, SISC 2019).
 
-4. Precision axis: KITE and GPUQT run KPM chains in single precision;
-   moments are dot-product-averaged, so FP32 chains with FP64 accumulation
-   would roughly double SpMM and GEMM throughput. Engineering, vbcsr-wide.
+4. NOT PURSUED -- precision axis: KITE and GPUQT run KPM chains in single
+   precision; declined for this codebase.
 
 5. GEMM axis (cheap-matvec regimes): the d-table columns can be randomly
    subsampled with importance weights (the (t - u) kernel), cutting the
