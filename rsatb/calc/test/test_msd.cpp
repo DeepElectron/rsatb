@@ -1365,10 +1365,10 @@ TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
     EXPECT_LT(err_spec, 1e-6 * std::max(1.0, scale));
 }
 
-// memory_tiles re-runs the chain per grid-point group while the evolution
-// carries through once; the arithmetic per (q, u) pair is identical, so the
-// tiled and untiled runs must agree to rounding.
-TEST(MSDTest, SpectralRouteMemoryTilesMatch) {
+// Segmented anchoring is an operator-identity rearrangement of the same
+// quadratic form, so small-segment and single-segment runs must agree per
+// sample, to rounding.
+TEST(MSDTest, SpectralRouteSegmentsMatchSingleSegment) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
     Matrix H(&graph), V(&graph), S(&graph);
     const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
@@ -1392,12 +1392,12 @@ TEST(MSDTest, SpectralRouteMemoryTilesMatch) {
     {
         Chebyshev<Scalar> cheby(H, S, -1.2, 1.2);
         corr_msd_spectral(cheby, VelocityOp<Scalar>(V), sample, n_steps, dt_fs, n_kpm,
-                          ref, energy, 2, 20, 0, 1);
+                          ref, energy, 2, 20, 0, 1.0e9);
     }
     {
         Chebyshev<Scalar> cheby(H, S, -1.2, 1.2);
         corr_msd_spectral(cheby, VelocityOp<Scalar>(V), sample, n_steps, dt_fs, n_kpm,
-                          tiled, energy, 2, 20, 0, 3);
+                          tiled, energy, 2, 20, 0, 40.0);
     }
     ASSERT_EQ(ref.size(), tiled.size());
     double max_diff = 0.0, scale = 0.0;
@@ -1405,7 +1405,7 @@ TEST(MSDTest, SpectralRouteMemoryTilesMatch) {
         scale = std::max(scale, std::abs(ref[i]));
         max_diff = std::max(max_diff, std::abs(ref[i] - tiled[i]));
     }
-    std::cout << "memory-tiles max diff " << max_diff << ", scale " << scale << std::endl;
+    std::cout << "segments max diff " << max_diff << ", scale " << scale << std::endl;
     EXPECT_GT(scale, 1e-6);
     EXPECT_LT(max_diff, 1e-10 * std::max(1.0, scale));
 }

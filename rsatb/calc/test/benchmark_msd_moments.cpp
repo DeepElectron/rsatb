@@ -399,7 +399,9 @@ int main(int argc, char** argv) {
         // input dependence the route choice hinges on -- the crossover sits
         // near dt ~ n_kpm * hbar / (5 * half_width).
         for (const auto& cfg : {std::pair<int, double>{12, 1.0},
-                                std::pair<int, double>{3, 4.0}}) {
+                                std::pair<int, double>{3, 4.0},
+                                std::pair<int, double>{48, 4.0},
+                                std::pair<int, double>{192, 1.0}}) {
             const int ns = cfg.first;
             const double dt = cfg.second;
             std::vector<double> ma, mb;
