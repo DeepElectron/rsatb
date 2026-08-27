@@ -70,11 +70,18 @@ public:
             // alpha = (r, r) / (p, Ap)
             T p_Ap = p.dot(Ap);
             
-            if (std::abs(p_Ap) < 1e-16) {
+            // Breakdown is judged RELATIVE to the residual: on an SPD
+            // operator p_Ap >= lambda_min ||p||^2 >= lambda_min r_norm_sq,
+            // so a vanishing ratio means a genuinely singular operator. An
+            // absolute threshold trips spuriously right at convergence,
+            // where r_norm_sq ~ tol^2 makes p_Ap ~ 1e-16 legitimate.
+            if (std::abs(p_Ap) < 1e-14 * std::abs(r_norm_sq)) {
                 // A breakdown is why the answer is wrong -- report it whatever
                 // the level says, on stderr.
                 if (A.graph->rank == 0 && ::rsatb::util::fault()) {
-                    std::cerr << "cg: breakdown, p_Ap too small\n";
+                    std::cerr << "cg: breakdown at iter " << k << ", |p_Ap| = "
+                              << std::abs(p_Ap) << " vs r_norm_sq = "
+                              << std::abs(r_norm_sq) << "\n";
                 }
                 break;
             }
@@ -160,9 +167,12 @@ public:
                 // alpha = rho / (p . Ap)
                 T p_Ap = p.dot(Ap);
                 
-                if (std::abs(p_Ap) < 1e-16) {
+                // Relative breakdown test, as in the plain CG above.
+                if (std::abs(p_Ap) < 1e-14 * std::abs(rho)) {
                     if (A.graph->rank == 0 && ::rsatb::util::fault()) {
-                        std::cerr << "pcg: breakdown, p_Ap too small\n";
+                        std::cerr << "pcg: breakdown at iter " << k << ", |p_Ap| = "
+                                  << std::abs(p_Ap) << " vs |rho| = "
+                                  << std::abs(rho) << "\n";
                     }
                     break;
                 }
@@ -244,16 +254,17 @@ public:
             // DistMultiVector is row-major (a row holds all vectors), so walk rows
             // outer and vectors inner.
             //
-            // Per-column breakdown guard, the batched analogue of the
-            // single-vector "p_Ap too small" break: a column that is already
-            // converged -- a zero right-hand side included, which is how the
-            // commutator MSD's affine component arrives here -- has R = P = 0
-            // and alpha = 0/0 would poison the whole block with NaN. Freezing
-            // the column keeps it exactly where it is while the live columns
-            // iterate on.
+            // Per-column guards, the batched analogue of the single-vector
+            // breaks: a column below tolerance freezes (alpha = 0) -- the
+            // all-zero right-hand side the commutator MSD's affine component
+            // arrives with included, where alpha = 0/0 would poison the
+            // whole block with NaN -- and breakdown is judged relative to
+            // the column's own residual, as in the single-vector solver.
             std::vector<T> alpha(num_vecs);
             for (int c = 0; c < num_vecs; ++c) {
-                alpha[c] = (std::abs(P_AP[c]) < 1e-16) ? T(0.0) : R_norm_sq[c] / P_AP[c];
+                const bool converged = std::abs(R_norm_sq[c]) < tol * tol;
+                const bool broke = std::abs(P_AP[c]) < 1e-14 * std::abs(R_norm_sq[c]);
+                alpha[c] = (converged || broke) ? T(0.0) : R_norm_sq[c] / P_AP[c];
             }
 
             #pragma omp parallel for
@@ -368,12 +379,14 @@ public:
                 std::vector<T> P_AP;
                 P_vec.dot(AP, P_AP);
                 
-                // Update X, R. Same per-column breakdown guard as the plain
-                // batched CG above: a converged or zero-RHS column freezes
-                // instead of dividing 0/0.
+                // Update X, R. Same per-column guards as the plain batched
+                // CG above: converged or zero-RHS columns freeze, breakdown
+                // is relative.
                 std::vector<T> alpha(num_vecs);
                 for (int c = 0; c < num_vecs; ++c) {
-                    alpha[c] = (std::abs(P_AP[c]) < 1e-16) ? T(0.0) : Rho[c] / P_AP[c];
+                    const bool converged = std::abs(R_norm_sq[c]) < tol * tol;
+                    const bool broke = std::abs(P_AP[c]) < 1e-14 * std::abs(Rho[c]);
+                    alpha[c] = (converged || broke) ? T(0.0) : Rho[c] / P_AP[c];
                 }
 
                 #pragma omp parallel for

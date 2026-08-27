@@ -3,7 +3,8 @@
 
 // Spectral (single-chain) diffusion spectrum: MSD(E, t) without a KPM
 // recurrence per time step. doc/design_msd_spectral.md carries the full
-// derivation, cost model, and references; the short version:
+// derivation, cost model, crossover criterion, and references; the short
+// version:
 //
 // The stepwise route (msd.hpp) pays n_steps * n_kpm operator applies because
 // delta(E - A~) sits between two time-evolved states and is re-expanded at
@@ -17,24 +18,50 @@
 // T_{|p-j|})/2 onto the SAME chain leaves
 //
 //   C_p(u) = sum_j c_j(u)^* [ d_{p+j}(u) + d_{|p-j|}(u) ] / 2,
-//   d_q(u) = < W T_q(A~) r | D U(u) D r >,
+//   d_q(u) = < W T_q(A~) r | D g(u) >,   g(u) = U(u) D r,
 //
-// with D the form-dressed velocity (apply_dual) and W the form's metric (S
-// under Solve; W T_q(A~) = T_q(A~)^H W is the same self-adjointness the
-// doubled moments lean on). One chain of n_kpm + K applies (K = the
-// Chebyshev content of the whole time window, T * half_width / hbar plus the
-// Bessel tail), one block-concurrent evolution of ~K applies
-// (arXiv:2510.17432), one ZGEMM dot table -- and every output time is scalar
-// post-processing. Cost is resolution + evolution instead of resolution x
-// n_steps; the win is ~ n_kpm / (4 tau_step) at long windows, aimed at the
-// expensive-apply forms (Solve: one CG per apply; Sandwich: three SpMVs).
+// with D the form-dressed velocity and W the form's metric. For the Solve
+// form with a non-composite velocity the dressing cancels into the metric,
+// <S T_q r | S^-1 V g> = <T_q r | V g>, so both sides run bare.
 //
-// The time integral is done with Kaiser-windowed-sinc (cardinal) quadrature
-// on a 2x-Nyquist grid: C_p(u) is band-limited to |omega| <= 2 in scaled
-// units (eigenvalue differences), so cardinal reconstruction is spectrally
-// accurate where a trapezoid at the same spacing errs at the percent level.
-// Re C_p(u) is even in u, so the grid mirrors exactly through u = 0; the
-// right edge is covered by evolving one kernel half-width past the window.
+// The computation is organised so that every axis is either one sequential
+// recurrence or a scalar contraction:
+//
+//   evolution   g advances through Chebyshev BLOCKS (arXiv:2510.17432);
+//               only the velocity-applied block states VX_m = D_v T_m(A~)
+//               g_block are stored (~0.8 columns per grid point; the raw
+//               X_m are never kept -- the block-end seed accumulates on the
+//               fly), ~K applies total, K = window * half_width / hbar +
+//               Bessel tail.
+//   chain       T_q(A~) r, q < n_kpm + K, dotted against the stored VX
+//               columns in tiled ZGEMMs. The dot table G_{q,m} is
+//               trapezoidal -- a block's states are read only up to the
+//               chain order its last grid point reaches -- so high-q tiles
+//               restrict to their late-block column suffix.
+//   grid points d_q(u) = sum_m c_m(u - u_block) G_{q,m} and the j-fold to
+//               C_p(u) are pure scalar work, cache-contiguous, OpenMP over
+//               grid points. No per-point vector reconstruction exists at
+//               all: it moved into the G contraction.
+//   time        num_p(t) = 2/hw^2 int_0^t (t - u) C_p(u) du by cardinal
+//               (Kaiser-windowed sinc) quadrature in closed form: an
+//               interior sample's kernel integral is exactly
+//               h^2 mu0 (t/h - c) (kernel DC moment; the first moment
+//               vanishes by evenness), so only O(W) samples near u = 0 and
+//               u = t need shift-invariant correction tables, and with
+//               prefix sums every output time costs O(W). Output grids of
+//               any density are genuinely free. (A naive trapezoid at this
+//               spacing errs at the percent level: C_p is band-limited to
+//               |omega| <= 2 with content at the band edge.) Re C_p(u) is
+//               even, so the grid mirrors exactly through u = 0; the
+//               evolution runs one kernel half-width past the window for
+//               the right edge.
+//
+// Memory, per rank: the stored VX columns, ~0.8 * n_cols * N_local * 16 B
+// (n_cols = output window at <= pi/4 scaled spacing), plus scalar tables.
+// `memory_tiles` > 1 splits the grid into that many groups: the evolution
+// still runs once, the chain re-runs per group -- chain applies scale with
+// the tile count, stored-state memory divides by it. An explicit knob, like
+// every other trade here.
 //
 // Estimator note: stepwise and spectral estimators share the physical trace
 // as expectation but differ per sample (the identity uses trace cyclicity).
@@ -73,298 +100,10 @@ inline double bessel_i0(double x) {
     return sum;
 }
 
-// Cardinal (Kaiser-windowed sinc) quadrature of int_0^{t_k} (t_k - u) C(u) du
-// from uniform samples C[c], c = 0..n_cols-1, spacing h, with the exact even
-// mirror through u = 0. w[k][c] are the folded weights; they depend only on
-// the grid, never on the integrand, so one build serves every moment index
-// and every sample.
-struct SincQuadWeights {
-    int n_steps = 0;
-    int m_sub = 1;
-    int half_width_samples = 16;
-    double h = 0.0;
-    std::vector<std::vector<double>> w;  // [n_steps + 1][n_cols]
-
-    SincQuadWeights(int n_steps_, int m_sub_, double h_, int n_cols, int ws = 16)
-        : n_steps(n_steps_), m_sub(m_sub_), half_width_samples(ws), h(h_) {
-        const double beta = 0.45 * M_PI * static_cast<double>(ws);
-        const double i0_beta = bessel_i0(beta);
-        auto kernel = [&](double s) {
-            const double a = std::abs(s);
-            if (a >= static_cast<double>(ws)) return 0.0;
-            const double core = (a < 1e-12) ? 1.0 : std::sin(M_PI * s) / (M_PI * s);
-            const double arg = 1.0 - (s / ws) * (s / ws);
-            return core * bessel_i0(beta * std::sqrt(std::max(0.0, arg))) / i0_beta;
-        };
-
-        w.assign(static_cast<size_t>(n_steps + 1),
-                 std::vector<double>(static_cast<size_t>(n_cols), 0.0));
-        const int points_per_sample = 12;
-        for (int k = 0; k <= n_steps; ++k) {
-            const double t = static_cast<double>(k) * m_sub * h;
-            auto& wk = w[static_cast<size_t>(k)];
-            for (int e = -ws; e <= k * m_sub + ws; ++e) {
-                const double lo = std::max(0.0, (e - ws) * h);
-                const double hi = std::min(t, (e + ws) * h);
-                if (hi <= lo) continue;
-                // Simpson over the support; the kernel oscillates with
-                // period 2h, so 12 points per sample resolves it well.
-                const int n_iv = std::max(4, static_cast<int>(
-                    std::ceil((hi - lo) / h * points_per_sample / 2.0)) * 2);
-                const double du = (hi - lo) / n_iv;
-                double acc = 0.0;
-                for (int i = 0; i <= n_iv; ++i) {
-                    const double u = lo + du * i;
-                    const double f = (t - u) * kernel(u / h - e);
-                    const double simpson =
-                        (i == 0 || i == n_iv) ? 1.0 : ((i % 2) ? 4.0 : 2.0);
-                    acc += simpson * f;
-                }
-                acc *= du / 3.0;
-                const int c = std::abs(e);
-                if (c < n_cols) wk[static_cast<size_t>(c)] += acc;
-            }
-        }
-    }
-};
-
-// One stochastic sample's contribution to the spectral-route numerator
-// moments num_p(t_k) and to the density moments. Complex double only: the
-// evolution and the dot table are intrinsically complex, and the tile GEMM
-// goes through zgemm.
-template <typename T>
-void msd_spectral_accumulate(
-    Chebyshev<T>& cheby,
-    VelocityOp<T> velocity,
-    const DistVector<T>& r,
-    int n_steps,
-    double dt_fs,
-    int n_kpm,
-    const SincQuadWeights& quad,
-    int block_substeps,
-    std::vector<double>& num_accum,  // [(n_steps + 1) * n_kpm], += contribution
-    std::vector<cd>& rho_accum       // [n_kpm], += contribution
-) {
-    static_assert(std::is_same_v<T, std::complex<double>>,
-                  "corr_msd_spectral runs in complex double");
-    DistGraph* graph = r.graph;
-    const int rank = graph->rank;
-    const double h = quad.h;
-    const int m_sub = quad.m_sub;
-    const int n_cols = static_cast<int>(quad.w.front().size());
-    const double hw = cheby.half_width;
-
-    // Backward coefficients per grid point: U(u)^-1 = sum_j bwd[u][j] T_j(A~).
-    std::vector<std::vector<cd>> bwd(static_cast<size_t>(n_cols));
-    bwd[0] = {cd(1.0, 0.0)};
-    for (int u = 1; u < n_cols; ++u) {
-        timeprop_coeff(u * h, 1e-14, false, bwd[u]);
-    }
-    const int k_j = static_cast<int>(bwd.back().size());
-    const int n_q = n_kpm + k_j - 1;  // chain states T_q, q = 0..n_q-1
-
-    auto apply_velocity = [&](const DistVector<T>& in, DistVector<T>& out) {
-        cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
-    };
-
-    // Velocity placement: the second velocity pairs with the metric, and for
-    // the Solve form the dressing cancels exactly,
-    //   < S T_q r | S^-1 V g > = < T_q r | V g >,
-    // so the per-grid-point apply is the BARE V SpMV and the chain needs no
-    // S product: n_u CG solves and n_q S applies vanish. Composite
-    // velocities keep their inner metric solves (only the outer dressing
-    // cancels, which apply_dual cannot skip today) and the Sandwich form has
-    // no such pairing -- both keep the dressed path. The seed w = D r is
-    // physical and stays dressed in every form.
-    const bool bare_velocity =
-        !velocity.composite() && cheby.form != ChebyOpForm::Sandwich;
-    auto apply_velocity_paired = [&](DistVector<T>& in, DistVector<T>& out) {
-        if (bare_velocity) {
-            velocity.matrix->mult(in, out);
-        } else {
-            cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
-        }
-    };
-
-    // ---- evolution: y(u) = D U(u) D r on the grid, block-concurrent -------
-    DistMultiVector<T> Y(graph, n_cols);
-    DistVector<T> w(graph), g(graph), tmp(graph), yv(graph);
-    apply_velocity(r, w);              // w = D r, the evolving seed
-    apply_velocity_paired(w, yv);      // y(0), metric-paired velocity
-    Y.set_col(0, yv);
-
-    int b_sub = block_substeps;
-    if (b_sub <= 0) b_sub = std::max(1, static_cast<int>(std::ceil(192.0 / h)));
-    b_sub = std::min(b_sub, n_cols - 1);
-
-    std::vector<std::vector<cd>> ctab(static_cast<size_t>(b_sub) + 1);
-    for (int k = 1; k <= b_sub; ++k) {
-        timeprop_coeff(k * h, 1e-14, true, ctab[static_cast<size_t>(k)]);
-    }
-    const int n_states = static_cast<int>(ctab[static_cast<size_t>(b_sub)].size());
-    std::vector<DistVector<T>> X;
-    X.reserve(static_cast<size_t>(n_states));
-    for (int m = 0; m < n_states; ++m) X.emplace_back(graph);
-
-    g.copy_from(w);
-    int done = 1;  // next grid index to fill
-    while (done < n_cols) {
-        ::rsatb::util::throw_if_interrupted(graph->comm);
-        const int b = std::min(b_sub, n_cols - done);
-        const int nk = static_cast<int>(ctab[static_cast<size_t>(b)].size());
-        X[0].copy_from(g);
-        if (nk > 1) cheby.apply_op(X[0], X[1], ChebyMode::NORMAL);
-        for (int m = 2; m < nk; ++m) {
-            cheby.apply_op(X[static_cast<size_t>(m - 1)], X[static_cast<size_t>(m)],
-                           ChebyMode::NORMAL);
-            X[static_cast<size_t>(m)].axpby(static_cast<T>(-1.0),
-                                            X[static_cast<size_t>(m - 2)],
-                                            static_cast<T>(2.0));
-        }
-        for (int k = 1; k <= b; ++k) {
-            const auto& c = ctab[static_cast<size_t>(k)];
-            tmp.copy_from(X[0]);
-            tmp.scale(CoeffCast<T>::apply(c[0]));
-            for (size_t m = 1; m < c.size(); ++m) {
-                tmp.axpy(CoeffCast<T>::apply(c[m]), X[m]);
-            }
-            apply_velocity_paired(tmp, yv);
-            Y.set_col(done + k - 1, yv);
-            if (k == b) g.copy_from(tmp);  // block-end state seeds the next block
-        }
-        done += b;
-        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kSummary)) {
-            std::cout << "msd-spectral: evolve " << (done - 1) << " / " << (n_cols - 1)
-                      << std::endl;
-        }
-    }
-
-    // ---- left chain + dot table d_q(u) = <W T_q r | y(u)> ------------------
-    // (plain <T_q r | V g(u)> when the metric cancelled into the velocity)
-    const bool weighted = (cheby.form == ChebyOpForm::Solve) && !bare_velocity;
-    const int tile_w = 32;
-    DistMultiVector<T> ltile(graph, tile_w);
-    DistVector<T> t0(graph), t1(graph), t2(graph), wq(graph);
-    std::vector<cd> dtab(static_cast<size_t>(n_q) * static_cast<size_t>(n_cols),
-                         cd(0.0, 0.0));
-    std::vector<cd> tile_buf(static_cast<size_t>(tile_w) * static_cast<size_t>(n_cols));
-
-    // The d-table is trapezoidal: the assembly below reads d_{p+j}(u) only
-    // for p < n_kpm and j < M(u), so rows q >= n_kpm are needed only from
-    // the first grid point whose expansion reaches them. High-q tiles
-    // restrict the GEMM to that column suffix.
-    std::vector<int> u_first(static_cast<size_t>(n_q), 0);
-    for (int q = n_kpm; q < n_q; ++q) {
-        int u = u_first[static_cast<size_t>(q - 1)];
-        while (u < n_cols &&
-               n_kpm - 1 + static_cast<int>(bwd[static_cast<size_t>(u)].size()) - 1 < q) {
-            ++u;
-        }
-        u_first[static_cast<size_t>(q)] = u;
-    }
-
-    auto flush_tile = [&](int q_start, int width) {
-        using isqrt::vbcsr_complex_double;
-        const int u0 = u_first[static_cast<size_t>(q_start)];
-        if (u0 >= n_cols) return;
-        const vbcsr_lapack_int m_ = width;
-        const vbcsr_lapack_int n_ = n_cols - u0;
-        const vbcsr_lapack_int k_ = ltile.local_rows;
-        const vbcsr_lapack_int lda_ = ltile.ld;
-        const vbcsr_lapack_int ldb_ = Y.ld;
-        const vbcsr_lapack_int ldc_ = width;
-        const cd one(1.0, 0.0), zero(0.0, 0.0);
-        // Row-major storage read as column-major is the transpose, so this
-        // computes  C(q, u) = sum_rows L[row, q] * conj(Y[row, u]);
-        // the wanted d = sum_rows conj(L) * Y is its conjugate.
-        isqrt::zgemm_("N", "C", &m_, &n_, &k_,
-                      reinterpret_cast<const vbcsr_complex_double*>(&one),
-                      reinterpret_cast<const vbcsr_complex_double*>(ltile.data.data()), &lda_,
-                      reinterpret_cast<const vbcsr_complex_double*>(Y.data.data()) + u0, &ldb_,
-                      reinterpret_cast<const vbcsr_complex_double*>(&zero),
-                      reinterpret_cast<vbcsr_complex_double*>(tile_buf.data()), &ldc_);
-        MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(),
-                      2 * width * static_cast<int>(n_), MPI_DOUBLE, MPI_SUM, graph->comm);
-        for (int q = 0; q < width; ++q) {
-            cd* row = dtab.data() + static_cast<size_t>(q_start + q) * n_cols;
-            for (int u = u0; u < n_cols; ++u) {
-                row[u] = std::conj(tile_buf[static_cast<size_t>(u - u0) * width + q]);
-            }
-        }
-    };
-
-    auto stash = [&](int q, const DistVector<T>& state) {
-        if (weighted) {
-            cheby.S->mult(const_cast<DistVector<T>&>(state), wq);
-            ltile.set_col(q % tile_w, wq);
-        } else {
-            ltile.set_col(q % tile_w, state);
-        }
-        if ((q % tile_w) == tile_w - 1 || q == n_q - 1) {
-            flush_tile(q - (q % tile_w), (q % tile_w) + 1);
-        }
-    };
-
-    t0.copy_from(r);
-    stash(0, t0);
-    if (n_q > 1) {
-        cheby.apply_op(t0, t1, ChebyMode::NORMAL);
-        stash(1, t1);
-    }
-    const int stride = std::max(1, n_q / 10);
-    for (int q = 2; q < n_q; ++q) {
-        ::rsatb::util::throw_if_interrupted(graph->comm);
-        cheby.apply_op(t1, t2, ChebyMode::NORMAL);
-        t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
-        stash(q, t2);
-        t0.swap(t1);
-        t1.swap(t2);
-        if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kSummary) &&
-            ::rsatb::util::every_nth(q - 2, stride)) {
-            std::cout << "msd-spectral: chain " << q << " / " << n_q << std::endl;
-        }
-    }
-
-    // ---- scalar assembly ---------------------------------------------------
-    // C_p(u) = Re sum_j bwd[u][j] (d_{p+j}(u) + d_{|p-j|}(u)) / 2
-    std::vector<double> cre(static_cast<size_t>(n_kpm) * static_cast<size_t>(n_cols));
-#pragma omp parallel for schedule(static)
-    for (int p = 0; p < n_kpm; ++p) {
-        for (int u = 0; u < n_cols; ++u) {
-            const auto& b = bwd[static_cast<size_t>(u)];
-            cd acc(0.0, 0.0);
-            for (size_t j = 0; j < b.size(); ++j) {
-                const int jp = p + static_cast<int>(j);
-                const int jm = std::abs(p - static_cast<int>(j));
-                acc += b[j] * (0.5 * (dtab[static_cast<size_t>(jp) * n_cols + u] +
-                                      dtab[static_cast<size_t>(jm) * n_cols + u]));
-            }
-            cre[static_cast<size_t>(p) * n_cols + u] = acc.real();
-        }
-    }
-
-    // num_p(t_k) = (2 / hw^2) int_0^{t_k} (t_k - u) C_p(u) du
-    const double scale = 2.0 / (hw * hw);
-#pragma omp parallel for schedule(static)
-    for (int p = 0; p < n_kpm; ++p) {
-        const double* cp = cre.data() + static_cast<size_t>(p) * n_cols;
-        for (int k = 0; k <= n_steps; ++k) {
-            const auto& wk = quad.w[static_cast<size_t>(k)];
-            double acc = 0.0;
-            for (int u = 0; u < n_cols; ++u) acc += wk[static_cast<size_t>(u)] * cp[u];
-            num_accum[static_cast<size_t>(k) * n_kpm + p] += scale * acc;
-        }
-    }
-
-    // Density moments of the same sample, for the shared normalisation.
-    const std::vector<cd> rho = metric_density_moments(cheby, r, n_kpm);
-    for (int p = 0; p < n_kpm; ++p) rho_accum[static_cast<size_t>(p)] += rho[static_cast<size_t>(p)];
-}
-
-// Grid setup shared by the public overloads: substeps per output step so that
-// the sample spacing is at most (pi/2) / time_oversample in scaled time
-// (Nyquist for the |omega| <= 2 band, times the safety factor), plus one
-// quadrature kernel half-width of padding past the window.
+// Grid setup shared by the public overloads: substeps per output step so
+// that the sample spacing is at most (pi/2) / time_oversample in scaled
+// time (Nyquist for the |omega| <= 2 band, times the safety factor), plus
+// one quadrature kernel half-width of padding past the window.
 struct SpectralGrid {
     int m_sub = 1;
     double h = 0.0;
@@ -381,10 +120,386 @@ struct SpectralGrid {
     }
 };
 
+// int_0^{t_k} (t_k - u) C(u) du from uniform samples C[c] (spacing h, even
+// mirror through u = 0), through the cardinal interpolant
+// C(u) = sum_e C[|e|] kappa(u/h - e), kappa a Kaiser-windowed sinc of
+// half-width W samples. See the header note: interior weights are closed
+// form, edges are three shift-invariant tables, output times shorter than
+// the two-edge overlap use directly integrated dense weights.
+struct TriangleQuad {
+    int W = 0;
+    int m_sub = 1;
+    int n_steps = 0;
+    int n_cols = 0;
+    double h = 0.0;
+    double mu0 = 0.0;
+    std::vector<double> abar, bbar;  // near-zero folded tables, c = 0..W-1
+    std::vector<double> r_edge;      // near-t table, m = -(W-1)..(W-1)
+    int small_rows = 0;
+    std::vector<std::vector<double>> small_w;
+
+    TriangleQuad(int n_steps_, int m_sub_, double h_, int n_cols_, int w)
+        : W(w), m_sub(m_sub_), n_steps(n_steps_), n_cols(n_cols_), h(h_) {
+        const double beta = 0.45 * M_PI * static_cast<double>(W);
+        const double i0_beta = bessel_i0(beta);
+        auto kernel = [&](double s) {
+            const double a = std::abs(s);
+            if (a >= static_cast<double>(W)) return 0.0;
+            const double core = (a < 1e-12) ? 1.0 : std::sin(M_PI * s) / (M_PI * s);
+            const double arg = 1.0 - (s / W) * (s / W);
+            return core * bessel_i0(beta * std::sqrt(std::max(0.0, arg))) / i0_beta;
+        };
+        auto integrate = [&](double lo, double hi, auto f) {
+            if (hi <= lo) return 0.0;
+            const int n_iv = 2 * std::max(64, static_cast<int>(std::ceil((hi - lo) * 24)));
+            const double ds = (hi - lo) / n_iv;
+            double acc = 0.0;
+            for (int i = 0; i <= n_iv; ++i) {
+                const double s = lo + ds * i;
+                const double simpson = (i == 0 || i == n_iv) ? 1.0 : ((i % 2) ? 4.0 : 2.0);
+                acc += simpson * f(s) * kernel(s);
+            }
+            return acc * ds / 3.0;
+        };
+
+        mu0 = integrate(-W, W, [](double) { return 1.0; });
+        abar.assign(static_cast<size_t>(W), 0.0);
+        bbar.assign(static_cast<size_t>(W), 0.0);
+        for (int c = 0; c < W; ++c) {
+            abar[static_cast<size_t>(c)] = integrate(-c, W, [](double) { return 1.0; });
+            bbar[static_cast<size_t>(c)] = integrate(-c, W, [&](double s) { return c + s; });
+            if (c > 0) {  // the mirrored sample at e = -c
+                abar[static_cast<size_t>(c)] += integrate(c, W, [](double) { return 1.0; });
+                bbar[static_cast<size_t>(c)] += integrate(c, W, [&](double s) { return s - c; });
+            }
+        }
+        r_edge.assign(static_cast<size_t>(2 * W - 1), 0.0);
+        for (int m = -(W - 1); m <= W - 1; ++m) {
+            r_edge[static_cast<size_t>(m + W - 1)] =
+                integrate(-W, m, [&](double s) { return m - s; });
+        }
+
+        small_rows = std::min(n_steps + 1, (2 * W + 2 + m_sub - 1) / m_sub + 1);
+        small_w.resize(static_cast<size_t>(small_rows));
+        for (int k = 0; k < small_rows; ++k) {
+            const int kt = k * m_sub;
+            const double t = kt * h;
+            auto& wk = small_w[static_cast<size_t>(k)];
+            wk.assign(static_cast<size_t>(std::min(n_cols, kt + W)), 0.0);
+            for (int e = -(W - 1); e < kt + W; ++e) {
+                const int c = std::abs(e);
+                if (c >= static_cast<int>(wk.size())) continue;
+                const double lo = std::max(static_cast<double>(-W), static_cast<double>(-e));
+                const double hi = std::min(static_cast<double>(W), static_cast<double>(kt - e));
+                wk[static_cast<size_t>(c)] +=
+                    h * integrate(lo, hi, [&](double s) { return t - (e + s) * h; });
+            }
+        }
+    }
+
+    // s0[i] = sum of the first i samples, s1 likewise weighted by the index.
+    double apply(const double* c_vals, const double* s0, const double* s1, int k) const {
+        if (k < small_rows) {
+            const auto& wk = small_w[static_cast<size_t>(k)];
+            double acc = 0.0;
+            for (size_t c = 0; c < wk.size(); ++c) acc += wk[c] * c_vals[c];
+            return acc;
+        }
+        const int kt = k * m_sub;
+        const double t = kt * h;
+        double acc = 0.0;
+        for (int c = 0; c < W; ++c) {
+            acc += c_vals[c] *
+                   h * (t * abar[static_cast<size_t>(c)] - h * bbar[static_cast<size_t>(c)]);
+        }
+        acc += h * h * mu0 *
+               (kt * (s0[kt - W + 1] - s0[W]) - (s1[kt - W + 1] - s1[W]));
+        for (int m = -(W - 1); m <= W - 1; ++m) {
+            acc += h * h * r_edge[static_cast<size_t>(m + W - 1)] * c_vals[kt - m];
+        }
+        return acc;
+    }
+};
+
+// One stochastic sample's contribution to the correlator samples C_p(u)
+// (accumulated u-major into cre_accum) and to the density moments. Complex
+// double only: the evolution and the dot table are intrinsically complex,
+// and the tile GEMM goes through zgemm.
+template <typename T>
+void msd_spectral_accumulate(
+    Chebyshev<T>& cheby,
+    VelocityOp<T> velocity,
+    const DistVector<T>& r,
+    int n_kpm,
+    const SpectralGrid& grid,
+    int block_substeps,
+    int memory_tiles,
+    std::vector<double>& cre_accum,  // [n_cols * n_kpm], u-major, +=
+    std::vector<cd>& rho_accum       // [n_kpm], +=
+) {
+    static_assert(std::is_same_v<T, std::complex<double>>,
+                  "corr_msd_spectral runs in complex double");
+    DistGraph* graph = r.graph;
+    const int rank = graph->rank;
+    const double h = grid.h;
+    const int n_cols = grid.n_cols;
+
+    // Expansion length of e^{-i A~ u h} per grid point (forward and backward
+    // truncate identically: the coefficient magnitudes are the same Bessel
+    // values).
+    std::vector<int> mlen(static_cast<size_t>(n_cols), 1);
+    {
+        std::vector<cd> probe;
+        for (int u = 1; u < n_cols; ++u) {
+            timeprop_coeff(u * h, 1e-14, true, probe);
+            mlen[static_cast<size_t>(u)] = static_cast<int>(probe.size());
+        }
+    }
+    const int n_q = n_kpm + mlen.back() - 1;
+
+    // Velocity placement: the second velocity pairs with the metric, and for
+    // the Solve form the dressing cancels exactly,
+    //   < S T_q r | S^-1 V g > = < T_q r | V g >,
+    // so both the per-state velocity and the chain run bare. Composite
+    // velocities keep their inner metric solves (only the outer dressing
+    // cancels, which apply_dual cannot skip today) and the Sandwich form has
+    // no such pairing -- both keep the dressed path. The seed w = D r is
+    // physical and stays dressed in every form.
+    const bool bare_velocity =
+        !velocity.composite() && cheby.form != ChebyOpForm::Sandwich;
+    const bool weighted = (cheby.form == ChebyOpForm::Solve) && !bare_velocity;
+    auto apply_velocity_paired = [&](DistVector<T>& in, DistVector<T>& out) {
+        if (bare_velocity) {
+            velocity.matrix->mult(in, out);
+        } else {
+            cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
+        }
+    };
+
+    DistVector<T> w(graph);
+    cheby.apply_dual(velocity, const_cast<DistVector<T>&>(r), w, ChebyMode::NORMAL, 1.0);
+
+    // Block layout in grid points: block b's m = 0 state sits at seed_point
+    // and its offsets k = 1..len cover the next len points; the first
+    // block's m = 0 state IS grid point 0.
+    int b_sub = block_substeps;
+    if (b_sub <= 0) b_sub = std::max(1, static_cast<int>(std::ceil(256.0 / h)));
+
+    struct Block {
+        int seed_point = 0;
+        int len = 0;
+        int n_states = 0;
+        int col0 = 0;     // first column in its tile's VX store
+        int q_need = 0;   // chain length its last grid point requires
+    };
+    std::vector<Block> blocks;
+    {
+        std::vector<cd> probe;
+        int covered = 0;
+        while (covered < n_cols - 1) {
+            Block b;
+            b.seed_point = covered;
+            b.len = std::min(b_sub, n_cols - 1 - b.seed_point);
+            timeprop_coeff(b.len * h, 1e-14, true, probe);
+            b.n_states = static_cast<int>(probe.size());
+            b.q_need = n_kpm + mlen[static_cast<size_t>(b.seed_point + b.len)] - 1;
+            blocks.push_back(b);
+            covered = b.seed_point + b.len;
+        }
+    }
+
+    // Memory tiles: contiguous groups of blocks. The evolution runs ONCE
+    // (the seed g carries across tiles); the chain re-runs per tile.
+    memory_tiles = std::max(1, std::min(memory_tiles, static_cast<int>(blocks.size())));
+    const int blocks_per_tile =
+        (static_cast<int>(blocks.size()) + memory_tiles - 1) / memory_tiles;
+
+    DistVector<T> t0(graph), t1(graph), t2(graph), g_end(graph), vx_tmp(graph), wq(graph);
+    DistVector<T> g_curr(graph);
+    g_curr.copy_from(w);
+
+    const int tile_w = 32;
+    DistMultiVector<T> ltile(graph, tile_w);
+
+    for (int tile0 = 0; tile0 < static_cast<int>(blocks.size()); tile0 += blocks_per_tile) {
+        const int tile1 = std::min(tile0 + blocks_per_tile, static_cast<int>(blocks.size()));
+        int tile_cols = 0;
+        for (int b = tile0; b < tile1; ++b) {
+            blocks[static_cast<size_t>(b)].col0 = tile_cols;
+            tile_cols += blocks[static_cast<size_t>(b)].n_states;
+        }
+        const int q_tile = blocks[static_cast<size_t>(tile1 - 1)].q_need;
+
+        // ---- evolution: velocity-applied block states -----------------------
+        DistMultiVector<T> vx(graph, tile_cols);
+        for (int b = tile0; b < tile1; ++b) {
+            const Block& blk = blocks[static_cast<size_t>(b)];
+            std::vector<cd> cend;
+            timeprop_coeff(blk.len * h, 1e-14, true, cend);
+            t0.copy_from(g_curr);
+            apply_velocity_paired(t0, vx_tmp);
+            vx.set_col(blk.col0, vx_tmp);
+            g_end.copy_from(t0);
+            g_end.scale(CoeffCast<T>::apply(cend[0]));
+            if (blk.n_states > 1) {
+                cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+                apply_velocity_paired(t1, vx_tmp);
+                vx.set_col(blk.col0 + 1, vx_tmp);
+                g_end.axpy(CoeffCast<T>::apply(cend[1]), t1);
+            }
+            for (int m = 2; m < blk.n_states; ++m) {
+                ::rsatb::util::throw_if_interrupted(graph->comm);
+                cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+                t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
+                apply_velocity_paired(t2, vx_tmp);
+                vx.set_col(blk.col0 + m, vx_tmp);
+                g_end.axpy(CoeffCast<T>::apply(cend[static_cast<size_t>(m)]), t2);
+                t0.swap(t1);
+                t1.swap(t2);
+            }
+            g_curr.copy_from(g_end);
+            if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kSummary)) {
+                std::cout << "msd-spectral: evolve " << (blk.seed_point + blk.len)
+                          << " / " << (n_cols - 1) << std::endl;
+            }
+        }
+
+        // ---- chain + trapezoidal tile GEMMs into the scalar table G ---------
+        std::vector<cd> gtab(static_cast<size_t>(q_tile) * tile_cols, cd(0.0, 0.0));
+        std::vector<cd> tile_buf(static_cast<size_t>(tile_w) * tile_cols);
+
+        auto flush_tile = [&](int q_start, int width) {
+            using isqrt::vbcsr_complex_double;
+            int col_from = tile_cols;
+            for (int b = tile0; b < tile1; ++b) {
+                if (blocks[static_cast<size_t>(b)].q_need > q_start) {
+                    col_from = blocks[static_cast<size_t>(b)].col0;
+                    break;
+                }
+            }
+            if (col_from >= tile_cols) return;
+            const vbcsr_lapack_int m_ = width;
+            const vbcsr_lapack_int n_ = tile_cols - col_from;
+            const vbcsr_lapack_int k_ = ltile.local_rows;
+            const vbcsr_lapack_int lda_ = ltile.ld;
+            const vbcsr_lapack_int ldb_ = vx.ld;
+            const vbcsr_lapack_int ldc_ = width;
+            const cd one(1.0, 0.0), zero(0.0, 0.0);
+            // Row-major storage read as column-major is the transpose, so
+            // this computes C(q, c) = sum_rows L[row, q] * conj(VX[row, c]);
+            // the wanted G = sum_rows conj(L) * VX is its conjugate.
+            isqrt::zgemm_("N", "C", &m_, &n_, &k_,
+                          reinterpret_cast<const vbcsr_complex_double*>(&one),
+                          reinterpret_cast<const vbcsr_complex_double*>(ltile.data.data()),
+                          &lda_,
+                          reinterpret_cast<const vbcsr_complex_double*>(vx.data.data()) + col_from,
+                          &ldb_,
+                          reinterpret_cast<const vbcsr_complex_double*>(&zero),
+                          reinterpret_cast<vbcsr_complex_double*>(tile_buf.data()), &ldc_);
+            MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(),
+                          2 * width * static_cast<int>(n_), MPI_DOUBLE, MPI_SUM,
+                          graph->comm);
+            for (int q = 0; q < width; ++q) {
+                cd* row = gtab.data() + static_cast<size_t>(q_start + q) * tile_cols;
+                for (int c = col_from; c < tile_cols; ++c) {
+                    row[c] = std::conj(tile_buf[static_cast<size_t>(c - col_from) * width + q]);
+                }
+            }
+        };
+
+        auto stash = [&](int q, const DistVector<T>& state) {
+            if (weighted) {
+                cheby.S->mult(const_cast<DistVector<T>&>(state), wq);
+                ltile.set_col(q % tile_w, wq);
+            } else {
+                ltile.set_col(q % tile_w, state);
+            }
+            if ((q % tile_w) == tile_w - 1 || q == q_tile - 1) {
+                flush_tile(q - (q % tile_w), (q % tile_w) + 1);
+            }
+        };
+
+        t0.copy_from(r);
+        stash(0, t0);
+        if (q_tile > 1) {
+            cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+            stash(1, t1);
+        }
+        const int stride = std::max(1, q_tile / 10);
+        for (int q = 2; q < q_tile; ++q) {
+            ::rsatb::util::throw_if_interrupted(graph->comm);
+            cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+            t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
+            stash(q, t2);
+            t0.swap(t1);
+            t1.swap(t2);
+            if (rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kSummary) &&
+                ::rsatb::util::every_nth(q - 2, stride)) {
+                std::cout << "msd-spectral: chain " << q << " / " << q_tile << std::endl;
+            }
+        }
+
+        // ---- scalar assembly: d_q(u), then the j-fold to C_p(u) -------------
+        // Flattened (block, offset) pairs so OpenMP parallelises over grid
+        // points; both contractions stream contiguous memory.
+        std::vector<std::pair<int, int>> points;  // (block index, offset k)
+        for (int b = tile0; b < tile1; ++b) {
+            const int k_lo = (blocks[static_cast<size_t>(b)].seed_point == 0) ? 0 : 1;
+            for (int k = k_lo; k <= blocks[static_cast<size_t>(b)].len; ++k) {
+                points.emplace_back(b, k);
+            }
+        }
+#pragma omp parallel
+        {
+            std::vector<cd> cfwd, bwd, d_row(static_cast<size_t>(n_q));
+#pragma omp for schedule(dynamic, 4)
+            for (size_t ip = 0; ip < points.size(); ++ip) {
+                const Block& blk = blocks[static_cast<size_t>(points[ip].first)];
+                const int k = points[ip].second;
+                const int u = blk.seed_point + k;
+                const int q_u = n_kpm + mlen[static_cast<size_t>(u)] - 1;
+                if (k == 0) {
+                    cfwd.assign(1, cd(1.0, 0.0));
+                } else {
+                    timeprop_coeff(k * h, 1e-14, true, cfwd);
+                }
+                const int n_m = std::min<int>(static_cast<int>(cfwd.size()), blk.n_states);
+                for (int q = 0; q < q_u; ++q) {
+                    const cd* grow =
+                        gtab.data() + static_cast<size_t>(q) * tile_cols + blk.col0;
+                    cd acc(0.0, 0.0);
+                    for (int m = 0; m < n_m; ++m) acc += cfwd[static_cast<size_t>(m)] * grow[m];
+                    d_row[static_cast<size_t>(q)] = acc;
+                }
+                if (u == 0) {
+                    bwd.assign(1, cd(1.0, 0.0));
+                } else {
+                    timeprop_coeff(u * h, 1e-14, false, bwd);
+                }
+                double* cre = cre_accum.data() + static_cast<size_t>(u) * n_kpm;
+                for (int p = 0; p < n_kpm; ++p) {
+                    cd acc(0.0, 0.0);
+                    for (size_t j = 0; j < bwd.size(); ++j) {
+                        const int jp = p + static_cast<int>(j);
+                        const int jm = std::abs(p - static_cast<int>(j));
+                        acc += bwd[j] * (0.5 * (d_row[static_cast<size_t>(jp)] +
+                                                d_row[static_cast<size_t>(jm)]));
+                    }
+                    cre[p] += acc.real();
+                }
+            }
+        }
+    }
+
+    // Density moments of the same sample, for the shared normalisation.
+    const std::vector<cd> rho = metric_density_moments(cheby, r, n_kpm);
+    for (int p = 0; p < n_kpm; ++p) rho_accum[static_cast<size_t>(p)] += rho[static_cast<size_t>(p)];
+}
+
 // `n_acc` is the accumulated moment count; when it is below `n_kpm_out` the
-// rows are extended by Burg linear prediction (moment_extrapolation.hpp)
-// before the shared Jackson reconstruction, exactly as in the stepwise
-// route's n_compute knob.
+// rows are extended by linear prediction (moment_extrapolation.hpp) before
+// the shared Jackson reconstruction, exactly as in the stepwise route's
+// n_compute knob.
 template <typename T>
 void msd_spectral_finalize(
     Chebyshev<T>& cheby,
@@ -392,7 +507,9 @@ void msd_spectral_finalize(
     int n_acc,
     int n_kpm_out,
     double inv_samples,
-    const std::vector<double>& num_accum,
+    const SpectralGrid& grid,
+    const TriangleQuad& quad,
+    const std::vector<double>& cre_accum,
     const std::vector<cd>& rho_accum,
     std::vector<double>& msd_out,
     std::vector<double>& energy_out
@@ -408,17 +525,42 @@ void msd_spectral_finalize(
     reconstruct_spectrum_from_moments(rho, density_spectrum, nullptr, true);
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm_out, true);
 
-    msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm_out), 0.0);
-    std::vector<cd> num(static_cast<size_t>(n_acc));
-    for (int k = 0; k <= n_steps; ++k) {
-        num.assign(static_cast<size_t>(n_acc), cd(0.0, 0.0));
+    // num_p(t_k) = (2 / hw^2) int_0^{t_k} (t_k - u) C_p(u) du; prefix sums
+    // make every output time O(kernel width) per moment.
+    const double hw = cheby.half_width;
+    const double scale = 2.0 / (hw * hw) * inv_samples;
+    const int n_cols = grid.n_cols;
+    std::vector<double> num(static_cast<size_t>(n_steps + 1) * n_acc, 0.0);
+#pragma omp parallel
+    {
+        std::vector<double> c_vals(static_cast<size_t>(n_cols));
+        std::vector<double> s0(static_cast<size_t>(n_cols) + 1, 0.0);
+        std::vector<double> s1(static_cast<size_t>(n_cols) + 1, 0.0);
+#pragma omp for schedule(static)
         for (int p = 0; p < n_acc; ++p) {
-            num[static_cast<size_t>(p)] =
-                cd(num_accum[static_cast<size_t>(k) * n_acc + p] * inv_samples, 0.0);
+            for (int u = 0; u < n_cols; ++u) {
+                c_vals[static_cast<size_t>(u)] = cre_accum[static_cast<size_t>(u) * n_acc + p];
+                s0[static_cast<size_t>(u) + 1] = s0[static_cast<size_t>(u)] + c_vals[static_cast<size_t>(u)];
+                s1[static_cast<size_t>(u) + 1] =
+                    s1[static_cast<size_t>(u)] + static_cast<double>(u) * c_vals[static_cast<size_t>(u)];
+            }
+            for (int k = 0; k <= n_steps; ++k) {
+                num[static_cast<size_t>(k) * n_acc + p] =
+                    scale * quad.apply(c_vals.data(), s0.data(), s1.data(), k);
+            }
         }
-        extend(num);
+    }
+
+    msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm_out), 0.0);
+    std::vector<cd> row(static_cast<size_t>(n_acc));
+    for (int k = 0; k <= n_steps; ++k) {
+        for (int p = 0; p < n_acc; ++p) {
+            row[static_cast<size_t>(p)] = cd(num[static_cast<size_t>(k) * n_acc + p], 0.0);
+        }
+        std::vector<cd> extended(row);
+        extend(extended);
         std::vector<cd> msd_spectrum;
-        reconstruct_spectrum_from_moments(num, msd_spectrum, nullptr, true);
+        reconstruct_spectrum_from_moments(extended, msd_spectrum, nullptr, true);
         write_msd_row(density_spectrum, msd_spectrum, k, n_kpm_out, msd_out);
     }
 }
@@ -428,9 +570,13 @@ void msd_spectral_finalize(
 // Spectral-route periodic/any-basis MSD: same contract as the commutator
 // overload of corr_msd ([n_steps + 1, n_kpm] density-normalised rows on the
 // ascending Chebyshev grid), computed at resolution-plus-evolution cost. See
-// the header note and doc/design_msd_spectral.md; intended for the
-// expensive-apply forms and fine output grids -- the stepwise route remains
-// the right tool for cheap orthogonal matvecs with very long windows.
+// the header note and doc/design_msd_spectral.md, including the crossover
+// criterion dt* ~ n_kpm hbar / (5 half_width): intended whenever the output
+// grid is finer than that, and for the expensive-apply forms; the stepwise
+// route remains the right tool for cheap orthogonal matvecs with very long
+// windows. `n_kpm_compute` (0 = off) computes that many moments and extends
+// to n_kpm by linear prediction; `memory_tiles` > 1 divides stored-state
+// memory by re-running the chain per tile.
 template <typename T>
 void corr_msd_spectral(
     Chebyshev<T>& cheby,
@@ -443,7 +589,8 @@ void corr_msd_spectral(
     std::vector<double>& energy_out,
     int time_oversample = 2,
     int block_substeps = 0,
-    int n_kpm_compute = 0
+    int n_kpm_compute = 0,
+    int memory_tiles = 1
 ) {
     if (n_steps < 0) throw std::runtime_error("n_steps must be non-negative");
     if (n_kpm <= 0) throw std::runtime_error("n_kpm must be positive");
@@ -453,22 +600,23 @@ void corr_msd_spectral(
     } else {
         const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
         detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
-        detail::SincQuadWeights quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
-                                     detail::SpectralGrid::kKernelHalfWidth);
-        std::vector<double> num(static_cast<size_t>(n_steps + 1) * nc, 0.0);
+        detail::TriangleQuad quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
+                                  detail::SpectralGrid::kKernelHalfWidth);
+        std::vector<double> cre(static_cast<size_t>(grid.n_cols) * nc, 0.0);
         std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
-        detail::msd_spectral_accumulate(cheby, velocity, psi_in, n_steps, dt_fs, nc,
-                                        quad, block_substeps, num, rho);
-        detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm, 1.0, num, rho, msd_out,
-                                      energy_out);
+        detail::msd_spectral_accumulate(cheby, velocity, psi_in, nc, grid,
+                                        block_substeps, memory_tiles, cre, rho);
+        detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm, 1.0, grid, quad, cre,
+                                      rho, msd_out, energy_out);
     }
 }
 
 // Sample-block overload: columns are independent stochastic samples; their
-// numerator and density moments are averaged BEFORE the spectrum ratio,
-// matching the multivector semantics of the stepwise route. The columns run
-// through the vector path one at a time (matvec batching across columns is a
-// follow-up; the spectral route's economy is in the apply count itself).
+// correlator samples and density moments are averaged BEFORE the spectrum
+// ratio, matching the multivector semantics of the stepwise route. The
+// columns run through the vector path one at a time (matvec batching across
+// columns is a follow-up; trace self-averaging keeps production sample
+// counts small).
 template <typename T>
 void corr_msd_spectral(
     Chebyshev<T>& cheby,
@@ -481,7 +629,8 @@ void corr_msd_spectral(
     std::vector<double>& energy_out,
     int time_oversample = 2,
     int block_substeps = 0,
-    int n_kpm_compute = 0
+    int n_kpm_compute = 0,
+    int memory_tiles = 1
 ) {
     if (n_steps < 0) throw std::runtime_error("n_steps must be non-negative");
     if (n_kpm <= 0) throw std::runtime_error("n_kpm must be positive");
@@ -491,19 +640,19 @@ void corr_msd_spectral(
     } else {
         const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
         detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
-        detail::SincQuadWeights quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
-                                     detail::SpectralGrid::kKernelHalfWidth);
-        std::vector<double> num(static_cast<size_t>(n_steps + 1) * nc, 0.0);
+        detail::TriangleQuad quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
+                                  detail::SpectralGrid::kKernelHalfWidth);
+        std::vector<double> cre(static_cast<size_t>(grid.n_cols) * nc, 0.0);
         std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
         DistMultiVector<T>& samples = const_cast<DistMultiVector<T>&>(psi_in);
         for (int col = 0; col < psi_in.num_vectors; ++col) {
             DistVector<T> r = samples.get_col(col);
-            detail::msd_spectral_accumulate(cheby, velocity, r, n_steps, dt_fs, nc,
-                                            quad, block_substeps, num, rho);
+            detail::msd_spectral_accumulate(cheby, velocity, r, nc, grid,
+                                            block_substeps, memory_tiles, cre, rho);
         }
         detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm,
                                       1.0 / static_cast<double>(psi_in.num_vectors),
-                                      num, rho, msd_out, energy_out);
+                                      grid, quad, cre, rho, msd_out, energy_out);
     }
 }
 

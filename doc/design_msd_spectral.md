@@ -208,6 +208,46 @@ A free structural bonus for full diffusion tensors: the left chain depends
 only on the sample, not the axis, so x/y/z share one chain against three
 evolutions where the stepwise route triples everything.
 
+## Maturation review (2026-08): the production-shape engine
+
+A final scaling/efficiency/memory audit reshaped the engine; the algorithm
+is unchanged, every dense test tightened or held:
+
+- No per-grid-point vector work remains. The evolution stores
+  velocity-applied BLOCK STATES VX_m = D_v T_m(A~) g_block instead of
+  reconstructed y(u) columns: d_q(u) = sum_m c_m(u - u_block) G_{q,m} turns
+  the whole reconstruction into a scalar contraction. This removed the
+  hidden axpy stream (~block_length/2 vector passes per grid point, which
+  had rivalled the CG applies), cut stored columns by ~20%, and eliminated
+  raw X-state storage entirely (the block-end seed accumulates during the
+  recurrence). Block length is now limited only by the Bessel-tail
+  amortisation trade (default 256 scaled units).
+- The time quadrature is closed form. An interior sample's kernel integral
+  is exactly h^2 mu0 (t/h - c) (the kernel's DC moment; the first moment
+  vanishes by evenness), so only O(W) samples near u = 0 and u = t carry
+  shift-invariant correction tables, and prefix sums give every output time
+  at O(W) per moment. The old per-(k, u) numerically integrated weights
+  were O(n_steps^2 m_sub) to build -- hours at a thousand output steps --
+  and less accurate: the dense fixtures tightened from 2e-8 to 7e-11
+  (orthogonal) and 3.7e-8 to 5e-10 (long window).
+- Memory, per rank: ~0.8 * n_cols * N_local * 16 B of VX columns (plus
+  scalar tables); `memory_tiles` divides it by re-running the chain per
+  tile while the evolution still runs once, verified bitwise-level against
+  the untiled run.
+- The scalar assembly is cache-contiguous and OpenMP-parallel over grid
+  points, with thread-local coefficient builds (build_bessel_vector is
+  reentrant -- audited, no statics).
+- The CG breakdown guards are scale-relative (|p_Ap| against the residual;
+  an SPD operator bounds their ratio by lambda_min, so only a genuinely
+  singular operator trips) instead of the absolute 1e-16 that fired
+  spuriously right at convergence; batched columns freeze at tol precision.
+  The breakdown report now states iteration and magnitudes.
+
+Measured after maturation (same Solve fixture, 12 fs window, n_kpm = 300):
+48 steps @ 0.25 fs -- 37.2 s stepwise vs 5.3 s spectral (7.0x, was 6.5x);
+with LP at 100 computed moments, 4.0 s (9.2x). The dt sweep's spectral
+column stays constant and the crossover holds at dt* ~ 3-4 fs.
+
 ## Pushing further: a cross-field survey (2026-08)
 
 The route's cost has three independent axes -- resolution (the chain),

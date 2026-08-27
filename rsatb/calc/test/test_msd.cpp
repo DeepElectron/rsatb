@@ -1365,6 +1365,51 @@ TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
     EXPECT_LT(err_spec, 1e-6 * std::max(1.0, scale));
 }
 
+// memory_tiles re-runs the chain per grid-point group while the evolution
+// carries through once; the arithmetic per (q, u) pair is identical, so the
+// tiled and untiled runs must agree to rounding.
+TEST(MSDTest, SpectralRouteMemoryTilesMatch) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), V(&graph), S(&graph);
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 s = {Scalar(1.2, 0.0), Scalar(0.1, 0.0),
+                      Scalar(0.1, 0.0), Scalar(0.9, 0.0)};
+    const Dense2 v = {Scalar(0.1, 0.0), Scalar(0.2, 0.1),
+                      Scalar(0.2, -0.1), Scalar(-0.3, 0.0)};
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(S, {{s[0], s[1]}, {s[2], s[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    Vector sample(&graph);
+    fill_vector(sample, {Scalar(0.8, 0.0), Scalar(0.0, 0.6)});
+
+    // Long enough for several blocks; small block_substeps forces many.
+    const int n_steps = 16, n_kpm = 24;
+    const double dt_fs = 4.0;
+
+    std::vector<double> ref, tiled, energy;
+    {
+        Chebyshev<Scalar> cheby(H, S, -1.2, 1.2);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), sample, n_steps, dt_fs, n_kpm,
+                          ref, energy, 2, 20, 0, 1);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, S, -1.2, 1.2);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), sample, n_steps, dt_fs, n_kpm,
+                          tiled, energy, 2, 20, 0, 3);
+    }
+    ASSERT_EQ(ref.size(), tiled.size());
+    double max_diff = 0.0, scale = 0.0;
+    for (size_t i = 0; i < ref.size(); ++i) {
+        scale = std::max(scale, std::abs(ref[i]));
+        max_diff = std::max(max_diff, std::abs(ref[i] - tiled[i]));
+    }
+    std::cout << "memory-tiles max diff " << max_diff << ", scale " << scale << std::endl;
+    EXPECT_GT(scale, 1e-6);
+    EXPECT_LT(max_diff, 1e-10 * std::max(1.0, scale));
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);
