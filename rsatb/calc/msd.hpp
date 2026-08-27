@@ -10,6 +10,7 @@
 #include <cmath>
 #include <complex>
 #include <iostream>
+#include <memory>
 #include <stdexcept>
 #include <type_traits>
 #include <utility>
@@ -32,42 +33,6 @@ struct GammaAffineState {
     VectorType periodic;
 };
 
-template <typename T, typename VectorType>
-std::vector<cd> compute_density_moments(
-    Chebyshev<T>& cheby,
-    const VectorType& psi_in,
-    int n_kpm
-) {
-    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-        const auto moments = cheby.compute_moments(psi_in, n_kpm);
-        std::vector<cd> averaged(moments.size(), cd(0.0, 0.0));
-        if (moments.empty()) {
-            return averaged;
-        }
-
-        const size_t width = moments.front().size();
-        if (width == 0) {
-            return averaged;
-        }
-
-        for (size_t m = 0; m < moments.size(); ++m) {
-            cd accum = 0.0;
-            for (const auto& value : moments[m]) {
-                accum += static_cast<cd>(value);
-            }
-            averaged[m] = accum / static_cast<double>(width);
-        }
-        return averaged;
-    } else {
-        const auto moments = cheby.compute_moments(psi_in, n_kpm);
-        std::vector<cd> lifted(moments.size(), cd(0.0, 0.0));
-        for (size_t i = 0; i < moments.size(); ++i) {
-            lifted[i] = static_cast<cd>(moments[i]);
-        }
-        return lifted;
-    }
-}
-
 // KPM moments of delta(E - A) on |v>, weighted by the metric the form
 // implies (doc/position_commutator.md section 5): the density operator is
 // self-adjoint in the S inner product, so
@@ -76,58 +41,119 @@ std::vector<cd> compute_density_moments(
 //   Sandwich    mu_n = <v| T_n(A~) |v>       (eta-space dots ARE the S metric)
 //   Orthogonal  mu_n = <v| T_n(A~) |v>
 //
-// The plain compute_moments covers the last two; this adds the S-weighted
-// left vector for the Solve form and is what every non-orthogonal spectral
-// readout in this file goes through.
+// One doubled recurrence serves all three. Write W for the metric (S under
+// Solve, the identity otherwise): A~ is self-adjoint in W, so W T_n(A~) =
+// T_n(A~)^H W and the product identity 2 T_m T_n = T_{m+n} + T_{|m-n|}
+// folds onto the single chain t_n = T_n(A~) v, exactly as in
+// kpm_dos_moments (dos.hpp):
+//
+//   mu_{2n}   = 2 <t_n| W |t_n>     - mu_0
+//   mu_{2n-1} = 2 <t_n| W |t_{n-1}> - mu_1
+//
+// -- two moments per apply_op instead of one. This is not the doubling the
+// op_is_hermitian() gate in cheby.hpp forbids: that gate concerns PLAIN
+// moments under the Solve form, whose bra would need a second Chebyshev
+// chain seeded from S^-1 v. The S-weighted moments that comment sets aside
+// as "the sandwich estimator resampled" are, here, the defined quantity --
+// this file's spectra are S-weighted from the start. Per pair of moments
+// the Solve form pays one S SpMV for W t_n, noise next to the CG solve
+// inside its apply_op.
+//
+// This recurrence is the whole cost of the diffusion spectrum: n_steps *
+// n_kpm applies against n_steps * O(tau) for the time evolution (tau =
+// half_width * dt / hbar). The concurrent shared-state scheme that took the
+// AC correlator to ~9x fewer propagation matvecs (corr_ac_concurrent) does
+// NOT transfer to this term, for two reasons that survive every regrouping:
+// its gain is the Bessel tail of e^{-i A dt} amortised over a block, and
+// the moment recurrence has no tail -- all n_kpm terms are signal; and the
+// moments are BILINEAR in the evolved state, so expanding phi(t_k) over
+// block-shared Chebyshev states (b*tau + tail of them per block of b steps,
+// tau ~ 100-200 at production dt_fs = 10) needs a T_n chain per stored
+// state where AC needs one dot per sample. Whenever tau > 1 -- every
+// physical MSD run -- stepping in time IS the compressed representation,
+// and the halving above is what remains.
 template <typename T, typename VectorType>
 std::vector<cd> metric_density_moments(
     Chebyshev<T>& cheby,
     const VectorType& v,
     int n_kpm
 ) {
-    if (cheby.form != ChebyOpForm::Solve) {
-        return compute_density_moments(cheby, v, n_kpm);
-    }
+    const bool weighted = (cheby.form == ChebyOpForm::Solve);
 
-    VectorType left = ZeroLike(v);
-    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-        cheby.S->mult_dense(const_cast<VectorType&>(v), left);
-    } else {
-        cheby.S->mult(const_cast<VectorType&>(v), left);
-    }
+    auto dot_avg = [&](const VectorType& a, const VectorType& b) -> cd {
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            std::vector<T> per_column(static_cast<size_t>(a.num_vectors));
+            a.dot(b, per_column);
+            cd accum = 0.0;
+            for (const auto& value : per_column) accum += static_cast<cd>(value);
+            return accum / static_cast<double>(a.num_vectors);
+        } else {
+            return static_cast<cd>(a.dot(b));
+        }
+    };
 
     VectorType t0 = ZeroLike(v);
     VectorType t1 = ZeroLike(v);
     VectorType t2 = ZeroLike(v);
-    t0.copy_from(v);
-
-    auto record = [&](const VectorType& tn, std::vector<cd>& out) {
+    std::unique_ptr<VectorType> wbuf;
+    if (weighted) {
         if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
-            std::vector<T> per_column(static_cast<size_t>(v.num_vectors));
-            left.dot(tn, per_column);
-            cd accum = 0.0;
-            for (const auto& value : per_column) accum += static_cast<cd>(value);
-            out.push_back(accum / static_cast<double>(v.num_vectors));
+            wbuf = std::make_unique<VectorType>(v.graph, v.num_vectors);
         } else {
-            out.push_back(static_cast<cd>(left.dot(tn)));
+            wbuf = std::make_unique<VectorType>(v.graph);
         }
+    }
+    // W t, or t itself when the metric is the identity. S is Hermitian, so
+    // <W t_n| t_m> = <t_n| W |t_m> and the one weighted vector per
+    // iteration serves both moment formulas.
+    auto weight = [&](VectorType& t) -> VectorType& {
+        if (!weighted) return t;
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            cheby.S->mult_dense(t, *wbuf);
+        } else {
+            cheby.S->mult(t, *wbuf);
+        }
+        return *wbuf;
     };
 
-    std::vector<cd> moments;
-    moments.reserve(static_cast<size_t>(n_kpm));
-    record(t0, moments);
-    if (n_kpm > 1) {
-        cheby.apply_op(t0, t1, ChebyMode::NORMAL);
-        record(t1, moments);
-    }
-    for (int n = 2; n < n_kpm; ++n) {
+    std::vector<cd> moments(static_cast<size_t>(std::max(n_kpm, 0)), cd(0.0, 0.0));
+    if (n_kpm <= 0) return moments;
+
+    t0.copy_from(v);
+    moments[0] = dot_avg(weight(t0), t0);
+    if (n_kpm == 1) return moments;
+
+    cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+    moments[1] = dot_avg(weight(t0), t1);
+
+    for (int n = 1;; ++n) {
+        ::rsatb::util::throw_if_interrupted(v.graph->comm);
+        // t1 = T_n v, t0 = T_{n-1} v
+        VectorType& wt = weight(t1);
+        if (2 * n - 1 < n_kpm && 2 * n - 1 > 1) {
+            moments[static_cast<size_t>(2 * n - 1)] = 2.0 * dot_avg(wt, t0) - moments[1];
+        }
+        if (2 * n < n_kpm) {
+            moments[static_cast<size_t>(2 * n)] = 2.0 * dot_avg(wt, t1) - moments[0];
+        }
+        if (2 * n + 1 >= n_kpm) break;
         cheby.apply_op(t1, t2, ChebyMode::NORMAL);
         t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
-        record(t2, moments);
-        std::swap(t0, t1);
-        std::swap(t1, t2);
+        t0.swap(t1);
+        t1.swap(t2);
     }
     return moments;
+}
+
+// The per-step line prints at kSummary, not kProgress: a production MSD task
+// spends minutes to hours in this loop (n_kpm moment applies per step), and
+// the level contract (profile.hpp) says silence over that span is unhelpful,
+// not quiet. The every_nth throttle keeps it to ~20 lines per task --
+// phase-boundary cadence, not the per-iteration reporting kProgress adds.
+inline void log_msd_step(int rank, int step, int n_steps) {
+    if (rank != 0 || !::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kSummary)) return;
+    if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
+        std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
 }
 
 inline void write_msd_row(
@@ -273,10 +299,7 @@ void run_explicit_position_msd(
             xpsi0_prop.copy_from(xpsi0_prop_next);
         }
 
-        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
-            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
-                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
-        }
+        log_msd_step(psi_in.graph->rank, step, n_steps);
 
         apply_position(psi_curr, xpsi_curr);
         comm_state.copy_from(xpsi_curr);
@@ -333,10 +356,7 @@ void run_gamma_affine_msd(
             state_curr.periodic.copy_from(state_next.periodic);
         }
 
-        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
-            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
-                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
-        }
+        log_msd_step(psi_in.graph->rank, step, n_steps);
 
         // The affine branch stores U(t)X|psi> as a(t) + R b(t). In the commutator
         // XU(t)|psi> - U(t)X|psi>, the cell-linear R b(t) part cancels identically,
@@ -440,10 +460,7 @@ void run_commutator_msd(
             curr.periodic.copy_from(next.periodic);
         }
 
-        if (psi_in.graph->rank == 0 && ::rsatb::util::Log::enabled(::rsatb::util::LogLevel::kProgress)) {
-            if (::rsatb::util::every_nth(step, std::max(1, (n_steps + 1) / 20)))
-                std::cout << "msd: step " << step + 1 << " / " << (n_steps + 1) << std::endl;
-        }
+        log_msd_step(psi_in.graph->rank, step, n_steps);
 
         std::vector<cd> msd_moments = metric_density_moments(cheby, curr.affine, n_kpm);
         std::vector<cd> msd_spectrum;

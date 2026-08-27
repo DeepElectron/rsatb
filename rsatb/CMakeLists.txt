@@ -519,6 +519,12 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_msd PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_msd PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: benchmark_msd_moments - the diffusion-spectrum MSD loop on a
+    # synthetic lattice, orthogonal and solve forms
+    add_executable(benchmark_msd_moments calc/test/benchmark_msd_moments.cpp)
+    target_include_directories(benchmark_msd_moments PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_msd_moments PRIVATE ${RSATB_LINK_LIBS})
+
     # Executable: test_operator_api
     add_executable(test_operator_api test_operator_api.cpp $<TARGET_OBJECTS:backend>)
     target_include_directories(test_operator_api PRIVATE ${RSATB_INCLUDE_DIRS})

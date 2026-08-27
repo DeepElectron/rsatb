@@ -116,7 +116,9 @@ def msd_cost(task, window):
     """Gamma-affine MSD: two H0 products and one H1 first-moment product per step."""
     _, half_width = window
     time_coeffs = chebyshev_coeff_count(half_width * task["dt_fs"] / HBAR_EV_FS)
-    density = (task["n_steps"] + 2) * max(task["n_kpm"] - 1, 0)
+    # Doubled KPM recurrence (msd.hpp metric_density_moments): two moments
+    # per apply, so n_kpm moments cost floor(n_kpm / 2) applies.
+    density = (task["n_steps"] + 2) * (task["n_kpm"] // 2)
     affine = task["n_steps"] * max(time_coeffs - 1, 0) * 3
     return density + affine, "KPM density {} + affine time {}".format(density, affine)
 

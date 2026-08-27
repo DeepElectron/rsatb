@@ -797,6 +797,102 @@ TEST(MSDTest, OverlapFormMatchesEquivalentOrthogonalRun) {
     }
 }
 
+// The doubled metric-moment recurrence against the plain one-moment-per-apply
+// recurrence it replaced, on operators whose forms exercise both metrics: the
+// Solve form (S-weighted dots, one S product per moment pair) and the
+// orthogonal form (plain dots). The product identity behind the doubling is
+// an operator identity, not an approximation, so the two paths agree to
+// rounding; the tolerance here is the "bit-comparable" bar, orders below the
+// 1e-6..1e-8 the physics tests above compare spectra at.
+TEST(MSDTest, DoubledMetricMomentsMatchPlainRecurrence) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph);
+    Matrix S(&graph);
+    fill_matrix(H, {
+        {Scalar(-0.4, 0.0), Scalar(0.15, 0.2)},
+        {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}
+    });
+    fill_matrix(S, {
+        {Scalar(1.2, 0.0), Scalar(0.1, 0.0)},
+        {Scalar(0.1, 0.0), Scalar(0.9, 0.0)}
+    });
+
+    Vector sample_a(&graph);
+    fill_vector(sample_a, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
+    Vector sample_b(&graph);
+    fill_vector(sample_b, {Scalar(-0.2, 0.5), Scalar(0.6, 0.1)});
+
+    // The recurrence the doubled path replaced, S-weighted left vector when
+    // the form asks for one.
+    auto plain_moments = [&](Chebyshev<Scalar>& cheby, const Vector& v, int n_kpm) {
+        Vector left(&graph);
+        if (cheby.form == ChebyOpForm::Solve) {
+            Vector v_copy(&graph);
+            v_copy.copy_from(v);
+            cheby.S->mult(v_copy, left);
+        } else {
+            left.copy_from(v);
+        }
+        Vector t0(&graph), t1(&graph), t2(&graph);
+        t0.copy_from(v);
+        std::vector<cd> mu;
+        mu.push_back(static_cast<cd>(left.dot(t0)));
+        if (n_kpm > 1) {
+            cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+            mu.push_back(static_cast<cd>(left.dot(t1)));
+        }
+        for (int n = 2; n < n_kpm; ++n) {
+            cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+            t2.axpby(Scalar(-1.0), t0, Scalar(2.0));
+            mu.push_back(static_cast<cd>(left.dot(t2)));
+            t0.swap(t1);
+            t1.swap(t2);
+        }
+        return mu;
+    };
+
+    // Odd and even moment counts, so both tails of the doubled loop run.
+    for (int n_kpm : {32, 33}) {
+        Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
+        std::vector<cd> doubled =
+            rsatb::calc::detail::metric_density_moments(cheby_solve, sample_a, n_kpm);
+        std::vector<cd> plain = plain_moments(cheby_solve, sample_a, n_kpm);
+        ASSERT_EQ(doubled.size(), static_cast<size_t>(n_kpm));
+        for (int n = 0; n < n_kpm; ++n) {
+            EXPECT_NEAR(std::abs(doubled[static_cast<size_t>(n)] - plain[static_cast<size_t>(n)]),
+                        0.0, 1e-12) << "solve form, moment " << n;
+        }
+
+        Chebyshev<Scalar> cheby_orth(H, -1.0, 1.0);
+        doubled = rsatb::calc::detail::metric_density_moments(cheby_orth, sample_a, n_kpm);
+        plain = plain_moments(cheby_orth, sample_a, n_kpm);
+        for (int n = 0; n < n_kpm; ++n) {
+            EXPECT_NEAR(std::abs(doubled[static_cast<size_t>(n)] - plain[static_cast<size_t>(n)]),
+                        0.0, 1e-12) << "orthogonal form, moment " << n;
+        }
+    }
+
+    // Multivector with DISTINCT columns: the block moments are the average of
+    // the per-column moments, so a column mixup would not cancel here.
+    {
+        const int n_kpm = 33;
+        MultiVector samples(&graph, 2);
+        samples.set_col(0, sample_a);
+        samples.set_col(1, sample_b);
+
+        Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
+        std::vector<cd> block =
+            rsatb::calc::detail::metric_density_moments(cheby_solve, samples, n_kpm);
+        std::vector<cd> ref_a = plain_moments(cheby_solve, sample_a, n_kpm);
+        std::vector<cd> ref_b = plain_moments(cheby_solve, sample_b, n_kpm);
+        for (int n = 0; n < n_kpm; ++n) {
+            const cd expected = 0.5 * (ref_a[static_cast<size_t>(n)] + ref_b[static_cast<size_t>(n)]);
+            EXPECT_NEAR(std::abs(block[static_cast<size_t>(n)] - expected), 0.0, 1e-12)
+                << "multivector solve form, moment " << n;
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);
