@@ -1,4 +1,5 @@
 #include "../msd.hpp"
+#include "../msd_spectral.hpp"
 
 #include <gtest/gtest.h>
 #include <mpi.h>
@@ -194,6 +195,55 @@ Dense4 dense4_expm(const Dense4& a) {
         result = dense4_mul(result, result);
     }
     return result;
+}
+
+Dense2 dense2_expm(const Dense2& a) {
+    const double norm_bound = [&]() {
+        double max_row = 0.0;
+        for (int i = 0; i < 2; ++i) {
+            double row_sum = 0.0;
+            for (int j = 0; j < 2; ++j) {
+                row_sum += std::abs(a[static_cast<size_t>(i) * 2 + static_cast<size_t>(j)]);
+            }
+            max_row = std::max(max_row, row_sum);
+        }
+        return max_row;
+    }();
+
+    int squarings = 0;
+    if (norm_bound > 0.5) {
+        squarings = static_cast<int>(std::ceil(std::log2(norm_bound / 0.5)));
+    }
+    const double scale = std::ldexp(1.0, squarings);
+    Dense2 scaled = dense2_scale(a, Scalar(1.0 / scale, 0.0));
+
+    Dense2 result = dense2_identity();
+    Dense2 term = dense2_identity();
+    for (int n = 1; n <= 40; ++n) {
+        term = dense2_mul(term, scaled);
+        term = dense2_scale(term, Scalar(1.0 / static_cast<double>(n), 0.0));
+        result = dense2_add(result, term);
+    }
+    for (int i = 0; i < squarings; ++i) {
+        result = dense2_mul(result, result);
+    }
+    return result;
+}
+
+Scalar dense2_trace(const Dense2& a) { return a[0] + a[3]; }
+
+// Chebyshev matrix polynomials T_p(a) for p = 0..n-1, dense.
+std::vector<Dense2> dense2_chebyshev_family(const Dense2& a, int n) {
+    std::vector<Dense2> t;
+    t.reserve(static_cast<size_t>(n));
+    t.push_back(dense2_identity());
+    if (n > 1) t.push_back(a);
+    for (int p = 2; p < n; ++p) {
+        Dense2 next = dense2_scale(dense2_mul(a, t[static_cast<size_t>(p - 1)]), Scalar(2.0, 0.0));
+        next = dense2_add(next, dense2_scale(t[static_cast<size_t>(p - 2)], Scalar(-1.0, 0.0)));
+        t.push_back(next);
+    }
+    return t;
 }
 
 std::vector<Scalar> dense_chebyshev_moments(const Dense2& h_scaled, const DenseVec2& v, int n_moments) {
@@ -891,6 +941,331 @@ TEST(MSDTest, DoubledMetricMomentsMatchPlainRecurrence) {
                 << "multivector solve form, moment " << n;
         }
     }
+}
+
+// The spectral (single-chain VAC) route against a dense reference and against
+// the stepwise route, orthogonal form. Summed over the complete basis both
+// stochastic estimators ARE the exact trace, so the three must agree; the
+// spectral route's residual is its cardinal time quadrature.
+TEST(MSDTest, SpectralRouteMatchesDenseAndStepwiseOrthogonal) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), X(&graph), V(&graph);
+
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 x = {Scalar(-0.7, 0.0), Scalar(0.3, 0.1),
+                      Scalar(0.3, -0.1), Scalar(1.1, 0.0)};
+    // V = i[H, X], Hermitian; the commutator convention the engines consume.
+    Dense2 v{};
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    const int n_steps = 3, n_kpm = 32;
+    const double dt_fs = 1.5;
+    const double emin = -1.2, emax = 1.2;
+
+    // Complete basis as a sample block: the averaged moments are Tr[...]/2.
+    Vector e0(&graph), e1(&graph);
+    fill_vector(e0, {Scalar(1.0, 0.0), Scalar(0.0, 0.0)});
+    fill_vector(e1, {Scalar(0.0, 0.0), Scalar(1.0, 0.0)});
+    MultiVector samples(&graph, 2);
+    samples.set_col(0, e0);
+    samples.set_col(1, e1);
+
+    std::vector<double> msd_spec, e_spec, msd_step, e_step;
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                          msd_spec, e_spec);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, msd_step, e_step);
+    }
+
+    // Dense reference: trace moments of (X(t) - X) T_p (X(t) - X), averaged
+    // over the 2 basis columns, through the shared reconstruction.
+    const double hw = 0.5 * (emax - emin);
+    const double center = 0.5 * (emax + emin);
+    const double hbar = 0.6582119569;
+    const Dense2 a_s = dense2_scale(
+        dense2_add(h, dense2_scale(dense2_identity(), Scalar(-center, 0.0))),
+        Scalar(1.0 / hw, 0.0));
+    const std::vector<Dense2> tfam = dense2_chebyshev_family(a_s, n_kpm);
+
+    std::vector<cd> rho_ref(static_cast<size_t>(n_kpm));
+    for (int p = 0; p < n_kpm; ++p) {
+        rho_ref[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(tfam[static_cast<size_t>(p)])) * 0.5;
+    }
+    std::vector<cd> rho_spectrum;
+    reconstruct_spectrum_from_moments(rho_ref, rho_spectrum, nullptr, true);
+
+    ASSERT_EQ(msd_spec.size(), static_cast<size_t>(n_steps + 1) * n_kpm);
+    ASSERT_EQ(msd_step.size(), msd_spec.size());
+
+    double max_err_spec = 0.0, max_err_step = 0.0, scale_ref = 0.0;
+    for (int k = 0; k <= n_steps; ++k) {
+        const double tau = k * dt_fs * hw / hbar;
+        const Dense2 up = dense2_expm(dense2_scale(a_s, Scalar(0.0, tau)));
+        const Dense2 um = dense2_expm(dense2_scale(a_s, Scalar(0.0, -tau)));
+        const Dense2 xt = dense2_mul(up, dense2_mul(x, um));
+        const Dense2 dx = dense2_add(xt, dense2_scale(x, Scalar(-1.0, 0.0)));
+
+        std::vector<cd> num_ref(static_cast<size_t>(n_kpm));
+        for (int p = 0; p < n_kpm; ++p) {
+            const Dense2 mid = dense2_mul(dx, dense2_mul(tfam[static_cast<size_t>(p)], dx));
+            num_ref[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(mid)) * 0.5;
+        }
+        std::vector<cd> num_spectrum;
+        reconstruct_spectrum_from_moments(num_ref, num_spectrum, nullptr, true);
+
+        for (int i = 0; i < n_kpm; ++i) {
+            const double rho = rho_spectrum[static_cast<size_t>(i)].real();
+            double ref = 0.0;
+            if (std::abs(rho) > 1e-12) ref = num_spectrum[static_cast<size_t>(i)].real() / rho;
+            scale_ref = std::max(scale_ref, std::abs(ref));
+            const size_t idx = static_cast<size_t>(k) * n_kpm + static_cast<size_t>(i);
+            max_err_spec = std::max(max_err_spec, std::abs(msd_spec[idx] - ref));
+            max_err_step = std::max(max_err_step, std::abs(msd_step[idx] - ref));
+        }
+    }
+    std::cout << "spectral vs dense max err " << max_err_spec
+              << ", stepwise vs dense max err " << max_err_step
+              << ", scale " << scale_ref << std::endl;
+    EXPECT_GT(scale_ref, 1e-3);
+    EXPECT_LT(max_err_step, 1e-6 * std::max(1.0, scale_ref));
+    EXPECT_LT(max_err_spec, 1e-6 * std::max(1.0, scale_ref));
+}
+
+// Long-window regression of the spectral route: the benchmark regime is
+// hundreds of scaled-time units, far past the short windows of the tests
+// above, and the cardinal quadrature, coefficient truncations, and block
+// reseeding all accumulate there if they are going to.
+TEST(MSDTest, SpectralRouteLongWindowOrthogonal) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), X(&graph), V(&graph);
+
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 x = {Scalar(-0.7, 0.0), Scalar(0.3, 0.1),
+                      Scalar(0.3, -0.1), Scalar(1.1, 0.0)};
+    Dense2 v{};
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    const int n_steps = 32, n_kpm = 24;
+    const double dt_fs = 5.0;   // tau_step ~ 9.1, full window ~ 291 scaled
+    const double emin = -1.2, emax = 1.2;
+
+    Vector e0(&graph), e1(&graph);
+    fill_vector(e0, {Scalar(1.0, 0.0), Scalar(0.0, 0.0)});
+    fill_vector(e1, {Scalar(0.0, 0.0), Scalar(1.0, 0.0)});
+    MultiVector samples(&graph, 2);
+    samples.set_col(0, e0);
+    samples.set_col(1, e1);
+
+    std::vector<double> msd_spec, e_spec;
+    {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                          msd_spec, e_spec);
+    }
+
+    const double hw = 0.5 * (emax - emin);
+    const double center = 0.5 * (emax + emin);
+    const double hbar = 0.6582119569;
+    const Dense2 a_s = dense2_scale(
+        dense2_add(h, dense2_scale(dense2_identity(), Scalar(-center, 0.0))),
+        Scalar(1.0 / hw, 0.0));
+    const std::vector<Dense2> tfam = dense2_chebyshev_family(a_s, n_kpm);
+
+    std::vector<cd> rho_ref(static_cast<size_t>(n_kpm));
+    for (int p = 0; p < n_kpm; ++p) {
+        rho_ref[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(tfam[static_cast<size_t>(p)])) * 0.5;
+    }
+    std::vector<cd> rho_spectrum;
+    reconstruct_spectrum_from_moments(rho_ref, rho_spectrum, nullptr, true);
+
+    double max_err_spec = 0.0, scale_ref = 0.0;
+    for (int k = 0; k <= n_steps; ++k) {
+        const double tau = k * dt_fs * hw / hbar;
+        const Dense2 up = dense2_expm(dense2_scale(a_s, Scalar(0.0, tau)));
+        const Dense2 um = dense2_expm(dense2_scale(a_s, Scalar(0.0, -tau)));
+        const Dense2 xt = dense2_mul(up, dense2_mul(x, um));
+        const Dense2 dx = dense2_add(xt, dense2_scale(x, Scalar(-1.0, 0.0)));
+
+        std::vector<cd> num_ref(static_cast<size_t>(n_kpm));
+        for (int p = 0; p < n_kpm; ++p) {
+            const Dense2 mid = dense2_mul(dx, dense2_mul(tfam[static_cast<size_t>(p)], dx));
+            num_ref[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(mid)) * 0.5;
+        }
+        std::vector<cd> num_spectrum;
+        reconstruct_spectrum_from_moments(num_ref, num_spectrum, nullptr, true);
+
+        for (int i = 0; i < n_kpm; ++i) {
+            const double rho = rho_spectrum[static_cast<size_t>(i)].real();
+            double ref = 0.0;
+            if (std::abs(rho) > 1e-12) ref = num_spectrum[static_cast<size_t>(i)].real() / rho;
+            scale_ref = std::max(scale_ref, std::abs(ref));
+            const size_t idx = static_cast<size_t>(k) * n_kpm + static_cast<size_t>(i);
+            max_err_spec = std::max(max_err_spec, std::abs(msd_spec[idx] - ref));
+        }
+    }
+    std::cout << "long-window spectral vs dense max err " << max_err_spec
+              << ", scale " << scale_ref << std::endl;
+    EXPECT_GT(scale_ref, 1e-3);
+    EXPECT_LT(max_err_spec, 1e-5 * std::max(1.0, scale_ref));
+}
+
+// The spectral route on the Solve form: complete METRIC basis (columns of L
+// with L L^H = S^-1), dense VAC reference built directly from the dressed
+// velocity, and the stepwise commutator route on the same inputs.
+TEST(MSDTest, SpectralRouteMatchesDenseWithOverlap) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), S(&graph), V(&graph);
+
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 s = {Scalar(1.2, 0.0), Scalar(0.1, 0.0),
+                      Scalar(0.1, 0.0), Scalar(0.9, 0.0)};
+    const Dense2 v = {Scalar(0.1, 0.0), Scalar(0.2, 0.1),
+                      Scalar(0.2, -0.1), Scalar(-0.3, 0.0)};
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(S, {{s[0], s[1]}, {s[2], s[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    const int n_steps = 3, n_kpm = 32;
+    const double dt_fs = 1.5;
+    const double emin = -1.2, emax = 1.2;
+
+    auto inv2 = [](const Dense2& m) {
+        const Scalar det = m[0] * m[3] - m[1] * m[2];
+        return Dense2{m[3] / det, -m[1] / det, -m[2] / det, m[0] / det};
+    };
+    const Dense2 s_inv = inv2(s);
+    // Cholesky of S^-1 = L L^H; its columns are the complete metric basis.
+    Dense2 lchol{};
+    {
+        const Scalar a = s_inv[0], b = s_inv[1], c = s_inv[3];
+        const Scalar l00 = std::sqrt(a.real());
+        lchol[0] = l00;
+        lchol[2] = std::conj(b) / l00;
+        lchol[3] = std::sqrt((c - std::norm(b) / a).real());
+    }
+
+    Vector r0(&graph), r1(&graph);
+    fill_vector(r0, {lchol[0], lchol[2]});
+    fill_vector(r1, {lchol[1], lchol[3]});
+    MultiVector samples(&graph, 2);
+    samples.set_col(0, r0);
+    samples.set_col(1, r1);
+
+    std::vector<double> msd_spec, e_spec, msd_step, e_step;
+    {
+        Chebyshev<Scalar> cheby(H, S, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                          msd_spec, e_spec);
+    }
+    {
+        Chebyshev<Scalar> cheby(H, S, emin, emax);
+        corr_msd(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                 msd_step, e_step);
+    }
+
+    ASSERT_EQ(msd_step.size(), msd_spec.size());
+
+    // Dense reference straight from the VAC definition: coefficient traces
+    // are basis-invariant, so num_p(t) = (2 / hw^2) int_0^t (t - u)
+    // Re Tr[T_p(A_s) e^{+iA_s u} D e^{-iA_s u} D] du with D = S^-1 V.
+    const double hw = 0.5 * (emax - emin);
+    const double center = 0.5 * (emax + emin);
+    const double hbar = 0.6582119569;
+    const Dense2 a0 = dense2_mul(s_inv, h);
+    const Dense2 a_s = dense2_scale(
+        dense2_add(a0, dense2_scale(dense2_identity(), Scalar(-center, 0.0))),
+        Scalar(1.0 / hw, 0.0));
+    const Dense2 d_op = dense2_mul(s_inv, v);
+    const std::vector<Dense2> tfam = dense2_chebyshev_family(a_s, n_kpm);
+
+    std::vector<cd> rho_ref(static_cast<size_t>(n_kpm));
+    for (int p = 0; p < n_kpm; ++p) {
+        rho_ref[static_cast<size_t>(p)] = static_cast<cd>(dense2_trace(tfam[static_cast<size_t>(p)])) * 0.5;
+    }
+    std::vector<cd> rho_spectrum;
+    reconstruct_spectrum_from_moments(rho_ref, rho_spectrum, nullptr, true);
+
+    // Fine-grid VAC in scaled time, integrated per output step.
+    const double tau_max = n_steps * dt_fs * hw / hbar;
+    const double du = 1e-3;
+    const int n_fine = static_cast<int>(std::ceil(tau_max / du)) + 1;
+    const Dense2 estep = dense2_expm(dense2_scale(a_s, Scalar(0.0, du)));
+    const Dense2 estep_m = dense2_expm(dense2_scale(a_s, Scalar(0.0, -du)));
+
+    std::vector<std::vector<double>> vac(static_cast<size_t>(n_kpm),
+                                         std::vector<double>(static_cast<size_t>(n_fine)));
+    Dense2 up = dense2_identity(), um = dense2_identity();
+    for (int f = 0; f < n_fine; ++f) {
+        const Dense2 d_u = dense2_mul(up, dense2_mul(d_op, um));
+        const Dense2 dd = dense2_mul(d_u, d_op);
+        for (int p = 0; p < n_kpm; ++p) {
+            vac[static_cast<size_t>(p)][static_cast<size_t>(f)] =
+                static_cast<cd>(dense2_trace(dense2_mul(tfam[static_cast<size_t>(p)], dd))).real() * 0.5;
+        }
+        up = dense2_mul(estep, up);
+        um = dense2_mul(um, estep_m);
+    }
+
+    double max_err_spec = 0.0, max_err_step = 0.0, scale_ref = 0.0;
+    for (int k = 0; k <= n_steps; ++k) {
+        const double tk = k * dt_fs * hw / hbar;
+        const int nf = std::min(n_fine - 1, static_cast<int>(std::floor(tk / du)));
+        std::vector<cd> num_ref(static_cast<size_t>(n_kpm));
+        for (int p = 0; p < n_kpm; ++p) {
+            double acc = 0.0;
+            for (int f = 0; f <= nf; ++f) {
+                const double u = f * du;
+                const double wgt = (f == 0 || f == nf) ? 0.5 : 1.0;
+                acc += wgt * (tk - u) * vac[static_cast<size_t>(p)][static_cast<size_t>(f)];
+            }
+            num_ref[static_cast<size_t>(p)] = cd(2.0 / (hw * hw) * acc * du, 0.0);
+        }
+        std::vector<cd> num_spectrum;
+        reconstruct_spectrum_from_moments(num_ref, num_spectrum, nullptr, true);
+
+        for (int i = 0; i < n_kpm; ++i) {
+            const double rho = rho_spectrum[static_cast<size_t>(i)].real();
+            double ref = 0.0;
+            if (std::abs(rho) > 1e-12) ref = num_spectrum[static_cast<size_t>(i)].real() / rho;
+            scale_ref = std::max(scale_ref, std::abs(ref));
+            const size_t idx = static_cast<size_t>(k) * n_kpm + static_cast<size_t>(i);
+            max_err_spec = std::max(max_err_spec, std::abs(msd_spec[idx] - ref));
+            max_err_step = std::max(max_err_step, std::abs(msd_step[idx] - ref));
+        }
+    }
+    std::cout << "solve spectral vs dense max err " << max_err_spec
+              << ", stepwise vs dense max err " << max_err_step
+              << ", scale " << scale_ref << std::endl;
+    EXPECT_GT(scale_ref, 1e-3);
+    EXPECT_LT(max_err_step, 1e-6 * std::max(1.0, scale_ref));
+    EXPECT_LT(max_err_spec, 1e-6 * std::max(1.0, scale_ref));
 }
 
 int main(int argc, char** argv) {

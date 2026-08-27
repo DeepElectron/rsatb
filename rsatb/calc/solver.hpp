@@ -243,8 +243,18 @@ public:
             
             // DistMultiVector is row-major (a row holds all vectors), so walk rows
             // outer and vectors inner.
+            //
+            // Per-column breakdown guard, the batched analogue of the
+            // single-vector "p_Ap too small" break: a column that is already
+            // converged -- a zero right-hand side included, which is how the
+            // commutator MSD's affine component arrives here -- has R = P = 0
+            // and alpha = 0/0 would poison the whole block with NaN. Freezing
+            // the column keeps it exactly where it is while the live columns
+            // iterate on.
             std::vector<T> alpha(num_vecs);
-            for (int c = 0; c < num_vecs; ++c) alpha[c] = R_norm_sq[c] / P_AP[c];
+            for (int c = 0; c < num_vecs; ++c) {
+                alpha[c] = (std::abs(P_AP[c]) < 1e-16) ? T(0.0) : R_norm_sq[c] / P_AP[c];
+            }
 
             #pragma omp parallel for
             for (int i = 0; i < X.local_rows; ++i) {
@@ -279,9 +289,13 @@ public:
                 break;
             }
             
-            // Update P
+            // Update P; a frozen column (see the alpha guard) keeps beta = 0
+            // so its search direction stays zero rather than turning 0/0.
             std::vector<T> beta(num_vecs);
-            for (int c = 0; c < num_vecs; ++c) beta[c] = R_new_norm_sq[c] / R_norm_sq[c];
+            for (int c = 0; c < num_vecs; ++c) {
+                beta[c] = (std::abs(R_norm_sq[c]) < 1e-300) ? T(0.0)
+                                                            : R_new_norm_sq[c] / R_norm_sq[c];
+            }
 
             #pragma omp parallel for
             for (int i = 0; i < P.local_rows; ++i) {
@@ -354,9 +368,13 @@ public:
                 std::vector<T> P_AP;
                 P_vec.dot(AP, P_AP);
                 
-                // Update X, R
+                // Update X, R. Same per-column breakdown guard as the plain
+                // batched CG above: a converged or zero-RHS column freezes
+                // instead of dividing 0/0.
                 std::vector<T> alpha(num_vecs);
-                for (int c = 0; c < num_vecs; ++c) alpha[c] = Rho[c] / P_AP[c];
+                for (int c = 0; c < num_vecs; ++c) {
+                    alpha[c] = (std::abs(P_AP[c]) < 1e-16) ? T(0.0) : Rho[c] / P_AP[c];
+                }
 
                 #pragma omp parallel for
                 for (int i = 0; i < X.local_rows; ++i) {
@@ -393,9 +411,11 @@ public:
                 std::vector<T> Rho_new;
                 R.dot(Z, Rho_new);
                 
-                // Update P
+                // Update P; frozen columns keep beta = 0 as above.
                 std::vector<T> beta(num_vecs);
-                for (int c = 0; c < num_vecs; ++c) beta[c] = Rho_new[c] / Rho[c];
+                for (int c = 0; c < num_vecs; ++c) {
+                    beta[c] = (std::abs(Rho[c]) < 1e-300) ? T(0.0) : Rho_new[c] / Rho[c];
+                }
 
                 #pragma omp parallel for
                 for (int i = 0; i < P_vec.local_rows; ++i) {

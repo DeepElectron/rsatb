@@ -17,6 +17,7 @@
 //   OMP_NUM_THREADS=8 ./benchmark_msd_moments
 
 #include "../msd.hpp"
+#include "../msd_spectral.hpp"
 #include "../../utils/profile.hpp"
 
 #include <mpi.h>
@@ -123,8 +124,8 @@ void fill_position_matrix(BlockSpMat<Scalar>& X, const Lattice& lat) {
     X.assemble();
 }
 
-void fill_samples(DistMultiVector<Scalar>& psi) {
-    unsigned rng = 777u;
+void fill_samples(DistMultiVector<Scalar>& psi, unsigned seed = 777u) {
+    unsigned rng = seed;
     for (int col = 0; col < psi.num_vectors; ++col) {
         unsigned col_rng = rng + 1000003u * static_cast<unsigned>(col);
         for (int local = 0; local < psi.local_rows; ++local) {
@@ -227,6 +228,94 @@ int main(int argc, char** argv) {
         const double t1 = rsatb::util::wall_time();
         std::printf("solve       n=%d nv=4 steps=3 n_kpm=300  dt=1fs    %8.2f s   checksum % .12e\n",
                     small.n, t1 - t0, checksum(msd));
+    }
+
+    // Stepwise vs spectral on the Solve form, in the regime the spectral
+    // route targets: expensive applies (CG each) and a fine output grid.
+    // The commutator (stepwise) and VAC (spectral) routes run on the SAME
+    // velocity operator, so the two checksums describe the same estimator
+    // family; small differences are the per-sample estimator arrangement.
+    {
+        DistGraph graph = make_graph(small, MPI_COMM_WORLD);
+        BlockSpMat<Scalar> H(&graph);
+        fill_hamiltonian(H, small);
+        BlockSpMat<Scalar> S(&graph);
+        fill_overlap(S, small, 0.08);
+        // V = i[H, X] for the diagonal lattice X: V_ij = i H_ij (x_j - x_i),
+        // Hermitian, same sparsity as H.
+        BlockSpMat<Scalar> V(&graph);
+        {
+            auto xcoord = [&](int row) {
+                return 2.5 * static_cast<double>(row / (small.L * small.L));
+            };
+            for (int local = 0; local < static_cast<int>(V.graph->owned_global_indices.size()); ++local) {
+                const int row = V.graph->owned_global_indices[local];
+                for (int col : small.adj[row]) {
+                    if (col == row) continue;
+                    Scalar hop(-1.0, 0.0);
+                    Scalar val = Scalar(0.0, 1.0) * hop * Scalar(xcoord(col) - xcoord(row), 0.0);
+                    V.add_block(row, col, &val, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+                }
+            }
+            V.assemble();
+        }
+        DistMultiVector<Scalar> psi(&graph, 2);
+        fill_samples(psi);
+
+        const int n_steps = 48;
+        const double dt_fs = 0.25;
+        const int n_kpm = 300;
+
+        std::vector<double> msd_a, msd_b, energy;
+        double t_step, t_spec;
+        {
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            const double t0 = rsatb::util::wall_time();
+            corr_msd(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm, msd_a, energy);
+            t_step = rsatb::util::wall_time() - t0;
+        }
+        {
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            const double t0 = rsatb::util::wall_time();
+            corr_msd_spectral(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm, msd_b, energy);
+            t_spec = rsatb::util::wall_time() - t0;
+        }
+        std::printf("solve fine grid  n=%d nv=2 steps=%d n_kpm=%d dt=%.2ffs\n",
+                    small.n, n_steps, n_kpm, dt_fs);
+        std::printf("  stepwise  %8.2f s   checksum % .12e\n", t_step, checksum(msd_a));
+        std::printf("  spectral  %8.2f s   checksum % .12e   speedup %.2fx\n",
+                    t_spec, checksum(msd_b), t_step / t_spec);
+        // Route agreement where the density has weight (middle half of the
+        // window, final step). The routes are different unbiased estimators
+        // of one trace, so this is finite-sample scatter, not truncation.
+        double max_rel = 0.0;
+        for (int i = n_kpm / 4; i < 3 * n_kpm / 4; ++i) {
+            const size_t idx = static_cast<size_t>(n_steps) * n_kpm + static_cast<size_t>(i);
+            const double denom = std::max(std::abs(msd_a[idx]), std::abs(msd_b[idx]));
+            if (denom > 1e-8) {
+                max_rel = std::max(max_rel, std::abs(msd_a[idx] - msd_b[idx]) / denom);
+            }
+        }
+        std::printf("  mid-spectrum route deviation (final step): %.3f\n", max_rel);
+        // Noise floor: the SAME stepwise route on an independent sample set,
+        // same metric. Cross-route deviation at or below this level is
+        // finite-sample scatter, not a systematic difference.
+        {
+            DistMultiVector<Scalar> psi2(&graph, 2);
+            fill_samples(psi2, 424243u);
+            Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
+            std::vector<double> msd_c;
+            corr_msd(cheby, VelocityOp<Scalar>(V), psi2, n_steps, dt_fs, n_kpm, msd_c, energy);
+            double floor_rel = 0.0;
+            for (int i = n_kpm / 4; i < 3 * n_kpm / 4; ++i) {
+                const size_t idx = static_cast<size_t>(n_steps) * n_kpm + static_cast<size_t>(i);
+                const double denom = std::max(std::abs(msd_a[idx]), std::abs(msd_c[idx]));
+                if (denom > 1e-8) {
+                    floor_rel = std::max(floor_rel, std::abs(msd_a[idx] - msd_c[idx]) / denom);
+                }
+            }
+            std::printf("  stepwise seed-to-seed noise floor:         %.3f\n", floor_rel);
+        }
     }
 
     MPI_Finalize();
