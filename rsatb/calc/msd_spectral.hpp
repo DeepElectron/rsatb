@@ -232,28 +232,51 @@ struct TriangleQuad {
     }
 };
 
-// One stochastic sample's contribution to the correlator samples C_p(u)
-// (accumulated u-major into cre_accum) and to the density moments. Complex
-// double only: the trajectories and the dot table are intrinsically complex,
-// and the tile GEMM goes through zgemm.
+// One CHUNK of stochastic samples' contributions to the correlator samples
+// C_p(u) (accumulated u-major into cre_accum) and to the density moments.
+// Complex double only: the trajectories and the dot table are intrinsically
+// complex, and the tile GEMM goes through zgemm.
+//
+// BLOCKED over samples on the APPLY axis only: every recursion (the g
+// trajectory, the chain, the anchor advance) runs the whole chunk through
+// one SpMM per term -- that is where the width-1 route lost 5-10x on
+// per-apply efficiency. The dot structure is SAMPLE-DIAGONAL
+// (G_s[q, c] = <W T_q r_s | VX_c> pairs a sample's chain with the SAME
+// sample's trajectory columns), so the stores are laid out sample-major
+// (per-sample contiguous column slabs) and the tile GEMMs run one slice per
+// sample -- identical total dot work to the looped route, one shared
+// Allreduce per tile. Memory scales with the chunk width (the caller caps
+// it): segment store chunk * ~1.3 L N_local x 16 B, dot table
+// chunk * q_seg * seg_cols x 16 B.
 template <typename T>
 void msd_spectral_accumulate(
     Chebyshev<T>& cheby,
     VelocityOp<T> velocity,
-    const DistVector<T>& r,
+    const DistMultiVector<T>& rblk,
     int n_kpm,
     const SpectralGrid& grid,
     int block_substeps,
     double segment_scaled,
     std::vector<double>& cre_accum,  // [n_cols * n_kpm], u-major, +=
-    std::vector<cd>& rho_accum       // [n_kpm], +=
+    std::vector<cd>& rho_accum       // [n_kpm], += (sum over samples)
 ) {
     static_assert(std::is_same_v<T, std::complex<double>>,
                   "corr_msd_spectral runs in complex double");
-    DistGraph* graph = r.graph;
+    DistGraph* graph = rblk.graph;
     const int rank = graph->rank;
+    const int nb = rblk.num_vectors;
     const double h = grid.h;
     const int n_cols = grid.n_cols;
+
+    // Column copy between multivectors, ld-aware (DMV rows are stride ld,
+    // padded -- never copy across rows).
+    auto copy_col = [](DistMultiVector<T>& dst, int dcol,
+                       const DistMultiVector<T>& src, int scol) {
+        for (int row = 0; row < src.local_rows; ++row) {
+            dst.data[static_cast<size_t>(row) * dst.ld + dcol] =
+                src.data[static_cast<size_t>(row) * src.ld + scol];
+        }
+    };
 
     // Velocity placement: see the header note. The seed w = D r is physical
     // and stays dressed in every form; the paired velocity and the chain run
@@ -261,16 +284,17 @@ void msd_spectral_accumulate(
     const bool bare_velocity =
         !velocity.composite() && cheby.form != ChebyOpForm::Sandwich;
     const bool weighted = (cheby.form == ChebyOpForm::Solve) && !bare_velocity;
-    auto apply_velocity_paired = [&](DistVector<T>& in, DistVector<T>& out) {
+    auto apply_velocity_paired = [&](DistMultiVector<T>& in, DistMultiVector<T>& out) {
         if (bare_velocity) {
-            velocity.matrix->mult(in, out);
+            velocity.matrix->mult_dense(in, out);
         } else {
             cheby.apply_dual(velocity, in, out, ChebyMode::NORMAL, 1.0);
         }
     };
 
-    DistVector<T> w(graph);
-    cheby.apply_dual(velocity, const_cast<DistVector<T>&>(r), w, ChebyMode::NORMAL, 1.0);
+    DistMultiVector<T> w(graph, nb);
+    cheby.apply_dual(velocity, const_cast<DistMultiVector<T>&>(rblk), w,
+                     ChebyMode::NORMAL, 1.0);
 
     // Block layout in grid points: block b's m = 0 state sits at seed_point
     // and its offsets k = 1..len cover the next len points; the first
@@ -321,13 +345,14 @@ void msd_spectral_accumulate(
         }
     }
 
-    DistVector<T> t0(graph), t1(graph), t2(graph), acc_end(graph), vx_tmp(graph), wq(graph);
-    DistVector<T> g_curr(graph), r_seg(graph);
+    DistMultiVector<T> t0(graph, nb), t1(graph, nb), t2(graph, nb),
+        acc_end(graph, nb), vx_tmp(graph, nb), wq(graph, nb);
+    DistMultiVector<T> g_curr(graph, nb), r_seg(graph, nb);
     g_curr.copy_from(w);
-    r_seg.copy_from(r);
+    r_seg.copy_from(rblk);
 
     const int tile_w = 32;
-    DistMultiVector<T> ltile(graph, tile_w);
+    DistMultiVector<T> ltile(graph, tile_w * nb);  // sample-major tile slabs
 
     for (size_t iseg = 0; iseg < segments.size(); ++iseg) {
         const int s0 = segments[iseg].first;
@@ -358,20 +383,28 @@ void msd_spectral_accumulate(
         const int n_q = q_seg;
 
         // ---- g trajectory through this segment's blocks, storing VX --------
-        DistMultiVector<T> vx(graph, seg_cols);
+        // Sample-major store: sample s's columns are the contiguous slab
+        // [s * seg_cols, (s + 1) * seg_cols) -- each tile GEMM below slices
+        // its own sample's slab.
+        DistMultiVector<T> vx(graph, seg_cols * nb);
+        auto store_vx = [&](int c, const DistMultiVector<T>& block_cols) {
+            for (int s = 0; s < nb; ++s) {
+                copy_col(vx, s * seg_cols + c, block_cols, s);
+            }
+        };
         for (int b = s0; b < s1; ++b) {
             const Block& blk = blocks[static_cast<size_t>(b)];
             std::vector<cd> cend;
             timeprop_coeff(blk.len * h, 1e-14, true, cend);
             t0.copy_from(g_curr);
             apply_velocity_paired(t0, vx_tmp);
-            vx.set_col(blk.col0, vx_tmp);
+            store_vx(blk.col0, vx_tmp);
             acc_end.copy_from(t0);
             acc_end.scale(CoeffCast<T>::apply(cend[0]));
             if (blk.n_states > 1) {
                 cheby.apply_op(t0, t1, ChebyMode::NORMAL);
                 apply_velocity_paired(t1, vx_tmp);
-                vx.set_col(blk.col0 + 1, vx_tmp);
+                store_vx(blk.col0 + 1, vx_tmp);
                 acc_end.axpy(CoeffCast<T>::apply(cend[1]), t1);
             }
             for (int m = 2; m < blk.n_states; ++m) {
@@ -379,7 +412,7 @@ void msd_spectral_accumulate(
                 cheby.apply_op(t1, t2, ChebyMode::NORMAL);
                 t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
                 apply_velocity_paired(t2, vx_tmp);
-                vx.set_col(blk.col0 + m, vx_tmp);
+                store_vx(blk.col0 + m, vx_tmp);
                 acc_end.axpy(CoeffCast<T>::apply(cend[static_cast<size_t>(m)]), t2);
                 t0.swap(t1);
                 t1.swap(t2);
@@ -392,8 +425,13 @@ void msd_spectral_accumulate(
         }
 
         // ---- chain on the segment anchor r_s, trapezoidal tile GEMMs --------
-        std::vector<cd> gtab(static_cast<size_t>(q_seg) * seg_cols, cd(0.0, 0.0));
-        std::vector<cd> tile_buf(static_cast<size_t>(tile_w) * seg_cols);
+        // The dot table is SAMPLE-DIAGONAL, so gtab holds one q x c slab per
+        // sample and each tile flush runs one GEMM slice per sample against
+        // its own vx slab -- same total dot work as the looped route, one
+        // shared Allreduce per tile.
+        std::vector<cd> gtab(static_cast<size_t>(nb) * q_seg * seg_cols,
+                             cd(0.0, 0.0));
+        std::vector<cd> tile_buf(static_cast<size_t>(nb) * tile_w * seg_cols);
 
         auto flush_tile = [&](int q_start, int width) {
             using isqrt::vbcsr_complex_double;
@@ -412,34 +450,48 @@ void msd_spectral_accumulate(
             const vbcsr_lapack_int ldb_ = vx.ld;
             const vbcsr_lapack_int ldc_ = width;
             const cd one(1.0, 0.0), zero(0.0, 0.0);
+            const size_t slab = static_cast<size_t>(width) * n_;
             // Row-major storage read as column-major is the transpose, so
             // this computes C(q, c) = sum_rows L[row, q] * conj(VX[row, c]);
-            // the wanted G = sum_rows conj(L) * VX is its conjugate.
-            isqrt::zgemm_("N", "C", &m_, &n_, &k_,
-                          reinterpret_cast<const vbcsr_complex_double*>(&one),
-                          reinterpret_cast<const vbcsr_complex_double*>(ltile.data.data()),
-                          &lda_,
-                          reinterpret_cast<const vbcsr_complex_double*>(vx.data.data()) + col_from,
-                          &ldb_,
-                          reinterpret_cast<const vbcsr_complex_double*>(&zero),
-                          reinterpret_cast<vbcsr_complex_double*>(tile_buf.data()), &ldc_);
+            // the wanted G = sum_rows conj(L) * VX is its conjugate. Column
+            // offsets select sample s's tile slab and vx slab.
+            for (int s = 0; s < nb; ++s) {
+                isqrt::zgemm_("N", "C", &m_, &n_, &k_,
+                              reinterpret_cast<const vbcsr_complex_double*>(&one),
+                              reinterpret_cast<const vbcsr_complex_double*>(
+                                  ltile.data.data()) + s * tile_w,
+                              &lda_,
+                              reinterpret_cast<const vbcsr_complex_double*>(
+                                  vx.data.data()) + s * seg_cols + col_from,
+                              &ldb_,
+                              reinterpret_cast<const vbcsr_complex_double*>(&zero),
+                              reinterpret_cast<vbcsr_complex_double*>(
+                                  tile_buf.data() + s * slab), &ldc_);
+            }
             MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(),
-                          2 * width * static_cast<int>(n_), MPI_DOUBLE, MPI_SUM,
+                          2 * static_cast<int>(slab) * nb, MPI_DOUBLE, MPI_SUM,
                           graph->comm);
-            for (int q = 0; q < width; ++q) {
-                cd* row = gtab.data() + static_cast<size_t>(q_start + q) * seg_cols;
-                for (int c = col_from; c < seg_cols; ++c) {
-                    row[c] = std::conj(tile_buf[static_cast<size_t>(c - col_from) * width + q]);
+            for (int s = 0; s < nb; ++s) {
+                cd* gs = gtab.data() + static_cast<size_t>(s) * q_seg * seg_cols;
+                const cd* ts = tile_buf.data() + static_cast<size_t>(s) * slab;
+                for (int q = 0; q < width; ++q) {
+                    cd* row = gs + static_cast<size_t>(q_start + q) * seg_cols;
+                    for (int c = col_from; c < seg_cols; ++c) {
+                        row[c] = std::conj(
+                            ts[static_cast<size_t>(c - col_from) * width + q]);
+                    }
                 }
             }
         };
 
-        auto stash = [&](int q, const DistVector<T>& state) {
+        auto stash = [&](int q, const DistMultiVector<T>& state) {
+            const DistMultiVector<T>* src = &state;
             if (weighted) {
-                cheby.S->mult(const_cast<DistVector<T>&>(state), wq);
-                ltile.set_col(q % tile_w, wq);
-            } else {
-                ltile.set_col(q % tile_w, state);
+                cheby.S->mult_dense(const_cast<DistMultiVector<T>&>(state), wq);
+                src = &wq;
+            }
+            for (int s = 0; s < nb; ++s) {
+                copy_col(ltile, s * tile_w + (q % tile_w), *src, s);
             }
             if ((q % tile_w) == tile_w - 1 || q == q_seg - 1) {
                 flush_tile(q - (q % tile_w), (q % tile_w) + 1);
@@ -498,28 +550,34 @@ void msd_spectral_accumulate(
                     timeprop_coeff(k * h, 1e-14, true, cfwd);
                 }
                 const int n_m = std::min<int>(static_cast<int>(cfwd.size()), blk.n_states);
-                for (int q = 0; q < q_u; ++q) {
-                    const cd* grow =
-                        gtab.data() + static_cast<size_t>(q) * seg_cols + blk.col0;
-                    cd acc(0.0, 0.0);
-                    for (int m = 0; m < n_m; ++m) acc += cfwd[static_cast<size_t>(m)] * grow[m];
-                    d_row[static_cast<size_t>(q)] = acc;
-                }
                 if (delta == 0) {
                     bwd.assign(1, cd(1.0, 0.0));
                 } else {
                     timeprop_coeff(delta * h, 1e-14, false, bwd);
                 }
                 double* cre = cre_accum.data() + static_cast<size_t>(u) * n_kpm;
-                for (int p = 0; p < n_kpm; ++p) {
-                    cd acc(0.0, 0.0);
-                    for (size_t j = 0; j < bwd.size(); ++j) {
-                        const int jp = p + static_cast<int>(j);
-                        const int jm = std::abs(p - static_cast<int>(j));
-                        acc += bwd[j] * (0.5 * (d_row[static_cast<size_t>(jp)] +
-                                                d_row[static_cast<size_t>(jm)]));
+                for (int s = 0; s < nb; ++s) {
+                    const cd* gs =
+                        gtab.data() + static_cast<size_t>(s) * q_seg * seg_cols;
+                    for (int q = 0; q < q_u; ++q) {
+                        const cd* grow =
+                            gs + static_cast<size_t>(q) * seg_cols + blk.col0;
+                        cd acc(0.0, 0.0);
+                        for (int m = 0; m < n_m; ++m) {
+                            acc += cfwd[static_cast<size_t>(m)] * grow[m];
+                        }
+                        d_row[static_cast<size_t>(q)] = acc;
                     }
-                    cre[p] += acc.real();
+                    for (int p = 0; p < n_kpm; ++p) {
+                        cd acc(0.0, 0.0);
+                        for (size_t j = 0; j < bwd.size(); ++j) {
+                            const int jp = p + static_cast<int>(j);
+                            const int jm = std::abs(p - static_cast<int>(j));
+                            acc += bwd[j] * (0.5 * (d_row[static_cast<size_t>(jp)] +
+                                                    d_row[static_cast<size_t>(jm)]));
+                        }
+                        cre[p] += acc.real();
+                    }
                 }
             }
         }
@@ -547,9 +605,14 @@ void msd_spectral_accumulate(
         }
     }
 
-    // Density moments of the same sample, for the shared normalisation.
-    const std::vector<cd> rho = metric_density_moments(cheby, r, n_kpm);
-    for (int p = 0; p < n_kpm; ++p) rho_accum[static_cast<size_t>(p)] += rho[static_cast<size_t>(p)];
+    // Density moments of the same samples, for the shared normalisation.
+    // metric_density_moments averages over the block's columns; rho_accum
+    // carries the SUM over samples, so scale back up by the chunk width.
+    const std::vector<cd> rho = metric_density_moments(cheby, rblk, n_kpm);
+    for (int p = 0; p < n_kpm; ++p) {
+        rho_accum[static_cast<size_t>(p)] += rho[static_cast<size_t>(p)] *
+                                             static_cast<double>(nb);
+    }
 }
 
 // The assembly above leaves each rank its round-robin share of the
@@ -649,6 +712,17 @@ void msd_spectral_finalize(
 // The regime it exists for is sparse output sampling of very long windows
 // -- dt_step beyond ~2 L / lambda in scaled units -- where the per-output
 // moment runs amortise away while the chain term does not.
+//
+// `sample_width` is the stochastic block's column count. The two routes run
+// their applies at different SpMM widths -- stepwise sweeps the whole block,
+// the spectral chunks cap at kSpectralSampleChunk = 16 -- and per-apply
+// cost is NOT width-independent (a width-1 SpMV is overhead-bound; measured
+// 4x end-to-end on a 1664-orbital sandwich block of 64). The counts are
+// therefore derated by the coarse saturating efficiency eff(w) = w/(w + 3):
+// machine-independence survives as a RATIO of widths, not a flop model, and
+// at equal widths the factor is exactly 1. The misroute this prevents was
+// measured 2026-08-27 (silicon 64-sample block, pre-blocking: auto chose
+// spectral at 4x the stepwise wall).
 template <typename T>
 bool spectral_msd_cheaper(
     const Chebyshev<T>& cheby,
@@ -657,7 +731,8 @@ bool spectral_msd_cheaper(
     int n_kpm,
     int n_kpm_compute = 0,
     int time_oversample = 2,
-    double segment_scaled = 0.0
+    double segment_scaled = 0.0,
+    int sample_width = 1
 ) {
     if (n_steps <= 0 || dt_fs <= 0.0 || n_kpm <= 0) return false;
     const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
@@ -671,7 +746,12 @@ bool spectral_msd_cheaper(
     if (seg <= 0.0) seg = std::max(192.0, std::min(768.0, static_cast<double>(nc)));
     const detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
     const double window = grid.n_cols * grid.h;  // includes the kernel pad
-    const double spectral = window * (3.0 + static_cast<double>(nc) / seg);
+    auto eff = [](int w) { return static_cast<double>(w) / (w + 3.0); };
+    const int w_step = std::max(1, sample_width);
+    const int w_spec = std::min(w_step, 16);  // kSpectralSampleChunk
+    const double width_penalty = eff(w_step) / eff(w_spec);
+    const double spectral =
+        window * (3.0 + static_cast<double>(nc) / seg) * width_penalty;
     return spectral < stepwise;
 }
 
@@ -710,7 +790,9 @@ void corr_msd_spectral(
                                   detail::SpectralGrid::kKernelHalfWidth);
         std::vector<double> cre(static_cast<size_t>(grid.n_cols) * nc, 0.0);
         std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
-        detail::msd_spectral_accumulate(cheby, velocity, psi_in, nc, grid,
+        DistMultiVector<T> one_col(psi_in.graph, 1);
+        one_col.set_col(0, psi_in);
+        detail::msd_spectral_accumulate(cheby, velocity, one_col, nc, grid,
                                         block_substeps, segment_scaled, cre, rho);
         detail::reduce_correlator(cre, psi_in.graph->comm);
         detail::msd_spectral_finalize(cheby, n_steps, nc, n_kpm, 1.0, grid, quad, cre,
@@ -720,10 +802,14 @@ void corr_msd_spectral(
 
 // Sample-block overload: columns are independent stochastic samples; their
 // correlator samples and density moments are averaged BEFORE the spectrum
-// ratio, matching the multivector semantics of the stepwise route. The
-// columns run through the vector path one at a time (matvec batching across
-// columns is a follow-up; trace self-averaging keeps production sample
-// counts small).
+// ratio, matching the multivector semantics of the stepwise route. Samples
+// run through the blocked accumulate in chunks of kSpectralSampleChunk:
+// every recursion then advances the whole chunk per SpMM (the width-1 route
+// measured 4x slower end to end from per-apply overhead alone), while the
+// sample-diagonal dot tables and the segment store scale with the CHUNK,
+// not the sample count -- the chunk is the memory knob (segment store
+// chunk * ~1.3 L N_local x 16 B; dot table chunk * q_seg * seg_cols x
+// 16 B), and 16 already sits on the SpMM efficiency plateau.
 template <typename T>
 void corr_msd_spectral(
     Chebyshev<T>& cheby,
@@ -737,7 +823,8 @@ void corr_msd_spectral(
     int time_oversample = 2,
     int block_substeps = 0,
     int n_kpm_compute = 0,
-    double segment_scaled = 0.0
+    double segment_scaled = 0.0,
+    int sample_chunk = 0
 ) {
     if (n_steps < 0) throw std::runtime_error("n_steps must be non-negative");
     if (n_kpm <= 0) throw std::runtime_error("n_kpm must be positive");
@@ -745,6 +832,9 @@ void corr_msd_spectral(
     if constexpr (!std::is_same_v<T, std::complex<double>>) {
         throw std::runtime_error("corr_msd_spectral needs complex double scalars");
     } else {
+        constexpr int kSpectralSampleChunk = 16;
+        const int chunk_cap =
+            sample_chunk > 0 ? sample_chunk : kSpectralSampleChunk;
         const int nc = (n_kpm_compute > 0 && n_kpm_compute < n_kpm) ? n_kpm_compute : n_kpm;
         detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
         detail::TriangleQuad quad(n_steps, grid.m_sub, grid.h, grid.n_cols,
@@ -752,9 +842,13 @@ void corr_msd_spectral(
         std::vector<double> cre(static_cast<size_t>(grid.n_cols) * nc, 0.0);
         std::vector<cd> rho(static_cast<size_t>(nc), cd(0.0, 0.0));
         DistMultiVector<T>& samples = const_cast<DistMultiVector<T>&>(psi_in);
-        for (int col = 0; col < psi_in.num_vectors; ++col) {
-            DistVector<T> r = samples.get_col(col);
-            detail::msd_spectral_accumulate(cheby, velocity, r, nc, grid,
+        for (int col0 = 0; col0 < psi_in.num_vectors; col0 += chunk_cap) {
+            const int nb = std::min(chunk_cap, psi_in.num_vectors - col0);
+            DistMultiVector<T> chunk(psi_in.graph, nb);
+            for (int s = 0; s < nb; ++s) {
+                chunk.set_col(s, samples.get_col(col0 + s));
+            }
+            detail::msd_spectral_accumulate(cheby, velocity, chunk, nc, grid,
                                             block_substeps, segment_scaled, cre, rho);
         }
         detail::reduce_correlator(cre, psi_in.graph->comm);

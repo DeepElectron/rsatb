@@ -235,6 +235,52 @@ stepwise seed-to-seed noise floor next to the cross-route deviation to keep
 that legible. Trace self-averaging makes one or few samples sufficient at
 production system sizes.
 
+## 5.1 Blocked samples (2026-08-27)
+
+The route is blocked over stochastic samples on the APPLY axis: chunks
+of `kSpectralSampleChunk = 16` columns advance through every recursion
+(trajectory, chain, anchor) as one multivector, so each SpMM feeds the
+whole chunk -- the width-1 loop measured 4x slower end to end on a
+1664-orbital sandwich block of 64 purely from per-apply overhead. The
+dot structure is SAMPLE-DIAGONAL ($G_s$ pairs a sample's chain with the
+same sample's trajectory), so stores are sample-major slabs, the tile
+GEMMs run one slice per sample (identical total dot work to the loop),
+and one Allreduce serves all slabs per tile. Memory scales with the
+CHUNK, never the sample count: segment store $\times$ chunk, dot table
+chunk $\times q_{seg} \times$ seg\_cols $\times 16$ B; 16 sits on
+the SpMM efficiency plateau and keeps diamond-sized systems in budget.
+Any chunking reproduces the width-1 spectrum to summation rounding
+(`BlockedSampleChunksMatchWidthOne`); `sample_chunk` overrides the cap.
+The auto dispatch (`spectral_msd_cheaper`) is width-aware: counts are
+derated by the saturating per-apply efficiency ratio
+$\mathrm{eff}(w) = w/(w+3)$ between the routes' widths -- exactly 1 at
+equal widths, and the machine-independence of the comparison survives
+as a ratio of widths rather than a flop model. (Pre-blocking, the
+count-only estimate misrouted a 64-sample production block to the
+4x-slower path; measured 2026-08-27.)
+
+Measured clean (2026-08-28, silicon sc444, 1664 orbitals, sandwich, 64
+samples, n\_steps 80, dt 0.5 fs, n\_kpm 1000, machine idle): width-1
+spectral $\approx 60$ min task; blocked (4 chunk passes of 16)
+**18m02s** -- a 3.4x speedup from blocking alone. The stepwise route
+with moment prediction (`n_kpm_compute` 320) runs the same task in
+13m12s. The control run resolved the comparison (2026-08-28,
+`si_stepwise_full`): stepwise at FULL moments costs 18m16s -- equal to
+blocked spectral -- so the prediction trick was the only source of the
+stepwise advantage, and it is UNSAFE on discrete spectra: with
+`n_kpm_compute` 320 the silicon MSD grid is 29% negative (worst
+$-1.2\times10^5$ against a $\sim10^4$ scale) and $D(E,t)$ deviates
+$\sim24\%$ median from either full-resolution route, because the
+Chebyshev moments of a sparse discrete spectrum are undamped cosines
+that linear prediction cannot extrapolate. At full moments the
+stepwise route is exactly positivity-preserving (zero negatives on the
+whole grid, as the diagonal Jackson density guarantees) and the two
+routes cross-validate: 5.1% median pointwise deviation, correlation
+0.9991, residual = kernel difference. Use prediction only on dense
+spectra (the 1024-atom diamond shows 2 band-edge fuzz points); on
+small cells run full moments, where the route choice is a cost wash
+and section 6's window scaling decides.
+
 ## 6. When each route wins
 
 With segmented anchoring the spectral cost is linear in the window and
