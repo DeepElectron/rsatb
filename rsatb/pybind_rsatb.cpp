@@ -601,9 +601,90 @@ PYBIND11_MODULE(_rsatb, m) {
          }, py::arg("dE"), py::arg("method") = "kpm")
         .def("cell", &rsatb::RSATB::cell)
         .def("energy_bounds", &rsatb::RSATB::energy_bounds)
+        .def("compute_pdos", [](rsatb::RSATB& self, double dE, const std::string& projection) {
+             std::vector<double> pdos_out, total_out, omega_out;
+             std::vector<int> group_type, group_slot;
+             int n_group = 0;
+             std::string population;
+             self.compute_pdos(dE, projection, pdos_out, total_out, omega_out, n_group,
+                               population, group_type, group_slot);
+             py::dict out;
+             out["energy"] = py::array_t<double>(static_cast<py::ssize_t>(omega_out.size()),
+                                                 omega_out.data());
+             const py::ssize_t n2t = static_cast<py::ssize_t>(omega_out.size());
+             const py::ssize_t nk =
+                 n2t > 0 ? static_cast<py::ssize_t>(total_out.size()) / n2t : 0;
+             py::array_t<double> pdos({nk, static_cast<py::ssize_t>(n_group), n2t});
+             std::copy(pdos_out.begin(), pdos_out.end(), pdos.mutable_data());
+             py::array_t<double> total({nk, n2t});
+             std::copy(total_out.begin(), total_out.end(), total.mutable_data());
+             out["pdos"] = pdos;
+             out["total"] = total;
+             out["n_group"] = n_group;
+             out["population"] = population;
+             // Empty for the by-atom grouping, where the id is the atom's own
+             // input index and needs no separate label.
+             out["group_type"] = py::array_t<int>(
+                 static_cast<py::ssize_t>(group_type.size()), group_type.data());
+             out["group_slot"] = py::array_t<int>(
+                 static_cast<py::ssize_t>(group_slot.size()), group_slot.data());
+             return out;
+         }, py::arg("dE"), py::arg("projection") = "atom")
+        .def("compute_rs_density", [](rsatb::RSATB& self, double mu, double kT,
+                                      double spin_degeneracy, double spacing, int box_edge,
+                                      int n_samples, int block, unsigned long seed,
+                                      double fragment_core, double fragment_buffer,
+                                      int energy_windows) {
+             rsatb::calc::RealSpaceDensityOptions opt;
+             opt.mu = mu;
+             opt.kT = kT;
+             opt.spin_degeneracy = spin_degeneracy;
+             opt.spacing = spacing;
+             opt.box_edge = box_edge;
+             opt.n_samples = n_samples;
+             opt.block = block;
+             opt.seed = seed;
+             opt.fragment_core = fragment_core;
+             opt.fragment_buffer = fragment_buffer;
+             opt.energy_windows = energy_windows;
+             const auto res = self.compute_rs_density(std::move(opt));
+
+             // Same compact per-rank layout as compute_rs_ldos: global point
+             // indices plus this rank's values; no rank holds the whole map.
+             const int64_t n_owned = res.domain.n_point();
+             py::array_t<int64_t> index(n_owned);
+             auto* index_ptr = index.mutable_data();
+             for (int64_t p = 0; p < n_owned; ++p) {
+                 index_ptr[p] = rsatb::calc::GlobalIndexOfOwnedPoint(res.grid, res.domain, p);
+             }
+             py::array_t<double> values(static_cast<py::ssize_t>(n_owned));
+             std::copy(res.density.begin(), res.density.end(), values.mutable_data());
+             py::dict out;
+             out["shape"] = py::make_tuple(res.grid.shape[0], res.grid.shape[1],
+                                           res.grid.shape[2]);
+             out["n_point"] = res.grid.n_point();
+             out["point_index"] = index;
+             out["density"] = values;
+             out["filter_degree"] = res.filter_degree;
+             out["n_states"] = res.n_states;
+             out["sampler_residual"] = res.sampler_residual;
+             out["electrons_on_grid"] = res.electrons_on_grid;
+             out["n_fragments"] = res.n_fragments;
+             out["correction_rms"] = res.correction_rms;
+             out["control_beta"] = res.control_beta;
+             out["n_windows"] = res.n_windows;
+             return out;
+         }, py::arg("mu"), py::arg("kT"), py::arg("spin_degeneracy") = 2.0,
+            py::arg("spacing") = 0.4, py::arg("box_edge") = 0, py::arg("n_samples") = 64,
+            py::arg("block") = 16, py::arg("seed") = 12345,
+            py::arg("fragment_core") = 4.5, py::arg("fragment_buffer") = 0.0,
+            py::arg("energy_windows") = 1)
         .def("compute_rs_ldos", [](rsatb::RSATB& self, std::vector<double> energies, double eta,
                                    double spacing, int box_edge, int n_samples, int block,
-                                   unsigned long seed) {
+                                   unsigned long seed, double fragment_core,
+                                   double fragment_buffer, bool subspace_cv,
+                                   int subspace_filters, int local_capture,
+                                   int local_pack, int local_pack_replicas) {
              rsatb::calc::RealSpaceLdosOptions opt;
              opt.energies = std::move(energies);
              opt.eta = eta;
@@ -612,6 +693,13 @@ PYBIND11_MODULE(_rsatb, m) {
              opt.n_samples = n_samples;
              opt.block = block;
              opt.seed = seed;
+             opt.fragment_core = fragment_core;
+             opt.fragment_buffer = fragment_buffer;
+             opt.subspace_cv = subspace_cv;
+             opt.subspace_filters = subspace_filters;
+             opt.local_capture = local_capture;
+             opt.local_pack = local_pack;
+             opt.local_pack_replicas = local_pack_replicas;
              const auto res = self.compute_rs_ldos(std::move(opt));
 
              // This rank's compact share: global point indices plus values.
@@ -640,10 +728,35 @@ PYBIND11_MODULE(_rsatb, m) {
              out["filter_degree"] = res.filter_degree;
              out["n_states"] = res.n_states;
              out["sampler_residual"] = res.sampler_residual;
+             out["n_fragments"] = res.n_fragments;
+             out["correction_rms"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.correction_rms.size()),
+                 res.correction_rms.data());
+             out["control_beta"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.control_beta.size()),
+                 res.control_beta.data());
+             out["subspace_capture"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.subspace_capture.size()),
+                 res.subspace_capture.data());
+             out["subspace_rank"] = py::array_t<int>(
+                 static_cast<py::ssize_t>(res.subspace_rank.size()),
+                 res.subspace_rank.data());
+             out["local_route"] = py::array_t<int>(
+                 static_cast<py::ssize_t>(res.local_route.size()),
+                 res.local_route.data());
+             out["local_packing_se"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.local_packing_se.size()),
+                 res.local_packing_se.data());
+             out["local_regions"] = res.local_regions;
+             out["local_colors"] = res.local_colors;
+             out["min_same_color_distance"] = res.min_same_color_distance;
              return out;
          }, py::arg("energies"), py::arg("eta"), py::arg("spacing") = 0.4,
             py::arg("box_edge") = 0, py::arg("n_samples") = 64, py::arg("block") = 16,
-            py::arg("seed") = 12345)
+            py::arg("seed") = 12345, py::arg("fragment_core") = 4.5,
+            py::arg("fragment_buffer") = 0.0, py::arg("subspace_cv") = true,
+            py::arg("subspace_filters") = 4, py::arg("local_capture") = 0,
+            py::arg("local_pack") = 8, py::arg("local_pack_replicas") = 2)
         .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis, std::string method, int block) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;

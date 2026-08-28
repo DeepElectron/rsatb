@@ -66,6 +66,8 @@ class MetricSampler {
         // where x^{-1/2} diverges.
         const double lo = w_min_ - std::min(pad, 0.5 * w_min_);
         const double hi = w_max_ + pad;
+        q_lo_ = lo;
+        q_hi_ = hi;
         const double center = 0.5 * (hi + lo);
         const double half = 0.5 * (hi - lo);
 
@@ -122,6 +124,16 @@ class MetricSampler {
     /// Terms actually kept after truncation.
     int degree() const { return static_cast<int>(coeffs_.size()) - 1; }
 
+    /// The coloring polynomial itself -- the coefficient table of q on
+    /// [q_lo, q_hi] in the T_n((x - center)/half) basis -- for consumers
+    /// that must reproduce THE SAME q elsewhere (the solve-form fragment
+    /// surrogate compresses the actual chain Zt q(W), never an ideal
+    /// x^{-1/2}: matching in covariance only, off by a rotation, kills the
+    /// per-sample cancellation a control variate lives on).
+    const std::vector<std::complex<double>>& q_coeffs() const { return coeffs_; }
+    double q_lo() const { return q_lo_; }
+    double q_hi() const { return q_hi_; }
+
   private:
     /// Extremal eigenvalues of W = Zt^H S Zt, via the composed-operator mode
     /// of the repo's eigensolver. Also certifies w_min > 0, i.e. that Zt is
@@ -156,6 +168,8 @@ class MetricSampler {
     SymPrecondMat<Matrix, ISQRTMPreconditioner<T>, T> w_;
     double w_min_ = 0.0;
     double w_max_ = 0.0;
+    double q_lo_ = 0.0;
+    double q_hi_ = 0.0;
     std::vector<std::complex<double>> coeffs_;
     std::unique_ptr<Chebyshev<T>> cheby_;
     std::unique_ptr<Vector> tmp_;

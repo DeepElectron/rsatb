@@ -19,6 +19,8 @@
 #include "cheby.hpp"
 #include "collocation.hpp"
 #include "dos.hpp"
+#include "pdos.hpp"
+#include "rs_density.hpp"
 #include "rs_ldos.hpp"
 #include "fft.hpp"
 #include "fftcheb_transport.hpp"
@@ -100,6 +102,10 @@ struct ObservableContext {
 
     setup::OperatorSet* operators = nullptr;
     vbcsr::atomic::AtomicData* atomic_data = nullptr;
+    /// One-slot fragment-basis cache owned by the RSATB object (null when
+    /// the caller has none): the real-space tasks share their fragment
+    /// eigensolves through it across calls of one setup.
+    detail::FragmentBasisCache* fragment_cache = nullptr;
     const SampleVectors* samples = nullptr;
     /// Leaders of each sub-communicator; per-k results are summed across it.
     MPI_Comm master_comm = MPI_COMM_NULL;
@@ -428,6 +434,120 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
         }
     }
 
+// Projected DOS: the DOS recursion with a per-group segmented reduction
+// (calc/pdos.hpp). One run yields every group plus the all-rows total, on the
+// same energy grid ComputeDos uses, so sum_g pdos_g = total holds bin by bin.
+//
+// WHICH population comes out follows the operator form and is returned in
+// `population_out` rather than chosen: the sandwich form projects onto Lowdin
+// orbitals, the solve form onto Mulliken populations (which may legitimately
+// go negative). See pdos.hpp for the derivation. KPM (Jackson) only: the
+// correlation route reconstructs per group just as linearly, but nothing
+// production asks for it yet.
+inline void ComputePdos(const ObservableContext& context, double de_ev,
+                        const std::string& projection, std::vector<double>& pdos_out,
+                        std::vector<double>& total_out, std::vector<double>& omega_out,
+                        int& n_group_out, std::string& population_out,
+                        std::vector<int>& group_type_out,
+                        std::vector<int>& group_slot_out) {
+    RSATB_PHASE("task/pdos");
+    util::InterruptGuard interrupt_guard;
+    auto& ops = context.RequireOperators();
+    if (!ops.has_bounds()) {
+        throw std::runtime_error(
+            "Spectral bound is not computed yet. Set it true during Setup stage for random "
+            "state method support.");
+    }
+    if (!(de_ev > 0.0)) {
+        throw std::runtime_error("pdos dE must be a positive energy resolution in eV");
+    }
+    if (context.atomic_data == nullptr) {
+        throw std::runtime_error("pdos needs atomic data for the orbital grouping.");
+    }
+
+    PdosGroups groups;
+    if (projection == "atom") {
+        groups = PdosGroupsByAtom(*context.atomic_data, context.atomic_data->comm);
+    } else if (projection == "orbital_slot") {
+        groups = PdosGroupsByOrbitalSlot(*context.atomic_data);
+    } else {
+        throw std::runtime_error("pdos projection must be 'atom' or 'orbital_slot', got '" +
+                                 projection + "'");
+    }
+    n_group_out = groups.n_groups;
+    group_type_out = groups.group_type;
+    group_slot_out = groups.group_slot;
+
+    const double span = ops.emax() - ops.emin();
+    const double half_width = span / 2.0;
+    const int nt = std::max(1, static_cast<int>(std::ceil(span / de_ev)));
+    // Same kernel theory as ComputeDos's kpm branch: Jackson at N moments is
+    // a Gaussian of FWHM 7.396 * half_width / N.
+    const double jackson_fwhm = std::sqrt(8.0 * std::log(2.0)) * M_PI;
+    const int N = std::max(1, static_cast<int>(std::ceil(jackson_fwhm * half_width / de_ev)));
+
+    int world_rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &world_rank);
+    if (world_rank == 0 && util::Log::enabled(util::LogLevel::kProgress)) {
+        std::cout << "pdos: dE " << de_ev << " eV over span " << span << " eV -> " << nt
+                  << " steps, " << N << " moments, " << groups.n_groups << " groups ("
+                  << projection << ")" << std::endl;
+    }
+
+    const double scale = half_width;
+    const double shift = (ops.emax() + ops.emin()) / 2.0;
+    std::vector<double> x_grid(2 * nt);
+    for (int i = 0; i < nt; ++i) {
+        x_grid[i] = static_cast<double>(i - nt) / nt;
+        x_grid[nt + i] = static_cast<double>(i) / nt;
+    }
+
+    const size_t per_k = static_cast<size_t>(groups.n_groups) * 2 * nt;
+    std::vector<double> local_pdos(ops.global_nk() * per_k, 0.0);
+    std::vector<double> local_total(ops.global_nk() * static_cast<size_t>(2 * nt), 0.0);
+    population_out = "";
+
+    for (const auto& kp : ops.local_kpoints()) {
+        const int k_idx = kp.first;
+        auto cheby = context.MakeChebyshev(ops.kpoint_state(k_idx));
+        // The population convention follows the operator form; report it.
+        population_out = cheby->op_is_hermitian() ? "lowdin" : "mulliken";
+
+        const PdosMoments mom =
+            (context.samples->nsamples == 1)
+                ? kpm_pdos_moments(*cheby, *context.samples->sample_vec, N, groups)
+                : kpm_pdos_moments(*cheby, *context.samples->sample_multi_vec, N, groups);
+
+        // Same amplitude convention as ComputeDos (x2 against the unnormalised
+        // inverse FFT of the correlation route), so total == the dos task's
+        // output and the group rows sum to it.
+        const std::vector<double> rho_total =
+            evaluate_kpm_density(mom.total, x_grid, 0.5 / nt);
+        for (int i = 0; i < 2 * nt; ++i) {
+            local_total[k_idx * static_cast<size_t>(2 * nt) + i] = 2.0 * rho_total[i];
+        }
+        std::vector<std::complex<double>> mu_g(N);
+        for (int g = 0; g < groups.n_groups; ++g) {
+            for (int m = 0; m < N; ++m) mu_g[m] = mom.at(g, m);
+            const std::vector<double> rho = evaluate_kpm_density(mu_g, x_grid, 0.5 / nt);
+            double* out = local_pdos.data() + k_idx * per_k +
+                          static_cast<size_t>(g) * 2 * nt;
+            for (int i = 0; i < 2 * nt; ++i) out[i] = 2.0 * rho[i];
+        }
+    }
+
+    pdos_out = std::move(local_pdos);
+    total_out = std::move(local_total);
+    context.GatherKPointResults(&pdos_out);
+    context.GatherKPointResults(&total_out);
+
+    omega_out.resize(2 * nt);
+    for (int i = 0; i < nt; ++i) {
+        omega_out[i] = (i - nt) * scale / nt + shift;
+        omega_out[nt + i] = i * scale / nt + shift;
+    }
+}
+
 // AC conductivity. Two routes to the same Kubo correlator, both sampling at
 // the correlator's Nyquist step pi/(2*half_width) (calc::kAcOversample), so
 // both are alias-free and agree sample for sample:
@@ -442,7 +562,7 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
 // Both report sigma on the same (nt+1)-point frequency grid up to the
 // half-width; `block` (concurrent only) caps the stored-state memory,
 // 0 = the built-in default min(nt, 128).
-inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="ab",
+inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out, std::vector<double>& omega_out, std::string axis="abc",
                       const std::string& method = "concurrent", int block = 0) {
     RSATB_PHASE("task/ac");
     util::InterruptGuard interrupt_guard;
@@ -795,9 +915,20 @@ inline void ComputeMsdSpectrum(
                 }
                 use_spectral = true;
             } else if (method == "auto") {
+                // The estimate is width-aware: the routes run their applies
+                // at different SpMM widths (stepwise = the whole sample
+                // block, spectral = its chunk cap), and per-apply cost is
+                // not width-independent.
+                const int msd_width =
+                    context.samples->sample_multi_vec
+                        ? context.samples->sample_multi_vec->num_vectors
+                        : 1;
                 use_spectral = spectral_capable && cheby->form != ChebyOpForm::Orthogonal &&
                                rsatb::calc::spectral_msd_cheaper(*cheby, n_steps, dt_fs,
-                                                                 n_kpm, n_kpm_compute);
+                                                                 n_kpm, n_kpm_compute,
+                                                                 /*time_oversample=*/2,
+                                                                 /*segment_scaled=*/0.0,
+                                                                 msd_width);
             }
 
             auto run_msd_for_sample = [&](const auto& sample) {
@@ -1258,6 +1389,88 @@ inline vbcsr::BlockSpMat<double> PeelGammaReal(vbcsr::BlockSpMat<std::complex<do
     return out;
 }
 
+/// Everything a real-space grid task needs from the operator set: the Gamma
+/// pencil peeled to real, the form, the factor, and the measured bounds.
+/// Shared by the LDOS map and the electron density, which differ only in the
+/// filter they hand the same estimator.
+struct GammaPencil {
+    vbcsr::BlockSpMat<double> H;
+    std::unique_ptr<vbcsr::BlockSpMat<double>> s;   ///< solve form only
+    std::unique_ptr<vbcsr::BlockSpMat<double>> zt;  ///< S^{-1/2} factor
+    ChebyOpForm form = ChebyOpForm::Solve;
+    double emin = 0.0, emax = 0.0;
+};
+
+inline GammaPencil PeelGammaPencil(const ObservableContext& context, const std::string& task) {
+    auto& ops = context.RequireOperators();
+    if (!ops.has_bounds()) {
+        throw std::runtime_error(
+            "Spectral bound is not computed yet. Set it true during Setup stage for random "
+            "state method support.");
+    }
+    if (ops.global_nk() != 1) {
+        throw std::runtime_error(
+            "The " + task + " is Gamma-only; run with a single k-point at Gamma "
+            "(use a supercell instead of a k-mesh).");
+    }
+    const auto& kpoints = ops.local_kpoints();
+    if (kpoints.empty()) {
+        throw std::runtime_error("This rank holds no k-point state; cannot compute the " +
+                                 task + ".");
+    }
+    for (double component : kpoints.front().second) {
+        if (std::abs(component) > 1e-12) {
+            throw std::runtime_error("The " + task + " is Gamma-only, but the k-point is "
+                                     "not Gamma.");
+        }
+    }
+    auto& state = ops.kpoint_state(kpoints.front().first);
+    if (!ops.has_overlap()) {
+        throw std::runtime_error(
+            "The " + task + " needs a non-orthogonal model: an orthogonal tight-binding "
+            "model has no real-space basis functions to collocate.");
+    }
+    if (!state.hamiltonian) {
+        throw std::runtime_error("The Hamiltonian is not available at the Gamma point.");
+    }
+
+    GammaPencil out;
+    out.H = PeelGammaReal(*state.hamiltonian, "Hamiltonian");
+    out.form = state.form();
+    out.emin = ops.emin();
+    out.emax = ops.emax();
+
+    // S is peeled for the solve form only. The sandwich form iterates Z H Z
+    // and seeds with covariance I, so it never references S -- which is what
+    // makes releasing S at setup harmless rather than a loss of capability.
+    if (out.form == ChebyOpForm::Solve) {
+        if (!state.overlap) {
+            throw std::runtime_error(
+                "The solve-form " + task + " needs the overlap, which is not "
+                "materialized at this k-point.");
+        }
+        out.s = std::make_unique<vbcsr::BlockSpMat<double>>(
+            PeelGammaReal(*state.overlap, "overlap"));
+    }
+
+    // The S^{-1/2} factor: reuse the operator set's if it built one (its
+    // quality only sets iteration counts, never the answer), else one fresh
+    // isqrtm at defaults.
+    if (auto* isqrt = dynamic_cast<ISQRTMPreconditioner<ObservableScalar>*>(
+            state.preconditioner.get())) {
+        out.zt = std::make_unique<vbcsr::BlockSpMat<double>>(
+            PeelGammaReal(isqrt->factor(), "S^{-1/2} factor"));
+    } else if (out.s) {
+        out.zt = std::make_unique<vbcsr::BlockSpMat<double>>(out.s->duplicate(true));
+        inverse_sqrt(*out.s, out.zt.get(), InverseSqrtOptions{});
+    } else {
+        throw std::runtime_error(
+            "The sandwich-form " + task + " needs the Z factor held by the overlap "
+            "preconditioner, which is not present at this k-point.");
+    }
+    return out;
+}
+
 }  // namespace detail
 
 /// The full-cell LDOS map, from the operator set's Gamma pencil.
@@ -1276,68 +1489,7 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
                                                 const std::vector<std::string>& orbital_files,
                                                 RealSpaceLdosOptions options) {
     RSATB_PHASE("task/rs_ldos");
-    auto& ops = context.RequireOperators();
-    if (!ops.has_bounds()) {
-        throw std::runtime_error(
-            "Spectral bound is not computed yet. Set it true during Setup stage for random "
-            "state method support.");
-    }
-    if (ops.global_nk() != 1) {
-        throw std::runtime_error(
-            "The real-space LDOS is Gamma-only; run with a single k-point at Gamma "
-            "(use a supercell instead of a k-mesh).");
-    }
-    const auto& kpoints = ops.local_kpoints();
-    if (kpoints.empty()) {
-        throw std::runtime_error("This rank holds no k-point state; cannot compute the LDOS.");
-    }
-    for (double component : kpoints.front().second) {
-        if (std::abs(component) > 1e-12) {
-            throw std::runtime_error("The real-space LDOS is Gamma-only, but the k-point is not Gamma.");
-        }
-    }
-    auto& state = ops.kpoint_state(kpoints.front().first);
-    if (!ops.has_overlap()) {
-        throw std::runtime_error(
-            "The real-space LDOS needs a non-orthogonal model: an orthogonal tight-binding "
-            "model has no real-space basis functions to collocate.");
-    }
-    if (!state.hamiltonian) {
-        throw std::runtime_error("The Hamiltonian is not available at the Gamma point.");
-    }
-
-    auto H = detail::PeelGammaReal(*state.hamiltonian, "Hamiltonian");
-
-    // S is peeled for the solve form only. The sandwich form iterates Z H Z
-    // and seeds with covariance I, so it never references S -- which is what
-    // makes releasing S at setup harmless rather than a loss of capability.
-    std::unique_ptr<vbcsr::BlockSpMat<double>> s;
-    if (state.form() == ChebyOpForm::Solve) {
-        if (!state.overlap) {
-            throw std::runtime_error(
-                "The solve-form real-space LDOS needs the overlap, which is not "
-                "materialized at this k-point.");
-        }
-        s = std::make_unique<vbcsr::BlockSpMat<double>>(
-            detail::PeelGammaReal(*state.overlap, "overlap"));
-    }
-
-    // The S^{-1/2} factor: reuse the operator set's if it built one (its
-    // quality only sets iteration counts, never the answer), else one fresh
-    // isqrtm at defaults.
-    std::unique_ptr<vbcsr::BlockSpMat<double>> zt;
-    if (auto* isqrt = dynamic_cast<ISQRTMPreconditioner<ObservableScalar>*>(
-            state.preconditioner.get())) {
-        zt = std::make_unique<vbcsr::BlockSpMat<double>>(
-            detail::PeelGammaReal(isqrt->factor(), "S^{-1/2} factor"));
-    } else if (s) {
-        zt = std::make_unique<vbcsr::BlockSpMat<double>>(s->duplicate(true));
-        inverse_sqrt(*s, zt.get(), InverseSqrtOptions{});
-    } else {
-        throw std::runtime_error(
-            "The sandwich-form real-space LDOS needs the Z factor held by the overlap "
-            "preconditioner, which is not present at this k-point.");
-    }
+    detail::GammaPencil pencil = detail::PeelGammaPencil(context, "real-space LDOS");
 
     // Box ownership is settled inside the driver, from the atom partition
     // itself -- nothing here re-derives how the atoms were distributed.
@@ -1345,10 +1497,32 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
     MPI_Comm comm = atomic_data.comm;
 
     const OrbitalCollocation collocation(orbital_files, comm);
-    options.emin = ops.emin();
-    options.emax = ops.emax();
-    return ComputeRealSpaceLdos(atomic_data, H, s.get(), *zt, state.form(), collocation, options,
-                                comm);
+    options.emin = pencil.emin;
+    options.emax = pencil.emax;
+    return ComputeRealSpaceLdos(atomic_data, pencil.H, pencil.s.get(), *pencil.zt,
+                                pencil.form, collocation, options, comm,
+                                context.fragment_cache);
+}
+
+/// The real-space electron density, from the same Gamma pencil. Glue only --
+/// the method lives in rs_density.hpp; the same peel, factor reuse and bound
+/// fill as the LDOS adapter, because it is the same estimator under a
+/// different filter.
+inline RealSpaceDensityResult ComputeRealSpaceDensity(const ObservableContext& context,
+                                                      const std::vector<std::string>& orbital_files,
+                                                      RealSpaceDensityOptions options) {
+    RSATB_PHASE("task/density");
+    detail::GammaPencil pencil = detail::PeelGammaPencil(context, "real-space density");
+
+    vbcsr::atomic::AtomicData& atomic_data = *context.atomic_data;
+    MPI_Comm comm = atomic_data.comm;
+
+    const OrbitalCollocation collocation(orbital_files, comm);
+    options.emin = pencil.emin;
+    options.emax = pencil.emax;
+    return ComputeRealSpaceDensity(atomic_data, pencil.H, pencil.s.get(), *pencil.zt,
+                                   pencil.form, collocation, options, comm,
+                                   context.fragment_cache);
 }
 
 }  // namespace calc

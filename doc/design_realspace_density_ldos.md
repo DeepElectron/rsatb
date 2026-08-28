@@ -886,3 +886,482 @@ Probing needs a local operator: large $\eta$, an in-gap energy, or strong
 disorder — not the in-band narrow-$\eta$ maps this path exists to produce.
 The lesson generalises: **locality of $\delta_\eta(E-H)$, not sampler design,
 governs variance reduction for this estimator.**
+
+---
+
+## 10. Addendum (2026-08): the fragment control variate for sampled maps
+
+Post-processing maps (rs_ldos.hpp / rs_density.hpp, route 5.3b) do not need
+SCF-grade exactness, and §5's full probing costs χ(14.8 Å) ≈ 7.4×10³ seeds at
+the diamond basis — ~100× the sampling sweep budget. What they suffered from
+instead was the χ² sampling floor: each map point is a squared amplitude of a
+random state, pointwise relative error √(2/n) — measured 17.0% / 8.5% at
+64 / 256 samples on diamond sc444/sc888 against dense diagonalization,
+against the predicted 17.7% / 8.8%.
+
+`rs_fragment.hpp` closes that gap with a control variate (options
+`fragment_core`, `fragment_buffer` on both map tasks):
+
+$$ n(r) = n_0(r) \;+\; \mathbb E\big[\,|\Phi T\xi|^2 - |\Phi T_0\xi|^2\,\big], $$
+
+with $T_0$ a dense-fragment surrogate of the filtered operator and $n_0$ its
+exact map (streamed through the same contraction as identity blocks).
+Unbiased for any $T_0$; the correction's variance carries only the residual
+$T - T_0$, exponentially small in the buffer. This is the
+overlapped-embedded-fragment scheme of stochastic DFT [Neuhauser–Baer–Rabani
+JCP 141, 041102 (2014); Chen et al. JCP 150, 034106 (2019)] carried to the
+LCAO pencil, and it composes with §5: probing spends locality on exactness,
+the control variate spends the same locality on variance.
+
+### 10.1 As implemented: the surrogate, the baseline, and the split
+
+**$T_0$ approximates a square-root FACTOR of the density matrix, never
+$D^{1/2}$.** The estimator does not iterate $D$; it iterates the factor
+
+$$ T \;=\; Z\,p\big(Z^H H Z\big), \qquad p = \sqrt{f}, \qquad D = T\,T^H, $$
+
+with $f$ the occupation for the density and $\delta_\eta(E_k - \cdot)$ for
+each requested LDOS energy. $T$ is *a* factor, not the symmetric square root:
+$TQ$ factors the same $D$ for every orthogonal $Q$, and that non-uniqueness is
+exactly the gauge §10.2 is about. $T_0$ is therefore built as a
+factor directly — the fragment eigendecomposition emits it in one step.
+Building a surrogate $D_0$ and rooting it would be a sparse matrix product
+(excluded by the design constraints) and would throw away precisely what the
+map needs, which is the factor's columns.
+
+**Three index sets, two of them physical.** Fragments are geometric objects,
+and `BuildFragmentCv` carries three distinct sets:
+
+| set | code | built from | role |
+|---|---|---|---|
+| core | `core_rows` | one fractional bin of edge `fragment_core`; the bins PARTITION the atoms | the **rows** of $T_0$ this fragment owns |
+| $F$ (domain) | `dom_rows`, size $n_f$ | every atom within `fragment_buffer` of a core atom, minimum image; $\supset$ core | the **columns** of $T_0$ — the subspace the operator is compressed onto |
+| row support | `nr`, size $n_r$ | atoms whose $Z$ rows carry weight against an $F$ column, trimmed at `kZrowTrim` = 1e-3 | scratch only: the rows of $Z[:,F]$ and $H$ needed to FORM the compression |
+
+$F$ is an orbital set, not an atom set — the atom list is expanded through
+`type_norb`. The row support is not a fragment in any physical sense; it
+exists because $(Z[:,F])^H H\,Z[:,F]$ cannot be formed without knowing which
+rows of $Z[:,F]$ are nonzero, and that support is strictly wider than $F$.
+Untrimmed it is $Z$'s full row pattern, which is what made the first sc888
+build ~1e17 flops.
+
+Because the cores partition the atoms, every row of $T_0$ comes from exactly
+one fragment: $T_0$ is a single global operator assembled from disjoint row
+blocks, not a set of overlapping patches to be stitched. Rows owned by
+different fragments still couple in the map — $(T_0T_0^H)_{ij}$ pairs them
+through any column their domains share — so unlike the embedded-fragment
+schemes it descends from, nothing is patched together on the grid.
+
+**One fragment, once per run.** With $c, h$ the padded interval's centre and
+half-width,
+
+$$ A_{FF} = (Z[:,F])^H H\,Z[:,F] = V\,\mathrm{diag}(a)\,V^T, \qquad
+   x_j = (a_j - c)/h, $$
+$$ P_k \;=\; Z[\mathrm{core},F]\;V\,\mathrm{diag}\big(p_k(x_j)\big)\,V^T
+       \;=\; Z[\mathrm{core},F]\;p_k(A_{FF}) , $$
+
+and $P_k$ **is** the core rows of $T_0$ for filter $k$. The two indexed
+objects, spelled out because both are easy to misread: a *table* $k$ is one
+Chebyshev coefficient vector, i.e. one filter function — one per LDOS energy,
+one for the density, one per window when `energy_windows` > 1; and
+$p_k(x_j)$ is that filter evaluated by Clenshaw (`ClenshawEval`) at the
+fragment eigenvalue $a_j$, mapped into the $[-1,1]$ the series is fitted on.
+$V$ and $a$ come from $(Z,H)$ alone, so ONE dense eigensolve serves every
+table: a 20-energy LDOS pays one extra $\mathcal O(n_c n_f^2)$ reweighting per
+fragment per energy, never another eigensolve. In the limit of one
+fragment holding everything, $Z[:,F]\,p(A_{FF}) = Z\,p(Z^HHZ) = T$
+identically — the 2.3e-14 measurement below.
+
+**Cost, and the one knob that moves it.** Per fragment: $2n_r^2n_f + 2n_rn_f^2$
+to form $A_{FF}$, $\approx 9n_f^3$ for `dsyevd`, then $2n_cn_f^2$ per table.
+With the row trim keeping $n_r = \mathcal O(n_f)$ this is $\mathcal O(n_f^3)$,
+and $n_f$ is set by the domain volume,
+
+$$ n_f \approx \rho_\mathrm{atom}\,\big(c^3 + 6c^2r + 3\pi c r^2 +
+   \tfrac43\pi r^3\big)\, n_\mathrm{orb}, \qquad
+   c = \texttt{fragment\_core},\; r = \texttt{fragment\_buffer}. $$
+
+Diamond at $c = 4.5$ Å, $r = 4$ Å: domain $\approx 1520$ Å$^3 \approx 270$
+atoms against a core of $\approx 16$. So the buffer is a CUBIC cost knob
+against an exponential accuracy gain ($n_f \propto (c+2r)^3$, cost
+$\propto n_f^3$), and at fixed buffer a smaller core is cheaper in total
+($N/c^3$ fragments of $(c+2r)^3$ size) at the price of more redundant
+dressing — 4.5 Å is a compromise, not an optimum. Two limits bind before
+flops do: $H_d$ is a dense $n_r \times n_r$ per THREAD (fragments are the
+parallel grain), and $P$ storage is $n_c \times n_f$ per fragment PER TABLE,
+so a many-energy LDOS is memory-limited where the density is not.
+
+Note what the shape of $P_k$ implies: only $n_c$ of $n_f$ rows are kept —
+6% for the diamond numbers above — while `dsyevd` computes all of $V$. This
+is verbatim the argument `isqrt_action.hpp` makes for the isqrtm seed ("a
+full eigendecomposition costs a large multiple of $n^3$ to produce $n^2$
+numbers of which only $n\cdot n_\mathrm{rhs}$ are used"), and
+$P_k^T = p_k(A_{FF})\,Z[\mathrm{core},F]^T$ is exactly that kernel's thin-action
+signature with $n_\mathrm{rhs} = n_c$. A block-Lanczos action started from
+$Z[\mathrm{core},F]^T$ would serve every table from one Krylov space,
+preserving the one-solve-serves-all-energies property; break-even against the
+eigensolve is $m \approx 9n_f/n_c \approx 150$ steps at these sizes, so it
+wins for the density filter and coarse $\eta$ and loses for sharp-$\eta$ LDOS,
+where $m$ scales as $\mathrm{spread}/\eta$ for the same reason the main
+recursion's degree does. Derived, not measured; and it removes only the
+eigensolve share of the build unless $A_{FF}$ also stops being formed
+densely. Recorded as an extension point, not a plan.
+
+**$n_0$ is analytic. Only the difference is sampled.** This is the part the
+identity at the top of §10 states but does not show. $T_0$ produces a map by
+the same contraction as the true operator,
+
+$$ n_0(r) = \sum_s \big|\Phi(r)^T T_0 e_s\big|^2
+        = \sum_{ij}\varphi_i(r)\varphi_j(r)\,(T_0T_0^H)_{ij}, $$
+
+with $D_0 = T_0T_0^H$ never formed — that would be the sparse product the
+design forbids. Instead the COLUMNS of $T_0$ are streamed through the grid
+over all $N$ basis vectors: no RNG, no reduction over samples, an exact column
+sum. It is literally the `complete_basis` route applied to $T_0$ instead of
+$T$, and it is affordable for the same reason that route is not affordable for
+$T$: a column of $T$ costs a Chebyshev sweep, a column of $T_0$ is a stored
+number (`ApplyIdentity`).
+
+| term | how it is computed | error it carries |
+|---|---|---|
+| $n_0$ | deterministic sum over all $N$ columns of $T_0$ | none from sampling; exact for $T_0$, up to the collocation quadrature every term shares |
+| $\bar X$ | $n_s$ Chebyshev sweeps of the true $T$ | full $\chi^2$ noise, ~17% at 64 samples |
+| $\bar Y$ | $n_s$ fragment GEMMs against the SAME seeds | full $\chi^2$ noise, ~17%, correlated with $\bar X$ |
+| $\bar X - \bar Y$ | their difference | variance $\propto$ the residual $T - T_0$ alone |
+
+Read the assembly $\hat n = \bar X + \beta(n_0 - \bar Y)$ at $\beta = 1$ as
+$n_0 + (\bar X - \bar Y)$: an exact deterministic map of the surrogate plus a
+stochastic correction for what the surrogate got wrong. The third row is the
+one that matters — $\bar Y$ is *just as noisy* as $\bar X$ on its own; what
+makes the scheme work is that both are driven by the same $\xi$, so the
+$\chi^2$ fluctuations cancel in the difference. Hence the buffer controls
+VARIANCE and not bias: $n_0$ is exact for whatever $T_0$ was built, and the
+samples are only ever asked to supply $T - T_0$. An insufficient buffer costs
+sampling error, never a wrong density.
+
+**Relation to the isqrtm graph seed.** The construction is the same family as
+`graph_inverse_sqrt` — dense matrix function on a local neighbourhood, keep
+only the centre's rows, assemble globally from disjoint row sets — with three
+differences worth stating because the analogy otherwise over-promises:
+
+| | isqrtm seed | fragment $T_0$ |
+|---|---|---|
+| subproblem | one per ATOM (block row) | one per CORE BIN (~16 atoms in diamond at 4.5 Å) |
+| neighbourhood | $S$'s own row pattern — one hop, fixed by $r_c$ | geometric ball of radius `fragment_buffer` — multi-hop, tunable |
+| local operator | $S[\mathrm{nbr},\mathrm{nbr}]$, ONE sparse matrix | $A_{FF}$, a compression of TWO ($Z$ and $H$) on one index set |
+| function | $x^{-1/2}$ | the sqrt-filter $p_k$, all tables from one solve |
+| kept | that atom's block row | the core's rows |
+| the error | REMOVED later by Newton–Schulz; the seed only sets the step count | never removed; absorbed statistically by the sampled correction |
+
+The last row is the substantive one. The isqrtm seed is an initial guess that
+a global iteration cleans up, so its locality error disappears from the
+answer. $T_0$ is never refined — its error is permanent and is paid for in
+variance. Same locality argument, different currency, which is the same
+distinction §10's opening draws between probing and the control variate.
+
+### 10.2 Gauge, measured behaviour, and the safeguards
+
+**The gauge lesson (measured, not hypothetical).** The surrogate must
+compress the SAME $(Z, H)$ pair the recursion iterates,
+
+$$ T_0 = Z[:,F]\; p\!\big(\, (Z[:,F])^H H\, Z[:,F] \,\big), $$
+
+never an idealized $S_f^{-1/2}$-based fragment pencil: the isqrtm $Z$
+satisfies $Z^H S Z = I$ to tolerance while differing from the symmetric
+$S^{-1/2}$ by a near-orthogonal gauge factor $Q$. The map is $Q$-invariant,
+but the per-sample states are not — an $(H,S)$-built surrogate leaves a
+$|Q - I|$-sized residual the buffer cannot remove (measured floor ~1e-3 on
+the chain fixture). The $(Z,H)$ compression is exact in the full-fragment
+limit by construction (measured 2.3e-14).
+
+**Measured, diamond sc444 density, 64 samples, ~50 s either way:**
+
+| buffer | pointwise rel std | rms of peak |
+|---|---|---|
+| off | 16.2% | 6.93% |
+| 3 Å | 2.5% | 1.05% |
+| 4 Å | 0.7% | 0.27% |
+| 5 Å | exact (cell-sized fragment) | 0.00% |
+
+`correction_rms` in the task output is the residual's own magnitude — the
+free a-posteriori indicator of what the samples still carry.
+
+Scope and honesty: the build is defined over the global atom list and runs at
+any rank count (it replicates O(nnz) block rows for the duration of the build;
+the O(boundary) halo gather that would replace that at extreme scale is the
+recorded extension point in `BuildFragmentCv`); sandwich form only, enforced by
+a guard in `FilteredSquareMap` — see "the operator form the surrogate assumes"
+below for what the solve form would take; the gain shrinks as the filter
+delocalizes (fine-η LDOS pays ξ(η) = ħv/η exactly as §3.3b prices it — no linear-scaling
+method escapes that regime).
+
+**Regression coefficient (the do-no-harm guarantee).** The raw control
+variate (β = 1) assumes the surrogate tracks the estimator sample for
+sample. For sharp spectral filters it does not: a fragment's spectrum near a
+probed energy is boundary-modified, and at the diamond sc888 band edge the
+β = 1 estimator was 4× *worse* than plain sampling. The assembly therefore
+uses $\hat n = \bar X - \beta(\bar Y - n_0)$ with
+$\beta = \mathrm{Cov}(X,Y)/\mathrm{Var}(Y)$ estimated from the same samples —
+the textbook regression control variate — with the covariance accumulated
+**per grid point** before the spatial sum (the covariance of the spatially
+integrated series reads ≈1 for any surrogate and is exactly the wrong
+statistic; this was measured, not hypothesized). β is reported per channel
+(`control_beta`): 1.0 for the density, 0.03–0.05 for the sc888 band-edge
+LDOS, matching the post-hoc optimum against the dense reference, and the CV
+is never worse than the plain estimator on any system. Measured sc888 (64
+fragments, buffer 4 Å, 64 samples, 39 min vs 28 min plain): density 17.0% →
+2.4% pointwise; LDOS 17.7/19.6/15.8% → 17.7/18.6/15.8%. Sharp-η full-cell
+LDOS remains priced by §3.3b — the fragments simply decline to pretend
+otherwise.
+
+**Rank independence (2026-08 addendum, continued).** Three separate
+partition dependencies were found and addressed. (1) The per-rank
+`mt19937` seed streams made the SAMPLED estimate redraw under a different
+rank count — measured 193% of peak between np=1 and np=2 on the sc444
+density at 16 samples. Replaced by counter-based Rademacher draws keyed on
+(seed, GLOBAL row, state index) — the construction class of Salmon et al.
+(SC'11) — so every rank evaluates the identical sign without communication.
+(2) The fragment build is now defined over the GLOBAL atom list from
+replicated block rows: the surrogate operator is the same at any rank
+count, and a core spanning ranks is built by each owner for its own rows.
+(3) What remains is the isqrtm gauge of Z itself, which is
+partition-sensitive upstream of any estimator; it moves finite-sample
+values within their own statistical error (measured 5.8% of peak at 16
+samples WITH the control variate — 33× less than the plain estimator's
+sensitivity, because the deterministic baseline is partition-free). Exact
+bitwise invariance across rank counts therefore requires a
+partition-deterministic Z. The solve form is the closer configuration but not
+a cure, and the distinction is worth stating precisely: its OPERATOR, S^-1 H,
+carries no gauge at all, and its seed covariance is exactly S^-1 for any
+invertible Zt (metric_sampler.hpp, Prop 4.7), so its EXPECTATION is gauge-free
+where the sandwich map inherits ||Z^H S Z - I|| as bias. Its SEEDS, however,
+do pass through Zt: c0 = Zt q(W) xi, and under Zt -> Zt Q the seed is simply
+rotated, c0 = Zt q(W) (Q xi). Finite-sample values therefore move under a
+gauge change exactly as the sandwich form's do. Derived, not measured.
+
+**The operator form the surrogate assumes (and what S^-1 H would take).** The
+control-variate identity itself needs only two things from the operator form:
+a seed with identity covariance that both branches can see, and some operator
+T_eff with X = |Phi T_eff xi|^2. BOTH hold in the solve form, where
+T_eff = F(S^-1 H) Zt q(W) and the raw Rademacher xi is drawn before the
+sampler (the fragment side rebuilds it from the same counter keys, never from
+c0). So Y would stay unbiased for n_0 there and the assembly would stay
+unbiased for n. The guard is not protecting the identity; it is protecting the
+surrogate's RELEVANCE, which is a variance question.
+
+How relevant would the existing T_0 be? Write Zt = S^{-1/2} Q with
+Q^H Q = W = Zt^H S Zt. When W = I the sandwich chain is S^{-1/2} p(A) Q and
+the solve chain is S^{-1/2} F(A) Q with A = S^{-1/2} H S^{-1/2}: the SAME state,
+seed for seed, not merely the same map. The two therefore differ by
+O(||W - I||), which is `MetricSampler::residual_norm()` and is the same isqrtm
+level that floors an (H,S)-built surrogate at ~1e-3. Enabling the present
+surrogate for the solve form would thus reduce variance down to that floor,
+while losing the exact full-fragment limit (it would bottom out at ||W - I||
+plus the CG tolerance of each matvec) — so the 2.3e-14 regression above needs a
+different threshold there, and that threshold is the acceptance criterion.
+Derived, not measured; not implemented.
+
+A gauge-EXACT solve-form surrogate has to compress all three factors, not one:
+T_0 = [F(S^-1 H)]_frag * Zt[:,F] * q(W_FF), with W_FF = (Zt[:,F])^H S Zt[:,F]
+carrying the sampler's own coefficient table (a fixed global polynomial, so
+evaluating it on the fragment compression is well defined), and
+[F(S^-1 H)]_frag taken from the generalized fragment problem H_FF v = S_FF v a
+(`dsygvd`) — never from a nonsymmetric (S^-1 H)_FF. That costs one more dense
+solve per fragment and one more `replicate` call for S, which the build's
+lambda already supports generically. The interval-containment argument
+survives the change: a generalized Rayleigh quotient of (H_FF, S_FF) is the
+Rayleigh quotient of a zero-padded GLOBAL vector, so the fragment eigenvalues
+still sit inside spec(S^-1 H) and the [-1, 1] clamp stays valid. Everything
+downstream is form-agnostic — ApplyIdentity's stored-column trick is a property
+of the storage, and the per-point beta, the per-box shrinkage and
+`correction_rms` never look at the operator.
+
+Position: not planned. The sandwich form is strictly cheaper for maps (no
+sampler construction, no CG inside the recursion), and the solve form's real
+advantage is bias, not variance — and if ||W - I|| is large enough for that
+bias to matter, it is large enough to floor the control variate too. The fix
+in both cases is converging Zt harder, not switching form.
+
+**Energy windows (ew-sDFT / ew-efsDFT).** `energy_windows` on the density
+task splits the occupation into Fermi-bounded windows AT THE SAME kT,
+filtered and squared separately from the same sweep and seeds, maps summed.
+Cross-window sampling variance is removed exactly; by Cauchy–Schwarz the
+windowed variance can never exceed the plain one, and each window channel
+carries its own fragment surrogate and regression coefficient — the hybrid
+of Chen et al. (2021), with the regression safeguard on top. The telescoping
+identity holds to the depth of the lowest window edge below the spectrum
+(30 kT → e⁻³⁰, measured 4.7e-13 of peak; at 10 kT the deficit is exactly
+f(e_min − 10kT) = e⁻¹⁰ ≈ 4e-5, which is how it was caught). This is the one
+reduction that keeps working where fragments cannot — the published metals
+benchmark (arXiv:2403.04203) measures fragments useless and windows worth
+~2× at 300 K — so the composed estimator degrades gracefully across the
+localization spectrum instead of failing with the material.
+
+**Theoretical headroom, and the two levers that remain (2026-08).** The map
+is a deterministic quantity, so there is no statistical floor in principle;
+the constraint is computational. With S filtered applications plus O(1)-local
+deterministic work, the achievable pointwise error interpolates between
+Monte-Carlo sqrt(2/n) (S = n) and probing exactness (S = χ(η) ∝ η⁻³ seeds,
+§5). Every published family sits on this curve: dilution / hierarchical
+probing moves along it linearly (the pair-suppression scale for the LDOS is
+r_c + ξ(η), re-derived — no shortcut); deflation is blocked by the extensive
+window rank; sub-η energy windows cost degree ∝ N_w. MLMC degenerates to our
+two-level scheme when level zero is computed exactly, which it is (the
+baseline). Within the class, the regression coefficient already realizes the
+variance-optimal mixing of the implemented controls (fitted β matches the
+post-hoc optimum). The remaining recoverable gap is SURROGATE QUALITY below
+the locality ceiling β_max(η): (i) spatially resolved β per grid box with
+shrinkage to the global fit — implemented; strict generalization, its gain
+appears for heterogeneous cells (defects, interfaces) where one global
+coefficient under-serves every region; (ii) boundary-state screening — damp
+the compression eigenvectors by their boundary weight (keeping the
+gauge-exact Z[:,F] factors), removing the anti-correlated fragment boundary
+spectrum that the measured LDOS failure consists of; bounded gain, roughly a
+doubling of β at η ≳ 0.5 eV, nothing at η = 0.25 where ξ(η) exceeds any O(1)
+fragment. Beyond both, better sharp-η accuracy at fixed cost means leaving
+the class: probing (§5), region mode (§3), or the k-route for crystals.
+
+**Cost of the surrogate itself (2026-08, efficiency pass).** The first
+implementation paid three structural overheads that the accounting above
+never required, measured 632 s of the 39-minute sc888 run (fragment_build
+484 s, fragment_baseline 148 s — the entire 1.38× premium over the plain
+estimator). All three are removed exactly — same arithmetic, same maps to
+floating-point reordering (measured 2.5e-14 relative on the recorded np=2
+fragment run):
+
+1. *Fragments are the parallel grain.* The dense per-fragment solves ran in
+   a serial loop, leaving the machine to threaded BLAS whose small GEMMs and
+   memory-bound tridiagonalization cannot use it. The build now threads over
+   fragments (one dense solve per thread, per-thread scratch marker arrays;
+   BLAS runs sequential inside the active parallel region — MKL detects the
+   nesting), and the domain search dropped its all-atoms scan — O(N²) over
+   fragments — first for a hand-rolled cell list, then (rightly) for the
+   library's own vbcsr::atomic::NeighborList on the replicated global
+   positions: one build shared by every fragment, image-correct for sheared
+   cells where a bare minimum-image round is not, and with the cutoff
+   inflated by the same absolute 1e-9 Å tolerance AtomicData's own graph
+   construction applies, so the buffer stays INCLUSIVE — a round
+   buffer on a lattice with round spacings sits atoms exactly on the
+   boundary, and the strict comparison silently dropped that shell (the
+   chain fixture's correction tripled; with the inclusive convention it is
+   marginally better than the original, whose fractional round-trip lost
+   exact-boundary atoms to 1e-16 rounding). The cell inverse likewise comes
+   from vbcsr::atomic::InvertCell3x3 instead of a private adjugate. Output
+   slots are preallocated in geometric bin order, so the result is
+   schedule-independent.
+
+2. *T₀'s identity columns are stored numbers, not products.* The exact
+   baseline streamed identity blocks through the same dense Apply the
+   samples use — a GEMM against seeds that are all zeros but for one entry
+   per column, whose product is literally a stored column of P. ApplyIdentity
+   scatters those columns directly (binary search of the sorted domain rows
+   against the block range); the baseline's flops fall to the write itself.
+
+3. *The baseline contraction must not pay for zeros.* Each identity-block
+   pass contracted every owned box against all columns, though a column of
+   T₀ reaches only the cores of fragments holding it — the stream cost grew
+   as (N/blk blocks) × O(N) boxes = O(N²), the one superlinear term in the
+   method. SquareVectorsOntoBoxes now detects each box's active columns
+   (one pass over rows already gathered; dense sample blocks settle the scan
+   after a row or two and take the unchanged path), compacts the GEMM to
+   them, and skips untouched boxes before the orbital evaluation. Active
+   (block, box) pairs are set by the overlap geometry, not the basis size —
+   the stream is O(N) again, and the wider block (512) amortizes the per-box
+   orbital evaluation across passes.
+
+Measured after the pass, same physics bit-for-bit at the tolerance above:
+sc444 density (buffer 4 Å) fragment_build 1.64 s, baseline 0.29 s against a
+41 s sweep — the control variate now costs ~2 s on a 49 s run, cheaper than
+the plain estimator's own noise.
+
+**The build is the submatrix method, and now runs on its machinery
+(2026-08, second pass).** Because the fragment's variational space is
+spanned by full-height columns of Z, the Rayleigh compression is exactly
+the principal submatrix of the sandwich operator, A_FF = M[F, F] with
+M = Z^T H Z — each fragment is one submatrix-method subproblem [Lass et
+al. 2018; CP2K 2020; NOLSM, Schade et al. 2022] with a multi-atom anchor,
+an arbitrary filter table instead of sign/isqrt, and (unlike NOLSM, which
+recomputes a local S^{-1/2} per submatrix and would hit the measured 1e-3
+gauge floor) prolongation through the true global Z columns. The build
+therefore now shares the graph seed's infrastructure: only Z's PATTERN with
+per-block Frobenius weights is replicated globally (~20 bytes/block — the
+partition-free fragment definition needs exactly that and no more), and the
+block payloads are fetched per batched fragment window through
+fetch_batched_block_payloads, one dense solve per thread. The dense
+nrr × nrr intermediates of the first pass are gone too, and how they went
+is a lesson in kernel shape — four variants of the SAME arithmetic,
+sc888 build (2 calls), all producing identical maps:
+
+| window-product kernel | build | peak |
+|---|---|---|
+| dense nrr² windows (replicated payloads) | 133 s | 123 GB |
+| per-block 13×13 GEMMs | 910 s | 52 GB |
+| single-block-row panels (m = 13) | 3710 s | 46 GB |
+| chunked panels (m ≈ 512) — SHIPPED | 246 s | 54 GB |
+
+The 1e-3-trimmed Z window at sc888 spans ~850 of 1024 atoms — nearly
+dense — so tiny GEMMs with strided output run at a tenth of BLAS3 speed;
+single-row panels are worse still because every m = 13 GEMM re-streams
+the full nrr × nf right-hand side (1.6 flops/byte across 64 threads is a
+bandwidth wall, not a compute kernel); and the full dense window sits one
+buffer increment from the 125 GB machine limit. The chunked panel is the
+dense GEMM evaluated in ~512-row slabs: dense-BLAS3 arithmetic intensity,
+O(chunk × nrr) scratch, never nrr². Numbers are unchanged throughout: the
+same fragments, the same trim, the same correction_rms to the printed
+digit.
+
+One benchmarking trap, chased to ground: across this work the untouched
+Chebyshev sweep read ~1815 s (five consecutive runs) against the recorded
+1467 s, with bit-identical outputs — and the cause was neither code nor
+machine state but THREADS. `rsatb run` with OMP_NUM_THREADS unset uses
+nproc = 96 on this 48-core SMT box; 2× oversubscription costs a
+bandwidth-bound spmm ~25% while leaving cache-resident sc444 unharmed
+(which is what made it look environmental). With OMP_NUM_THREADS=48,
+OMP_PLACES=cores, OMP_PROC_BIND=spread the sweep measured 1450 s. Final
+clean sc888 whole-run at proper threading: 33m46s against the recorded
+39m14s of the pre-optimization control variate — sweep unchanged (1450 vs
+1467 s), fragment_build 484 → 261 s, fragment_baseline 148 → 73 s, build
+peak 45 GB where the dense-window route needed 123 GB.
+
+**Smeared spectral weights: tried, measured, removed (2026-08).** The
+submatrix view suggests a refinement: each Ritz state's energy variance
+under M is exactly computable in the window (sigma_j² = ||M[:,F] v_j||² −
+a_j²), and evaluating the filter Gauss-Hermite-smeared over N(a_j, sigma_j)
+is the L2-optimal diagonal weight IF the state's spectral measure were
+Gaussian. Measured: density correction 20× WORSE (0.0053 → 0.106 at sc444
+b4.0), and the LDOS gains erased at every eta (eta=1.0: 14.5/15.1/16.0%
+back to 16.3/17.1/17.7% against the 17.7% plain floor; eta=0.5: back to
+plain). The mechanism, understood after the fact: the spectral measure of a
+spatially truncated state is a dominant peak plus low-weight far tails,
+sigma² is tail-dominated (Heisenberg broadening of the truncation, eV
+scale), and a Gaussian moves the PEAK's weight by a width the peak does not
+have. The regression coefficient kept every smeared run no worse than plain
+— the designed safety worked — but point evaluation p(a_j) won everywhere
+measured and is again the only weight. Recorded next attempt if sharp-eta
+surrogate quality is ever worth another round: a peak-plus-tail model with
+second-order embedding weights w_g = |(M_GF v_j)_g|² / (M_gg − a_j)² from
+the window diagonal, which respects the measure's actual shape where the
+Gaussian cannot.
+
+## 11. Subspace deflation for sharp-filter maps (2026-08-25)
+
+The sharp-eta LDOS lever: the filtered sample states double as a
+spectrum-slicing sketch of the energy window, the SQUARED filter rides the
+same recursion so the sketch's true filtered image is exact, and the
+estimator splits into a deterministic captured map plus a cross-fitted
+deflated remainder -- unbiased for any capture, never worse than plain
+pointwise, no fitted coefficient, no extra matvecs. Full self-contained
+definitions, derivations, algorithm, cost accounting, and the
+system-size scaling law live in the dedicated document:
+
+    doc/design_subspace_deflation.md
+
+Headline measurements (64 samples, eta = 0.25 eV, vs eta-matched
+references): sc444 maps exact to filter leakage (1e-9..5e-7 relative;
+plain 7-15%); sc888 gap 19.6% -> 0.02%, conduction edge 15.8% -> 1.5%,
+deep valence 17.7% -> 7.5% (rank-saturated); cost +9% wall at sc444,
+0.3% of the sc888 LDOS task; np1-vs-np2 at the isqrtm-gauge level.
+
+The one remaining structural extension point: sharing the fragment
+eigensolves across tasks in one run (each task still builds its own tables
+from the same decomposition).

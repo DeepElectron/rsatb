@@ -140,8 +140,108 @@ class RSATB:
         dos_out, omega_out = self._cpp_obj.compute_dos(dE, method)
         return np.array(dos_out), np.array(omega_out)
 
+    def compute_pdos(self, dE, projection="atom"):
+        """
+        Compute the projected DOS, resolved onto orbital groups.
+
+        The same stochastic Chebyshev run as compute_dos, with a per-group
+        reduction of the recursion vectors -- so all groups cost one DOS run,
+        and summing the groups reproduces the total bin by bin (a built-in
+        check, returned as 'total').
+
+        Which population comes out follows the operator form and is REPORTED,
+        not chosen: the sandwich form projects onto Lowdin orbitals
+        (non-negative), the solve form onto Mulliken populations (which may
+        legitimately be negative). The two are different, standard,
+        conventions; crossing them would cost extra matvecs per moment and is
+        not offered.
+
+        Args:
+            dE (float): Target energy resolution in eV, as compute_dos.
+            projection (str): 'atom' -- one group per atom, ordered by the
+                original atom index; 'orbital_slot' -- one group per
+                (atom type, orbital position within the atom block), so two
+                elements never share a group even where their basis sizes
+                coincide. Groups run type by type, types being the distinct
+                atomic numbers in ascending order; with one element they are
+                simply the slots in order. Slot maps to a shell once the
+                caller applies the basis ordering.
+
+        Returns:
+            dict with keys:
+                energy: (2*nt,) energy grid in eV.
+                pdos: (n_kpoint, n_group, 2*nt) projected DOS, states/eV.
+                total: (n_kpoint, 2*nt) the all-orbitals DOS from the same
+                    run; sum(pdos, axis=1) equals it to rounding.
+                n_group: group count.
+                population: 'lowdin' or 'mulliken'.
+                group_type, group_slot: (n_group,) the atom type and
+                    orbital slot each group stands for; empty for projection
+                    'atom', whose group id is already the atom's input index.
+        """
+        return self._cpp_obj.compute_pdos(dE, projection)
+
+    def compute_rs_density(self, mu, temp, spin_degeneracy=2.0, spacing=0.4,
+                           box_edge=0, n_samples=64, block=16, seed=12345,
+                           fragment_core=4.5, fragment_buffer=0.0,
+                           energy_windows=1):
+        """
+        Compute the electron density on a real-space grid.
+
+        The LDOS estimator with the energy filter replaced by sqrt of the
+        Fermi-Dirac occupation at (mu, temp): one Chebyshev sweep, one
+        accumulator, non-negative pointwise. Gamma-only; needs a model with
+        real-space orbitals. A post-processing observable of the fixed H --
+        not an SCF density (stochastic noise would feed back nonlinearly).
+
+        The Chebyshev degree scales as (spectral span)/(pi * kT), so low
+        temperatures are expensive; the smearing is a numerical knob as much
+        as a physical one.
+
+        Args:
+            mu (float): Chemical potential in eV (see the fermi_level task).
+            temp (float): Smearing temperature in K.
+            spin_degeneracy (float): States per orbital; 2 for spin-paired.
+            spacing, box_edge, n_samples, block, seed: as compute_rs_ldos.
+            fragment_core, fragment_buffer (float): Fragment control variate,
+                Angstrom. fragment_buffer > 0 enables it: a deterministic
+                fragment baseline plus a stochastically corrected remainder.
+                The buffer is the systematic accuracy knob (pointwise noise
+                falls as the fragments capture more of the filtered operator);
+                fragment_core only sizes the dense per-fragment solves.
+                Either operator form (the solve form compresses the full
+                chain including the sampler coloring); any rank count.
+            energy_windows (int): Split the occupation into this many energy
+                windows sampled separately from the same sweep and seeds
+                (ew-sDFT). Removes cross-window sampling noise at no extra
+                Chebyshev degree; can never increase the variance. The one
+                reduction that keeps working for delocalized (metallic)
+                occupations, where fragments cannot. 1 disables.
+
+        Returns:
+            dict with keys:
+                shape, n_point, point_index: as compute_rs_ldos.
+                density: (n_owned,) electrons/A^3, THIS RANK's grid share.
+                grid (serial runs only): density on the full (n0, n1, n2) grid.
+                electrons_on_grid: integral of the density over the grid --
+                    approaches the occupation sum as the grid refines
+                    (quadrature-limited; 100 Ry orbitals want <~0.4 A).
+                filter_degree, n_states, sampler_residual: diagnostics.
+        """
+        kT = 8.617333262e-5 * temp  # eV/K
+        out = self._cpp_obj.compute_rs_density(
+            mu, kT, spin_degeneracy, spacing, box_edge, n_samples, block, seed,
+            fragment_core, fragment_buffer, energy_windows)
+        if out["density"].shape[0] == out["n_point"]:
+            full = np.zeros(out["n_point"])
+            full[out["point_index"]] = out["density"]
+            out["grid"] = full.reshape(tuple(out["shape"]))
+        return out
+
     def compute_rs_ldos(self, energies, eta, spacing=0.4, box_edge=0,
-                        n_samples=64, block=16, seed=12345):
+                        n_samples=64, block=16, seed=12345,
+                        fragment_core=4.5, fragment_buffer=0.0,
+                        subspace_cv=True, subspace_filters=4, local_capture=0, local_pack=8):
         """
         Compute the full-cell LDOS map on a real-space grid.
 
@@ -179,6 +279,18 @@ class RSATB:
             n_samples (int): Random states; relative noise ~ 1/sqrt(n).
             block (int): States per Chebyshev sweep (SpMM width).
             seed (int): RNG seed, for reproducible maps.
+            subspace_cv (bool): Ritz-subspace control variate -- the filtered
+                sample states double as a spectrum-slicing sketch of the
+                energy window; cross-fitted halves correct each other through
+                exact rank-n/2 Ritz maps. Never worse than plain (fitted
+                coefficient); collapses the sampling noise where the window
+                holds few states (gaps, band edges, defect levels). Either
+                operator form (the solve form whitens the sketch in the S
+                metric); needs at least two sample blocks.
+            subspace_filters (int): sketch-rank multiplier of the deflation
+                -- each sample also contributes its first J-1 Chebyshev
+                modulations (the block-Krylov family), growing the captured
+                window rank J-fold at zero extra matvecs. 1 = bare states.
 
         Returns:
             dict with keys:
@@ -192,7 +304,9 @@ class RSATB:
                 filter_degree, n_states, sampler_residual: diagnostics.
         """
         out = self._cpp_obj.compute_rs_ldos(
-            list(energies), eta, spacing, box_edge, n_samples, block, seed)
+            list(energies), eta, spacing, box_edge, n_samples, block, seed,
+            fragment_core, fragment_buffer, subspace_cv, subspace_filters,
+            local_capture, local_pack)
         if out["ldos"].shape[1] == out["n_point"]:
             n_energy = out["ldos"].shape[0]
             full = np.zeros((n_energy, out["n_point"]))
@@ -221,7 +335,9 @@ class RSATB:
             n_kpm (int): Number of KPM moments.
             temp (float): Temperature.
             mu (float): Chemical potential.
-            axis (str, optional): Axis for volume calculation. Defaults to "abc".
+            axis (str, optional): Cell axes spanning the normalization
+                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
+                area), "a"/"b"/"c" (lattice-vector length). Defaults to "abc".
             method (str): "concurrent" (shared-Chebyshev-state evolution,
                 ~9x fewer propagation matvecs; the default) or "sequential"
                 (stepwise propagation, the independent cross-check). Both
@@ -300,7 +416,9 @@ class RSATB:
         Args:
             n_moments (int): Number of Chebyshev moments / energy grid points.
             formulation (str, optional): "greenwood" or "bastin".
-            axis (str, optional): Axis selector for volume calculation.
+            axis (str, optional): Cell axes spanning the normalization
+                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
+                area), "a"/"b"/"c" (lattice-vector length).
             partition_sections (int, optional): Explicit row-partition count.
             max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
             kernel (str, optional): Chebyshev summation rule: "jackson"
@@ -334,7 +452,9 @@ class RSATB:
             mu (float): Chemical potential in eV.
             temp (float): Temperature in K.
             formulation (str, optional): "greenwood" or "bastin".
-            axis (str, optional): Axis selector for volume calculation.
+            axis (str, optional): Cell axes spanning the normalization
+                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
+                area), "a"/"b"/"c" (lattice-vector length).
             partition_sections (int, optional): Explicit row-partition count.
             max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
             kernel (str, optional): Chebyshev summation rule ("jackson" or

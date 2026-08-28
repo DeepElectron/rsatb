@@ -572,6 +572,12 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_rs_ldos PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_rs_ldos PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: test_rs_density - the sqrt-Fermi-filtered electron density
+    # against dense diagonalization, both operator forms.
+    add_executable(test_rs_density calc/test/test_rs_density.cpp $<TARGET_OBJECTS:backend>)
+    target_include_directories(test_rs_density PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(test_rs_density PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
     # Executable: benchmark_spgemm - the SpGEMM numeric phase cost breakdown
     # on synthetic block matrices: full vs Hermitian-halved, batched vs
     # per-pair, at sparse and dense block densities.
@@ -642,7 +648,7 @@ if(RSATB_BUILD_TESTS)
 
     # Standalone MPI test drivers (own main(), not GTest). Registered so they
     # are compiled by the normal build and cannot silently bit-rot again.
-    foreach(_driver test_isqrtm test_graphmf test_solver test_dos test_ac test_fermi_ace)
+    foreach(_driver test_isqrtm test_pdos test_graphmf test_solver test_dos test_ac test_fermi_ace)
         add_executable(${_driver} calc/test/${_driver}.cpp)
         target_include_directories(${_driver} PRIVATE ${RSATB_INCLUDE_DIRS})
         target_link_libraries(${_driver} PRIVATE ${RSATB_LINK_LIBS})

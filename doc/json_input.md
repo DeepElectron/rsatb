@@ -250,11 +250,29 @@ rather than several:
 ```json
 "tasks": [
   {"type": "dos", "dE": 0.05},
+  {"type": "pdos", "dE": 0.05, "projection": "atom"},
   {"type": "ldos", "energies": {"min": -1.0, "max": 1.0, "n": 21}, "eta": 0.1},
+  {"type": "density", "mu": 0.0, "temp": 300.0, "fragment_buffer": 5.0},
   {"type": "dc_spectrum", "n_moments": 1024, "kernel": "costaper"},
   {"type": "msd", "n_steps": 100, "dt_fs": 10.0, "n_kpm": 1024, "axis": "x"}
 ]
 ```
+
+`pdos` rides the same run as `dos` and resolves it onto orbital groups (per
+atom or per orbital slot); the group rows sum to the returned total bin by
+bin, and the population convention -- Lowdin under the sandwich form,
+Mulliken under the solve form -- is reported in the result rather than
+chosen. `density` is the `ldos` estimator with the filter replaced by the
+square root of the Fermi-Dirac occupation at `(mu, temp)`; like `ldos` it is
+Gamma-only, needs the radial orbital files, and writes one file per rank.
+
+`ldos` and `density` accept `fragment_buffer` (Angstrom; 0 = off, the
+default): the fragment control variate. A deterministic fragment baseline
+carries most of the map and the random samples correct only the residual, so
+the pointwise noise drops by orders of magnitude at the same sample count --
+systematically, with the buffer as the knob. The task reports `n_fragments`
+and `correction_rms` (the residual the samples still carry). Sandwich form,
+single rank; `fragment_core` sizes the dense per-fragment solves.
 
 Two runs of the same observable need a `label` to tell their results apart:
 

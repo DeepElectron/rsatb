@@ -455,6 +455,73 @@ def test_a_graphene_dos_runs_from_json(tmp_path, capsys):
     assert arrays["energy"].shape[0] == arrays["dos"].shape[1]
 
 
+def test_the_axis_choices_volume_is_rejected_only_at_check_time():
+    """Cartesian letters and the non-cyclic 'ac' are not volume axes.
+
+    The transport axis names the cell axes spanning the normalization
+    volume, so its vocabulary is lattice letters in cyclic pair order --
+    the same set volume() accepts, which is what keeps a validated input
+    from crashing in C++ ("Invalid axis", 2026-08-26).
+    """
+    for bad in ("x", "ac"):
+        _, issues = resolve({"tasks": [{"type": "dc_spectrum", "axis": bad}]})
+        assert paths(errors(issues)) == ["tasks[0].axis"], bad
+        assert errors(issues)[0].hint, bad
+
+
+@pytest.mark.order(-1)
+def test_every_transport_axis_choice_runs_and_scales_by_its_volume(tmp_path):
+    """One dc_spectrum per AXIS choice; sigma * volume(axis) is invariant.
+
+    The axis picks the normalization volume and nothing else, so runs that
+    share every other knob differ by the exact volume ratio. The cell is
+    made fully triclinic first: on the stock cell b, c and a, c are
+    orthogonal pairs, and |v x w| = |v||w| bugs would cancel.
+    """
+    pytest.importorskip("_rsatb")
+    numpy = pytest.importorskip("numpy")
+
+    document = copy.deepcopy(templates.get("sktb"))
+    document["structure"]["cell"][2] = [0.4, 0.7, 20.0]
+    document["run"]["nsamples"] = 2
+    document["tasks"] = [
+        {"type": "dc_spectrum", "label": "sigma_" + axis, "axis": axis,
+         "n_moments": 32}
+        for axis in spec.AXIS.choices
+    ]
+    document["output"] = {"dir": str(tmp_path / "out")}
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(document))
+
+    assert main(["run", str(path)]) == 0
+
+    cell = numpy.array(document["structure"]["cell"], dtype=float)
+    a, b, c = cell
+    volume = {
+        "abc": abs(numpy.linalg.det(cell)),
+        "ab": numpy.linalg.norm(numpy.cross(a, b)),
+        "bc": numpy.linalg.norm(numpy.cross(b, c)),
+        "ca": numpy.linalg.norm(numpy.cross(c, a)),
+        "a": numpy.linalg.norm(a),
+        "b": numpy.linalg.norm(b),
+        "c": numpy.linalg.norm(c),
+    }
+    assert set(volume) == set(spec.AXIS.choices)
+
+    reference = None
+    for axis in spec.AXIS.choices:
+        sigma = numpy.load(str(tmp_path / "out" / ("sigma_" + axis + ".npz")))["sigma"]
+        assert numpy.isfinite(sigma).all(), axis
+        rescaled = sigma * volume[axis]
+        if reference is None:
+            reference = rescaled
+            assert numpy.abs(reference).max() > 0.0
+        else:
+            numpy.testing.assert_allclose(
+                rescaled, reference, rtol=1e-9,
+                atol=1e-12 * numpy.abs(reference).max(), err_msg=axis)
+
+
 @pytest.mark.parametrize("family,example", [
     ("sktb", "01_sktb_graphene.json"),
     ("dftb", "03_dftb_skf.json"),

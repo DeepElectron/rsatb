@@ -36,7 +36,9 @@
 
 #include <cmath>
 #include <complex>
+#include <limits>
 #include <memory>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -574,6 +576,539 @@ TEST(RealSpaceLdosTest, DistributedRanksAssembleTheSerialAnswer) {
         }
         EXPECT_LT(worst, 1e-10 * peak) << "energy " << opt.energies[k];
     }
+}
+
+TEST(RealSpaceLdosTest, RitzSubspaceCvCollapsesSparseWindowNoise) {
+    // The Ritz-subspace control variate (rs_ldos.hpp, subspace_cv): where the
+    // energy window holds fewer states than half the samples, the filtered
+    // states span the window and the cross-fitted Ritz surrogate carries the
+    // map almost deterministically -- the chi^2 sampling floor collapses. At
+    // a window denser than the sketch, the fitted coefficient must decline
+    // the surrogate (never worse than plain). Both regimes on one fixture.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    // Window sharpness from the actual level structure: at the spectrum's
+    // bottom edge, +-3 eta covers a handful of states -- well under the 16
+    // each cross-fitted half can capture, the regime where the deflation
+    // must collapse the noise. The second energy sits in a dense band
+    // (window rank far above the sketch) and is the no-harm check.
+    opt.eta = std::max((ref.eps[5] - ref.eps[0]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[0], ref.eps[2 * sys.n() / 3]};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 32;
+    opt.block = 8;
+    opt.seed = 424242;
+
+    auto run = [&](bool subspace) {
+        rsatb::calc::RealSpaceLdosOptions o = opt;
+        o.subspace_cv = subspace;
+        return rsatb::calc::ComputeRealSpaceLdos(
+            *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+            *sys.collocation, o, MPI_COMM_WORLD);
+    };
+    const auto plain = run(false);
+    const auto ritz = run(true);
+    ASSERT_EQ(static_cast<int>(ritz.subspace_capture.size()), 2);
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < plain.grid.n_box(); ++b) {
+        const auto box = plain.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+    for (size_t k = 0; k < opt.energies.size(); ++k) {
+        const auto reference = ReferenceMap(sys, ref, set, plain.grid, plain.domain,
+                                            opt.energies[k], opt.eta);
+        double np = 0.0, nr = 0.0, den = 0.0;
+        for (int64_t p = 0; p < plain.domain.n_point(); ++p) {
+            const double dp = plain.ldos[k][p] - reference[p];
+            const double dr = ritz.ldos[k][p] - reference[p];
+            np += dp * dp;
+            nr += dr * dr;
+            den += reference[p] * reference[p];
+        }
+        const double e_plain = std::sqrt(np / den);
+        const double e_ritz = std::sqrt(nr / den);
+        printf("  E=%+8.3f: rel L2 plain %.4f, deflated %.4f (capture %.3f, rank %d)\n",
+               opt.energies[k], e_plain, e_ritz, ritz.subspace_capture[k],
+               ritz.subspace_rank[k]);
+        if (k == 0) {
+            // Sparse window: the collapse regime. Loose bounds -- only a
+            // broken estimator fails them, not an unlucky seed.
+            EXPECT_LT(e_ritz, 0.3 * e_plain) << "energy " << opt.energies[k];
+            EXPECT_GT(ritz.subspace_capture[k], 0.8) << "energy " << opt.energies[k];
+        } else {
+            // Dense window: variance can only shrink, but one realization
+            // may wobble; never-worse up to realization noise.
+            EXPECT_LT(e_ritz, 1.2 * e_plain) << "energy " << opt.energies[k];
+        }
+    }
+}
+
+TEST(RealSpaceLdosTest, LocalCaptureRegionsSubdivideOwnedAtomsByOrbitalWeight) {
+    // The local-capture geometry starts from one rank's immutable owned atom
+    // set. A serial weighted RIB must cover its scalar rows exactly once,
+    // produce the requested number of compact pieces, and be deterministic.
+    std::vector<double> positions;
+    std::vector<int> orbital_weight;
+    for (int ix = 0; ix < 4; ++ix) {
+        for (int iy = 0; iy < 4; ++iy) {
+            for (int iz = 0; iz < 4; ++iz) {
+                positions.insert(positions.end(),
+                                 {static_cast<double>(ix), static_cast<double>(iy),
+                                  static_cast<double>(iz)});
+                orbital_weight.push_back(2);
+            }
+        }
+    }
+    std::vector<int> global_id(orbital_weight.size());
+    // Shifted, non-contiguous global ids: the stable id must reproduce the
+    // MINIMUM member id, not an index into this rank's local order.
+    for (size_t a = 0; a < global_id.size(); ++a) {
+        global_id[a] = 1000 + 3 * static_cast<int>(a);
+    }
+    const int target_rows = 16;
+    const auto regions = rsatb::calc::detail::BuildLocalCaptureRegions(
+        positions, orbital_weight, global_id, target_rows);
+    const auto repeat = rsatb::calc::detail::BuildLocalCaptureRegions(
+        positions, orbital_weight, global_id, target_rows);
+
+    ASSERT_EQ(regions.size(), 8u);
+    ASSERT_EQ(repeat.size(), regions.size());
+    std::vector<int> seen(128, 0);
+    std::vector<int> row_region(128, -1);
+    for (size_t b = 0; b < regions.size(); ++b) {
+        EXPECT_EQ(regions[b].orbital_rows, target_rows);
+        EXPECT_EQ(regions[b].rows, repeat[b].rows);
+        EXPECT_EQ(regions[b].rib_part, static_cast<int>(b));
+        EXPECT_EQ(regions[b].stable_id, repeat[b].stable_id);
+        EXPECT_GT(regions[b].radius, 0.0);
+        // The stable id is the minimum global id over the region's atoms
+        // (rows come in per-atom pairs here: atom = row / 2).
+        uint64_t expect_min = std::numeric_limits<uint64_t>::max();
+        for (int row : regions[b].rows) {
+            expect_min = std::min(
+                expect_min, static_cast<uint64_t>(global_id[row / 2]));
+        }
+        EXPECT_EQ(regions[b].stable_id, expect_min);
+        for (int row : regions[b].rows) {
+            ASSERT_GE(row, 0);
+            ASSERT_LT(row, static_cast<int>(seen.size()));
+            ++seen[row];
+            row_region[row] = static_cast<int>(b);
+        }
+    }
+    // Stable ids are unique across regions (atoms are uniquely owned).
+    std::set<uint64_t> ids;
+    for (const auto& region : regions) ids.insert(region.stable_id);
+    EXPECT_EQ(ids.size(), regions.size());
+    for (int count : seen) EXPECT_EQ(count, 1);
+    for (int atom = 0; atom < 64; ++atom) {
+        EXPECT_EQ(row_region[2 * atom], row_region[2 * atom + 1]);
+    }
+}
+
+TEST(RealSpaceLdosTest, DistributedLocalCaptureKeepsTheExistingAtomPartition) {
+    // Exercise the complete local-capture path under MPI.  AtomicData has
+    // already performed its RIB/ParMETIS redistribution; LDOS region setup
+    // must leave that ownership untouched and use only the communication of
+    // the ordinary distributed operator and grid pipelines.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world < 2) GTEST_SKIP() << "requires an MPI launch";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    std::vector<int> owned_before(sys.ad->atom_index.begin(),
+                                  sys.ad->atom_index.begin() + sys.ad->n_atom);
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = 0.05 * (ref.eps.back() - ref.eps.front());
+    opt.energies = {ref.eps[sys.n() / 2]};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 8;
+    opt.block = 4;
+    opt.subspace_filters = 1;
+    opt.local_capture = 3;
+    opt.local_pack = 2;
+    opt.seed = 919191;
+
+    const auto result = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+        *sys.collocation, opt, MPI_COMM_WORLD);
+
+    const std::vector<int> owned_after(sys.ad->atom_index.begin(),
+                                       sys.ad->atom_index.begin() + sys.ad->n_atom);
+    EXPECT_EQ(owned_after, owned_before);
+    ASSERT_EQ(result.ldos.size(), 1u);
+    double local_sum = 0.0;
+    for (double value : result.ldos[0]) {
+        ASSERT_TRUE(std::isfinite(value));
+        local_sum += value;
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &local_sum, 1, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+    EXPECT_GT(local_sum, 0.0);
+    EXPECT_EQ(result.subspace_rank[0], opt.local_capture);
+    EXPECT_TRUE(std::isfinite(result.subspace_capture[0]));
+    // The G = 1 collapse regression: every rank holds ONE region, so the old
+    // per-rank-maximum color bound collapsed local_pack = 2 to a single
+    // shared column for all regions in the run. The bound is now the GLOBAL
+    // region count: world ranks -> world regions -> both colors live.
+    EXPECT_EQ(result.local_route[0], 1);
+    EXPECT_EQ(result.local_regions, world);
+    EXPECT_EQ(result.local_colors, std::min(opt.local_pack, world));
+    EXPECT_TRUE(std::isfinite(result.local_packing_se[0]));
+    EXPECT_GE(result.local_packing_se[0], 0.0);
+}
+
+TEST(RealSpaceLdosTest, BlockLocalCaptureBeatsPlainAndStaysFiniteWhenEmpty) {
+    // Block-local capture (local_capture > 0): per-fragment bases from the
+    // sketch's local SVD, dedicated image sweeps, split-sample
+    // unbiasedness. On the chain fixture the whole system is one fragment
+    // -- the mechanism must collapse a dense-window error the same way the
+    // sandbox measured (and, with an empty window, the sv floor must keep
+    // rank 0 / plain behavior).
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = std::max((ref.eps[5] - ref.eps[0]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[2 * sys.n() / 3]};   // dense in-band window
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 32;
+    opt.block = 8;
+    opt.seed = 424242;
+
+    auto run = [&](int local_r, bool cv) {
+        rsatb::calc::RealSpaceLdosOptions o = opt;
+        o.local_capture = local_r;
+        o.subspace_cv = cv;
+        return rsatb::calc::ComputeRealSpaceLdos(
+            *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+            *sys.collocation, o, MPI_COMM_WORLD);
+    };
+    const auto plain = run(0, false);
+    const auto local = run(48, true);
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < plain.grid.n_box(); ++b) {
+        const auto box = plain.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+    const auto reference = ReferenceMap(sys, ref, set, plain.grid, plain.domain,
+                                        opt.energies[0], opt.eta);
+    double np = 0.0, nl = 0.0, den = 0.0;
+    for (int64_t p = 0; p < plain.domain.n_point(); ++p) {
+        const double dp = plain.ldos[0][p] - reference[p];
+        const double dl = local.ldos[0][p] - reference[p];
+        np += dp * dp;
+        nl += dl * dl;
+        den += reference[p] * reference[p];
+    }
+    const double e_plain = std::sqrt(np / den), e_local = std::sqrt(nl / den);
+    printf("  local capture: rel L2 plain %.4f, local %.4f (capture %.3f, rank %d)\n",
+           e_plain, e_local, local.subspace_capture[0], local.subspace_rank[0]);
+    EXPECT_LT(e_local, 0.5 * e_plain);
+    EXPECT_GT(local.subspace_capture[0], 0.5);
+
+    // The sketch captured this window completely (capture 1.0), so the
+    // energy ROUTES GLOBAL -- and with the route decided before the local
+    // machinery is priced, none of it may have been paid: no regions were
+    // built, no image sweep ran, no packing certificate exists. Before the
+    // reordering, enabling local_capture bought these sweeps even when, as
+    // here, no energy ever used them.
+    ASSERT_EQ(static_cast<int>(local.local_route.size()), 1);
+    EXPECT_EQ(local.local_route[0], 0);
+    EXPECT_EQ(local.local_regions, 0);
+    EXPECT_EQ(local.local_colors, 0);
+    ASSERT_EQ(static_cast<int>(local.local_packing_se.size()), 1);
+    EXPECT_EQ(local.local_packing_se[0], 0.0);
+    EXPECT_EQ(local.min_same_color_distance, -1.0);
+}
+
+TEST(RealSpaceLdosTest, LocalRouteRunsTheStageAndCertifiesItsPacking) {
+    // Starve the global sketch (few samples, no filter enrichment) so its
+    // capture falls below the routing threshold: the energy must route
+    // LOCAL, run the deferred per-fragment stage, and -- with the default
+    // two sign replicas -- report a measured between-replica packing error.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = std::max((ref.eps[5] - ref.eps[0]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[2 * sys.n() / 3]};   // dense in-band window
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 8;
+    opt.block = 4;
+    opt.subspace_filters = 1;
+    opt.local_capture = 48;
+    opt.seed = 424242;
+
+    const auto local = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+        *sys.collocation, opt, MPI_COMM_WORLD);
+
+    ASSERT_EQ(static_cast<int>(local.local_route.size()), 1);
+    ASSERT_EQ(local.local_route[0], 1) << "sketch unexpectedly captured the "
+                                          "window; the fixture must starve it";
+    // One rank, few orbitals: one region, one color, and therefore no
+    // same-color pair for the audit to measure (-1 = no shared color).
+    EXPECT_EQ(local.local_regions, 1);
+    EXPECT_EQ(local.local_colors, 1);
+    EXPECT_EQ(local.min_same_color_distance, -1.0);
+    // The certificate exists and is small against the map scale: the single
+    // region's capture is near exact here, so its packing noise must be too.
+    double map_rms = 0.0;
+    for (double value : local.ldos[0]) {
+        ASSERT_TRUE(std::isfinite(value));
+        map_rms += value * value;
+    }
+    map_rms = std::sqrt(map_rms /
+                        std::max<size_t>(1, local.ldos[0].size()));
+    ASSERT_EQ(static_cast<int>(local.local_packing_se.size()), 1);
+    EXPECT_TRUE(std::isfinite(local.local_packing_se[0]));
+    EXPECT_GE(local.local_packing_se[0], 0.0);
+    EXPECT_LT(local.local_packing_se[0], 0.5 * map_rms);
+    printf("  routed local: capture %.3f rank %d, packing se/rms %.4f\n",
+           local.subspace_capture[0], local.subspace_rank[0],
+           map_rms > 0.0 ? local.local_packing_se[0] / map_rms : 0.0);
+
+    // A single replica is the legacy estimator: same route, no certificate.
+    rsatb::calc::RealSpaceLdosOptions o1 = opt;
+    o1.local_pack_replicas = 1;
+    const auto single = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+        *sys.collocation, o1, MPI_COMM_WORLD);
+    EXPECT_EQ(single.local_route[0], 1);
+    EXPECT_EQ(single.local_packing_se[0], 0.0);
+    // Replicas average packing noise; the two estimates agree to the scale
+    // the certificate reports (loose factor: both carry residual sampling).
+    double diff = 0.0;
+    for (size_t p = 0; p < local.ldos[0].size(); ++p) {
+        const double d = local.ldos[0][p] - single.ldos[0][p];
+        diff += d * d;
+    }
+    diff = std::sqrt(diff / std::max<size_t>(1, local.ldos[0].size()));
+    EXPECT_LT(diff, map_rms);
+}
+
+TEST(RealSpaceLdosTest, RitzSubspaceCvStaysFiniteOnAnEmptyWindow) {
+    // Regression: at an energy window holding NO states the filtered states
+    // are pure sweep roundoff. The Gram spectrum of noise is flat, so a
+    // purely relative rank cutoff keeps every direction and 1/sqrt(sv)
+    // amplifies the stored images into an O(1) garbage map (first seen on
+    // Al: rms 7.5 where the truth is 0). The absolute eigenvalue floor must
+    // detect the empty window and fall back to the plain estimator.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+
+    // Center the window on the largest interior spectral gap, with eta small
+    // enough that the nearest state sits ~10 sigma out: the filter there is
+    // e^-50, far below double roundoff -- a numerically empty window.
+    size_t gi = 1;
+    for (size_t i = 1; i < ref.eps.size(); ++i) {
+        if (ref.eps[i] - ref.eps[i - 1] > ref.eps[gi] - ref.eps[gi - 1]) gi = i;
+    }
+    const double gap = ref.eps[gi] - ref.eps[gi - 1];
+    ASSERT_GT(gap, 0.0);
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = gap / 20.0;
+    opt.energies = {0.5 * (ref.eps[gi] + ref.eps[gi - 1])};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 16;
+    opt.block = 8;
+    opt.seed = 424242;
+
+    auto run = [&](bool subspace) {
+        rsatb::calc::RealSpaceLdosOptions o = opt;
+        o.subspace_cv = subspace;
+        return rsatb::calc::ComputeRealSpaceLdos(
+            *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+            *sys.collocation, o, MPI_COMM_WORLD);
+    };
+    const auto plain = run(false);
+    const auto ritz = run(true);
+
+    double mp = 0.0, mr = 0.0;
+    for (int64_t p = 0; p < plain.domain.n_point(); ++p) {
+        mp = std::max(mp, std::abs(plain.ldos[0][p]));
+        mr = std::max(mr, std::abs(ritz.ldos[0][p]));
+    }
+    printf("  empty window E=%+8.3f: max plain %.3e, deflated %.3e (rank %d)\n",
+           opt.energies[0], mp, mr, ritz.subspace_rank[0]);
+    // Both maps are filter-tail noise; the broken estimator was ~20 orders
+    // above the plain one, so a loose factor catches only real blow-ups.
+    EXPECT_LE(mr, 10.0 * mp + 1e-14);
+    EXPECT_EQ(ritz.subspace_rank[0], 0);
+}
+
+TEST(RealSpaceLdosTest, SolveFormRitzSubspaceCvCollapsesSparseWindowNoise) {
+    // The section-17 port: the same deflation in the S metric. The solve
+    // form's seeds carry covariance S^-1, so the sketch is whitened with the
+    // Gram Y^T S Y and the deflation contracts Q^T S c0 -- the sandwich
+    // split conjugated by S^{1/2}, statistically identical. The same fixture
+    // must therefore show the same collapse at the sparse window and the
+    // same no-harm at the dense one.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = std::max((ref.eps[5] - ref.eps[0]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[0], ref.eps[2 * sys.n() / 3]};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 32;
+    opt.block = 8;
+    opt.seed = 424242;
+
+    auto run = [&](bool subspace) {
+        rsatb::calc::RealSpaceLdosOptions o = opt;
+        o.subspace_cv = subspace;
+        return rsatb::calc::ComputeRealSpaceLdos(
+            *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+            *sys.collocation, o, MPI_COMM_WORLD);
+    };
+    const auto plain = run(false);
+    const auto ritz = run(true);
+    ASSERT_EQ(static_cast<int>(ritz.subspace_capture.size()), 2);
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < plain.grid.n_box(); ++b) {
+        const auto box = plain.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+    for (size_t k = 0; k < opt.energies.size(); ++k) {
+        const auto reference = ReferenceMap(sys, ref, set, plain.grid, plain.domain,
+                                            opt.energies[k], opt.eta);
+        double np = 0.0, nr = 0.0, den = 0.0;
+        for (int64_t p = 0; p < plain.domain.n_point(); ++p) {
+            const double dp = plain.ldos[k][p] - reference[p];
+            const double dr = ritz.ldos[k][p] - reference[p];
+            np += dp * dp;
+            nr += dr * dr;
+            den += reference[p] * reference[p];
+        }
+        const double e_plain = std::sqrt(np / den);
+        const double e_ritz = std::sqrt(nr / den);
+        printf("  solve E=%+8.3f: rel L2 plain %.4f, deflated %.4f "
+               "(capture %.3f, rank %d)\n",
+               opt.energies[k], e_plain, e_ritz, ritz.subspace_capture[k],
+               ritz.subspace_rank[k]);
+        if (k == 0) {
+            EXPECT_LT(e_ritz, 0.3 * e_plain) << "energy " << opt.energies[k];
+            EXPECT_GT(ritz.subspace_capture[k], 0.8) << "energy " << opt.energies[k];
+        } else {
+            EXPECT_LT(e_ritz, 1.2 * e_plain) << "energy " << opt.energies[k];
+        }
+    }
+}
+
+TEST(RealSpaceLdosTest, SolveFormBlockLocalCaptureBeatsPlain) {
+    // Local capture is a state-space split -- exact for ANY block projector,
+    // no metric involved -- so the solve form changes one thing only: the
+    // image sweep is seeded with S^-1 X, making the images represent the
+    // actual state covariance p^2(B) S^-1 (design 17.3, item 6, as landed:
+    // the Euclidean fragment SVD stays).
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys;
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = std::max((ref.eps[5] - ref.eps[0]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[2 * sys.n() / 3]};   // dense in-band window
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 32;
+    opt.block = 8;
+    opt.seed = 424242;
+
+    auto run = [&](int local_r, bool cv) {
+        rsatb::calc::RealSpaceLdosOptions o = opt;
+        o.local_capture = local_r;
+        o.subspace_cv = cv;
+        return rsatb::calc::ComputeRealSpaceLdos(
+            *sys.ad, *sys.H, sys.S.get(), *sys.Zt, rsatb::calc::ChebyOpForm::Solve,
+            *sys.collocation, o, MPI_COMM_WORLD);
+    };
+    const auto plain = run(0, false);
+    const auto local = run(48, true);
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < plain.grid.n_box(); ++b) {
+        const auto box = plain.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+    const auto reference = ReferenceMap(sys, ref, set, plain.grid, plain.domain,
+                                        opt.energies[0], opt.eta);
+    double np = 0.0, nl = 0.0, den = 0.0;
+    for (int64_t p = 0; p < plain.domain.n_point(); ++p) {
+        const double dp = plain.ldos[0][p] - reference[p];
+        const double dl = local.ldos[0][p] - reference[p];
+        np += dp * dp;
+        nl += dl * dl;
+        den += reference[p] * reference[p];
+    }
+    const double e_plain = std::sqrt(np / den), e_local = std::sqrt(nl / den);
+    printf("  solve local capture: rel L2 plain %.4f, local %.4f "
+           "(capture %.3f, rank %d)\n",
+           e_plain, e_local, local.subspace_capture[0], local.subspace_rank[0]);
+    EXPECT_LT(e_local, 0.5 * e_plain);
+    EXPECT_GT(local.subspace_capture[0], 0.5);
 }
 
 int main(int argc, char** argv) {

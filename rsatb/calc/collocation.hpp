@@ -1078,7 +1078,8 @@ public:
 #pragma omp parallel
         {
             std::vector<double> points, phi, local_coeff, psi, relative;
-            std::vector<int> active, kept;
+            std::vector<int> active, kept, col_ids;
+            std::vector<char> col_active;
             GridWorkStats mine;
 
 #pragma omp for schedule(dynamic)
@@ -1095,37 +1096,74 @@ public:
                     ++mine.boxes_empty;
                     continue;
                 }
+
+                // Columns of the block with any weight on this box's rows.
+                // Random sample blocks are dense and settle the scan after a
+                // row or two; spatially local columns (the identity-streamed
+                // fragment baseline of rs_ldos) leave most boxes with a
+                // fraction of the block or none of it, and the GEMM -- and
+                // for untouched boxes the orbital evaluation itself -- must
+                // not be paid for exact zeros. The skip is what holds the
+                // baseline stream at O(N): active (block, box) pairs are set
+                // by the overlap geometry, not by the basis size.
+                col_active.assign(n_vec, 0);
+                int n_active = 0;
+                for (int i = 0; i < n_local_orb && n_active < n_vec; ++i) {
+                    const double* src =
+                        coeffs.data() + static_cast<size_t>(local.orbitals[i]) * n_vec;
+                    for (int v = 0; v < n_vec; ++v) {
+                        if (!col_active[v] && src[v] != 0.0) {
+                            col_active[v] = 1;
+                            ++n_active;
+                        }
+                    }
+                }
+                if (n_active == 0) {  // no column reaches this box: stays zero
+                    ++mine.boxes_empty;
+                    continue;
+                }
                 ++mine.boxes_contracted;
                 mine.max_box_orbitals = std::max(mine.max_box_orbitals, n_local_orb);
                 mine.sum_box_orbitals += n_local_orb;
                 mine.points_total += n_box_point;
 
-                // Gather this box's rows of the coefficient array.
-                local_coeff.resize(static_cast<size_t>(n_local_orb) * n_vec);
+                // Gather this box's rows of the coefficient array, compacted
+                // to the active columns when some are dead.
+                const bool dense_cols = (n_active == n_vec);
+                if (!dense_cols) {
+                    col_ids.clear();
+                    for (int v = 0; v < n_vec; ++v) {
+                        if (col_active[v]) col_ids.push_back(v);
+                    }
+                }
+                local_coeff.resize(static_cast<size_t>(n_local_orb) * n_active);
                 for (int i = 0; i < n_local_orb; ++i) {
                     const double* src =
                         coeffs.data() + static_cast<size_t>(local.orbitals[i]) * n_vec;
-                    std::copy(src, src + n_vec,
-                              local_coeff.data() + static_cast<size_t>(i) * n_vec);
+                    double* dst = local_coeff.data() + static_cast<size_t>(i) * n_active;
+                    if (dense_cols) {
+                        std::copy(src, src + n_vec, dst);
+                    } else {
+                        for (int a = 0; a < n_active; ++a) dst[a] = src[col_ids[a]];
+                    }
                 }
 
                 grid.PointsOfBox(box, &points);
                 phi.assign(static_cast<size_t>(n_box_point) * n_local_orb, 0.0);
-                psi.resize(static_cast<size_t>(n_box_point) * n_vec);
 
                 EvaluatePhi(atomic_data, set, local, points, n_box_point, cell_inv, &relative,
                             &active, phi.data());
                 const int n_kept = detail::TrimZeroRows(n_box_point, n_local_orb, &phi, &kept);
                 mine.points_kept += n_kept;
                 if (n_kept == 0) continue;
-                psi.resize(static_cast<size_t>(n_kept) * n_vec);
+                psi.resize(static_cast<size_t>(n_kept) * n_active);
 
                 // psi = phi * local_coeff, both row-major. In Fortran layout
                 // that is local_coeff^T * phi^T with no transposition, the
                 // same trick ContractChunk uses.
                 {
                     using vbcsr::vbcsr_lapack_int;
-                    const vbcsr_lapack_int m = n_vec;
+                    const vbcsr_lapack_int m = n_active;
                     const vbcsr_lapack_int n = n_kept;
                     const vbcsr_lapack_int k = n_local_orb;
                     const double alpha = 1.0, beta = 0.0;
@@ -1133,10 +1171,12 @@ public:
                                   phi.data(), &k, &beta, psi.data(), &m);
                 }
 
+                // The dead columns contribute exactly zero to the square sum,
+                // so the mean keeps its full n_vec normalization.
                 for (int q = 0; q < n_kept; ++q) {
-                    const double* row = psi.data() + static_cast<size_t>(q) * n_vec;
+                    const double* row = psi.data() + static_cast<size_t>(q) * n_active;
                     double sum = 0.0;
-                    for (int v = 0; v < n_vec; ++v) sum += row[v] * row[v];
+                    for (int v = 0; v < n_active; ++v) sum += row[v] * row[v];
                     out[kept[q]] = sum * inv_n_vec * per_angstrom_cubed;
                 }
             }

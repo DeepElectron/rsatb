@@ -52,9 +52,12 @@ SPIN = _str(
     choices=("none", "collinear", "noncollinear", "spinorbit"))
 
 AXIS = _str(
-    "Cartesian directions the tensor is reduced over, and the axes the volume "
-    "is taken along. 'abc' uses the full cell volume.",
-    choices=("abc", "ab", "bc", "ac", "a", "b", "c", "x", "y", "z"))
+    "Cell axes spanning the normalization volume in the transport prefactor. "
+    "'abc' is the full cell volume; a cyclic pair ('ab', 'bc', 'ca') the area "
+    "of that lattice plane, for 2D systems padded with vacuum; a single "
+    "letter that lattice vector's length, for 1D. The conductivity tensor "
+    "itself always keeps all six Cartesian components.",
+    choices=("abc", "ab", "bc", "ca", "a", "b", "c"))
 
 HAMILTONIAN_FILE = Obj(
     "A precomputed real-space Hamiltonian H(R) and the file layout it uses.",
@@ -565,6 +568,34 @@ TASK = Union(
                                  "legacy outputs.",
                                  choices=("kpm", "corr")), default="kpm"),
             }),
+        "pdos": Obj(
+            "Projected density of states, resolved onto orbital groups by a "
+            "per-group reduction of the same stochastic Chebyshev run the dos "
+            "task performs -- every group costs one DOS run, and the group "
+            "rows sum to the returned total bin by bin.\n\n"
+            "The population convention follows the operator form and is "
+            "reported in the result rather than chosen: the sandwich form "
+            "projects onto Lowdin orbitals (non-negative); the solve form "
+            "onto Mulliken populations, which may legitimately be negative.",
+            {
+                "label": LABEL,
+                "dE": F(_num("Target energy resolution, as the dos task.",
+                             unit="eV", exclusive_minimum=0.0), default=0.1),
+                "projection": F(_str("'atom' groups by atom (original input "
+                                     "order); 'orbital_slot' groups by (atom "
+                                     "type, orbital position within the atom "
+                                     "block), so two elements never share a "
+                                     "group even where their basis sizes "
+                                     "coincide. It writes 'group_type' and "
+                                     "'group_slot' naming each group, types "
+                                     "being the distinct atomic numbers in "
+                                     "ascending order; with one element the "
+                                     "groups are simply the slots, in order. "
+                                     "Slot maps to a shell once the caller "
+                                     "applies the basis ordering.",
+                                     choices=("atom", "orbital_slot")),
+                                default="atom"),
+            }),
         "ldos": Obj(
             "Local density of states on a real-space grid, by square-root "
             "filtered stochastic Chebyshev expansion. Needs the radial orbital "
@@ -608,6 +639,130 @@ TASK = Union(
                                "equivalent map, not an identical one -- the two "
                                "differ by the sampling error, which falls as "
                                "1/sqrt(n_samples).", minimum=0), default=12345),
+                "fragment_core": F(_num("Fragment control variate: core bin "
+                                        "edge; see the density task.",
+                                        unit="Angstrom", exclusive_minimum=0.0),
+                                   default=4.5),
+                "fragment_buffer": F(_num("Fragment control variate: dressing "
+                                          "radius; 0 disables. See the density "
+                                          "task; for the LDOS the gain grows "
+                                          "with eta, since the filter's "
+                                          "real-space reach ~v/eta is what the "
+                                          "fragments must capture.",
+                                          unit="Angstrom", minimum=0.0),
+                                     default=0.0),
+                "subspace_cv": F(_bool("Ritz-subspace control variate: the "
+                                       "filtered sample states double as a "
+                                       "spectrum-slicing sketch of the energy "
+                                       "window; cross-fitted halves correct "
+                                       "each other through exact low-rank Ritz "
+                                       "maps. Never worse than plain; "
+                                       "collapses the noise where the window "
+                                       "holds few states (gaps, band edges, "
+                                       "defect levels). Either operator form."),
+                                 default=True),
+                "subspace_filters": F(_int("Sketch-rank multiplier of the "
+                                           "deflation: each sample also "
+                                           "contributes its first J-1 "
+                                           "Chebyshev modulations (block-"
+                                           "Krylov family), growing the "
+                                           "captured window rank J-fold at "
+                                           "zero extra matvecs. 1 = bare "
+                                           "filtered states.", minimum=1),
+                                      default=4),
+                "local_capture": F(_int("Block-local capture rank per "
+                                        "fragment: per-fragment bases from "
+                                        "the sketch's local SVD with "
+                                        "dedicated image sweeps. Breaks the "
+                                        "global deflation's rank wall at "
+                                        "dense (metallic) windows; capacity "
+                                        "is intensive, so it holds at any "
+                                        "system size. 0 = off.", minimum=0),
+                                   default=0),
+                "local_pack": F(_int("Fragment groups sharing image-sweep "
+                                     "columns under local_capture; image "
+                                     "cost = local_capture x local_pack "
+                                     "column-sweeps. Smaller packs are "
+                                     "cheaper but bring packed fragments "
+                                     "closer (crosstalk bias from the "
+                                     "filter kernel tail).", minimum=1),
+                                default=8),
+                "local_pack_replicas": F(
+                    _int("Independent sign realizations of the packed image "
+                         "columns under local_capture. The map averages the "
+                         "replicas (crosstalk falls as 1/replicas) and their "
+                         "spread is reported as local_packing_se, a measured "
+                         "packing error bar. Image-sweep cost scales "
+                         "linearly; 1 = single realization, no error bar.",
+                         minimum=1),
+                    default=2),
+            }),
+        "density": Obj(
+            "Electron density on a real-space grid: the ldos estimator with "
+            "the energy filter replaced by the square root of the Fermi-Dirac "
+            "occupation at (mu, temp). One Chebyshev sweep, one accumulator, "
+            "non-negative pointwise; Gamma-only and needs the radial orbital "
+            "files, like ldos. A post-processing observable of the fixed "
+            "Hamiltonian -- not an SCF density.\n\n"
+            "Written one file per rank like ldos, with 'density' in place of "
+            "'ldos' and no energy axis. 'electrons_on_grid' integrates the "
+            "map; it approaches the occupation sum as the grid refines and "
+            "its residual is a free quadrature diagnostic.\n\n"
+            "The Chebyshev degree scales as (spectral span)/(pi*kB*temp), so "
+            "low temperatures are expensive: the smearing is a numerical knob "
+            "as much as a physical one.",
+            {
+                "label": LABEL,
+                "mu": F(_num("Chemical potential; the fermi_level task finds "
+                             "it from an electron count.", unit="eV"),
+                        required=True),
+                "temp": F(_num("Smearing temperature.", unit="K",
+                               exclusive_minimum=0.0), default=300.0),
+                "spin_degeneracy": F(_num("States per orbital; 2 for a "
+                                          "spin-paired calculation.",
+                                          exclusive_minimum=0.0), default=2.0),
+                "spacing": F(_num("Grid point separation, as ldos.",
+                                  unit="Angstrom", exclusive_minimum=0.0),
+                             default=0.4),
+                "box_edge": F(_int("Grid box side in points, as ldos.",
+                                   minimum=0), default=0),
+                "n_samples": F(_int("Random states in the estimator.",
+                                    minimum=1), default=64),
+                "block": F(_int("States per Chebyshev sweep.", minimum=1),
+                           default=16),
+                "seed": F(_int("Random seed; see ldos for the rank-count "
+                               "caveat.", minimum=0), default=12345),
+                "fragment_core": F(_num("Fragment control variate: core bin "
+                                        "edge. Only sizes the dense fragment "
+                                        "solves.", unit="Angstrom",
+                                        exclusive_minimum=0.0), default=4.5),
+                "fragment_buffer": F(_num("Fragment control variate: dressing "
+                                          "radius; 0 disables. A deterministic "
+                                          "fragment baseline replaces most of "
+                                          "the map and the samples correct only "
+                                          "the residual, cutting the pointwise "
+                                          "noise at unchanged sweep cost. The "
+                                          "buffer is the systematic accuracy "
+                                          "knob. Either operator form; any "
+                                          "rank count.",
+                                          unit="Angstrom", minimum=0.0),
+                                     default=0.0),
+                "energy_windows": F(_int("Split the occupation into this many "
+                                         "energy windows sampled separately "
+                                         "from the same sweep and seeds "
+                                         "(ew-sDFT). Removes cross-window "
+                                         "sampling noise at no extra Chebyshev "
+                                         "degree and can never increase the "
+                                         "variance of the PLAIN estimator; "
+                                         "measured 2.4x alone at diamond sc888. "
+                                         "With fragments, window edges cut "
+                                         "through bands and collapse per-window "
+                                         "locality, so in gapped systems run "
+                                         "fragments alone; windows are the "
+                                         "delocalized (metallic) regime's "
+                                         "lever, where fragments cannot help. "
+                                         "1 disables.",
+                                         minimum=1), default=1),
             }),
         "ac": Obj(
             "AC conductivity, plus the dielectric function, refractive index "

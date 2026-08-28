@@ -179,6 +179,9 @@ public:
         util::InterruptGuard interrupt_guard;
 
         const auto normalized_options = normalize_setup_options(options);
+        // A new operator set means new (H, Z): the cached fragment basis is
+        // a function of them and must not survive the rebuild.
+        fragment_basis_cache_.invalidate();
         operators_ = setup::BuildOperatorSet(
             *atomic_data_,
             sub_comm_,
@@ -253,6 +256,20 @@ public:
         calc::ComputeDos(observable_context(), de_ev, dos_out, omega_out, method);
     }
 
+    /// Projected DOS on orbital groups; same energy grid and amplitude
+    /// convention as compute_dos, so the group rows sum to the DOS. The
+    /// population convention follows the operator form (sandwich -> Lowdin,
+    /// solve -> Mulliken) and is returned, not chosen.
+    void compute_pdos(double de_ev, const std::string& projection,
+                      std::vector<double>& pdos_out, std::vector<double>& total_out,
+                      std::vector<double>& omega_out, int& n_group_out,
+                      std::string& population_out, std::vector<int>& group_type_out,
+                      std::vector<int>& group_slot_out) {
+        calc::ComputePdos(observable_context(), de_ev, projection, pdos_out, total_out,
+                          omega_out, n_group_out, population_out, group_type_out,
+                          group_slot_out);
+    }
+
     /// Returns the unit cell as nine row-major values, Angstrom.
     std::vector<double> cell() const {
         if (!atomic_data_) {
@@ -272,7 +289,7 @@ public:
     }
 
     void compute_ac(int nt, int n_kpm, double temp, double mu, std::vector<double>& ac_out,
-                    std::vector<double>& omega_out, std::string axis = "ab",
+                    std::vector<double>& omega_out, std::string axis = "abc",
                     const std::string& method = "concurrent", int block = 0) {
         calc::ComputeAc(observable_context(), nt, n_kpm, temp, mu, ac_out, omega_out, axis,
                         method, block);
@@ -327,6 +344,14 @@ public:
     calc::RealSpaceLdosResult compute_rs_ldos(calc::RealSpaceLdosOptions options) {
         return calc::ComputeRealSpaceLdos(observable_context(), orbital_files_,
                                           std::move(options));
+    }
+
+    /// Real-space electron density; same constraints as compute_rs_ldos
+    /// (Gamma-only, needs real-space orbitals). Bounds come from the operator
+    /// set; the options' emin/emax are overwritten.
+    calc::RealSpaceDensityResult compute_rs_density(calc::RealSpaceDensityOptions options) {
+        return calc::ComputeRealSpaceDensity(observable_context(), orbital_files_,
+                                             std::move(options));
     }
 
     void compute_quantum_metric(int nt, int n_kpm, double temp, double mu,
@@ -529,6 +554,7 @@ private:
         context.samples = &sampling_;
         context.master_comm = master_comm_;
         context.sub_comm = sub_comm_;
+        context.fragment_cache = &fragment_basis_cache_;
         context.verbose = util::Log::enabled(util::LogLevel::kDebug);
         return context;
     }
@@ -559,6 +585,10 @@ private:
 
     std::unique_ptr<AtomicData> atomic_data_;
     std::unique_ptr<setup::OperatorSet> operators_;
+    /// Fragment eigenbasis shared by the real-space tasks of one setup
+    /// (rs_fragment.hpp): the dense per-fragment solves depend only on
+    /// (Z, H, core, buffer), so density and LDOS reuse one decomposition.
+    calc::detail::FragmentBasisCache fragment_basis_cache_;
     /// Radial orbital files of the model last set up, empty if it has none.
     std::vector<std::string> orbital_files_;
     calc::SampleVectors sampling_;

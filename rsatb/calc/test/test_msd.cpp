@@ -1568,6 +1568,67 @@ TEST(MSDTest, SpectralRouteSegmentsMatchSingleSegment) {
     EXPECT_LT(max_diff, 1e-10 * std::max(1.0, scale));
 }
 
+
+// The blocked sample path is a pure re-batching of the width-1 route: same
+// recursions, same sample-diagonal dots, different SpMM width. Any chunking
+// of the same sample block must therefore reproduce the same spectrum to
+// summation-order rounding -- chunk = 1 IS the pre-blocking behavior.
+TEST(MSDTest, BlockedSampleChunksMatchWidthOne) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, false);
+    Matrix H(&graph), X(&graph), V(&graph);
+    Dense2 h = {Scalar(0.3, 0.0), Scalar(0.42, 0.11), Scalar(0.42, -0.11),
+                Scalar(-0.5, 0.0)};
+    Dense2 x = {Scalar(-0.6, 0.0), Scalar(0.0, 0.0), Scalar(0.0, 0.0),
+                Scalar(0.6, 0.0)};
+    Dense2 v;
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+
+    const int n_steps = 3, n_kpm = 24;
+    const double dt_fs = 1.2;
+    const double emin = -1.2, emax = 1.2;
+
+    // 12 arbitrary sample columns: more than one chunk at every tested cap.
+    MultiVector samples(&graph, 12);
+    for (int s = 0; s < 12; ++s) {
+        Vector col(&graph);
+        fill_vector(col, {Scalar(std::cos(0.7 * s), 0.2 * s - 1.0),
+                          Scalar(0.4 - 0.1 * s, std::sin(1.3 * s))});
+        samples.set_col(s, col);
+    }
+
+    auto run_chunked = [&](int chunk) {
+        Chebyshev<Scalar> cheby(H, emin, emax);
+        std::vector<double> msd, energy;
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps,
+                          dt_fs, n_kpm, msd, energy,
+                          /*time_oversample=*/2, /*block_substeps=*/0,
+                          /*n_kpm_compute=*/0, /*segment_scaled=*/0.0,
+                          /*sample_chunk=*/chunk);
+        return msd;
+    };
+    const std::vector<double> ref = run_chunked(1);   // pre-blocking behavior
+    for (int chunk : {5, 12, 16}) {
+        const std::vector<double> got = run_chunked(chunk);
+        ASSERT_EQ(got.size(), ref.size());
+        double scale = 1e-14;
+        for (double r : ref) scale = std::max(scale, std::abs(r));
+        for (size_t i = 0; i < ref.size(); ++i) {
+            EXPECT_NEAR(got[i], ref[i], 1e-11 * scale)
+                << "chunk " << chunk << " row " << i;
+        }
+    }
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);

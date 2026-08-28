@@ -53,7 +53,11 @@ def _ldos(calc, task, options, result):
     energies = build_energies(task["energies"])
     out = calc.compute_rs_ldos(
         energies, task["eta"], spacing=task["spacing"], box_edge=task["box_edge"],
-        n_samples=task["n_samples"], block=task["block"], seed=task["seed"])
+        n_samples=task["n_samples"], block=task["block"], seed=task["seed"],
+        fragment_core=task["fragment_core"], fragment_buffer=task["fragment_buffer"],
+        subspace_cv=task["subspace_cv"], subspace_filters=task["subspace_filters"],
+        local_capture=task["local_capture"], local_pack=task["local_pack"],
+        local_pack_replicas=task["local_pack_replicas"])
 
     # Compact and per-rank: 'point_index' says where this rank's values sit in
     # the flat grid, so the pieces reassemble by scattering, never by summing.
@@ -69,6 +73,67 @@ def _ldos(calc, task, options, result):
     result.scalars["filter_degree"] = int(out["filter_degree"])
     result.scalars["n_states"] = int(out["n_states"])
     result.scalars["sampler_residual"] = float(out["sampler_residual"])
+    if int(out["n_fragments"]):
+        result.scalars["n_fragments"] = int(out["n_fragments"])
+        result.scalars["correction_rms"] = float(np.max(out["correction_rms"]))
+        result.arrays["control_beta"] = out["control_beta"]
+    if len(out["subspace_capture"]):
+        result.scalars["subspace_rank"] = int(np.min(out["subspace_rank"]))
+        result.arrays["subspace_capture"] = out["subspace_capture"]
+    if int(out["local_regions"]):
+        # The local-capture pass actually ran for some energy: report which
+        # energies it served, its measured packing error bar, and the audited
+        # same-color distance of the packing geometry.
+        result.arrays["local_route"] = out["local_route"]
+        result.arrays["local_packing_se"] = out["local_packing_se"]
+        result.scalars["local_regions"] = int(out["local_regions"])
+        result.scalars["local_colors"] = int(out["local_colors"])
+        result.scalars["min_same_color_distance"] = float(
+            out["min_same_color_distance"])
+
+
+def _pdos(calc, task, options, result):
+    import numpy as np
+
+    out = calc.compute_pdos(task["dE"], projection=task["projection"])
+    result.arrays["energy"] = out["energy"]
+    result.arrays["pdos"] = out["pdos"]
+    result.arrays["total"] = out["total"]
+    result.scalars["n_group"] = int(out["n_group"])
+    result.scalars["population"] = out["population"]
+    # Which atom type and orbital slot each group is; empty for projection
+    # "atom", whose group id is already the atom's input index.
+    if len(out["group_type"]):
+        result.arrays["group_type"] = out["group_type"]
+        result.arrays["group_slot"] = out["group_slot"]
+
+
+def _density(calc, task, options, result):
+    import numpy as np
+
+    out = calc.compute_rs_density(
+        task["mu"], task["temp"], spin_degeneracy=task["spin_degeneracy"],
+        spacing=task["spacing"], box_edge=task["box_edge"],
+        n_samples=task["n_samples"], block=task["block"], seed=task["seed"],
+        fragment_core=task["fragment_core"], fragment_buffer=task["fragment_buffer"],
+        energy_windows=task["energy_windows"])
+
+    # Same compact per-rank layout as the ldos task, for the same reason.
+    result.distributed = True
+    result.arrays["shape"] = np.asarray(out["shape"], dtype=np.int64)
+    result.arrays["point_index"] = out["point_index"]
+    result.arrays["density"] = out["density"]
+    result.scalars["n_point"] = int(out["n_point"])
+    result.scalars["filter_degree"] = int(out["filter_degree"])
+    result.scalars["n_states"] = int(out["n_states"])
+    result.scalars["sampler_residual"] = float(out["sampler_residual"])
+    result.scalars["electrons_on_grid"] = float(out["electrons_on_grid"])
+    if int(out["n_fragments"]):
+        result.scalars["n_fragments"] = int(out["n_fragments"])
+        result.scalars["correction_rms"] = float(out["correction_rms"])
+        result.scalars["control_beta"] = float(out["control_beta"])
+    if int(out["n_windows"]) > 1:
+        result.scalars["n_windows"] = int(out["n_windows"])
 
 
 def _energy_bounds(calc, task, options, result):
@@ -146,7 +211,9 @@ def _quantum_metric(calc, task, options, result):
 RUNNERS: Dict[str, Callable] = {
     "energy_bounds": _energy_bounds,
     "dos": _dos,
+    "pdos": _pdos,
     "ldos": _ldos,
+    "density": _density,
     "ac": _ac,
     "dc": _dc,
     "dc_spectrum": _dc_spectrum,
