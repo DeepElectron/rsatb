@@ -1172,12 +1172,16 @@ TEST(MSDTest, SandwichFormSpectralAndStepwiseMatchDenseReference) {
     EXPECT_LT(max_err_spec, 1e-6 * std::max(1.0, scale_ref));
 }
 
-// The auto dispatch's apply-count model, pinned to the measured sweep of
+// The auto dispatch's apply-count model. At widths past the SpMM plateau
+// the derate is 1 and pure counts decide, pinned to the measured sweep of
 // doc/design_msd_spectral.md section 6 (half-width 13 eV, n_kpm 300): both
 // long-window rows the spectral route won must come out spectral, and the
-// sparse-output-sampling corner it exists for -- output steps so long the
-// per-row moment runs amortise away while the chain term does not -- must
-// come out stepwise.
+// sparse-output-sampling corner -- output steps so long the per-row moment
+// runs amortise away while the chain term does not -- must come out
+// stepwise. Below the plateau the widths genuinely differ: a single sample
+// cannot fill the spectral chunk, while the stepwise readout time-tiles to
+// width 16 regardless, so the derate hands even the fine-sampled long
+// window to stepwise.
 TEST(MSDTest, AutoDispatchApplyModelPicksTheMeasuredWinners) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
     Matrix H(&graph);
@@ -1185,10 +1189,71 @@ TEST(MSDTest, AutoDispatchApplyModelPicksTheMeasuredWinners) {
                     {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}});
     Chebyshev<Scalar> cheby(H, -13.0, 13.0);  // only half_width is consulted
 
-    EXPECT_TRUE(spectral_msd_cheaper(cheby, 192, 1.0, 300));   // measured 2.78x
-    EXPECT_TRUE(spectral_msd_cheaper(cheby, 48, 4.0, 300));    // measured 1.10x
-    EXPECT_FALSE(spectral_msd_cheaper(cheby, 50, 200.0, 1000));  // the corner
-    EXPECT_FALSE(spectral_msd_cheaper(cheby, 0, 1.0, 300));      // degenerate
+    EXPECT_TRUE(spectral_msd_cheaper(cheby, 192, 1.0, 300, 0, 2, 0.0, 16));   // measured 2.78x
+    EXPECT_TRUE(spectral_msd_cheaper(cheby, 48, 4.0, 300, 0, 2, 0.0, 16));    // measured 1.10x
+    EXPECT_FALSE(spectral_msd_cheaper(cheby, 50, 200.0, 1000, 0, 2, 0.0, 16));  // the corner
+    EXPECT_FALSE(spectral_msd_cheaper(cheby, 0, 1.0, 300));                     // degenerate
+    EXPECT_FALSE(spectral_msd_cheaper(cheby, 192, 1.0, 300, 0, 2, 0.0, 1));   // width-1 sample
+}
+
+// Time-tiling the stepwise readout batches identical per-column recurrences
+// into one grouped run, so any tile depth reproduces the per-step readout to
+// rounding -- including a trailing partial tile, and on the Solve form whose
+// batched CG must freeze converged columns rather than perturb them.
+TEST(MSDTest, TimeTiledStepwiseMatchesPerStepReadout) {
+    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
+    Matrix H(&graph), S(&graph), V(&graph);
+
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 x = {Scalar(-0.7, 0.0), Scalar(0.3, 0.1),
+                      Scalar(0.3, -0.1), Scalar(1.1, 0.0)};
+    Dense2 v{};
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
+    fill_matrix(S, {
+        {Scalar(1.2, 0.0), Scalar(0.1, 0.0)},
+        {Scalar(0.1, 0.0), Scalar(0.9, 0.0)}
+    });
+
+    Vector sample(&graph);
+    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
+
+    const int n_steps = 7, n_kpm = 32;
+    const double dt = 0.5;
+
+    auto compare_tiles = [&](auto make_cheby) {
+        std::vector<double> msd_ref, msd_tiled, e_ref, e_tiled;
+        {
+            auto cheby = make_cheby();
+            corr_msd(*cheby, VelocityOp<Scalar>(V), sample, n_steps, dt, n_kpm,
+                     msd_ref, e_ref, 0, /*time_tile=*/1);
+        }
+        {
+            auto cheby = make_cheby();
+            corr_msd(*cheby, VelocityOp<Scalar>(V), sample, n_steps, dt, n_kpm,
+                     msd_tiled, e_tiled, 0, /*time_tile=*/3);
+        }
+        ASSERT_EQ(msd_ref.size(), msd_tiled.size());
+        double max_diff = 0.0, scale = 0.0;
+        for (size_t i = 0; i < msd_ref.size(); ++i) {
+            max_diff = std::max(max_diff, std::abs(msd_ref[i] - msd_tiled[i]));
+            scale = std::max(scale, std::abs(msd_ref[i]));
+        }
+        EXPECT_GT(scale, 1e-6);
+        EXPECT_LT(max_diff, 1e-10 * std::max(1.0, scale));
+    };
+
+    compare_tiles([&] { return std::make_unique<Chebyshev<Scalar>>(H, -1.0, 1.0); });
+    compare_tiles([&] { return std::make_unique<Chebyshev<Scalar>>(H, S, -1.0, 1.0); });
 }
 
 // Burg linear prediction on a dense moment sequence: a 2x2 spectrum is two

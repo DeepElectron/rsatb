@@ -153,6 +153,90 @@ std::vector<cd> metric_density_moments(
     return moments;
 }
 
+// The doubled recurrence over a (time-tile x sample) multivector: the same
+// per-column arithmetic as metric_density_moments, with the dots read per
+// column (bdot -- ONE Allreduce for the whole tile per dot) and averaged
+// inside each consecutive `group` of columns, one output time per group.
+// This is what makes the stepwise readout time-batched: a tile of commutator
+// states runs one recurrence at SpMM width instead of one recurrence per
+// output time, dividing both the per-apply overhead (a width-1 recurrence
+// measured ~4x overhead-bound) and the reduction count by the tile depth,
+// while every column's values -- and therefore the positivity of every
+// reconstructed row -- are those of the untiled run.
+template <typename T>
+std::vector<std::vector<cd>> metric_density_moments_grouped(
+    Chebyshev<T>& cheby,
+    const DistMultiVector<T>& v,
+    int n_kpm,
+    int group,
+    int n_compute = 0
+) {
+    const bool weighted = (cheby.form == ChebyOpForm::Solve);
+    const int n_run = (n_compute > 0 && n_compute < n_kpm) ? n_compute : n_kpm;
+    const int n_groups = v.num_vectors / group;
+
+    std::vector<std::vector<cd>> moments(
+        static_cast<size_t>(n_groups),
+        std::vector<cd>(static_cast<size_t>(std::max(n_run, 0)), cd(0.0, 0.0)));
+    if (n_run <= 0 || n_groups == 0) return moments;
+
+    std::vector<T> per_col(static_cast<size_t>(v.num_vectors));
+    auto dots_into = [&](const DistMultiVector<T>& a, const DistMultiVector<T>& b,
+                         auto&& sink) {
+        a.dot(b, per_col);
+        for (int g = 0; g < n_groups; ++g) {
+            cd acc(0.0, 0.0);
+            for (int c = 0; c < group; ++c) {
+                acc += static_cast<cd>(per_col[static_cast<size_t>(g) * group + c]);
+            }
+            sink(g, acc / static_cast<double>(group));
+        }
+    };
+
+    DistMultiVector<T> t0(v.graph, v.num_vectors), t1(v.graph, v.num_vectors),
+        t2(v.graph, v.num_vectors);
+    std::unique_ptr<DistMultiVector<T>> wbuf;
+    if (weighted) wbuf = std::make_unique<DistMultiVector<T>>(v.graph, v.num_vectors);
+    auto weight = [&](DistMultiVector<T>& t) -> DistMultiVector<T>& {
+        if (!weighted) return t;
+        cheby.S->mult_dense(t, *wbuf);
+        return *wbuf;
+    };
+
+    t0.copy_from(v);
+    dots_into(weight(t0), t0, [&](int g, cd val) { moments[static_cast<size_t>(g)][0] = val; });
+    if (n_run > 1) {
+        cheby.apply_op(t0, t1, ChebyMode::NORMAL);
+        dots_into(weight(t0), t1, [&](int g, cd val) { moments[static_cast<size_t>(g)][1] = val; });
+
+        for (int n = 1;; ++n) {
+            ::rsatb::util::throw_if_interrupted(v.graph->comm);
+            DistMultiVector<T>& wt = weight(t1);
+            if (2 * n - 1 < n_run && 2 * n - 1 > 1) {
+                dots_into(wt, t0, [&](int g, cd val) {
+                    moments[static_cast<size_t>(g)][static_cast<size_t>(2 * n - 1)] =
+                        2.0 * val - moments[static_cast<size_t>(g)][1];
+                });
+            }
+            if (2 * n < n_run) {
+                dots_into(wt, t1, [&](int g, cd val) {
+                    moments[static_cast<size_t>(g)][static_cast<size_t>(2 * n)] =
+                        2.0 * val - moments[static_cast<size_t>(g)][0];
+                });
+            }
+            if (2 * n + 1 >= n_run) break;
+            cheby.apply_op(t1, t2, ChebyMode::NORMAL);
+            t2.axpby(static_cast<T>(-1.0), t0, static_cast<T>(2.0));
+            t0.swap(t1);
+            t1.swap(t2);
+        }
+    }
+    if (n_run < n_kpm) {
+        for (auto& m : moments) m = extrapolate_moments_lp(m, n_kpm);
+    }
+    return moments;
+}
+
 // The per-step line prints at kSummary, not kProgress: a production MSD task
 // spends minutes to hours in this loop (n_kpm moment applies per step), and
 // the level contract (profile.hpp) says silence over that span is unhelpful,
@@ -204,7 +288,8 @@ void run_commutator_msd(
     int n_kpm,
     std::vector<double>& msd_out,
     std::vector<double>& energy_out,
-    int n_kpm_compute
+    int n_kpm_compute,
+    int time_tile
 ) {
     const double hbar_ev_fs = 0.6582119569;
     const double tau = cheby.half_width * dt_fs / hbar_ev_fs;
@@ -218,6 +303,63 @@ void run_commutator_msd(
     energy_out = chebyshev_energy_grid(cheby.center, cheby.half_width, n_kpm, true);
 
     msd_out.assign(static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm), 0.0);
+
+    // Time-batched readout: commutator states are stashed for `t_tile`
+    // output times and read out through ONE grouped moment recurrence at
+    // combined width t_tile * s_width. The auto tile fills the combined
+    // width to 16 columns -- the measured SpMM efficiency plateau, the same
+    // cap the spectral chunking uses -- so a few-sample production run
+    // stops paying width-1 recurrences. Memory: ~6 tile-width columns of
+    // recurrence state.
+    int s_width = 1;
+    if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+        s_width = psi_in.num_vectors;
+    }
+    int t_tile = time_tile;
+    if (t_tile <= 0) t_tile = std::max(1, 16 / s_width);
+
+    DistGraph* graph = psi_in.graph;
+    DistMultiVector<T> stash(graph, t_tile * s_width);
+    std::vector<int> pending;
+    pending.reserve(static_cast<size_t>(t_tile));
+
+    auto copy_cols = [](DistMultiVector<T>& dst, int dcol0,
+                        const DistMultiVector<T>& src, int scol0, int n_cols) {
+        for (int row = 0; row < src.local_rows; ++row) {
+            for (int c = 0; c < n_cols; ++c) {
+                dst.data[static_cast<size_t>(row) * dst.ld + dcol0 + c] =
+                    src.data[static_cast<size_t>(row) * src.ld + scol0 + c];
+            }
+        }
+    };
+
+    auto flush_tile = [&]() {
+        if (pending.empty()) return;
+        const int n_groups = static_cast<int>(pending.size());
+        DistMultiVector<T> work(graph, n_groups * s_width);
+        copy_cols(work, 0, stash, 0, n_groups * s_width);
+        const auto grouped =
+            metric_density_moments_grouped(cheby, work, n_kpm, s_width, n_kpm_compute);
+        for (int g = 0; g < n_groups; ++g) {
+            std::vector<cd> msd_spectrum;
+            reconstruct_spectrum_from_moments(grouped[static_cast<size_t>(g)],
+                                              msd_spectrum, nullptr, true);
+            write_msd_row(density_spectrum, msd_spectrum, pending[static_cast<size_t>(g)],
+                          n_kpm, msd_out);
+        }
+        pending.clear();
+    };
+
+    auto stash_phi = [&](const VectorType& phi, int step) {
+        const int slot = static_cast<int>(pending.size());
+        if constexpr (std::is_same_v<VectorType, DistMultiVector<T>>) {
+            copy_cols(stash, slot * s_width, phi, 0, s_width);
+        } else {
+            stash.set_col(slot, phi);
+        }
+        pending.push_back(step);
+        if (static_cast<int>(pending.size()) == t_tile) flush_tile();
+    };
 
     // driver(x) = C~ x = (i / half_width) * apply_dual(V, x)
     VectorType driver_tmp = ZeroLike(psi_in);
@@ -271,11 +413,9 @@ void run_commutator_msd(
 
         log_msd_step(psi_in.graph->rank, step, n_steps);
 
-        std::vector<cd> msd_moments = metric_density_moments(cheby, curr.phi, n_kpm, n_kpm_compute);
-        std::vector<cd> msd_spectrum;
-        reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
-        write_msd_row(density_spectrum, msd_spectrum, step, n_kpm, msd_out);
+        stash_phi(curr.phi, step);
     }
+    flush_tile();
 }
 
 } // namespace detail
@@ -288,6 +428,9 @@ void run_commutator_msd(
 // computed the same estimator from redundant data. It is also the
 // positivity oracle: at full moments every row is a diagonal Jackson
 // density of the commutator state, non-negative bin by bin.
+// `time_tile` (0 = auto) batches that many output times into one grouped
+// moment recurrence; the auto tile fills the combined SpMM width to 16
+// columns. Any tiling reproduces the untiled readout column for column.
 template <typename T, typename VectorType>
 void corr_msd(
     Chebyshev<T>& cheby,
@@ -298,7 +441,8 @@ void corr_msd(
     int n_kpm,
     std::vector<double>& msd_out,
     std::vector<double>& energy_out,
-    int n_kpm_compute = 0
+    int n_kpm_compute = 0,
+    int time_tile = 0
 ) {
     if (n_steps < 0) {
         throw std::runtime_error("n_steps must be non-negative");
@@ -323,7 +467,8 @@ void corr_msd(
         n_kpm,
         msd_out,
         energy_out,
-        n_kpm_compute);
+        n_kpm_compute,
+        time_tile);
     }
 }
 } // namespace calc

@@ -855,8 +855,11 @@ bool spectral_msd_cheaper(
     const detail::SpectralGrid grid(cheby.half_width, dt_fs, n_steps, time_oversample);
     const double window = grid.n_cols * grid.h;  // includes the kernel pad
     auto eff = [](int w) { return static_cast<double>(w) / (w + 3.0); };
-    const int w_step = std::max(1, sample_width);
-    const int w_spec = std::min(w_step, 16);  // kSpectralSampleChunk
+    // The stepwise readout time-tiles its recurrences to a combined width of
+    // at least 16 columns (msd.hpp), so its effective width is never below
+    // the spectral chunk cap.
+    const int w_step = std::max(std::max(1, sample_width), 16);
+    const int w_spec = std::min(std::max(1, sample_width), 16);  // kSpectralSampleChunk
     const double width_penalty = eff(w_step) / eff(w_spec);
     const double spectral =
         window * (3.0 + static_cast<double>(nc) / seg) * width_penalty;
