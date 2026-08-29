@@ -259,6 +259,24 @@ inline const op::VelocityAxis& SelectAxisData(
     throw std::runtime_error("compute_msd_spectrum axis must be one of: x, y, z");
 }
 
+// Normalization volume for the transport prefactor -- the full set the
+// inputs schema (AXIS) offers: 'abc' is the cell volume, a cyclic pair
+// ('ab', 'bc', 'ca') the corresponding lattice-plane area, and a single
+// letter that lattice vector's length (a 1D wire's normalization). The 3D
+// and planar cases delegate to AtomicData::volume; the 1D lengths are
+// computed here, where the transport meaning of the axis knob is defined --
+// AtomicData::volume never implemented them, so single-letter inputs threw
+// "Invalid axis" from deep inside the geometry layer.
+inline double TransportNormalizationVolume(vbcsr::atomic::AtomicData& atomic_data,
+                                           const std::string& axis) {
+    if (axis == "a" || axis == "b" || axis == "c") {
+        const int row = (axis == "a") ? 0 : (axis == "b") ? 1 : 2;
+        const double* v = atomic_data.cell.data() + 3 * row;
+        return std::sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    }
+    return atomic_data.volume(axis);
+}
+
 // Density of states. The user-facing knob is the energy resolution `de_ev`
 // (eV); the internal step/moment counts are derived from it against the
 // spectral span, which only exists here at run time:
@@ -567,7 +585,8 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
         double scale = (ops.emax() - ops.emin()) / 2.0;
         double shift = (ops.emax() + ops.emin()) / 2.0;
         double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
-        double ac_prefactor = (double)context.atomic_data->norb() / context.atomic_data->volume(axis);
+        double ac_prefactor = (double)context.atomic_data->norb() /
+                              TransportNormalizationVolume(*context.atomic_data, axis);
 
         const bool concurrent = (method == "concurrent");
         // Both correlator routes sample at the alias-free Nyquist step.
@@ -689,7 +708,8 @@ inline void ComputeDcSpectrum(
         }
 
         const auto dc_formulation = parse_dc_formulation(formulation);
-        const double trace_prefactor = static_cast<double>(context.atomic_data->norb()) / context.atomic_data->volume(axis);
+        const double trace_prefactor = static_cast<double>(context.atomic_data->norb()) /
+                                       TransportNormalizationVolume(*context.atomic_data, axis);
         const double transport_prefactor =
             (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
 
