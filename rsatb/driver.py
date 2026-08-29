@@ -542,25 +542,30 @@ class RSATB:
         array therefore always has a singleton leading k-axis.
 
         Args:
-            method (str): "stepwise" re-expands the energy resolution at
-                every output time (n_steps * n_kpm operator applies -- the
-                right choice for cheap orthogonal tight-binding matvecs).
-                "spectral" runs the segmented single-chain route at
-                resolution-plus-evolution cost, linear in the evolution
-                window and independent of the output grid density; it needs
-                a periodic axis with velocity data. "auto" (default) picks
-                spectral whenever operator applies are expensive
-                (non-orthogonal S^-1 H or Z^H H Z forms), the velocity
-                exists, and a machine-independent apply-count estimate
-                favours it -- which is everywhere except very sparse output
-                sampling of very long windows; stepwise otherwise. The two
-                methods are different unbiased estimators of one trace, so
-                pin the method for sweeps that must not switch estimators.
-                See doc/design_msd_spectral.md.
+            method (str): Both kernels run the ONE formalism -- the
+                commutator velocity correlator, valid for any basis, form,
+                and boundary condition (the model must supply the velocity;
+                orthogonal models always do). "stepwise" re-expands the
+                energy resolution at every output time (n_steps * n_kpm
+                operator applies -- the right choice for cheap orthogonal
+                tight-binding matvecs, and exactly positivity-preserving at
+                full moments). "spectral" runs the segmented single-chain
+                route at resolution-plus-evolution cost, linear in the
+                evolution window and independent of the output grid density.
+                "auto" (default) picks spectral whenever operator applies
+                are expensive (non-orthogonal S^-1 H or Z^H H Z forms) and a
+                machine-independent apply-count estimate favours it -- which
+                is everywhere except very sparse output sampling of very
+                long windows; stepwise otherwise. The two kernels are
+                different unbiased estimators of one trace, so pin the
+                method for sweeps that must not switch estimators. See
+                doc/design_msd_spectral.md.
             n_kpm_compute (int): 0 = off. Compute only this many Chebyshev
                 moments and extend to n_kpm by linear prediction, cutting
                 the resolution cost by n_kpm / n_kpm_compute on either
-                method.
+                method. UNSAFE on discrete/sparse spectra (measured 29-56%
+                negative grid points and ~24% D bias on small cells); a
+                warning is printed when set.
 
         Returns:
             tuple: (msd, energy, time)

@@ -216,7 +216,7 @@ TEST(RSATBOperatorApiTest, ComputeDCSpectrumUsesOrthogonalVelocityFallbackForHdf
     std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, ComputeMSDSpectrumUsesFallbackPositionProviderForCommutingSingleSite) {
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumRunsOnTheVelocityFallbackForCommutingSingleSite) {
     const std::string path = make_hdf5_hamiltonian_file(std::complex<double>(2.0, 0.0));
     auto rsatb_inst = make_single_atom_rsatb(path, {1.25, -0.5, 0.75});
 
@@ -292,7 +292,7 @@ TEST(RSATBOperatorApiTest, SetupUsesExplicitEnergyBounds) {
     std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, ComputeMSDSpectrumUsesGammaAffinePathForPeriodicAxisWithoutPositionProvider) {
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumRunsOnTheVelocityFallbackForPeriodicAxis) {
     const std::string path = make_periodic_hdf5_hamiltonian_file(1, std::complex<double>(0.0, 0.0), std::complex<double>(0.2, 0.0));
     auto rsatb_inst = make_periodic_single_atom_rsatb(path, 1, {{0.0, 0.0, 0.0}});
 
@@ -411,21 +411,23 @@ TEST(RSATBOperatorApiTest, ComputeMSDSpectrumRejectsUnknownMethod) {
     std::remove(path.c_str());
 }
 
-TEST(RSATBOperatorApiTest, ComputeMSDSpectrumSpectralRefusesNonPeriodicAxis) {
-    // The spectral estimator integrates velocity correlations, so it lives
-    // where the commutator velocity does; a non-periodic axis must be
-    // refused by name rather than silently rerouted.
+TEST(RSATBOperatorApiTest, ComputeMSDSpectrumSpectralRunsOnNonPeriodicAxis) {
+    // The velocity formalism is boundary-condition-agnostic: a non-periodic
+    // axis carries a single R = 0 bond-moment image, which IS the
+    // open-boundary [H, X], so method 'spectral' runs there like anywhere
+    // else. Along z this fixture has no bonds at all, so the spectrum
+    // vanishes.
     const std::string path = make_periodic_hdf5_hamiltonian_file(1, std::complex<double>(0.0, 0.0), std::complex<double>(0.2, 0.0));
     auto rsatb_inst = make_periodic_single_atom_rsatb(path, 1, {{0.0, 0.0, 0.0}});
 
     std::vector<double> msd;
     std::vector<double> energy;
     std::vector<double> time;
-    try {
-        rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "z", "spectral");
-        FAIL() << "method 'spectral' should refuse a non-periodic axis";
-    } catch (const std::runtime_error& error) {
-        EXPECT_NE(std::string(error.what()).find("non-periodic axis"), std::string::npos);
+    rsatb_inst->compute_msd_spectrum(2, 0.5, 16, msd, energy, time, "z", "spectral");
+
+    ASSERT_EQ(msd.size(), 3u * 16u);
+    for (double value : msd) {
+        EXPECT_NEAR(value, 0.0, 1e-10);
     }
 
     std::remove(path.c_str());

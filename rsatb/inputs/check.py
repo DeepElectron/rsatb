@@ -44,9 +44,10 @@ _CAPABILITY_DOC = {
                "position follow from H(R)",
 }
 
-# Which tasks need which operator, and which need the Gamma point.
-_NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric")
-_NEEDS_POSITION = ("msd",)
+# Which tasks need which operator, and which need the Gamma point. msd runs
+# on the commutator velocity alone (both its kernels do), so it sits with
+# the other velocity consumers.
+_NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric", "msd")
 _NEEDS_GAMMA_ONLY = ("ldos",)
 _NEEDS_GAMMA = ("msd",)
 _NEEDS_ORBITAL_FILES = ("ldos",)
@@ -234,19 +235,6 @@ def check_consistency(document: dict) -> List[Issue]:
                 where, "'{}' needs the velocity operator, which the '{}' model with "
                        "these inputs does not supply".format(kind, family),
                 hint=why))
-        if kind in _NEEDS_POSITION and not caps["position"]:
-            issues.append(Issue(
-                where, "'{}' needs the position operator, which the '{}' model with "
-                       "these inputs does not supply".format(kind, family),
-                hint=why))
-        # The spectral MSD estimator integrates velocity correlations, so
-        # the velocity requirement follows the method, not the task kind.
-        if kind == "msd" and task.get("method") == "spectral" and not caps["velocity"]:
-            issues.append(Issue(
-                join_path(where, "method"),
-                "msd method 'spectral' runs on the commutator velocity, which the "
-                "'{}' model with these inputs does not supply".format(family),
-                hint="use method 'stepwise' (or 'auto', which falls back)"))
         if kind in _NEEDS_ORBITAL_FILES and family != "lcao":
             issues.append(Issue(
                 where, "'{}' needs the radial orbital files, which only an LCAO model "

@@ -108,20 +108,23 @@ void fill_overlap(BlockSpMat<Scalar>& S, const Lattice& lat, double off) {
 }
 
 // x-coordinate of each site, as diagonal data (Angstrom-flavoured spacing).
-void fill_position(DistVector<Scalar>& x, const Lattice& lat) {
-    for (int local = 0; local < x.local_size; ++local) {
-        const int row = x.graph->owned_global_indices[local];
-        x[local] = Scalar(2.5 * static_cast<double>(row / (lat.L * lat.L)), 0.0);
+// V = i[H, X] for the diagonal lattice X: V_ij = i H_ij (x_j - x_i),
+// Hermitian, same sparsity as H -- the one operator the consolidated
+// velocity-formalism MSD consumes.
+void fill_velocity(BlockSpMat<Scalar>& V, const Lattice& lat) {
+    auto xcoord = [&](int row) {
+        return 2.5 * static_cast<double>(row / (lat.L * lat.L));
+    };
+    for (int local = 0; local < static_cast<int>(V.graph->owned_global_indices.size()); ++local) {
+        const int row = V.graph->owned_global_indices[local];
+        for (int col : lat.adj[row]) {
+            if (col == row) continue;
+            Scalar hop(-1.0, 0.0);
+            Scalar val = Scalar(0.0, 1.0) * hop * Scalar(xcoord(col) - xcoord(row), 0.0);
+            V.add_block(row, col, &val, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
+        }
     }
-}
-
-void fill_position_matrix(BlockSpMat<Scalar>& X, const Lattice& lat) {
-    for (int local = 0; local < static_cast<int>(X.graph->owned_global_indices.size()); ++local) {
-        const int row = X.graph->owned_global_indices[local];
-        Scalar v(2.5 * static_cast<double>(row / (lat.L * lat.L)), 0.0);
-        X.add_block(row, row, &v, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-    }
-    X.assemble();
+    V.assemble();
 }
 
 void fill_samples(DistMultiVector<Scalar>& psi, unsigned seed = 777u) {
@@ -152,15 +155,15 @@ int main(int argc, char** argv) {
         DistGraph graph = make_graph(lat, MPI_COMM_WORLD);
         BlockSpMat<Scalar> H(&graph);
         fill_hamiltonian(H, lat);
-        DistVector<Scalar> x(&graph);
-        fill_position(x, lat);
+        BlockSpMat<Scalar> V(&graph);
+        fill_velocity(V, lat);
         DistMultiVector<Scalar> psi(&graph, 8);
         fill_samples(psi);
 
         Chebyshev<Scalar> cheby(H, -7.0, 7.0);
         std::vector<double> msd, energy;
         const double t0 = rsatb::util::wall_time();
-        corr_msd(cheby, x, psi, 8, 10.0, 1000, msd, energy);
+        corr_msd(cheby, VelocityOp<Scalar>(V), psi, 8, 10.0, 1000, msd, energy);
         const double t1 = rsatb::util::wall_time();
         std::printf("orthogonal  n=%d nv=8 steps=8 n_kpm=1000 dt=10fs   %8.2f s   checksum % .12e\n",
                     lat.n, t1 - t0, checksum(msd));
@@ -216,15 +219,15 @@ int main(int argc, char** argv) {
         fill_hamiltonian(H, small);
         BlockSpMat<Scalar> S(&graph);
         fill_overlap(S, small, 0.08);
-        BlockSpMat<Scalar> X(&graph);
-        fill_position_matrix(X, small);
+        BlockSpMat<Scalar> V(&graph);
+        fill_velocity(V, small);
         DistMultiVector<Scalar> psi(&graph, 4);
         fill_samples(psi);
 
         Chebyshev<Scalar> cheby(H, S, -13.0, 13.0);
         std::vector<double> msd, energy;
         const double t0 = rsatb::util::wall_time();
-        corr_msd(cheby, X, psi, 3, 1.0, 300, msd, energy);
+        corr_msd(cheby, VelocityOp<Scalar>(V), psi, 3, 1.0, 300, msd, energy);
         const double t1 = rsatb::util::wall_time();
         std::printf("solve       n=%d nv=4 steps=3 n_kpm=300  dt=1fs    %8.2f s   checksum % .12e\n",
                     small.n, t1 - t0, checksum(msd));
@@ -241,24 +244,8 @@ int main(int argc, char** argv) {
         fill_hamiltonian(H, small);
         BlockSpMat<Scalar> S(&graph);
         fill_overlap(S, small, 0.08);
-        // V = i[H, X] for the diagonal lattice X: V_ij = i H_ij (x_j - x_i),
-        // Hermitian, same sparsity as H.
         BlockSpMat<Scalar> V(&graph);
-        {
-            auto xcoord = [&](int row) {
-                return 2.5 * static_cast<double>(row / (small.L * small.L));
-            };
-            for (int local = 0; local < static_cast<int>(V.graph->owned_global_indices.size()); ++local) {
-                const int row = V.graph->owned_global_indices[local];
-                for (int col : small.adj[row]) {
-                    if (col == row) continue;
-                    Scalar hop(-1.0, 0.0);
-                    Scalar val = Scalar(0.0, 1.0) * hop * Scalar(xcoord(col) - xcoord(row), 0.0);
-                    V.add_block(row, col, &val, 1, 1, AssemblyMode::INSERT, MatrixLayout::ColMajor);
-                }
-            }
-            V.assemble();
-        }
+        fill_velocity(V, small);
         DistMultiVector<Scalar> psi(&graph, 2);
         fill_samples(psi);
 

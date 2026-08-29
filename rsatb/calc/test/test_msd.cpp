@@ -285,10 +285,13 @@ std::vector<cd> to_complex_moments(const std::vector<Scalar>& moments) {
 } // namespace
 
 TEST(MSDTest, CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap) {
+    // Diagonal commuting H and X have V = i[H, X] = 0 identically, so the
+    // commutator kernel must return the zero spectrum on this overlap-form
+    // fixture -- the wavepacket cannot spread.
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, false);
     Matrix H(&graph);
     Matrix S(&graph);
-    Matrix X(&graph);
+    Matrix V(&graph);
 
     fill_matrix(H, {
         {Scalar(-0.4, 0.0), Scalar(0.0, 0.0)},
@@ -298,10 +301,16 @@ TEST(MSDTest, CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap) {
         {Scalar(1.2, 0.0), Scalar(0.0, 0.0)},
         {Scalar(0.0, 0.0), Scalar(0.9, 0.0)}
     });
-    fill_matrix(X, {
-        {Scalar(-0.7, 0.0), Scalar(0.0, 0.0)},
-        {Scalar(0.0, 0.0), Scalar(1.1, 0.0)}
-    });
+    // fill_matrix skips exact zeros, so the vanishing velocity gets its
+    // diagonal blocks inserted explicitly.
+    for (int local_row = 0;
+         local_row < static_cast<int>(graph.owned_global_indices.size()); ++local_row) {
+        const int global_row = graph.owned_global_indices[local_row];
+        Scalar zero(0.0, 0.0);
+        V.add_block(global_row, global_row, &zero, 1, 1, AssemblyMode::INSERT,
+                    MatrixLayout::ColMajor);
+    }
+    V.assemble();
 
     Vector sample(&graph);
     fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
@@ -309,7 +318,7 @@ TEST(MSDTest, CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap) {
     Chebyshev<Scalar> cheby(H, S, -1.0, 1.0);
     std::vector<double> msd;
     std::vector<double> energy;
-    corr_msd(cheby, X, sample, 3, 0.5, 64, msd, energy);
+    corr_msd(cheby, VelocityOp<Scalar>(V), sample, 3, 0.5, 64, msd, energy);
 
     ASSERT_EQ(energy.size(), 64u);
     ASSERT_EQ(msd.size(), static_cast<size_t>(4 * 64));
@@ -321,15 +330,16 @@ TEST(MSDTest, CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap) {
 TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
     Matrix H(&graph);
-    Matrix X(&graph);
+    Matrix V(&graph);
 
     fill_matrix(H, {
         {Scalar(0.0, 0.0), Scalar(0.35, 0.0)},
         {Scalar(0.35, 0.0), Scalar(0.1, 0.0)}
     });
-    fill_matrix(X, {
-        {Scalar(-0.5, 0.0), Scalar(0.0, 0.0)},
-        {Scalar(0.0, 0.0), Scalar(0.5, 0.0)}
+    // V = i[H, X] for X = diag(-0.5, 0.5): i H_01 (x_1 - x_0) off-diagonal.
+    fill_matrix(V, {
+        {Scalar(0.0, 0.0), Scalar(0.0, 0.35)},
+        {Scalar(0.0, -0.35), Scalar(0.0, 0.0)}
     });
 
     Vector sample_a(&graph);
@@ -341,7 +351,7 @@ TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
 
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, X, sample_a, 2, 0.4, 48, msd_single, energy_single);
+        corr_msd(cheby, VelocityOp<Scalar>(V), sample_a, 2, 0.4, 48, msd_single, energy_single);
     }
 
     MultiVector samples(&graph, 2);
@@ -351,7 +361,7 @@ TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     std::vector<double> msd_mv;
     {
         Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, X, samples, 2, 0.4, 48, msd_mv, energy_mv);
+        corr_msd(cheby, VelocityOp<Scalar>(V), samples, 2, 0.4, 48, msd_mv, energy_mv);
     }
 
     ASSERT_EQ(msd_mv.size(), msd_single.size());
@@ -361,148 +371,6 @@ TEST(MSDTest, RepeatedSamplesInMultiVectorMatchSingleVectorRun) {
     }
     for (size_t i = 0; i < msd_single.size(); ++i) {
         EXPECT_NEAR(msd_mv[i], msd_single[i], 1e-10);
-    }
-}
-
-TEST(MSDTest, DiagonalExplicitPositionMultiVectorMatchesSingleVectorRun) {
-    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph);
-
-    fill_matrix(H, {
-        {Scalar(0.0, 0.0), Scalar(0.35, 0.0)},
-        {Scalar(0.35, 0.0), Scalar(0.1, 0.0)}
-    });
-
-    Vector diagonal_x(&graph);
-    fill_vector(diagonal_x, {Scalar(-0.5, 0.0), Scalar(0.5, 0.0)});
-
-    Vector sample(&graph);
-    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.0, 1.0 / std::sqrt(2.0))});
-
-    std::vector<double> msd_single;
-    std::vector<double> energy_single;
-    std::vector<double> msd_multi;
-    std::vector<double> energy_multi;
-
-    {
-        Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, diagonal_x, sample, 2, 0.4, 48, msd_single, energy_single);
-    }
-
-    MultiVector samples(&graph, 2);
-    samples.set_col(0, sample);
-    samples.set_col(1, sample);
-
-    {
-        Chebyshev<Scalar> cheby(H, -1.0, 1.0);
-        corr_msd(cheby, diagonal_x, samples, 2, 0.4, 48, msd_multi, energy_multi);
-    }
-
-    ASSERT_EQ(energy_single.size(), energy_multi.size());
-    ASSERT_EQ(msd_single.size(), msd_multi.size());
-    for (size_t i = 0; i < energy_single.size(); ++i) {
-        EXPECT_NEAR(energy_single[i], energy_multi[i], 1e-12);
-    }
-    for (size_t i = 0; i < msd_single.size(); ++i) {
-        EXPECT_NEAR(msd_single[i], msd_multi[i], 1e-10);
-    }
-}
-
-TEST(MSDTest, GammaAffineRouteMatchesDenseReference) {
-    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H0(&graph);
-    Matrix H1(&graph);
-
-    fill_matrix(H0, {
-        {Scalar(-0.2, 0.0), Scalar(0.35, 0.0)},
-        {Scalar(0.35, 0.0), Scalar(0.1, 0.0)}
-    });
-    fill_matrix(H1, {
-        {Scalar(0.0, 0.0), Scalar(0.18, 0.0)},
-        {Scalar(0.18, 0.0), Scalar(0.0, 0.0)}
-    });
-
-    Vector diagonal_x(&graph);
-    fill_vector(diagonal_x, {Scalar(0.0, 0.0), Scalar(0.4, 0.0)});
-
-    Vector sample(&graph);
-    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.0, 1.0 / std::sqrt(2.0))});
-
-    Chebyshev<Scalar> cheby(H0, -1.0, 1.0);
-    std::vector<double> msd;
-    std::vector<double> energy;
-    const int n_steps = 2;
-    const double dt_fs = 0.4;
-    const int n_kpm = 48;
-    corr_msd(cheby, H1, diagonal_x, sample, n_steps, dt_fs, n_kpm, msd, energy);
-
-    const Dense2 h0_dense = {
-        Scalar(-0.2, 0.0), Scalar(0.35, 0.0),
-        Scalar(0.35, 0.0), Scalar(0.1, 0.0)
-    };
-    const Dense2 h1_dense = {
-        Scalar(0.0, 0.0), Scalar(0.18, 0.0),
-        Scalar(0.18, 0.0), Scalar(0.0, 0.0)
-    };
-    const Dense2 x0_dense = {
-        Scalar(0.0, 0.0), Scalar(0.0, 0.0),
-        Scalar(0.0, 0.0), Scalar(0.4, 0.0)
-    };
-    const Dense2 h_scaled = dense2_scale(dense2_add(h0_dense, dense2_scale(dense2_identity(), Scalar(-cheby.center, 0.0))), Scalar(1.0 / cheby.half_width, 0.0));
-
-    const double hbar_ev_fs = 0.6582119569;
-    const double time = dt_fs / hbar_ev_fs;
-    Dense4 affine_generator = {
-        h0_dense[0], h0_dense[1], h1_dense[0], h1_dense[1],
-        h0_dense[2], h0_dense[3], h1_dense[2], h1_dense[3],
-        Scalar(0.0, 0.0), Scalar(0.0, 0.0), h0_dense[0], h0_dense[1],
-        Scalar(0.0, 0.0), Scalar(0.0, 0.0), h0_dense[2], h0_dense[3]
-    };
-    for (auto& value : affine_generator) {
-        value *= Scalar(0.0, -1.0);
-    }
-
-    const DenseVec2 psi_dense = {
-        Scalar(1.0 / std::sqrt(2.0), 0.0),
-        Scalar(0.0, 1.0 / std::sqrt(2.0))
-    };
-    const DenseVec2 xpsi_dense = dense2_mul_vec(x0_dense, psi_dense);
-    const DenseVec4 initial_affine = {
-        xpsi_dense[0], xpsi_dense[1],
-        psi_dense[0], psi_dense[1]
-    };
-
-    std::vector<cd> density_moments = to_complex_moments(dense_chebyshev_moments(h_scaled, psi_dense, n_kpm));
-    std::vector<cd> density_spectrum;
-    reconstruct_spectrum_from_moments(density_moments, density_spectrum, nullptr, true);
-
-    ASSERT_EQ(msd.size(), static_cast<size_t>(n_steps + 1) * static_cast<size_t>(n_kpm));
-    ASSERT_EQ(energy.size(), static_cast<size_t>(n_kpm));
-
-    for (int step = 0; step <= n_steps; ++step) {
-        const Dense4 propagator = dense4_expm(dense4_scale(affine_generator, Scalar(time * static_cast<double>(step), 0.0)));
-        const DenseVec4 propagated = dense4_mul_vec(propagator, initial_affine);
-        const DenseVec2 a = {propagated[0], propagated[1]};
-        const DenseVec2 b = {propagated[2], propagated[3]};
-        DenseVec2 comm = dense2_mul_vec(x0_dense, b);
-        comm[0] -= a[0];
-        comm[1] -= a[1];
-
-        std::vector<cd> msd_moments = to_complex_moments(dense_chebyshev_moments(h_scaled, comm, n_kpm));
-        std::vector<cd> msd_spectrum;
-        reconstruct_spectrum_from_moments(msd_moments, msd_spectrum, nullptr, true);
-
-        for (int k = 0; k < n_kpm; ++k) {
-            const double rho = density_spectrum[static_cast<size_t>(k)].real();
-            double expected = 0.0;
-            if (std::abs(rho) > 1e-12) {
-                expected = msd_spectrum[static_cast<size_t>(k)].real() / rho;
-            }
-            EXPECT_NEAR(
-                msd[static_cast<size_t>(step) * static_cast<size_t>(n_kpm) + static_cast<size_t>(k)],
-                expected,
-                1e-8);
-        }
     }
 }
 
@@ -667,153 +535,46 @@ TEST(MSDTest, CommutatorRouteMatchesDenseReferenceWithOverlap) {
     }
 }
 
-TEST(MSDTest, GammaAffineRepeatedSamplesInMultiVectorMatchSingleVectorRun) {
-    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H0(&graph);
-    Matrix H1(&graph);
-
-    fill_matrix(H0, {
-        {Scalar(-0.2, 0.0), Scalar(0.35, 0.0)},
-        {Scalar(0.35, 0.0), Scalar(0.1, 0.0)}
-    });
-    fill_matrix(H1, {
-        {Scalar(0.0, 0.0), Scalar(0.18, 0.0)},
-        {Scalar(0.18, 0.0), Scalar(0.0, 0.0)}
-    });
-
-    Vector diagonal_x(&graph);
-    fill_vector(diagonal_x, {Scalar(0.0, 0.0), Scalar(0.4, 0.0)});
-
-    Vector sample(&graph);
-    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.0, 1.0 / std::sqrt(2.0))});
-
-    std::vector<double> msd_single;
-    std::vector<double> energy_single;
-    std::vector<double> msd_multi;
-    std::vector<double> energy_multi;
-    const int n_steps = 2;
-    const double dt_fs = 0.4;
-    const int n_kpm = 48;
-
-    {
-        Chebyshev<Scalar> cheby(H0, -1.0, 1.0);
-        corr_msd(
-            cheby,
-            H1,
-            diagonal_x,
-            sample,
-            n_steps,
-            dt_fs,
-            n_kpm,
-            msd_single,
-            energy_single);
-    }
-
-    MultiVector samples(&graph, 2);
-    samples.set_col(0, sample);
-    samples.set_col(1, sample);
-
-    {
-        Chebyshev<Scalar> cheby(H0, -1.0, 1.0);
-        corr_msd(
-            cheby,
-            H1,
-            diagonal_x,
-            samples,
-            n_steps,
-            dt_fs,
-            n_kpm,
-            msd_multi,
-            energy_multi);
-    }
-
-    ASSERT_EQ(energy_single.size(), energy_multi.size());
-    ASSERT_EQ(msd_single.size(), msd_multi.size());
-    for (size_t i = 0; i < energy_single.size(); ++i) {
-        EXPECT_NEAR(energy_single[i], energy_multi[i], 1e-12);
-    }
-    for (size_t i = 0; i < msd_single.size(); ++i) {
-        EXPECT_NEAR(msd_single[i], msd_multi[i], 1e-10);
-    }
-}
-
-// The diagonal-position overload applies X as a plain elementwise product,
-// which is the position operator only in an orthonormal basis. Handed a
-// Solve- or Sandwich-form Chebyshev it would iterate a dressed operator
-// against an undressed X. Production never did, but only because
-// observables.hpp routes overlap-bearing models to the matrix overload; the
-// guard makes it a stated precondition rather than a routing accident.
-TEST(MSDTest, DiagonalPositionOverloadRejectsNonOrthogonalForms) {
-    DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph);
-    Matrix S(&graph);
-    fill_matrix(H, {
-        {Scalar(-0.4, 0.0), Scalar(0.15, 0.2)},
-        {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}
-    });
-    fill_matrix(S, {
-        {Scalar(1.2, 0.0), Scalar(0.1, 0.0)},
-        {Scalar(0.1, 0.0), Scalar(0.9, 0.0)}
-    });
-
-    Vector sample(&graph);
-    fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
-    Vector diagonal_position(&graph);
-    fill_vector(diagonal_position, {Scalar(-0.7, 0.0), Scalar(1.1, 0.0)});
-
-    std::vector<double> msd;
-    std::vector<double> energy;
-
-    Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
-    EXPECT_THROW(corr_msd(cheby_solve, diagonal_position, sample, 2, 0.5, 16, msd, energy),
-                 std::runtime_error);
-
-    // The guard is targeted: the orthogonal form this overload exists for
-    // still runs.
-    Chebyshev<Scalar> cheby_orth(H, -1.0, 1.0);
-    EXPECT_NO_THROW(corr_msd(cheby_orth, diagonal_position, sample, 2, 0.5, 16, msd, energy));
-}
-
 // The overlap-form MSD, on a fixture that can actually see the dressing.
 //
 // CommutingDiagonalOperatorsGiveZeroSpectrumWithOverlap above cannot: it is
-// built on a graph with no off-diagonal blocks, so everything commutes, the
-// expected spectrum is identically zero, and S^-1 X, X S^-1 and a bare
-// undressed X all reproduce it. Here H and X are complex Hermitian and do not
-// commute, and the overlap is a multiple of the identity so that the solve
-// form (S^-1 H, dressing X to S^-1 X) and an orthogonal run on H/s with X/s
-// are the SAME operator and the same dressed X -- so the two must agree while
-// reaching that answer by different code. The conj(X) run is the margin a
-// conjugation slip would have to clear.
+// built on commuting operators whose velocity vanishes. Here H and V are
+// complex Hermitian and generic, and the overlap is a multiple of the
+// identity so that the solve form (S^-1 H, dressing V to S^-1 V) and an
+// orthogonal run on H/s with V/s are the SAME operator and the same dressed
+// driver -- so the two must agree while reaching that answer by different
+// code (CG solves and S-weighted moments against bare recursions). The
+// conj(V) run is the margin a conjugation slip would have to clear.
 TEST(MSDTest, OverlapFormMatchesEquivalentOrthogonalRun) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
     const double s_ovl = 2.0;
 
-    Matrix H(&graph), X(&graph), S(&graph), Hs(&graph), Xs(&graph), Xconj(&graph);
-    fill_matrix(H, {
-        {Scalar(-0.4, 0.0), Scalar(0.15, 0.2)},
-        {Scalar(0.15, -0.2), Scalar(0.35, 0.0)}
-    });
-    fill_matrix(X, {
-        {Scalar(-0.7, 0.0), Scalar(0.3, 0.1)},
-        {Scalar(0.3, -0.1), Scalar(1.1, 0.0)}
-    });
+    const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
+                      Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
+    const Dense2 x = {Scalar(-0.7, 0.0), Scalar(0.3, 0.1),
+                      Scalar(0.3, -0.1), Scalar(1.1, 0.0)};
+    Dense2 v{};
+    {
+        const Dense2 hx = dense2_mul(h, x);
+        const Dense2 xh = dense2_mul(x, h);
+        for (int i = 0; i < 4; ++i) {
+            v[static_cast<size_t>(i)] = Scalar(0.0, 1.0) *
+                (hx[static_cast<size_t>(i)] - xh[static_cast<size_t>(i)]);
+        }
+    }
+
+    Matrix H(&graph), V(&graph), S(&graph), Hs(&graph), Vs(&graph), Vconj(&graph);
+    fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
+    fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
     fill_matrix(S, {
         {Scalar(s_ovl, 0.0), Scalar(0.0, 0.0)},
         {Scalar(0.0, 0.0), Scalar(s_ovl, 0.0)}
     });
-    fill_matrix(Hs, {
-        {Scalar(-0.4 / s_ovl, 0.0), Scalar(0.15 / s_ovl, 0.2 / s_ovl)},
-        {Scalar(0.15 / s_ovl, -0.2 / s_ovl), Scalar(0.35 / s_ovl, 0.0)}
-    });
-    fill_matrix(Xs, {
-        {Scalar(-0.7 / s_ovl, 0.0), Scalar(0.3 / s_ovl, 0.1 / s_ovl)},
-        {Scalar(0.3 / s_ovl, -0.1 / s_ovl), Scalar(1.1 / s_ovl, 0.0)}
-    });
-    fill_matrix(Xconj, {
-        {Scalar(-0.7 / s_ovl, 0.0), Scalar(0.3 / s_ovl, -0.1 / s_ovl)},
-        {Scalar(0.3 / s_ovl, 0.1 / s_ovl), Scalar(1.1 / s_ovl, 0.0)}
-    });
+    const Scalar inv_s(1.0 / s_ovl, 0.0);
+    fill_matrix(Hs, {{h[0] * inv_s, h[1] * inv_s}, {h[2] * inv_s, h[3] * inv_s}});
+    fill_matrix(Vs, {{v[0] * inv_s, v[1] * inv_s}, {v[2] * inv_s, v[3] * inv_s}});
+    fill_matrix(Vconj, {{std::conj(v[0]) * inv_s, std::conj(v[1]) * inv_s},
+                        {std::conj(v[2]) * inv_s, std::conj(v[3]) * inv_s}});
 
     Vector sample(&graph);
     fill_vector(sample, {Scalar(1.0 / std::sqrt(2.0), 0.0), Scalar(0.3, -0.4)});
@@ -823,13 +584,16 @@ TEST(MSDTest, OverlapFormMatchesEquivalentOrthogonalRun) {
     std::vector<double> msd_solve, msd_orth, msd_conj, e_solve, e_orth, e_conj;
 
     Chebyshev<Scalar> cheby_solve(H, S, -1.0, 1.0);
-    corr_msd(cheby_solve, X, sample, n_steps, dt, n_kpm, msd_solve, e_solve);
+    corr_msd(cheby_solve, VelocityOp<Scalar>(V), sample, n_steps, dt, n_kpm,
+             msd_solve, e_solve);
 
     Chebyshev<Scalar> cheby_orth(Hs, -1.0, 1.0);
-    corr_msd(cheby_orth, Xs, sample, n_steps, dt, n_kpm, msd_orth, e_orth);
+    corr_msd(cheby_orth, VelocityOp<Scalar>(Vs), sample, n_steps, dt, n_kpm,
+             msd_orth, e_orth);
 
     Chebyshev<Scalar> cheby_conj(Hs, -1.0, 1.0);
-    corr_msd(cheby_conj, Xconj, sample, n_steps, dt, n_kpm, msd_conj, e_conj);
+    corr_msd(cheby_conj, VelocityOp<Scalar>(Vconj), sample, n_steps, dt, n_kpm,
+             msd_conj, e_conj);
 
     ASSERT_EQ(msd_solve.size(), msd_orth.size());
     double scale = 0.0, gap_conj = 0.0;
@@ -839,7 +603,7 @@ TEST(MSDTest, OverlapFormMatchesEquivalentOrthogonalRun) {
     }
     // Not the zero spectrum: this fixture actually exercises the dressing.
     EXPECT_GT(scale, 1e-6);
-    // ... and it can tell X from conj(X).
+    // ... and it can tell V from conj(V).
     EXPECT_GT(gap_conj, 1e-3 * scale);
 
     for (size_t i = 0; i < msd_solve.size(); ++i) {
@@ -949,7 +713,7 @@ TEST(MSDTest, DoubledMetricMomentsMatchPlainRecurrence) {
 // spectral route's residual is its cardinal time quadrature.
 TEST(MSDTest, SpectralRouteMatchesDenseAndStepwiseOrthogonal) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph), X(&graph), V(&graph);
+    Matrix H(&graph), V(&graph);
 
     const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
                       Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
@@ -966,7 +730,6 @@ TEST(MSDTest, SpectralRouteMatchesDenseAndStepwiseOrthogonal) {
         }
     }
     fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
-    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
     fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
 
     const int n_steps = 3, n_kpm = 32;
@@ -989,11 +752,14 @@ TEST(MSDTest, SpectralRouteMatchesDenseAndStepwiseOrthogonal) {
     }
     {
         Chebyshev<Scalar> cheby(H, emin, emax);
-        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, msd_step, e_step);
+        corr_msd(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                 msd_step, e_step);
     }
 
     // Dense reference: trace moments of (X(t) - X) T_p (X(t) - X), averaged
-    // over the 2 basis columns, through the shared reconstruction.
+    // over the 2 basis columns, through the shared reconstruction. Both
+    // routes above run on V = i[H, X] alone -- this open-boundary position
+    // reference is exactly what the velocity formalism must reproduce.
     const double hw = 0.5 * (emax - emin);
     const double center = 0.5 * (emax + emin);
     const double hbar = 0.6582119569;
@@ -1052,7 +818,7 @@ TEST(MSDTest, SpectralRouteMatchesDenseAndStepwiseOrthogonal) {
 // reseeding all accumulate there if they are going to.
 TEST(MSDTest, SpectralRouteLongWindowOrthogonal) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph), X(&graph), V(&graph);
+    Matrix H(&graph), V(&graph);
 
     const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
                       Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
@@ -1068,7 +834,6 @@ TEST(MSDTest, SpectralRouteLongWindowOrthogonal) {
         }
     }
     fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
-    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
     fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
 
     const int n_steps = 32, n_kpm = 24;
@@ -1458,7 +1223,7 @@ TEST(MSDTest, LinearPredictionRecoversDenseMoments) {
 // the moment sequences are exact AR signals, so the knob must cost nothing.
 TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph), X(&graph), V(&graph);
+    Matrix H(&graph), V(&graph);
 
     const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
                       Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
@@ -1474,7 +1239,6 @@ TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
         }
     }
     fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
-    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
     fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
 
     const int n_steps = 3, n_kpm = 64, n_compute = 16;
@@ -1491,11 +1255,13 @@ TEST(MSDTest, MomentExtrapolationMatchesFullOrderRuns) {
     std::vector<double> full_step, lp_step, full_spec, lp_spec, energy;
     {
         Chebyshev<Scalar> cheby(H, emin, emax);
-        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, full_step, energy);
+        corr_msd(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                 full_step, energy);
     }
     {
         Chebyshev<Scalar> cheby(H, emin, emax);
-        corr_msd(cheby, X, samples, n_steps, dt_fs, n_kpm, lp_step, energy, n_compute);
+        corr_msd(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
+                 lp_step, energy, n_compute);
     }
     {
         Chebyshev<Scalar> cheby(H, emin, emax);
@@ -1575,7 +1341,7 @@ TEST(MSDTest, SpectralRouteSegmentsMatchSingleSegment) {
 // summation-order rounding -- chunk = 1 IS the pre-blocking behavior.
 TEST(MSDTest, BlockedSampleChunksMatchWidthOne) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, false);
-    Matrix H(&graph), X(&graph), V(&graph);
+    Matrix H(&graph), V(&graph);
     Dense2 h = {Scalar(0.3, 0.0), Scalar(0.42, 0.11), Scalar(0.42, -0.11),
                 Scalar(-0.5, 0.0)};
     Dense2 x = {Scalar(-0.6, 0.0), Scalar(0.0, 0.0), Scalar(0.0, 0.0),
@@ -1590,7 +1356,6 @@ TEST(MSDTest, BlockedSampleChunksMatchWidthOne) {
         }
     }
     fill_matrix(H, {{h[0], h[1]}, {h[2], h[3]}});
-    fill_matrix(X, {{x[0], x[1]}, {x[2], x[3]}});
     fill_matrix(V, {{v[0], v[1]}, {v[2], v[3]}});
 
     const int n_steps = 3, n_kpm = 24;

@@ -226,40 +226,28 @@ def test_a_task_needing_velocity_is_refused_when_the_model_has_none():
     assert any("velocity operator" in issue.message for issue in errors(issues))
 
 
-def test_msd_is_refused_on_a_non_orthogonal_model_without_position():
-    # The periodic MSD now runs on non-orthogonal bases through the commutator
-    # route -- but that route needs the position/dipole integrals, which a
-    # non-orthogonal Slater-Koster model does not have. So the refusal moves
-    # from "orthogonal only" to the position capability.
+def test_msd_is_refused_on_a_non_orthogonal_model_without_velocity():
+    # Both MSD kernels run on the commutator velocity alone, which a
+    # non-orthogonal Slater-Koster model cannot supply (no dipole
+    # integrals) -- whatever the method value says.
     model = copy.deepcopy(MINIMAL["model"])
     model["overlap"] = {"onsite": {"C": {"pz": 1.0}}}
-    _, issues = resolve({"model": model, "tasks": [{"type": "msd"}]})
-    assert any("position operator" in issue.message for issue in errors(issues))
+    for method in (None, "stepwise", "spectral"):
+        task = {"type": "msd"}
+        if method:
+            task["method"] = method
+        _, issues = resolve({"model": model, "tasks": [task]})
+        assert any("velocity operator" in issue.message for issue in errors(issues))
 
 
 def test_msd_is_allowed_on_lcao():
-    # LCAO carries the dipole integrals, so the non-orthogonal periodic MSD is
+    # LCAO carries the dipole integrals, so the non-orthogonal MSD is
     # available (doc/position_commutator.md section 8).
     lcao = {"type": "lcao", "hamiltonian": {"path": "h.h5"},
             "orbitals": {"names": ["C.orb"]}}
     _, issues = resolve({"model": lcao, "tasks": [{"type": "msd"}]})
-    assert not any("position operator" in issue.message or "orthogonal" in issue.message
+    assert not any("velocity operator" in issue.message or "orthogonal" in issue.message
                    for issue in errors(issues))
-
-
-def test_msd_spectral_method_is_refused_without_velocity():
-    # The spectral estimator integrates velocity correlations, so the velocity
-    # requirement follows the method, not the task kind; 'auto' on the same
-    # model is fine because it falls back to the stepwise route.
-    model = copy.deepcopy(MINIMAL["model"])
-    model["overlap"] = {"onsite": {"C": {"pz": 1.0}}}
-    _, issues = resolve({"model": model,
-                         "tasks": [{"type": "msd", "method": "spectral"}]})
-    assert any("commutator velocity" in issue.message for issue in errors(issues))
-
-    _, issues = resolve({"model": model,
-                         "tasks": [{"type": "msd", "method": "auto"}]})
-    assert not any("commutator velocity" in issue.message for issue in errors(issues))
 
 
 def test_duplicate_result_names_are_refused():

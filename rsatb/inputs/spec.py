@@ -885,19 +885,20 @@ TASK = Union(
                            default=1000),
                 "axis": F(_str("Direction the displacement is measured along.",
                                choices=("x", "y", "z")), default="x"),
-                "method": F(_str("Estimator. 'stepwise' re-expands the energy "
-                                 "resolution at every output time (n_steps * "
-                                 "n_kpm applies -- right for cheap orthogonal "
-                                 "matvecs). 'spectral' runs the segmented "
-                                 "single-chain route: cost linear in the "
-                                 "evolution window and independent of the "
-                                 "output grid; needs a periodic axis with "
-                                 "velocity data. 'auto' picks spectral "
-                                 "whenever applies are expensive "
-                                 "(non-orthogonal forms), the velocity "
-                                 "exists, and the apply-count estimate "
-                                 "favours it; pin the method for sweeps "
-                                 "that must not switch estimators.",
+                "method": F(_str("Evaluation kernel; both run the commutator "
+                                 "velocity correlator. 'stepwise' re-expands "
+                                 "the energy resolution at every output time "
+                                 "(n_steps * n_kpm applies -- right for cheap "
+                                 "orthogonal matvecs, and exactly "
+                                 "positivity-preserving at full moments). "
+                                 "'spectral' runs the segmented single-chain "
+                                 "route: cost linear in the evolution window "
+                                 "and independent of the output grid. 'auto' "
+                                 "picks spectral whenever applies are "
+                                 "expensive (non-orthogonal forms) and the "
+                                 "apply-count estimate favours it; pin the "
+                                 "method for sweeps that must not switch "
+                                 "estimators.",
                                  choices=("auto", "stepwise", "spectral")),
                             default="auto"),
                 "n_kpm_compute": F(_int("Compute only this many moments and "

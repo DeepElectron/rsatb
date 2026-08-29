@@ -148,7 +148,7 @@ Three kinds of problem, in three passes:
 3. **Sections that disagree** — each is valid, but together they are not:
 
 ```
-error: tasks[1]: 'msd' needs the position operator, which the 'sktb' model with
+error: tasks[1]: 'msd' needs the velocity operator, which the 'sktb' model with
                  these inputs does not supply
     hint: a non-orthogonal Slater-Koster model carries no dipole integrals, so
           neither position nor the commutator velocity exists for it
@@ -191,12 +191,10 @@ only needed for the explicit-integral cross-check velocity, never for
 production. A non-orthogonal `sktb` or `dftb` model has no dipole integrals,
 so it has neither position nor velocity.
 
-`ac`, `dc`, `dc_spectrum` and `quantum_metric` need velocity. `msd` needs
-position and the Gamma point — any basis, orthogonal or not; the periodic
-route runs the commutator machinery either way, and its `method: "spectral"`
-estimator (which `"auto"` selects on non-orthogonal setups) additionally
-needs the velocity. `ldos` needs the radial orbital files, so LCAO, at a
-single Gamma point.
+`ac`, `dc`, `dc_spectrum`, `quantum_metric` and `msd` need velocity — both
+MSD kernels run the commutator velocity correlator, on any basis and either
+boundary condition. `msd` additionally needs the Gamma point. `ldos` needs
+the radial orbital files, so LCAO, at a single Gamma point.
 
 ## Structures
 
