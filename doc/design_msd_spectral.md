@@ -281,6 +281,48 @@ spectra (the 1024-atom diamond shows 2 band-edge fuzz points); on
 small cells run full moments, where the route choice is a cost wash
 and section 6's window scaling decides.
 
+## 5.2 Trace-first fold (2026-08-29)
+
+The silicon tie above had a precise cause: the apply-count model says the
+blocked spectral route runs $\sim 1.9\times$ fewer operator applies than
+full-moment stepwise on that task, so roughly half of its 18 minutes was
+*not* applies — it was the per-sample scalar fold (the
+sample–time–energy–Bessel loops) plus the per-sample dot tables and their
+reductions. Everything downstream of the dot table $G_s$ is *linear* in it,
+and every coefficient depends only on grid geometry, never on the sample —
+so the tables are summed the moment they form (a $\beta$-chained GEMM
+accumulation into one aggregate table per segment) and the fold runs once
+per chunk instead of once per sample. Exactly the same estimator, to
+summation order; table memory and Allreduce volume drop by the chunk width.
+
+The fold itself is then restructured from loops into dense primitives:
+
+- **Bessel tables hoisted.** The forward offset-$k$ coefficients depend
+  only on $kh$ (shared by every block and chunk) and are tabled once per
+  call; the backward tables ride along the existing per-segment $M(\delta)$
+  probe, since the backward coefficients are the forward ones' conjugates.
+- **$d_q(u)$ by GEMM.** $d_q(u) = \sum_m c_m(k)\, \bar G_{q,\mathrm{col}_0+m}$
+  is one ZGEMM per block over its grid points.
+- **The Bessel fold by FFT.** $C_p = \tfrac12 \sum_j b_j (d_{p+j} +
+  d_{|p-j|})$ is a Toeplitz-plus-Hankel product; with the even extension
+  $\tilde D_t = d_{|t|}$ and the symmetric kernel $\kappa_0 = b_0$,
+  $\kappa_{\pm j} = b_j/2$, it collapses to the single linear convolution
+  $C_p = (\kappa * \tilde D)_p$, evaluated with zero-padded FFTs (FFTW,
+  one plan pair per segment, thread-safe new-array execution) —
+  $O(L \log L)$ per grid point instead of $O(n_{\mathrm{kpm}} M(\delta))$,
+  which on the silicon task was $\sim 3\times 10^{12}$ multiplies even
+  after chunk aggregation.
+- **MPI deal preserved.** Each rank folds a contiguous share of every
+  block's points, computing its own D-GEMM slice, so the (now small) scalar
+  work still scales with ranks; one correlator reduction at the end, as
+  before.
+
+This is the organizing principle of FastCheb-style methods — transform the
+moment sequences rather than materialize their full coupling — applied to
+the segmented fold. The estimator is untouched: all dense complete-basis
+tests, the chunking-equality test, and the segment-equality test pass at
+their prior tolerances.
+
 ## 6. When each route wins
 
 With segmented anchoring the spectral cost is linear in the window and

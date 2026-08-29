@@ -51,12 +51,16 @@
 //                 table G_{q,m} is trapezoidal (a block's states are read
 //                 only up to the chain order its last grid point reaches),
 //                 so high-q tiles restrict to their late-block suffix.
-//   grid points   d^s_q = sum_m c_m(block offset) G_{q,m} and the j-fold to
-//                 C_p(u) are pure scalar work, cache-contiguous, OpenMP over
-//                 grid points and dealt round-robin across MPI ranks (the
-//                 vector work above scales with ranks; without the deal this
-//                 scalar floor would not). No per-grid-point vector work
-//                 exists at all.
+//   grid points   TRACE-FIRST: the dot table is summed over the sample
+//                 chunk as it forms (everything downstream is linear in it),
+//                 so the scalar fold runs once per chunk, not per sample.
+//                 d_q(u) = sum_m c_m(k) G_{q,m} is one ZGEMM per block, and
+//                 the Bessel fold to C_p(u) is a Toeplitz-plus-Hankel
+//                 product done as one FFT convolution per grid point
+//                 (O(L log L) instead of O(n_kpm M)). Blocks' points are
+//                 dealt contiguously across MPI ranks (each rank's D comes
+//                 from its own GEMM slice), OpenMP inside. No per-grid-point
+//                 vector work exists at all.
 //   time          num_p(t) = 2/hw^2 int_0^t (t - u) C_p(u) du by cardinal
 //                 (Kaiser-windowed sinc) quadrature in closed form: an
 //                 interior sample's kernel integral is exactly
@@ -82,6 +86,7 @@
 #include "msd.hpp"
 #include "moment_extrapolation.hpp"
 #include "lapack_isqrt.hpp"
+#include "fft.hpp"
 
 #include <mpi.h>
 
@@ -232,22 +237,57 @@ struct TriangleQuad {
     }
 };
 
+// One out-of-place complex FFT plan pair of fixed length, executed on
+// caller-supplied buffers. fftw_execute_dft IS thread-safe; plan creation is
+// not, so a FoldPlans is built once per segment in serial code and shared by
+// the OpenMP fold threads. FFTW_UNALIGNED keeps new-array execution valid
+// for plain std::vector storage.
+struct FoldPlans {
+    fftw_plan fwd = nullptr;
+    fftw_plan bwd = nullptr;
+    explicit FoldPlans(int len) {
+        std::vector<cd> a(static_cast<size_t>(len)), b(static_cast<size_t>(len));
+        const unsigned flags = FFTW_ESTIMATE | FFTW_UNALIGNED;
+        fwd = fftw_plan_dft_1d(len, reinterpret_cast<fftw_complex*>(a.data()),
+                               reinterpret_cast<fftw_complex*>(b.data()),
+                               FFTW_FORWARD, flags);
+        bwd = fftw_plan_dft_1d(len, reinterpret_cast<fftw_complex*>(a.data()),
+                               reinterpret_cast<fftw_complex*>(b.data()),
+                               FFTW_BACKWARD, flags);
+    }
+    ~FoldPlans() {
+        if (fwd) fftw_destroy_plan(fwd);
+        if (bwd) fftw_destroy_plan(bwd);
+    }
+    FoldPlans(const FoldPlans&) = delete;
+    FoldPlans& operator=(const FoldPlans&) = delete;
+    void forward(cd* in, cd* out) const {
+        fftw_execute_dft(fwd, reinterpret_cast<fftw_complex*>(in),
+                         reinterpret_cast<fftw_complex*>(out));
+    }
+    void backward(cd* in, cd* out) const {
+        fftw_execute_dft(bwd, reinterpret_cast<fftw_complex*>(in),
+                         reinterpret_cast<fftw_complex*>(out));
+    }
+};
+
 // One CHUNK of stochastic samples' contributions to the correlator samples
 // C_p(u) (accumulated u-major into cre_accum) and to the density moments.
 // Complex double only: the trajectories and the dot table are intrinsically
 // complex, and the tile GEMM goes through zgemm.
 //
-// BLOCKED over samples on the APPLY axis only: every recursion (the g
+// BLOCKED over samples on the APPLY axis: every recursion (the g
 // trajectory, the chain, the anchor advance) runs the whole chunk through
 // one SpMM per term -- that is where the width-1 route lost 5-10x on
 // per-apply efficiency. The dot structure is SAMPLE-DIAGONAL
 // (G_s[q, c] = <W T_q r_s | VX_c> pairs a sample's chain with the SAME
 // sample's trajectory columns), so the stores are laid out sample-major
 // (per-sample contiguous column slabs) and the tile GEMMs run one slice per
-// sample -- identical total dot work to the looped route, one shared
-// Allreduce per tile. Memory scales with the chunk width (the caller caps
-// it): segment store chunk * ~1.3 L N_local x 16 B, dot table
-// chunk * q_seg * seg_cols x 16 B.
+// sample against its own vx slab. TRACE-FIRST, the slices accumulate into
+// ONE aggregate table (everything downstream is linear in it, with
+// geometry-only coefficients), so the table, its Allreduce, and the whole
+// scalar fold are chunk-width-independent. Memory: segment store
+// chunk * ~1.3 L N_local x 16 B; dot table q_seg * seg_cols x 16 B, once.
 template <typename T>
 void msd_spectral_accumulate(
     Chebyshev<T>& cheby,
@@ -324,6 +364,14 @@ void msd_spectral_accumulate(
         }
     }
 
+    // Forward Bessel tables, hoisted: the offset-k expansion depends only on
+    // k h, which every block (and every chunk) shares.
+    std::vector<std::vector<cd>> cfwd_tab(static_cast<size_t>(b_sub) + 1);
+    cfwd_tab[0] = {cd(1.0, 0.0)};
+    for (int k = 1; k <= b_sub; ++k) {
+        timeprop_coeff(k * h, 1e-14, true, cfwd_tab[static_cast<size_t>(k)]);
+    }
+
     // Segments: contiguous groups of whole blocks covering ~segment_scaled
     // in scaled time. The expansion anchor re-seeds at every segment start.
     double seg_target = segment_scaled;
@@ -362,14 +410,21 @@ void msd_spectral_accumulate(
                             blocks[static_cast<size_t>(s1 - 1)].len;
         const int seg_len = seg_end - seg_start;
 
-        // Segment-relative expansion lengths M(delta) (forward and backward
-        // truncate identically: same Bessel magnitudes).
+        // Segment-relative expansion lengths M(delta), and the backward
+        // coefficient table alongside (forward and backward truncate
+        // identically -- same Bessel magnitudes -- and the backward
+        // coefficients are the forward ones' conjugates).
         std::vector<int> mrel(static_cast<size_t>(seg_len) + 1, 1);
+        std::vector<std::vector<cd>> bwd_tab(static_cast<size_t>(seg_len) + 1);
+        bwd_tab[0] = {cd(1.0, 0.0)};
         {
             std::vector<cd> probe;
             for (int d = 1; d <= seg_len; ++d) {
                 timeprop_coeff(d * h, 1e-14, true, probe);
                 mrel[static_cast<size_t>(d)] = static_cast<int>(probe.size());
+                auto& bw = bwd_tab[static_cast<size_t>(d)];
+                bw.resize(probe.size());
+                for (size_t j = 0; j < probe.size(); ++j) bw[j] = std::conj(probe[j]);
             }
         }
         int seg_cols = 0;
@@ -425,13 +480,17 @@ void msd_spectral_accumulate(
         }
 
         // ---- chain on the segment anchor r_s, trapezoidal tile GEMMs --------
-        // The dot table is SAMPLE-DIAGONAL, so gtab holds one q x c slab per
-        // sample and each tile flush runs one GEMM slice per sample against
-        // its own vx slab -- same total dot work as the looped route, one
-        // shared Allreduce per tile.
-        std::vector<cd> gtab(static_cast<size_t>(nb) * q_seg * seg_cols,
-                             cd(0.0, 0.0));
-        std::vector<cd> tile_buf(static_cast<size_t>(nb) * tile_w * seg_cols);
+        // TRACE-FIRST: everything downstream of the dot table is linear in
+        // it, and its coefficients depend only on grid geometry -- so the
+        // per-sample tables G_s are summed into ONE aggregate table the
+        // moment they are formed. The dot structure stays SAMPLE-DIAGONAL
+        // (one GEMM slice per sample against its own vx slab, same total
+        // dot flops), but the slices accumulate (beta = 1) into a single
+        // tile buffer: table memory, the Allreduce volume, and the whole
+        // scalar fold below shrink by the chunk width. Exactly the same
+        // estimator, to summation order.
+        std::vector<cd> gtab(static_cast<size_t>(q_seg) * seg_cols, cd(0.0, 0.0));
+        std::vector<cd> tile_buf(static_cast<size_t>(tile_w) * seg_cols);
 
         auto flush_tile = [&](int q_start, int width) {
             using isqrt::vbcsr_complex_double;
@@ -454,7 +513,8 @@ void msd_spectral_accumulate(
             // Row-major storage read as column-major is the transpose, so
             // this computes C(q, c) = sum_rows L[row, q] * conj(VX[row, c]);
             // the wanted G = sum_rows conj(L) * VX is its conjugate. Column
-            // offsets select sample s's tile slab and vx slab.
+            // offsets select sample s's tile slab and vx slab; beta chains
+            // the samples into one aggregate tile.
             for (int s = 0; s < nb; ++s) {
                 isqrt::zgemm_("N", "C", &m_, &n_, &k_,
                               reinterpret_cast<const vbcsr_complex_double*>(&one),
@@ -464,22 +524,19 @@ void msd_spectral_accumulate(
                               reinterpret_cast<const vbcsr_complex_double*>(
                                   vx.data.data()) + s * seg_cols + col_from,
                               &ldb_,
-                              reinterpret_cast<const vbcsr_complex_double*>(&zero),
+                              reinterpret_cast<const vbcsr_complex_double*>(
+                                  s == 0 ? &zero : &one),
                               reinterpret_cast<vbcsr_complex_double*>(
-                                  tile_buf.data() + s * slab), &ldc_);
+                                  tile_buf.data()), &ldc_);
             }
             MPI_Allreduce(MPI_IN_PLACE, tile_buf.data(),
-                          2 * static_cast<int>(slab) * nb, MPI_DOUBLE, MPI_SUM,
+                          2 * static_cast<int>(slab), MPI_DOUBLE, MPI_SUM,
                           graph->comm);
-            for (int s = 0; s < nb; ++s) {
-                cd* gs = gtab.data() + static_cast<size_t>(s) * q_seg * seg_cols;
-                const cd* ts = tile_buf.data() + static_cast<size_t>(s) * slab;
-                for (int q = 0; q < width; ++q) {
-                    cd* row = gs + static_cast<size_t>(q_start + q) * seg_cols;
-                    for (int c = col_from; c < seg_cols; ++c) {
-                        row[c] = std::conj(
-                            ts[static_cast<size_t>(c - col_from) * width + q]);
-                    }
+            for (int q = 0; q < width; ++q) {
+                cd* row = gtab.data() + static_cast<size_t>(q_start + q) * seg_cols;
+                for (int c = col_from; c < seg_cols; ++c) {
+                    row[c] = std::conj(
+                        tile_buf[static_cast<size_t>(c - col_from) * width + q]);
                 }
             }
         };
@@ -520,63 +577,114 @@ void msd_spectral_accumulate(
             }
         }
 
-        // ---- scalar assembly: d^s_q(delta), then the j-fold to C_p(u) -------
-        // gtab is identical on every rank (the tile GEMMs end in an
-        // Allreduce), so the grid points are dealt round-robin across ranks
-        // and cre_accum holds partial sums until reduce_correlator; the
-        // scalar floor then scales with ranks like the vector work above.
-        std::vector<std::pair<int, int>> points;  // (block index, offset k)
-        for (int b = s0; b < s1; ++b) {
-            const int k_lo = (blocks[static_cast<size_t>(b)].seed_point == 0) ? 0 : 1;
-            for (int k = k_lo; k <= blocks[static_cast<size_t>(b)].len; ++k) {
-                points.emplace_back(b, k);
-            }
-        }
-        const size_t rank_stride = static_cast<size_t>(graph->size);
-#pragma omp parallel
+        // ---- scalar fold on the aggregate table: D by GEMM, C_p by FFT ------
+        // d_q(u) = sum_m c_m(k) G[q, col0 + m] is one ZGEMM per block over
+        // its grid points, and the Bessel fold
+        //   C_p = sum_j b_j (d_{p+j} + d_{|p-j|}) / 2
+        // is one Toeplitz-plus-Hankel product: with the even extension
+        // Dt_t = d_{|t|} and the symmetric kernel kap_0 = b_0,
+        // kap_{+-j} = b_j / 2, it is the single linear convolution
+        // C_p = (kap * Dt)_p, evaluated by zero-padded FFTs -- O(L log L)
+        // per grid point instead of O(n_kpm M(delta)). Each rank takes a
+        // contiguous share of every block's points (its D columns come from
+        // its own GEMM slice), so the fold scales with ranks and cre_accum
+        // stays partial until reduce_correlator.
         {
-            std::vector<cd> cfwd, bwd, d_row(static_cast<size_t>(n_q));
+            const int max_nj = mrel[static_cast<size_t>(seg_len)];
+            int lfft = 1;
+            while (lfft < n_q + 3 * max_nj) lfft <<= 1;
+            const FoldPlans plans(lfft);
+            const double inv_l = 1.0 / static_cast<double>(lfft);
+
+            for (int b = s0; b < s1; ++b) {
+                const Block& blk = blocks[static_cast<size_t>(b)];
+                const int k_lo = (blk.seed_point == 0) ? 0 : 1;
+                const int n_pts = blk.len - k_lo + 1;
+                const int per = (n_pts + graph->size - 1) / graph->size;
+                const int p_from = std::min(n_pts, rank * per);
+                const int p_to = std::min(n_pts, p_from + per);
+                if (p_from >= p_to) continue;
+                const int q_u = blk.q_need;
+                const int my_pts = p_to - p_from;
+
+                // This rank's forward-coefficient columns, zero-padded to the
+                // block's state count.
+                std::vector<cd> cmat(static_cast<size_t>(blk.n_states) * my_pts,
+                                     cd(0.0, 0.0));
+                for (int ik = 0; ik < my_pts; ++ik) {
+                    const int k = k_lo + p_from + ik;
+                    const std::vector<cd>& cf = cfwd_tab[static_cast<size_t>(k)];
+                    const int n_m = std::min<int>(static_cast<int>(cf.size()),
+                                                  blk.n_states);
+                    std::copy(cf.begin(), cf.begin() + n_m,
+                              cmat.begin() + static_cast<size_t>(ik) * blk.n_states);
+                }
+                std::vector<cd> dtab(static_cast<size_t>(q_u) * my_pts);
+                {
+                    using isqrt::vbcsr_complex_double;
+                    const vbcsr_lapack_int m_ = q_u;
+                    const vbcsr_lapack_int n_ = my_pts;
+                    const vbcsr_lapack_int k_ = blk.n_states;
+                    const vbcsr_lapack_int lda_ = seg_cols;
+                    const vbcsr_lapack_int ldb_ = blk.n_states;
+                    const vbcsr_lapack_int ldc_ = q_u;
+                    const cd one(1.0, 0.0), zero(0.0, 0.0);
+                    // gtab is q-major (row-major over [q_seg, seg_cols]);
+                    // read as column-major it is the [seg_cols, q_seg]
+                    // transpose, so "T" recovers D[q, k].
+                    isqrt::zgemm_("T", "N", &m_, &n_, &k_,
+                                  reinterpret_cast<const vbcsr_complex_double*>(&one),
+                                  reinterpret_cast<const vbcsr_complex_double*>(
+                                      gtab.data()) + blk.col0,
+                                  &lda_,
+                                  reinterpret_cast<const vbcsr_complex_double*>(
+                                      cmat.data()),
+                                  &ldb_,
+                                  reinterpret_cast<const vbcsr_complex_double*>(&zero),
+                                  reinterpret_cast<vbcsr_complex_double*>(dtab.data()),
+                                  &ldc_);
+                }
+
+#pragma omp parallel
+                {
+                    std::vector<cd> fa(static_cast<size_t>(lfft));
+                    std::vector<cd> fb(static_cast<size_t>(lfft));
+                    std::vector<cd> fc(static_cast<size_t>(lfft));
 #pragma omp for schedule(dynamic, 4)
-            for (size_t ip = static_cast<size_t>(rank); ip < points.size();
-                 ip += rank_stride) {
-                const Block& blk = blocks[static_cast<size_t>(points[ip].first)];
-                const int k = points[ip].second;
-                const int u = blk.seed_point + k;
-                const int delta = u - seg_start;
-                const int q_u = n_kpm + mrel[static_cast<size_t>(delta)] - 1;
-                if (k == 0) {
-                    cfwd.assign(1, cd(1.0, 0.0));
-                } else {
-                    timeprop_coeff(k * h, 1e-14, true, cfwd);
-                }
-                const int n_m = std::min<int>(static_cast<int>(cfwd.size()), blk.n_states);
-                if (delta == 0) {
-                    bwd.assign(1, cd(1.0, 0.0));
-                } else {
-                    timeprop_coeff(delta * h, 1e-14, false, bwd);
-                }
-                double* cre = cre_accum.data() + static_cast<size_t>(u) * n_kpm;
-                for (int s = 0; s < nb; ++s) {
-                    const cd* gs =
-                        gtab.data() + static_cast<size_t>(s) * q_seg * seg_cols;
-                    for (int q = 0; q < q_u; ++q) {
-                        const cd* grow =
-                            gs + static_cast<size_t>(q) * seg_cols + blk.col0;
-                        cd acc(0.0, 0.0);
-                        for (int m = 0; m < n_m; ++m) {
-                            acc += cfwd[static_cast<size_t>(m)] * grow[m];
+                    for (int ik = 0; ik < my_pts; ++ik) {
+                        const int k = k_lo + p_from + ik;
+                        const int u = blk.seed_point + k;
+                        const int delta = u - seg_start;
+                        const int n_j = mrel[static_cast<size_t>(delta)];
+                        const int q_pt = n_kpm + n_j - 1;
+                        const cd* dcol = dtab.data() + static_cast<size_t>(ik) * q_u;
+                        // Even extension Dt(a) = d_{|a - (n_j - 1)|}; the
+                        // convolution index p + 2 (n_j - 1) is C_p.
+                        std::fill(fa.begin(), fa.end(), cd(0.0, 0.0));
+                        for (int a = 0; a < q_pt + n_j - 1; ++a) {
+                            fa[static_cast<size_t>(a)] =
+                                dcol[std::abs(a - (n_j - 1))];
                         }
-                        d_row[static_cast<size_t>(q)] = acc;
-                    }
-                    for (int p = 0; p < n_kpm; ++p) {
-                        cd acc(0.0, 0.0);
-                        for (size_t j = 0; j < bwd.size(); ++j) {
-                            const int jp = p + static_cast<int>(j);
-                            const int jm = std::abs(p - static_cast<int>(j));
-                            acc += bwd[j] * (0.5 * (d_row[static_cast<size_t>(jp)] +
-                                                    d_row[static_cast<size_t>(jm)]));
+                        plans.forward(fa.data(), fc.data());
+                        const std::vector<cd>& bw =
+                            bwd_tab[static_cast<size_t>(delta)];
+                        std::fill(fb.begin(), fb.end(), cd(0.0, 0.0));
+                        fb[static_cast<size_t>(n_j - 1)] = bw[0];
+                        for (int j = 1; j < n_j; ++j) {
+                            const cd half = 0.5 * bw[static_cast<size_t>(j)];
+                            fb[static_cast<size_t>(n_j - 1 + j)] = half;
+                            fb[static_cast<size_t>(n_j - 1 - j)] = half;
                         }
-                        cre[p] += acc.real();
+                        plans.forward(fb.data(), fa.data());
+                        for (int i = 0; i < lfft; ++i) {
+                            fc[static_cast<size_t>(i)] *= fa[static_cast<size_t>(i)];
+                        }
+                        plans.backward(fc.data(), fa.data());
+                        double* cre = cre_accum.data() + static_cast<size_t>(u) * n_kpm;
+                        const int off = 2 * (n_j - 1);
+                        for (int p = 0; p < n_kpm; ++p) {
+                            cre[p] += fa[static_cast<size_t>(p + off)].real() * inv_l;
+                        }
                     }
                 }
             }
@@ -805,11 +913,11 @@ void corr_msd_spectral(
 // ratio, matching the multivector semantics of the stepwise route. Samples
 // run through the blocked accumulate in chunks of kSpectralSampleChunk:
 // every recursion then advances the whole chunk per SpMM (the width-1 route
-// measured 4x slower end to end from per-apply overhead alone), while the
-// sample-diagonal dot tables and the segment store scale with the CHUNK,
-// not the sample count -- the chunk is the memory knob (segment store
-// chunk * ~1.3 L N_local x 16 B; dot table chunk * q_seg * seg_cols x
-// 16 B), and 16 already sits on the SpMM efficiency plateau.
+// measured 4x slower end to end from per-apply overhead alone), the dot
+// table is trace-first aggregated over each chunk, and only the segment
+// store scales with the CHUNK -- the chunk is the memory knob (segment
+// store chunk * ~1.3 L N_local x 16 B), and 16 already sits on the SpMM
+// efficiency plateau.
 template <typename T>
 void corr_msd_spectral(
     Chebyshev<T>& cheby,
