@@ -323,6 +323,19 @@ the segmented fold. The estimator is untouched: all dense complete-basis
 tests, the chunking-equality test, and the segment-equality test pass at
 their prior tolerances.
 
+Measured (2026-08-29, same silicon task, machine ~idle): **15m33s**
+against the blocked baseline's 18m02s, and the output reproduces the
+campaign's spectrum to $3.8\times10^{-8}$ relative over the full
+$81\times1000$ grid. The remaining wall is the route's own inner
+products — the operator applies and the chain-dot GEMMs, which
+trace-first deliberately does not reduce (they *are* the estimator) —
+plus the chunk-width-16 apply efficiency gap against the 64-wide
+stepwise sweep. The fold no longer registers in the profile. The
+apply-count dispatch model over-predicts the spectral margin here
+($1.8\times$ predicted, $1.18\times$ measured) precisely because it
+ignores the dot GEMMs; it still ranks the routes correctly, which is
+all the dispatch asks of it.
+
 ## 6. When each route wins
 
 With segmented anchoring the spectral cost is linear in the window and
@@ -415,7 +428,7 @@ the knob the fine-grid Solve benchmark reaches 9.2× over stepwise.
 ## 8. Numerical safeguards fixed along the way
 
 - **Batched CG/PCG column guards** (solver.hpp): a column with an all-zero
-  right-hand side — how the stepwise commutator route's affine component
+  right-hand side — how the stepwise kernel's commutator state $\phi(0)$
   arrives — produced $\alpha = 0/0$ and silently poisoned the whole block
   with NaN (NaN survives neither `max()` nor the density gate downstream).
   Columns below tolerance now freeze.
@@ -478,18 +491,38 @@ and multivector batching of the sample loop.
     A. Ferreira, E. R. Mucciolo, Phys. Rev. Lett. **115**, 106601 (2015) —
     the energy-domain siblings of the dot table.
 
+## One formalism (2026-08-29)
+
+MSD is computed from exactly one estimator family: the commutator velocity
+correlator, $\phi(t) = [X, U(t)]\,\psi$ built from $V$ alone, valid for
+every basis, operator form, and boundary condition (the bond moment's
+$R + r_j - r_i$ weight degenerates to the open-boundary $[H, X]$ at a
+single $R = 0$ image). The stepwise position-representation routes the code
+used to carry — explicit position matrix, diagonal position, the
+Gamma-affine split — computed the same estimator from redundant data and
+were removed. What remains is two *evaluation kernels* of the one
+formalism: the time-batched stepwise kernel (`msd.hpp`, the positivity
+oracle — every full-moment row is a diagonal Jackson density) and the
+trace-first spectral kernel (`msd_spectral.hpp`), behind the `method` knob.
+No third estimator.
+
 ## Implementation map
 
+- `rsatb/calc/msd.hpp` — `corr_msd(...)`: THE stepwise kernel (commutator
+  pair recursion, grouped time-tiled moment readout); knobs
+  `n_kpm_compute`, `time_tile`.
 - `rsatb/calc/msd_spectral.hpp` — `corr_msd_spectral(...)`: blocks, chain,
-  tiled GEMMs, scalar assembly, cardinal quadrature; knobs
-  `time_oversample`, `block_substeps`, `n_kpm_compute`, `segment_scaled`.
-  Output contract identical to `corr_msd` ($[n_t{+}1,\, n_{\mathrm{kpm}}]$
-  density-normalised rows on the ascending Chebyshev grid).
+  trace-first aggregate tables, GEMM d-rows, FFT Bessel fold, cardinal
+  quadrature; knobs `time_oversample`, `block_substeps`, `n_kpm_compute`,
+  `segment_scaled`, `sample_chunk`. Output contract identical to
+  `corr_msd` ($[n_t{+}1,\, n_{\mathrm{kpm}}]$ density-normalised rows on
+  the ascending Chebyshev grid).
 - `rsatb/calc/moment_extrapolation.hpp` — `extrapolate_moments_lp`.
 - `rsatb/calc/observables.hpp` — `ComputeMsdSpectrum(..., method,
-  n_kpm_compute)`: the `"auto" | "stepwise" | "spectral"` dispatch above,
-  surfaced through `rsatb.hpp`, the pybind layer, and
-  `driver.py::compute_msd_spectrum` / `compute_diffusion_spectrum`.
+  n_kpm_compute)`: requires the velocity, dispatches
+  `"auto" | "stepwise" | "spectral"` as above, surfaced through
+  `rsatb.hpp`, the pybind layer, and `driver.py::compute_msd_spectrum` /
+  `compute_diffusion_spectrum`.
 - Validation: `test_msd.cpp` (dense complete-basis fixtures for all three
   operator forms — Orthogonal, Solve, and Sandwich, the last against a
   dense reference written in its own $Z^H H Z$ variables — plus
