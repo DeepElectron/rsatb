@@ -24,6 +24,8 @@
 
 #include <complex>
 #include <cstdio>
+#include <cstdlib>
+#include <string>
 #include <vector>
 
 using namespace vbcsr;
@@ -145,10 +147,95 @@ double checksum(const std::vector<double>& msd) {
     return acc;
 }
 
+// Peak resident set of this process so far, in MB (VmHWM -- the high-water
+// mark, which point RSS readings miss; see the profiling notes).
+double vmhwm_mb() {
+    std::FILE* f = std::fopen("/proc/self/status", "r");
+    if (!f) return 0.0;
+    char line[256];
+    double kb = 0.0;
+    while (std::fgets(line, sizeof line, f)) {
+        if (std::sscanf(line, "VmHWM: %lf kB", &kb) == 1) break;
+    }
+    std::fclose(f);
+    return kb / 1024.0;
+}
+
+// Single-configuration mode for scaling sweeps:
+//   benchmark_msd_moments run <stepwise|spectral> <orthogonal|solve>
+//                             <L> <n_steps> <dt_fs> <n_kpm> <nsamples>
+// One machine-parsable RESULT line: wall seconds, max-over-ranks VmHWM, and
+// the spectrum checksum (routes are different estimators of one trace, so
+// checksums match per route, not across routes).
+int run_one(int argc, char** argv) {
+    if (argc != 9) {
+        std::fprintf(stderr,
+                     "usage: %s run <stepwise|spectral> <orthogonal|solve> "
+                     "<L> <n_steps> <dt_fs> <n_kpm> <nsamples>\n",
+                     argv[0]);
+        return 2;
+    }
+    const std::string route = argv[2];
+    const std::string form = argv[3];
+    const int L = std::atoi(argv[4]);
+    const int n_steps = std::atoi(argv[5]);
+    const double dt_fs = std::atof(argv[6]);
+    const int n_kpm = std::atoi(argv[7]);
+    const int nsamples = std::atoi(argv[8]);
+
+    const Lattice lat(L);
+    DistGraph graph = make_graph(lat, MPI_COMM_WORLD);
+    BlockSpMat<Scalar> H(&graph);
+    fill_hamiltonian(H, lat);
+    BlockSpMat<Scalar> V(&graph);
+    fill_velocity(V, lat);
+    BlockSpMat<Scalar> S(&graph);
+    const bool solve = (form == "solve");
+    if (solve) fill_overlap(S, lat, 0.08);
+    DistMultiVector<Scalar> psi(&graph, nsamples);
+    fill_samples(psi);
+
+    const double emax = solve ? 13.0 : 7.0;
+    Chebyshev<Scalar> cheby =
+        solve ? Chebyshev<Scalar>(H, S, -emax, emax)
+              : Chebyshev<Scalar>(H, -emax, emax);
+
+    std::vector<double> msd, energy;
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double t0 = rsatb::util::wall_time();
+    if (route == "spectral") {
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm,
+                          msd, energy);
+    } else {
+        corr_msd(cheby, VelocityOp<Scalar>(V), psi, n_steps, dt_fs, n_kpm, msd, energy);
+    }
+    MPI_Barrier(MPI_COMM_WORLD);
+    const double wall = rsatb::util::wall_time() - t0;
+
+    double peak = vmhwm_mb();
+    MPI_Allreduce(MPI_IN_PLACE, &peak, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    int rank = 0, n_rank = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &n_rank);
+    if (rank == 0) {
+        std::printf("RESULT route=%s form=%s L=%d N=%d ranks=%d steps=%d dt=%.3f "
+                    "nkpm=%d S=%d wall=%.3f vmhwm_mb=%.1f checksum=% .9e\n",
+                    route.c_str(), form.c_str(), L, lat.n, n_rank, n_steps, dt_fs,
+                    n_kpm, nsamples, wall, peak, checksum(msd));
+    }
+    return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
+
+    if (argc > 1 && std::string(argv[1]) == "run") {
+        const int code = run_one(argc, argv);
+        MPI_Finalize();
+        return code;
+    }
 
     const Lattice lat(20);  // 8000 sites, orthogonal fixture
     {

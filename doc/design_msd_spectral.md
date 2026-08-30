@@ -384,6 +384,27 @@ machine-independent — an apply *count*, not a flop model — and
 included). Checked against the table above, it predicts $0.9\times$ and
 $2.7\times$ where $1.10\times$ and $2.78\times$ were measured.
 
+**Measured scaling (2026-08-29, idle 96-core node; `benchmark_msd_moments
+run` mode).** On the Solve-form lattice (CG per apply) the spectral kernel
+wins at every size and widens with $N$ ($1.6\times$ at 512 sites,
+$3.1\times$ at 8000); on the orthogonal lattice stepwise is $3$–$6\times$
+faster — the structural boundary the dispatch encodes. Both kernels are
+measured linear in the window (exponents 1.01 stepwise / 0.97 spectral,
+12–192 steps) with the spectral margin holding at 2.3–2.6$\times$; both are
+sub-linear in $n_{\mathrm{kpm}}$ ($8\times$ finer resolution costs
+$2.2\times$ / $3.2\times$). Spectral memory is segment-local as designed: a
+$16\times$ longer window costs $1.19\times$ the peak RSS (165→196 MB at
+N=4096). Sixty-four samples cost the spectral kernel $7.9\times$
+(trace-first: only applies scale) against $10.2\times$ stepwise. MPI strong
+scaling at N=32768 (4 threads/rank): spectral $5.6\times$ at 8 ranks (69%
+efficiency, per-rank memory 505→126 MB) vs stepwise $3.5\times$ (43%).
+OpenMP on real 13-orbital LCAO blocks (silicon, 6→24 threads): stepwise 94%
+incremental efficiency, spectral 69%; the single-orbital synthetic lattice
+saturates much earlier (pointer-bound SpMV, worst case), and low-sample
+spectral runs are additionally bounded by their chunk width — a 2-sample
+run applies width-2 operators while the stepwise readout tiles itself to
+width 16 regardless.
+
 The task layer exposes exactly this dispatch: `compute_msd_spectrum` takes
 `method = "auto" | "stepwise" | "spectral"`, where `"auto"` (the default)
 selects the spectral route whenever the operator form is expensive-apply
