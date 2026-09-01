@@ -231,6 +231,18 @@ struct FragmentCv {
     const FragmentBasis* basis = nullptr;
     std::vector<std::vector<std::vector<double>>> P;  ///< [table][frag],
                                                       ///< column-major |core| x |F|.
+    /// Inverted domain index for the identity stream: every (global column,
+    /// fragment, position-in-domain) triple of this rank's fragments, sorted
+    /// by column. ApplyIdentity binary-searches a column block here instead
+    /// of scanning every fragment -- the difference between O(touched) and
+    /// the O(n_frag) screening that made the baseline stream quadratic in N
+    /// (blocks x fragments both grow with the cell). Built lazily once.
+    struct ColRef {
+        int64_t col;
+        int32_t frag;
+        int32_t pos;
+    };
+    mutable std::vector<ColRef> col_index;
 
     bool enabled() const { return basis != nullptr && basis->n_frag > 0; }
     int n_frag() const { return basis ? basis->n_frag : 0; }
@@ -282,26 +294,56 @@ struct FragmentCv {
     /// domain -- so the block is a scatter of already-computed numbers; the
     /// dense product Apply would run against these seeds is all zeros but for
     /// one entry per column.
+    ///
+    /// Bounded-work contract: `rows` carries, on entry, the rows the PREVIOUS
+    /// call wrote (they are zeroed here -- never the whole multivector, whose
+    /// blanket scale(0) was itself an O(N) touch per block); on return it
+    /// holds the rows this call wrote, sorted and unique. Pass it empty on
+    /// the first call over a freshly zeroed chi0. Fragments are found through
+    /// the inverted column index, so the work is O(touched), independent of
+    /// the fragment count.
     void ApplyIdentity(int k, int64_t start, int nv,
-                       vbcsr::DistMultiVector<double>* chi0) const {
-        chi0->scale(0.0);
-#pragma omp parallel for schedule(dynamic)
-        for (int f = 0; f < basis->n_frag; ++f) {
-            const int nc = static_cast<int>(basis->core_rows[f].size());
-            if (nc == 0) continue;
-            const auto& dr = basis->dom_rows[f];
-            const auto lo = std::lower_bound(dr.begin(), dr.end(), start);
-            const auto hi = std::lower_bound(lo, dr.end(), start + nv);
-            const double* Pf = P[k][f].data();
-            for (auto it = lo; it != hi; ++it) {
-                const int j = static_cast<int>(it - dr.begin());
-                const int v = static_cast<int>(*it - start);
-                const double* col = Pf + static_cast<size_t>(j) * nc;
-                for (int i = 0; i < nc; ++i) {
-                    chi0->row_data(basis->core_rows[f][i])[v] += col[i];
+                       vbcsr::DistMultiVector<double>* chi0,
+                       std::vector<int>* rows) const {
+        for (const int r : *rows) {
+            double* d = chi0->row_data(r);
+            std::fill(d, d + nv, 0.0);
+        }
+        rows->clear();
+        if (col_index.empty()) {
+            size_t total = 0;
+            for (int f = 0; f < basis->n_frag; ++f) total += basis->dom_rows[f].size();
+            col_index.reserve(total);
+            for (int f = 0; f < basis->n_frag; ++f) {
+                if (basis->core_rows[f].empty()) continue;
+                const auto& dr = basis->dom_rows[f];
+                for (size_t j = 0; j < dr.size(); ++j) {
+                    col_index.push_back({dr[j], f, static_cast<int32_t>(j)});
                 }
             }
+            std::sort(col_index.begin(), col_index.end(),
+                      [](const ColRef& a, const ColRef& b) { return a.col < b.col; });
         }
+        const auto lo = std::lower_bound(
+            col_index.begin(), col_index.end(), start,
+            [](const ColRef& a, int64_t c) { return a.col < c; });
+        const auto hi = std::lower_bound(
+            lo, col_index.end(), start + nv,
+            [](const ColRef& a, int64_t c) { return a.col < c; });
+        for (auto it = lo; it != hi; ++it) {
+            const int f = it->frag;
+            const int nc = static_cast<int>(basis->core_rows[f].size());
+            const int v = static_cast<int>(it->col - start);
+            const double* col =
+                P[k][f].data() + static_cast<size_t>(it->pos) * nc;
+            for (int i = 0; i < nc; ++i) {
+                chi0->row_data(basis->core_rows[f][i])[v] += col[i];
+            }
+            rows->insert(rows->end(), basis->core_rows[f].begin(),
+                         basis->core_rows[f].end());
+        }
+        std::sort(rows->begin(), rows->end());
+        rows->erase(std::unique(rows->begin(), rows->end()), rows->end());
     }
 };
 

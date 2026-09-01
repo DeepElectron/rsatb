@@ -544,6 +544,36 @@ $r_F \approx m_{\text{eff}}\,\dim_F/N$ dimensions (measured: 557 states
 capture bases therefore have total capacity $\sum_F r_F$ — unbounded by
 the sketch width.
 
+**Quantitative estimate (two regimes and a crossover).** Phase-space
+counting sharpens the participation law. The window occupies the
+$k$-shell of radius $k_E$, thickness $\Delta k = \eta/\hbar v_E$; a
+fragment of linear size $L$ blurs every wavevector by $\sim 1/L$, so
+
+$$ r \;\approx\; \rho(E)\,\dim_F\,\max(\eta,\ E_{\mathrm{Th}}),
+\qquad E_{\mathrm{Th}} = \hbar v_E/L
+\quad\Longrightarrow\quad
+\frac{r}{m_{\text{eff}}} \approx \frac{\dim_F}{N}
+\max\!\Big(1, \frac{E_{\mathrm{Th}}}{\eta}\Big). $$
+
+For $\eta > E_{\mathrm{Th}}$ (fragment Thouless energy; $\hbar D/L^2$
+diffusive) the ratio is the pure volume fraction — the participation
+law above (predicts $r \approx 70$ for the measured 567/4536-orbital,
+557-state point; measured 40 at 90% weight, below the full-support
+count as an $\varepsilon$-rank should be, the Landau–Widom boundary
+correction being only $\sim \log(k_E L)\log(1/\varepsilon)$ modes).
+For $\eta < E_{\mathrm{Th}}$ — the dense region under a sharp window —
+$r$ FLOORS at the channel count $\sim (k_E L)^{d-1}$, independent of
+both $\eta$ and $N$: at fixed sharp $\eta$ the compression
+$m_{\text{eff}}/r$ then grows $\propto N$ unboundedly. The crossover
+fixes the fragment size: $L^\* \approx \hbar v_E/\eta = \xi$, the
+window's coherence length. Larger fragments grow $r$ with volume for
+no accuracy; much smaller ones store redundant shared boundary
+channels ($\sum_F r_F = \rho N \max(\eta, E_{\mathrm{Th}})$ exceeds
+$m_{\text{eff}}$ by $E_{\mathrm{Th}}/\eta$ — the storage price of
+locality for over-sharp windows). Homogeneous-band estimate, not a
+bound: a flat band ($v_E \to 0$) never enters the channel regime and
+its local rank is honestly extensive over the flat-band weight.
+
 **Why locality survives spectral sharpness.** A sharp window is
 spectrally local, so its KERNEL
 $P(\mathbf r,\mathbf r') = \sum_{\text{win}}\psi_n(\mathbf r)

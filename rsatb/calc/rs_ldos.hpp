@@ -68,6 +68,7 @@
 #include <memory>
 #include <random>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -97,6 +98,11 @@ struct RealSpaceLdosOptions {
     /// on the rank count.
     double fragment_core = 4.5;    ///< Core bin edge, Angstrom.
     double fragment_buffer = 0.0;  ///< Dressing radius, Angstrom; 0 = off.
+    /// Keep the defining control-variate coefficient at one when false.
+    /// Fitting from the same finite sample is a robustness heuristic but is
+    /// not the exactly unbiased estimator; publication bias tests therefore
+    /// use false.  Retained as an option for legacy LDOS fragment runs.
+    bool fit_fragment_coefficient = true;
     /// Subspace deflation, the sharp-filter complement of the fragments.
     /// The filtered sample states ARE a spectrum-slicing sketch of the
     /// energy window (Chebyshev-filtered subspace iteration with the
@@ -775,12 +781,26 @@ inline RealSpaceLdosResult FilteredSquareMap(
         local_row_offset[a + 1] =
             local_row_offset[a] + atomic_data.type_norb[atomic_data.atom_type[a]];
     }
+    // Sign keys need a rank-count-INVARIANT row numbering. The graph's global
+    // index is the atom's position in the post-partition ownership order
+    // (DistGraph iota), so it permutes with the rank count: keying random
+    // draws on it gave a different realization -- a one-noise-quantum shift
+    // of every stochastic map -- at every np (measured: 3796.49 vs 3786.08
+    // electrons on 216-atom Al at np 1 vs 2, deterministic paths identical
+    // to 13 digits). The ORIGINAL file id (atomic_data.atom_index) is the
+    // stable name of an atom, so the draws below are keyed by the row
+    // numbering the original order induces, while every enumeration and
+    // matrix structure keeps the graph numbering it is built on.
+    std::vector<int64_t> seed_row_of_local;    // owned scalar row -> invariant row
+    std::vector<int64_t> seed_row0_of_atom;    // graph atom gid -> invariant row0
+    std::vector<int64_t> atom_prefix;          // graph atom gid -> global row0
     {
         std::vector<int> mine;
-        mine.reserve(2 * static_cast<size_t>(atomic_data.n_atom));
+        mine.reserve(3 * static_cast<size_t>(atomic_data.n_atom));
         for (int a = 0; a < atomic_data.n_atom; ++a) {
             mine.push_back(atomic_data.get_global_index(a));
             mine.push_back(local_row_offset[a + 1] - local_row_offset[a]);
+            mine.push_back(atomic_data.atom_index[a]);
         }
         std::vector<int> all = mine;
         if (comm != MPI_COMM_NULL && size > 1) {
@@ -793,12 +813,13 @@ inline RealSpaceLdosResult FilteredSquareMap(
             MPI_Allgatherv(mine.data(), local_count, MPI_INT, all.data(), counts.data(),
                            displs.data(), MPI_INT, comm);
         }
-        const size_t n_atom_global = all.size() / 2;
-        std::vector<int64_t> prefix(n_atom_global + 1, 0);
+        const size_t n_atom_global = all.size() / 3;
+        atom_prefix.assign(n_atom_global + 1, 0);
+        std::vector<int64_t>& prefix = atom_prefix;
         {
             std::vector<int> norb_of(n_atom_global, 0);
             for (size_t i = 0; i < n_atom_global; ++i) {
-                norb_of[static_cast<size_t>(all[2 * i])] = all[2 * i + 1];
+                norb_of[static_cast<size_t>(all[3 * i])] = all[3 * i + 1];
             }
             for (size_t g = 0; g < n_atom_global; ++g) prefix[g + 1] = prefix[g] + norb_of[g];
         }
@@ -807,17 +828,42 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 "complete_basis enumeration disagrees with the matrix size; the atom global "
                 "indices are not the dense 0..N_atom-1 this mode assumes.");
         }
+        {
+            // The invariant numbering: row offsets in ORIGINAL atom order.
+            std::vector<int> norb_by_orig(n_atom_global, 0);
+            for (size_t i = 0; i < n_atom_global; ++i) {
+                const size_t orig = static_cast<size_t>(all[3 * i + 2]);
+                if (orig >= n_atom_global) {
+                    throw std::runtime_error(
+                        "Original atom ids are not the dense 0..N_atom-1 the "
+                        "invariant seed numbering assumes.");
+                }
+                norb_by_orig[orig] = all[3 * i + 1];
+            }
+            std::vector<int64_t> orig_prefix(n_atom_global + 1, 0);
+            for (size_t g = 0; g < n_atom_global; ++g) {
+                orig_prefix[g + 1] = orig_prefix[g] + norb_by_orig[g];
+            }
+            seed_row0_of_atom.assign(n_atom_global, 0);
+            for (size_t i = 0; i < n_atom_global; ++i) {
+                seed_row0_of_atom[static_cast<size_t>(all[3 * i])] =
+                    orig_prefix[static_cast<size_t>(all[3 * i + 2])];
+            }
+        }
         basis_of_owned.reserve(atomic_data.n_atom);
         for (int a = 0; a < atomic_data.n_atom; ++a) {
             basis_of_owned.emplace_back(prefix[atomic_data.get_global_index(a)], a);
         }
         std::sort(basis_of_owned.begin(), basis_of_owned.end());
         global_row_of_local.assign(local_row_offset.back(), 0);
+        seed_row_of_local.assign(local_row_offset.back(), 0);
         n_global_rows = prefix.back();
         for (int a = 0; a < atomic_data.n_atom; ++a) {
             const int64_t g0 = prefix[atomic_data.get_global_index(a)];
+            const int64_t s0 = seed_row0_of_atom[atomic_data.get_global_index(a)];
             for (int o = 0; o < local_row_offset[a + 1] - local_row_offset[a]; ++o) {
                 global_row_of_local[local_row_offset[a] + o] = g0 + o;
+                seed_row_of_local[local_row_offset[a] + o] = s0 + o;
             }
         }
     }
@@ -877,26 +923,127 @@ inline RealSpaceLdosResult FilteredSquareMap(
         RSATB_PHASE("rs_ldos/fragment_baseline");
         const int64_t n_basis = graph->global_scalar_rows();
         // T0's columns against identity seeds are stored numbers, not
-        // products (ApplyIdentity), and they are spatially local, so the
-        // contraction skips every box a column never reaches. What remains
-        // per pass is the per-box orbital evaluation, which the wide block
-        // amortizes: the width costs only scratch memory here, and narrow
-        // passes made the baseline the slowest phase of the run.
+        // products (ApplyIdentity), and they are spatially local. The GEMM
+        // work per pass was always bounded by the overlap geometry; what
+        // made the STREAM quadratic was everything around it touching the
+        // full domain once per block -- the fragment scan, the chi0 blanket
+        // zero, the dense set gather, the all-box screening loop, and the
+        // full-grid accumulate. Each is now bounded by the block's actual
+        // support: the inverted column index finds the touched fragments,
+        // the sparse gather moves only their core rows, and the reachable
+        // owned boxes are enumerated from geometry -- so per-block work is
+        // O(touched) and the whole stream is O(N), which the per-pass GEMM
+        // already was. The identical products are formed in the identical
+        // order; untouched boxes contribute the exact zeros they always did.
         const int base_blk = std::max(opt.block, 512);
+        std::vector<int> chi_rows, coeff_slots, active_slots, touched_atoms;
+        std::vector<char> atom_flag(atomic_data.n_atom, 0);
+        std::vector<char> slot_flag(result.domain.n_box(), 0);
+        std::unordered_map<int, int> slot_of_box;
+        slot_of_box.reserve(result.domain.boxes.size());
+        for (int s = 0; s < result.domain.n_box(); ++s) {
+            slot_of_box.emplace(result.domain.boxes[s], s);
+        }
+        double max_box_radius = 0.0;
+        for (const int b : result.domain.boxes) {
+            max_box_radius = std::max(max_box_radius, result.grid.BoxAt(b).radius);
+        }
+        const auto cinv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
+        // Fractional half-extent of a Cartesian reach R along each axis.
+        double frac_per_ang[3];
+        for (int d = 0; d < 3; ++d) {
+            frac_per_ang[d] = std::sqrt(cinv[0 + d] * cinv[0 + d] +
+                                        cinv[3 + d] * cinv[3 + d] +
+                                        cinv[6 + d] * cinv[6 + d]);
+        }
         for (int64_t start = 0; start < n_basis; start += base_blk) {
             const int blk = static_cast<int>(std::min<int64_t>(base_blk, n_basis - start));
             if (!chi0 || chi0->num_vectors != blk) {
                 chi0 = std::make_unique<DistMultiVector<double>>(graph, blk);
+                chi_rows.clear();
             }
             for (int k = 0; k < n_energy; ++k) {
-                frag_cv.ApplyIdentity(k, start, blk, chi0.get());
-                GatherSetRows(atomic_data, *chi0, set, plan, comm, &coeffs);
+                frag_cv.ApplyIdentity(k, start, blk, chi0.get(), &chi_rows);
+                if (k == 0) {
+                    // The touched support is the same for every table of the
+                    // block (same fragments, different values): flag the
+                    // owned atoms once, and find the reachable owned boxes
+                    // once, after the gather names the set atoms.
+                    for (const int a : touched_atoms) atom_flag[a] = 0;
+                    touched_atoms.clear();
+                    int a = 0;
+                    for (const int row : chi_rows) {
+                        while (local_row_offset[a + 1] <= row) ++a;
+                        if (!atom_flag[a]) {
+                            atom_flag[a] = 1;
+                            touched_atoms.push_back(a);
+                        }
+                    }
+                }
+                GatherSetRowsSparse(atomic_data, *chi0, set, plan, comm, atom_flag,
+                                    &coeffs, &coeff_slots);
+                if (k == 0) {
+                    for (const int slot : active_slots) slot_flag[slot] = 0;
+                    active_slots.clear();
+                    for (const int sa : coeff_slots) {
+                        const double* p = set.positions.data() + 3 * static_cast<size_t>(sa);
+                        const double reach =
+                            type_rcut[set.atom_type[sa]] + max_box_radius;
+                        double frac[3];
+                        for (int d = 0; d < 3; ++d) {
+                            frac[d] = p[0] * cinv[0 + d] + p[1] * cinv[3 + d] +
+                                      p[2] * cinv[6 + d];
+                        }
+                        int lo[3], hi[3];
+                        for (int d = 0; d < 3; ++d) {
+                            const double per_box = static_cast<double>(
+                                result.grid.box_edge[d]) / result.grid.shape[d];
+                            const double ext = reach * frac_per_ang[d];
+                            lo[d] = static_cast<int>(
+                                std::floor((frac[d] - ext) / per_box));
+                            hi[d] = static_cast<int>(
+                                std::floor((frac[d] + ext) / per_box));
+                            if (!atomic_data.pbc[d]) {
+                                lo[d] = std::max(lo[d], 0);
+                                hi[d] = std::min(hi[d], result.grid.box_count[d] - 1);
+                            }
+                        }
+                        for (int bx = lo[0]; bx <= hi[0]; ++bx) {
+                            const int wx = ((bx % result.grid.box_count[0]) +
+                                            result.grid.box_count[0]) %
+                                           result.grid.box_count[0];
+                            for (int by = lo[1]; by <= hi[1]; ++by) {
+                                const int wy = ((by % result.grid.box_count[1]) +
+                                                result.grid.box_count[1]) %
+                                               result.grid.box_count[1];
+                                for (int bz = lo[2]; bz <= hi[2]; ++bz) {
+                                    const int wz =
+                                        ((bz % result.grid.box_count[2]) +
+                                         result.grid.box_count[2]) %
+                                        result.grid.box_count[2];
+                                    const int id =
+                                        (wx * result.grid.box_count[1] + wy) *
+                                            result.grid.box_count[2] +
+                                        wz;
+                                    const auto it = slot_of_box.find(id);
+                                    if (it == slot_of_box.end()) continue;
+                                    if (slot_flag[it->second]) continue;
+                                    slot_flag[it->second] = 1;
+                                    active_slots.push_back(it->second);
+                                }
+                            }
+                        }
+                    }
+                }
                 collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk,
                                                    result.grid, result.domain, &values,
-                                                   &prof.grid_work);
+                                                   &prof.grid_work, &active_slots);
                 double* out = base[k].data();
-                for (int64_t pnt = 0; pnt < result.domain.n_point(); ++pnt) {
-                    out[pnt] += static_cast<double>(blk) * values[pnt];
+                for (const int slot : active_slots) {
+                    for (int64_t pnt = result.domain.offset[slot];
+                         pnt < result.domain.offset[slot + 1]; ++pnt) {
+                        out[pnt] += static_cast<double>(blk) * values[pnt];
+                    }
                 }
             }
         }
@@ -1009,12 +1156,16 @@ inline RealSpaceLdosResult FilteredSquareMap(
         if (opt.complete_basis) {
             fill_identity(*xi, start, blk);
         } else {
-            // Counter-based draw keyed on (seed, global row, state): the same
-            // sign on every rank for a given basis row, so the estimate does
-            // not depend on how the atoms were partitioned.
+            // Counter-based draw keyed on (seed, INVARIANT row, state): the
+            // invariant numbering is the one the original atom order induces,
+            // so the same physical basis row draws the same sign on every
+            // rank AND at every rank count. The graph row would not do: it is
+            // partition-order dependent (DistGraph iota), and keying on it
+            // made the whole stochastic map shift by one noise quantum with
+            // the rank count.
             for (int row = 0; row < xi->local_rows; ++row) {
                 double* r = xi->row_data(row);
-                const uint64_t grow = static_cast<uint64_t>(global_row_of_local[row]);
+                const uint64_t grow = static_cast<uint64_t>(seed_row_of_local[row]);
                 for (int v = 0; v < blk; ++v) {
                     r[v] = RademacherSign(opt.seed, grow,
                                           static_cast<uint64_t>(start + v));
@@ -1114,7 +1265,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
                     for (int row = 0; row < w0.local_rows; ++row) {
                         double* r = w0.row_data(row);
                         const uint64_t grow =
-                            static_cast<uint64_t>(global_row_of_local[row]);
+                            static_cast<uint64_t>(seed_row_of_local[row]);
                         for (int v = 0; v < blk; ++v) {
                             r[v] = RademacherSign(opt.seed, grow,
                                                   static_cast<uint64_t>(v));
@@ -1232,11 +1383,15 @@ inline RealSpaceLdosResult FilteredSquareMap(
                     if (k == 0) {
                         xi_global.assign(
                             static_cast<size_t>(frag_cv.n_global_rows()) * blk, 0.0);
-                        for (int64_t g = 0; g < frag_cv.n_global_rows(); ++g) {
-                            double* r = xi_global.data() + static_cast<size_t>(g) * blk;
-                            for (int v = 0; v < blk; ++v) {
-                                r[v] = RademacherSign(opt.seed, static_cast<uint64_t>(g),
-                                                      static_cast<uint64_t>(start + v));
+                        for (size_t ag = 0; ag + 1 < atom_prefix.size(); ++ag) {
+                            for (int64_t g = atom_prefix[ag]; g < atom_prefix[ag + 1]; ++g) {
+                                double* r = xi_global.data() + static_cast<size_t>(g) * blk;
+                                const uint64_t srow = static_cast<uint64_t>(
+                                    seed_row0_of_atom[ag] + (g - atom_prefix[ag]));
+                                for (int v = 0; v < blk; ++v) {
+                                    r[v] = RademacherSign(opt.seed, srow,
+                                                          static_cast<uint64_t>(start + v));
+                                }
                             }
                         }
                     }
@@ -1289,11 +1444,15 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 if (k == 0) {
                     xi_global.assign(
                         static_cast<size_t>(frag_cv.n_global_rows()) * blk, 0.0);
-                    for (int64_t g = 0; g < frag_cv.n_global_rows(); ++g) {
-                        double* r = xi_global.data() + static_cast<size_t>(g) * blk;
-                        for (int v = 0; v < blk; ++v) {
-                            r[v] = RademacherSign(opt.seed, static_cast<uint64_t>(g),
-                                                  static_cast<uint64_t>(start + v));
+                    for (size_t ag = 0; ag + 1 < atom_prefix.size(); ++ag) {
+                        for (int64_t g = atom_prefix[ag]; g < atom_prefix[ag + 1]; ++g) {
+                            double* r = xi_global.data() + static_cast<size_t>(g) * blk;
+                            const uint64_t srow = static_cast<uint64_t>(
+                                seed_row0_of_atom[ag] + (g - atom_prefix[ag]));
+                            for (int v = 0; v < blk; ++v) {
+                                r[v] = RademacherSign(opt.seed, srow,
+                                                      static_cast<uint64_t>(start + v));
+                            }
                         }
                     }
                 }
@@ -1366,7 +1525,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
             // anticorrelates (pure noise -- take the plain estimator), above 1
             // the estimate is extrapolating its own sampling error.
             double beta = 1.0;
-            if (var > 1e-300 && cv_blocks > 1) {
+            if (opt.fit_fragment_coefficient && var > 1e-300 && cv_blocks > 1) {
                 beta = std::max(0.0, std::min(1.0, cov / var));
             }
             result.control_beta[k] = beta;
@@ -1384,9 +1543,13 @@ inline RealSpaceLdosResult FilteredSquareMap(
             // The shrinkage keeps the few-block local estimates from chasing
             // their own noise, and the [0, 1] clamp bounds the damage of any
             // remaining misfit by the plain estimator's own variance.
+            // The prior divisor is the GLOBAL box count -- cov and var are
+            // global moments, and dividing by the rank-LOCAL box count made
+            // the shrinkage strength (and so the assembled map) depend on
+            // the rank count.
             const int n_box = result.domain.n_box();
-            const double prior_cov = cov / std::max(1, n_box);
-            const double prior_var = var / std::max(1, n_box);
+            const double prior_cov = cov / std::max(1, result.grid.n_box());
+            const double prior_var = var / std::max(1, result.grid.n_box());
             double sumsq = 0.0;
             double* out = result.ldos[k].data();
             for (int b = 0; b < n_box; ++b) {
@@ -1402,7 +1565,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 const double cov_b = (bxy - nb * bx_y) + prior_cov;
                 const double var_b = (byy - nb * by_y) + prior_var;
                 double beta_b = beta;
-                if (var_b > 1e-300 && cv_blocks > 1) {
+                if (opt.fit_fragment_coefficient && var_b > 1e-300 && cv_blocks > 1) {
                     beta_b = std::max(0.0, std::min(1.0, cov_b / var_b));
                 }
                 for (int64_t p = p0; p < p1; ++p) {
@@ -2092,10 +2255,12 @@ inline RealSpaceLdosResult FilteredSquareMap(
                                       xib.row_data(row));
                         }
                     } else {
+                        // Rebuilds the SAME draw the sweep made: keyed by the
+                        // invariant row, like every sign in this file.
                         for (int row = 0; row < lr; ++row) {
                             double* d = xib.row_data(row);
                             const uint64_t grow =
-                                static_cast<uint64_t>(global_row_of_local[row]);
+                                static_cast<uint64_t>(seed_row_of_local[row]);
                             for (int v = 0; v < blk; ++v) {
                                 d[v] = RademacherSign(
                                     opt.seed, grow, static_cast<uint64_t>(start + v));

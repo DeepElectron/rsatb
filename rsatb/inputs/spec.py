@@ -747,6 +747,14 @@ TASK = Union(
                                           "rank count.",
                                           unit="Angstrom", minimum=0.0),
                                      default=0.0),
+                "fragment_coefficient": F(
+                    _str("Coefficient multiplying the paired fragment "
+                         "correction. 'fixed' uses coefficient one and is "
+                         "exactly unbiased for every fixed fragment. "
+                         "'fitted' estimates a box-local coefficient from "
+                         "the same samples as a legacy robustness heuristic.",
+                         choices=("fixed", "fitted")),
+                    default="fitted"),
                 "energy_windows": F(_int("Split the occupation into this many "
                                          "energy windows sampled separately "
                                          "from the same sweep and seeds "

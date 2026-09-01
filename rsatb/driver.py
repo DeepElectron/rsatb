@@ -184,7 +184,7 @@ class RSATB:
     def compute_rs_density(self, mu, temp, spin_degeneracy=2.0, spacing=0.4,
                            box_edge=0, n_samples=64, block=16, seed=12345,
                            fragment_core=4.5, fragment_buffer=0.0,
-                           energy_windows=1):
+                           energy_windows=1, fragment_coefficient="fitted"):
         """
         Compute the electron density on a real-space grid.
 
@@ -217,6 +217,10 @@ class RSATB:
                 Chebyshev degree; can never increase the variance. The one
                 reduction that keeps working for delocalized (metallic)
                 occupations, where fragments cannot. 1 disables.
+            fragment_coefficient (str): ``"fixed"`` uses the defining
+                coefficient-one control variate and is exactly unbiased for
+                any fixed fragment. ``"fitted"`` retains the legacy
+                same-sample robustness heuristic.
 
         Returns:
             dict with keys:
@@ -229,9 +233,12 @@ class RSATB:
                 filter_degree, n_states, sampler_residual: diagnostics.
         """
         kT = 8.617333262e-5 * temp  # eV/K
+        if fragment_coefficient not in ("fixed", "fitted"):
+            raise ValueError("fragment_coefficient must be 'fixed' or 'fitted'")
         out = self._cpp_obj.compute_rs_density(
             mu, kT, spin_degeneracy, spacing, box_edge, n_samples, block, seed,
-            fragment_core, fragment_buffer, energy_windows)
+            fragment_core, fragment_buffer, energy_windows,
+            fragment_coefficient == "fitted")
         if out["density"].shape[0] == out["n_point"]:
             full = np.zeros(out["n_point"])
             full[out["point_index"]] = out["density"]
@@ -241,7 +248,8 @@ class RSATB:
     def compute_rs_ldos(self, energies, eta, spacing=0.4, box_edge=0,
                         n_samples=64, block=16, seed=12345,
                         fragment_core=4.5, fragment_buffer=0.0,
-                        subspace_cv=True, subspace_filters=4, local_capture=0, local_pack=8):
+                        subspace_cv=True, subspace_filters=4, local_capture=0,
+                        local_pack=8, local_pack_replicas=2):
         """
         Compute the full-cell LDOS map on a real-space grid.
 
@@ -306,7 +314,7 @@ class RSATB:
         out = self._cpp_obj.compute_rs_ldos(
             list(energies), eta, spacing, box_edge, n_samples, block, seed,
             fragment_core, fragment_buffer, subspace_cv, subspace_filters,
-            local_capture, local_pack)
+            local_capture, local_pack, local_pack_replicas)
         if out["ldos"].shape[1] == out["n_point"]:
             n_energy = out["ldos"].shape[0]
             full = np.zeros((n_energy, out["n_point"]))

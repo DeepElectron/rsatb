@@ -59,6 +59,9 @@ struct RealSpaceDensityOptions {
     /// systematic accuracy knob; 0 disables.
     double fragment_core = 4.5;    ///< Core bin edge, Angstrom.
     double fragment_buffer = 0.0;  ///< Dressing radius, Angstrom; 0 = off.
+    /// False gives the coefficient-one estimator, exactly unbiased for every
+    /// fixed fragment. True retains the fitted legacy robustness heuristic.
+    bool fit_fragment_coefficient = true;
     /// Energy-window dilution (ew-sDFT: Chen & Baer, JCP 2019; hybrid with
     /// fragments = ew-efsDFT, Chen et al. 2021). The occupation is split into
     /// n windows bounded by Fermi steps AT THE SAME kT, each window filtered
@@ -189,6 +192,7 @@ inline RealSpaceDensityResult ComputeRealSpaceDensity(
     base.sampler = opt.sampler;
     base.fragment_core = opt.fragment_core;
     base.fragment_buffer = opt.fragment_buffer;
+    base.fit_fragment_coefficient = opt.fit_fragment_coefficient;
     // The Ritz-subspace control is the sharp-filter lever; the occupied
     // manifold's rank is extensive, so no O(n_samples) sketch of it can
     // correlate. Fragments and energy windows are the density's levers.

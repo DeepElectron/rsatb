@@ -855,6 +855,154 @@ inline void GatherSetRows(vbcsr::atomic::AtomicData& atomic_data,
     }
 }
 
+/// GatherSetRows for a block known to be nonzero on FEW owned atoms: the
+/// identity-streamed fragment baseline, whose per-block support is the cores
+/// of a handful of fragments while the dense gather repacked (and, over the
+/// whole stream, re-zeroed) every set row every block -- an O(N) touch per
+/// block that multiplied into the O(N^2) the baseline must not have.
+///
+/// Contract: `atom_touched` flags this rank's OWNED atoms carrying nonzero
+/// rows of X for this block. `coeffs_out` is a persistent buffer over calls;
+/// `touched_slots` carries, on entry, the set slots the PREVIOUS call wrote
+/// (zeroed here -- never the full buffer), and on return the slots this call
+/// wrote. Pass it empty on the first call. Work and traffic are O(touched)
+/// plus one MPI_Alltoall of counts; the result equals the dense gather on
+/// every touched slot, and untouched slots hold zero, exactly as the dense
+/// gather would have left them.
+inline void GatherSetRowsSparse(vbcsr::atomic::AtomicData& atomic_data,
+                                const vbcsr::DistMultiVector<double>& X,
+                                const OrbitalSet& set,
+                                const OrbitalSetExchangePlan& plan,
+                                MPI_Comm comm,
+                                const std::vector<char>& atom_touched,
+                                std::vector<double>* coeffs_out,
+                                std::vector<int>* touched_slots) {
+    if (coeffs_out == nullptr || touched_slots == nullptr) {
+        throw std::runtime_error("GatherSetRowsSparse needs its output pointers.");
+    }
+    int size = 1;
+    if (comm != MPI_COMM_NULL) MPI_Comm_size(comm, &size);
+    const bool exchange = (comm != MPI_COMM_NULL && size > 1);
+    const int n_vec = X.num_vectors;
+
+    if (coeffs_out->size() != static_cast<size_t>(set.n_orb()) * n_vec) {
+        coeffs_out->assign(static_cast<size_t>(set.n_orb()) * n_vec, 0.0);
+        touched_slots->clear();
+    }
+    for (const int slot : *touched_slots) {
+        const size_t o = static_cast<size_t>(set.orb_offset[slot]) * n_vec;
+        std::fill(coeffs_out->begin() + o,
+                  coeffs_out->begin() + o +
+                      static_cast<size_t>(set.atom_norb[slot]) * n_vec,
+                  0.0);
+    }
+    touched_slots->clear();
+
+    std::vector<int> row_offset(atomic_data.n_atom + 1, 0);
+    for (int a = 0; a < atomic_data.n_atom; ++a) {
+        row_offset[a + 1] =
+            row_offset[a] + atomic_data.type_norb[atomic_data.atom_type[a]];
+    }
+
+    if (!exchange) {
+        // Serial: records correspond index-wise between send_local and
+        // recv_slot, exactly as the dense path's pack/unpack pair does.
+        for (size_t rec = 0; rec < plan.send_local.size(); ++rec) {
+            const int local = plan.send_local[rec];
+            if (!atom_touched[local]) continue;
+            const int slot = plan.recv_slot[rec];
+            double* dst =
+                coeffs_out->data() + static_cast<size_t>(set.orb_offset[slot]) * n_vec;
+            for (int row = row_offset[local]; row < row_offset[local + 1]; ++row) {
+                const double* src = X.row_data(row);
+                std::copy(src, src + n_vec, dst);
+                dst += n_vec;
+            }
+            touched_slots->push_back(slot);
+        }
+        return;
+    }
+
+    // Filtered exchange: ship, per destination, the touched records'
+    // positions within that destination's record stream (so the receiver can
+    // name the set slot) followed by their rows.
+    std::vector<int> send_recs(size, 0), send_elems(size, 0);
+    std::vector<int> pos_buf;
+    std::vector<double> send_buf;
+    {
+        size_t record = 0;
+        for (int r = 0; r < size; ++r) {
+            for (int i = 0; i < plan.send_counts[r]; ++i, ++record) {
+                const int local = plan.send_local[record];
+                if (!atom_touched[local]) continue;
+                ++send_recs[r];
+                send_elems[r] +=
+                    (row_offset[local + 1] - row_offset[local]) * n_vec;
+            }
+        }
+        pos_buf.reserve(static_cast<size_t>(
+            std::accumulate(send_recs.begin(), send_recs.end(), 0)));
+        record = 0;
+        for (int r = 0; r < size; ++r) {
+            for (int i = 0; i < plan.send_counts[r]; ++i, ++record) {
+                const int local = plan.send_local[record];
+                if (!atom_touched[local]) continue;
+                pos_buf.push_back(i);
+                for (int row = row_offset[local]; row < row_offset[local + 1];
+                     ++row) {
+                    const double* src = X.row_data(row);
+                    send_buf.insert(send_buf.end(), src, src + n_vec);
+                }
+            }
+        }
+    }
+    std::vector<int> recv_recs(size, 0);
+    MPI_Alltoall(send_recs.data(), 1, MPI_INT, recv_recs.data(), 1, MPI_INT, comm);
+
+    std::vector<int> sdis(size + 1, 0), rdis(size + 1, 0);
+    for (int r = 0; r < size; ++r) {
+        sdis[r + 1] = sdis[r] + send_recs[r];
+        rdis[r + 1] = rdis[r] + recv_recs[r];
+    }
+    std::vector<int> pos_in(static_cast<size_t>(rdis[size]));
+    MPI_Alltoallv(pos_buf.data(), send_recs.data(), sdis.data(), MPI_INT,
+                  pos_in.data(), recv_recs.data(), rdis.data(), MPI_INT, comm);
+
+    // Element counts of the incoming rows follow from the named records.
+    std::vector<int> recv_elems(size, 0);
+    std::vector<int> rec_base(size + 1, 0);
+    for (int r = 0; r < size; ++r) rec_base[r + 1] = rec_base[r] + plan.recv_counts[r];
+    for (int r = 0; r < size; ++r) {
+        for (int i = rdis[r]; i < rdis[r + 1]; ++i) {
+            const int slot = plan.recv_slot[rec_base[r] + pos_in[i]];
+            recv_elems[r] += set.atom_norb[slot] * n_vec;
+        }
+    }
+    std::vector<int> sedis(size + 1, 0), redis(size + 1, 0);
+    for (int r = 0; r < size; ++r) {
+        sedis[r + 1] = sedis[r] + send_elems[r];
+        redis[r + 1] = redis[r] + recv_elems[r];
+    }
+    std::vector<double> recv_buf(static_cast<size_t>(redis[size]));
+    MPI_Alltoallv(send_buf.data(), send_elems.data(), sedis.data(), MPI_DOUBLE,
+                  recv_buf.data(), recv_elems.data(), redis.data(), MPI_DOUBLE,
+                  comm);
+
+    size_t at = 0;
+    for (int r = 0; r < size; ++r) {
+        for (int i = rdis[r]; i < rdis[r + 1]; ++i) {
+            const int slot = plan.recv_slot[rec_base[r] + pos_in[i]];
+            const int norb = set.atom_norb[slot];
+            std::copy(recv_buf.begin() + at,
+                      recv_buf.begin() + at + static_cast<size_t>(norb) * n_vec,
+                      coeffs_out->begin() +
+                          static_cast<size_t>(set.orb_offset[slot]) * n_vec);
+            at += static_cast<size_t>(norb) * n_vec;
+            touched_slots->push_back(slot);
+        }
+    }
+}
+
 /// What the box loop actually did, for diagnosing scaling.
 ///
 /// Linear scaling rests on a claim about per-box work: the orbital count
@@ -1045,6 +1193,16 @@ public:
     ///   coeffs: Row-major (n_orb, n_vec) coefficients over `set`'s numbering.
     ///   n_vec: Number of sample vectors; the mean is taken over them.
     ///   values_out: domain.n_point() values, in owned-box order.
+    ///   slots: Optional owned-box slot list to restrict the pass to. When
+    ///     given, ONLY those slots' values are zeroed and written -- entries
+    ///     of other slots are left stale and must not be read -- and the box
+    ///     loop never visits (or pays ViewForSphere for) any other box. This
+    ///     is the O(N) contract of the identity-streamed fragment baseline:
+    ///     the caller knows from geometry which boxes a block of spatially
+    ///     local columns can reach, so a full-domain scan per block -- which
+    ///     multiplied into O(N^2) screening across the stream -- is replaced
+    ///     by a bounded visit. Dense sample blocks pass null and keep the
+    ///     full sweep.
     void SquareVectorsOntoBoxes(vbcsr::atomic::AtomicData& atomic_data,
                                 const OrbitalSet& set,
                                 const std::vector<double>& coeffs,
@@ -1052,7 +1210,8 @@ public:
                                 const RealSpaceGrid& grid,
                                 const GridDomain& domain,
                                 std::vector<double>* values_out,
-                                GridWorkStats* stats = nullptr) const {
+                                GridWorkStats* stats = nullptr,
+                                const std::vector<int>* slots = nullptr) const {
         if (values_out == nullptr) {
             throw std::runtime_error("SquareVectorsOntoBoxes needs an output pointer.");
         }
@@ -1066,7 +1225,17 @@ public:
         RequireUniqueMinimumImage(atomic_data, set);
         ValidateSetAgainstEvaluators(set);
 
-        values_out->assign(static_cast<size_t>(domain.n_point()), 0.0);
+        if (slots == nullptr) {
+            values_out->assign(static_cast<size_t>(domain.n_point()), 0.0);
+        } else {
+            if (values_out->size() != static_cast<size_t>(domain.n_point())) {
+                values_out->assign(static_cast<size_t>(domain.n_point()), 0.0);
+            }
+            for (const int slot : *slots) {
+                std::fill(values_out->begin() + domain.offset[slot],
+                          values_out->begin() + domain.offset[slot + 1], 0.0);
+            }
+        }
         const auto cell_inv = vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
         const double per_angstrom_cubed = model::lcao::kBohrPerAngstrom *
                                           model::lcao::kBohrPerAngstrom *
@@ -1082,8 +1251,11 @@ public:
             std::vector<char> col_active;
             GridWorkStats mine;
 
+            const int n_iter =
+                slots ? static_cast<int>(slots->size()) : domain.n_box();
 #pragma omp for schedule(dynamic)
-            for (int slot = 0; slot < domain.n_box(); ++slot) {
+            for (int iter = 0; iter < n_iter; ++iter) {
+                const int slot = slots ? (*slots)[iter] : iter;
                 const GridBox box = grid.BoxAt(domain.boxes[slot]);
                 const int n_box_point = box.n_point();
                 if (n_box_point == 0) continue;

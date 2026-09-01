@@ -601,6 +601,73 @@ PYBIND11_MODULE(_rsatb, m) {
          }, py::arg("dE"), py::arg("method") = "kpm")
         .def("cell", &rsatb::RSATB::cell)
         .def("energy_bounds", &rsatb::RSATB::energy_bounds)
+        // Reference-extraction hook: one operator as global COO triplets.
+        // `which` selects H, S, or a velocity representation piece for
+        // `axis` (0/1/2 = x/y/z): "matrix" when the axis is a bare sparse
+        // matrix (orthogonal basis), or "bond"/"xbar"/"delta" for the
+        // composite commutator velocity, which combine as
+        //   V = i (bond - xbar S^-1 H + H S^-1 delta)
+        // (cheby.hpp apply_dual_composite). Single-rank only: a dense
+        // diagonalization reference has no reason to run distributed.
+        .def("dump_operator_coo", [](rsatb::RSATB& self, const std::string& which,
+                                     int axis, int k_idx) {
+             int world = 1;
+             MPI_Comm_size(MPI_COMM_WORLD, &world);
+             if (world != 1) {
+                 throw std::runtime_error("dump_operator_coo is single-rank only");
+             }
+             auto* ops = self.operators();
+             if (ops == nullptr) throw std::runtime_error("operators not set up");
+             vbcsr::BlockSpMat<std::complex<double>>* M = nullptr;
+             if (which == "H") M = ops->hamiltonian_k(k_idx);
+             else if (which == "S") M = ops->overlap_k(k_idx);
+             else {
+                 const auto& vt = ops->velocity_state(k_idx);
+                 const auto& ax = (axis == 0) ? vt.x : (axis == 1) ? vt.y : vt.z;
+                 if (which == "matrix") M = ax.matrix.get();
+                 else if (which == "bond") M = ax.bond.get();
+                 else if (which == "xbar") M = ax.xbar.get();
+                 else if (which == "delta") M = ax.delta.get();
+                 else throw std::runtime_error("unknown operator name: " + which);
+             }
+             if (M == nullptr) {
+                 throw std::runtime_error(which + " is not populated for this model");
+             }
+             auto* g = M->graph;
+             const auto& adj_ptr = g->adj_ptr;
+             const auto& adj_ind = g->adj_ind;
+             const auto& bsz = g->block_sizes;
+             const auto& boff = g->block_offsets;
+             const int n_rows = static_cast<int>(g->owned_global_indices.size());
+             size_t nnz = 0;
+             for (int r = 0; r < n_rows; ++r) {
+                 for (int s = adj_ptr[r]; s < adj_ptr[r + 1]; ++s) {
+                     nnz += static_cast<size_t>(bsz[r]) * bsz[adj_ind[s]];
+                 }
+             }
+             py::array_t<int64_t> rows(nnz), cols(nnz);
+             py::array_t<std::complex<double>> vals(nnz);
+             auto* rp = rows.mutable_data();
+             auto* cp = cols.mutable_data();
+             auto* vp = vals.mutable_data();
+             size_t o = 0;
+             for (int r = 0; r < n_rows; ++r) {
+                 const int rd = bsz[r];
+                 for (int s = adj_ptr[r]; s < adj_ptr[r + 1]; ++s) {
+                     const int c = adj_ind[s];
+                     const int cd = bsz[c];
+                     const std::complex<double>* b = M->block_data(s);
+                     for (int i = 0; i < rd; ++i) {
+                         for (int j = 0; j < cd; ++j, ++o) {
+                             rp[o] = boff[r] + i;
+                             cp[o] = boff[c] + j;
+                             vp[o] = b[static_cast<size_t>(i) * cd + j];
+                         }
+                     }
+                 }
+             }
+             return py::make_tuple(rows, cols, vals);
+         }, py::arg("which"), py::arg("axis") = 0, py::arg("k_idx") = 0)
         .def("compute_pdos", [](rsatb::RSATB& self, double dE, const std::string& projection) {
              std::vector<double> pdos_out, total_out, omega_out;
              std::vector<int> group_type, group_slot;
@@ -634,7 +701,8 @@ PYBIND11_MODULE(_rsatb, m) {
                                       double spin_degeneracy, double spacing, int box_edge,
                                       int n_samples, int block, unsigned long seed,
                                       double fragment_core, double fragment_buffer,
-                                      int energy_windows) {
+                                      int energy_windows, bool fit_fragment_coefficient,
+                                      bool complete_basis) {
              rsatb::calc::RealSpaceDensityOptions opt;
              opt.mu = mu;
              opt.kT = kT;
@@ -647,6 +715,8 @@ PYBIND11_MODULE(_rsatb, m) {
              opt.fragment_core = fragment_core;
              opt.fragment_buffer = fragment_buffer;
              opt.energy_windows = energy_windows;
+             opt.fit_fragment_coefficient = fit_fragment_coefficient;
+             opt.complete_basis = complete_basis;
              const auto res = self.compute_rs_density(std::move(opt));
 
              // Same compact per-rank layout as compute_rs_ldos: global point
@@ -678,7 +748,9 @@ PYBIND11_MODULE(_rsatb, m) {
             py::arg("spacing") = 0.4, py::arg("box_edge") = 0, py::arg("n_samples") = 64,
             py::arg("block") = 16, py::arg("seed") = 12345,
             py::arg("fragment_core") = 4.5, py::arg("fragment_buffer") = 0.0,
-            py::arg("energy_windows") = 1)
+            py::arg("energy_windows") = 1,
+            py::arg("fit_fragment_coefficient") = true,
+            py::arg("complete_basis") = false)
         .def("compute_rs_ldos", [](rsatb::RSATB& self, std::vector<double> energies, double eta,
                                    double spacing, int box_edge, int n_samples, int block,
                                    unsigned long seed, double fragment_core,

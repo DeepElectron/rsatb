@@ -54,56 +54,206 @@ number of columns but replaces this exactness with random cross-region terms.
 A scalable claim is therefore credible only if those cross terms are both
 controlled geometrically and measured statistically.
 
-## 3. Error decomposition
+## 3. Choose the side of the square-root filter before optimizing packing
 
-Condition on the vectors used to construct and tune the block projector
-$P=\sum_B P_B$.  The exact local split is
+Write the positive LDOS operator as $K=FF^\dagger$ and condition on a frozen
+block projector $P=\sum_B P_B$.  There are two exact projector identities.
+The current implementation projects the *filtered output*:
 
 $$
-K=(I-P)K(I-P)+PK+KP-PKP.
+K=\underbrace{PK+KP-PKP}_{D_{\rm out}}
+ +\underbrace{(I-P)K(I-P)}_{R_{\rm out}}.
 $$
 
-The first term is sampled with independent vectors.  Let $D(\mathbf r)$ be
-the diagonal of the last three terms.  With one separate image column for
-every local basis direction, $D$ is evaluated exactly.
+An equally exact alternative projects the random vector *before* the
+square-root filter:
 
-Packing introduces independent signs $\sigma^{(\ell)}_{Bj}$, where $\ell$
-labels a packing replica.  The captured map from replica $\ell$ can be
-written
+$$
+\boxed{
+K=\underbrace{FPF^\dagger}_{D_{\rm in}}
+ +\underbrace{F(I-P)F^\dagger}_{R_{\rm in}}.}
+$$
+
+The second identity should be the reference design for the next
+implementation.  It has four concrete advantages.
+
+1. Both terms are positive and $0\le R_{\rm in}\le K$.  Hence its pointwise
+   Gaussian residual variance can never exceed the plain estimator's.
+   $D_{\rm out}$ need not be positive and no analogous pointwise ordering is
+   available for the present split.
+2. Direct local images require $Fq_j$, not $Kq_j$.  For the Gaussian LDOS
+   filter the $K$ polynomial is about $\sqrt 2$ more expensive than the $F$
+   polynomial.
+3. $P=I$ continuously becomes complete-identity probing through $F$; no
+   separate polarization formula is needed at the full-rank endpoint.
+4. The two splits discard exactly the same *integrated* spectral weight:
+
+   $$
+   \operatorname{Tr}R_{\rm out}
+   =\operatorname{Tr}[(I-P)K]
+   =\operatorname{Tr}R_{\rm in}.
+   $$
+
+The price is scheduling, not additional scalar filter work.  Training
+vectors must first be filtered and used to freeze $P$; only then can
+independent production vectors be filtered as $F(I-P)\xi$.  The current
+single pass over all training and production columns must therefore become
+two sequential block sweeps.  Keep the output-side split as an A/B baseline:
+a strongly nonuniform map can in principle prefer its pointwise residual,
+but it must overcome the higher-degree images and loss of positivity.
+
+### 3.1 Error decomposition of the preferred split
+
+Let $U_B=(u_{B1},\ldots,u_{Br_B})$ and
+$P=\sum_BU_BU_B^\dagger$.  Pack equally indexed directions of same-color
+regions into
+
+$$
+x_{gj}^{(\ell)}=
+\sum_{B:c(B)=g}\sigma_{Bj}^{(\ell)}u_{Bj},
+\qquad X_\ell=(x_{gj}^{(\ell)})_{g,j}.
+$$
+
+Then $\mathbb E_\sigma[X_\ell X_\ell^\dagger]=P$.  The captured map from
+one replica is the positive square-root-filter map
 
 $$
 \widehat D_\ell(\mathbf r)
-=D(\mathbf r)+
-\sum_{B\ne C\atop c(B)=c(C)}
-\sigma^{(\ell)}_{Bj}\sigma^{(\ell)}_{Cj}
-d_{BCj}(\mathbf r).
+=\langle\mathbf r|F X_\ell X_\ell^\dagger F^\dagger|\mathbf r\rangle
+=\sum_{g,j}|\langle\mathbf r|F x_{gj}^{(\ell)}\rangle|^2.
 $$
 
-Pairwise-independent counter signs give
-$\mathbb E_\sigma\widehat D_\ell=D$.  Averaging $L$ replicas gives the final
-estimator
+Its packing error is exactly
 
 $$
-\widehat\rho(\mathbf r)=
+\epsilon_{P,\ell}(\mathbf r)
+=\langle\mathbf r|F(X_\ell X_\ell^\dagger-P)F^\dagger
+|\mathbf r\rangle.
+$$
+
+The full learned estimator is
+
+$$
+\widehat\rho_P(\mathbf r)=
 \frac1L\sum_{\ell=1}^L\widehat D_\ell(\mathbf r)
 +\frac1{n_R}\sum_{i=1}^{n_R}
-|G(I-P)F\xi_i|^2(\mathbf r).
+|\langle\mathbf r|F(I-P)\xi_i\rangle|^2.
 $$
 
-The learning, tuning, residual, packing-pilot, and packing-production domains
-must use disjoint counter keys.  Conditional on the frozen estimator design,
-the two production errors are then independent and
+For real Gaussian production vectors, define
 
 $$
-\operatorname{Var}\widehat\rho(\mathbf r)
-=\frac{v_R(\mathbf r)}{n_R}
+\rho_R(\mathbf r)=
+\langle\mathbf r|F(I-P)F^\dagger|\mathbf r\rangle.
+$$
+
+Independent residual vectors and packing phases then give the exact
+conditional variance model
+
+$$
+\operatorname{Var}\widehat\rho_P(\mathbf r)
+=\frac{2\rho_R(\mathbf r)^2}{n_R}
 +\frac{v_P(\mathbf r)}{L}.
 $$
 
-This equation is the controller's error model.  `correction_rms` is not a
-substitute for either variance and must not be presented as an error bar.
+Real sign residuals have the usual nonpositive fourth-cumulant correction.
+The learning, tuning, residual, packing-pilot, and packing-production domains
+must use disjoint counter keys.  `correction_rms` is not a substitute for
+either production variance and must not be presented as an error bar.
 
-### 3.1 Randomness roles and selection bias
+### 3.2 Why learning a local projector can beat identity probing
+
+For one training family $Y_B=\Pi_BF\Omega_L$,
+
+$$
+\mathbb E[Y_BY_B^\dagger]
+=n_L\Pi_BK\Pi_B.
+$$
+
+Let $\lambda_{B1}\ge\cdots\ge\lambda_{Bd_B}$ be the eigenvalues of the
+local covariance $\Pi_BK\Pi_B$.  By the Ky Fan maximum principle, the top
+$r_B$ eigenvectors minimize the integrated residual among all rank-$r_B$
+projectors supported in $B$:
+
+$$
+\min_{\operatorname{rank}P_B=r_B}
+\operatorname{Tr}[F(I-P)F^\dagger]
+=\operatorname{Tr}K-
+\sum_B\sum_{j=1}^{r_B}\lambda_{Bj}.
+$$
+
+The local eigenvalue tail $\sum_{j>r_B}\lambda_{Bj}$ is therefore the
+quantity exchanged for fewer image columns.  The additional Chebyshev
+modulations should generate a larger candidate range; an independent
+target-filter covariance should select and rank the final directions inside
+that range so that enrichment does not silently optimize a different
+spectral weighting.
+
+There are two independent reductions in column count:
+
+| construction | global filter columns |
+|---|---:|
+| complete identity, no packing | $N_Bd_B$ |
+| learned local projector, no packing | $N_Br_B+n_{L,T,R}$ |
+| packed identity | $L_I G_I d_B$ |
+| packed learned projector | $L_PG_Pr_B+n_{L,T,R}$ |
+
+The first reduction, $d_B\to r_B$, uses local spectral compressibility and
+leaves a sampled residual.  The second, $N_B\to G$, uses spatial separation
+and leaves packing interference.  Identity probing applies only the second;
+the learned estimator applies both.
+
+With the preferred input-side split, all entries in the table use $F$, so a
+first equal-work comparison is
+
+$$
+C_{\rm identity}\simeq M_F L_I G_I d_B,
+\qquad
+C_{\rm learned}\simeq M_F
+(n_{L,T,R}+L_PG_Pr_B).
+$$
+
+At equal $G$ and $L$, learning has a cost advantage precisely when
+
+$$
+d_B-r_B>\frac{n_{L,T,R}}{LG},
+$$
+
+provided its residual plus packing error meets the same target.  This is not
+a universal dominance theorem.  If the local spectrum has exact rank
+$r_*\ll d_B$, choosing $r_B\ge r_*$ removes the residual and learned capture
+is cheaper whenever the inequality holds.  If the local spectrum is flat,
+small residual error forces $r_B\simeq d_B$ and identity probing wins because
+learning adds overhead without compressing anything.
+
+For a fixed rank and coloring distance, define the masked map-averaged
+residual and packing variances by $a(r_B)$ and $b(r_B,D)$.  The actual route
+selection problem is
+
+$$
+\min_{r_B,D,n_R,L}
+M_F[n_{L,T}+n_R+LG(D)r_B]
+\quad\hbox{subject to}\quad
+\frac{a(r_B)}{n_R}+\frac{b(r_B,D)}{L}\le\epsilon^2.
+$$
+
+Identity probing is the boundary point $r_B=d_B$, $n_R=0$ of this same
+optimization.  It is not a competing physical idea.  The controller should
+select the minimum measured cost, including the identity boundary, rather
+than decide in advance that stochastic or deterministic computation is
+preferable.
+
+The current dense-window audit illustrates the prefactor.  The code targets
+$d_B\simeq6r_B$: for $r_B=96$, $d_B\simeq576$, $G=8$, $n=32$, and $L=2$,
+the preferred learned route has about
+$32+2\times8\times96=1568$ square-root-filter columns.  One deterministic
+packed-identity pattern has $8\times576=4608$ columns; two identity replicas
+have 9216.  Thus identity is approximately 2.9 or 5.9 times wider in this
+specific block construction.  An optimized coordinate coloring may change
+$G_Id_B$ substantially, so this count is a benchmark prediction, not a
+verdict.
+
+### 3.3 Randomness roles and selection bias
 
 Adaptive choices cannot use the same random values later reported as the
 estimate.  Otherwise choosing a route, rank, distance, or sample count because
@@ -136,14 +286,17 @@ The current code constructs and filters the local image columns before the
 global projector has decided whether local capture is needed.  Reverse this
 order.
 
-1. Run the ordinary filtered sample sweep and store the learning, tuning, and
-   production families needed by the global and local projectors.
+1. Run a training/tuning filtered sweep.  Do not yet filter the local
+   production vectors.
 2. Construct the global candidate from learning vectors and evaluate its
    predicted production error with tuning vectors.
 3. Freeze the route for every energy.  Accept the global path where the
    tuning error meets the requested target.
-4. Only the remaining energies enter local basis construction and image
-   sweeps; their final residual uses production vectors only.
+4. Only the remaining energies enter local basis construction.  Freeze their
+   ranks and packing design.
+5. Apply $F$ to the packed local directions and, in a separate production
+   sweep, to $(I-P)\xi_R$.  These two stages supply the positive captured and
+   residual maps in Sec. 3.1.
 
 The route must be based on an estimated error, not a fixed capture value such
 as 0.9.  Capture is still a useful diagnostic, but a window with small total
@@ -194,6 +347,89 @@ declare the rank cap active.  The final residual vectors never participate in
 this decision.  Report the fraction of regions at the cap.  Regions may have
 different ranks; packed columns are padded only within small rank buckets so
 low-rank regions do not pay the global maximum unnecessarily.
+
+### 5.1 Identity-probing endpoint
+
+The admissible local ranks include the full block dimension.  Setting
+
+$$
+P_B=I_B\quad\hbox{for every region},\qquad
+P_{\rm loc}=\sum_B I_B=I,
+$$
+
+eliminates the sampled remainder exactly:
+
+$$
+F(I-P_{\rm loc})F^\dagger=0,
+\qquad F P_{\rm loc}F^\dagger=K.
+$$
+
+With separate image columns this is the complete deterministic-basis
+calculation.  With packing, use the region coordinate directions
+$e_{Bj}$:
+
+$$
+x_{gj}^{(\ell)}=
+\sum_{B:c(B)=g}\sigma_{Bj}^{(\ell)}e_{Bj},
+\qquad
+Y_{gj}^{(\ell)}=Fx_{gj}^{(\ell)}.
+$$
+
+The positive packed estimate is
+
+$$
+\widehat\rho_I^{(\ell)}(\mathbf r)
+=\sum_{g,j}|\langle\mathbf r|Y_{gj}^{(\ell)}\rangle|^2
+=\langle\mathbf r|F X_\ell X_\ell^\dagger F^\dagger|\mathbf r\rangle.
+$$
+
+Since $\mathbb E_\sigma[XX^\dagger]=I$, this is an unbiased estimator of the
+full LDOS and its only statistical error is packing error.  The two-sided
+square-root form is preferred to one-sided $K$ polarization: it uses the
+lower-degree filter, is positive for every replica, and inherits the
+square-root variance advantage.  This is distance-colored stochastic
+probing, not a deterministic method unless either no regions share columns
+or the coloring eliminates every nonzero cross term.  A fixed phase pattern
+is a deterministic approximation with unknown packing bias, not an exact
+calculation merely because no random-state residual remains.
+
+Identity probing needs no learned basis, square-root-filter training vectors,
+or residual samples.  Its leading image width is
+
+$$
+G(D)d_B L,
+$$
+
+whereas learned local capture uses approximately
+$G(D)r_BL+n_RF$-filter columns.  A first cost comparison is therefore
+
+$$
+C_{\rm identity}\simeq L G d_B M_F,
+\qquad
+C_{\rm learned}^{\rm preferred}
+\simeq (n_{L,T,R}+L G r_B)M_F,
+$$
+
+The current output-side implementation instead pays
+$n_{L,T,R}M_F+LGr_BM_K$.  Identity probing is favored when $r_B$ is close to
+$d_B$, basis learning is expensive, or the distance coloring makes packing
+exceptionally quiet.  Learned capture is favored when $r_B\ll d_B$ and the
+sampled eigenvalue tail is cheap enough to meet the same accuracy target.
+
+The controller must therefore compare three complete estimators with tuning
+data and then freeze the route:
+
+1. global learned projector;
+2. local learned projector plus sampled residual;
+3. local identity probing with packing error only.
+
+For identity probing, region size is an independent geometric parameter; it
+must not be defined as $6r_B$.  Varying region size trades coordinate width
+against color count, and the relevant cost is the measured product
+$G(D)d_B$, which is expected to approach the number of orbital directions in
+one exclusion volume.  The identity endpoint is both a production candidate
+and a mandatory baseline for deciding whether learned local bases provide
+real value.
 
 ## 6. Distributed region-neighbor graph
 
@@ -260,7 +496,8 @@ pilot:
 
 1. Select canary regions deterministically across region sizes and atom
    types.
-2. Apply each routed $K_k$ to a few isolated canary basis directions.
+2. Apply each routed $F_k$ to a few isolated canary basis directions (and
+   retain the present $K_k$ measurement only for the output-side A/B path).
 3. Bin the captured-map cross products by source--target distance to obtain
    an upper quantile $\widehat\kappa_k(d)$.
 4. Predict the far-color variance
@@ -353,6 +590,9 @@ residual_error_estimate, total_error_estimate
 image_columns, image_matvecs
 ```
 
+`route` distinguishes `global_learned`, `local_learned`, and
+`local_identity_probing`.
+
 An estimator that cannot meet the target under the caps must say so.  It must
 not silently return the best attempted map as a certified result.
 
@@ -389,25 +629,37 @@ spectral-kernel model.
 These changes retain the current coloring and should land first because they
 expose its real error.
 
-### Phase B: distance guarantee
+### Phase B: settle the estimator before optimizing its coloring
 
-5. Add the distributed region directory and conflict graph.
-6. Add deterministic distributed graph coloring and the zero-conflict audit.
-7. Retain the current periodic coloring only as a test baseline.
+5. Add positive square-root packed-identity probing as the full-rank
+   reference path.
+6. Add the two-stage input-side learned split: training/tuning first, then
+   packed $F P F^\dagger$ images and $F(I-P)\xi_R$ production vectors.
+7. A/B it against the current output-side $K$-image split at equal
+   filter-vector work and equal error.  Do not replace the current route
+   until the exact small-system identities and multi-seed comparison pass.
 
-### Phase C: adaptation
+### Phase C: distance guarantee
 
-8. Add eigenvalue-tail and holdout selection of $r_B$.
-9. Add canary kernel-envelope measurements and adaptive $D$.
-10. Add cost-optimal adaptation of $n_R$ and $L$ under width/memory caps.
-11. Cluster heterogeneous energy windows before local processing.
+8. Add the distributed region directory and conflict graph.
+9. Add deterministic distributed graph coloring and the zero-conflict audit.
+10. Retain the current periodic coloring only as a test baseline.
 
-### Phase D: optional advanced paths
+### Phase D: adaptation
 
-12. Add nested/hierarchical color refinement so earlier image work contributes
+11. Add eigenvalue-tail and holdout selection of $r_B$.
+12. Add canary filter-envelope measurements and adaptive $D$.
+13. Add cost-optimal adaptation of $n_R$ and $L$ under width/memory caps.
+14. Cluster heterogeneous energy windows before local processing.
+15. Route continuously over $0\le r_B\le d_B$; the endpoint $r_B=d_B$ is
+    packed identity and has no residual samples.
+
+### Phase E: optional advanced paths
+
+16. Add nested/hierarchical color refinement so earlier image work contributes
     to later accuracy levels.
-13. Add the regular-lattice multiplier coloring fast path.
-14. Evaluate mixed precision for image sweeps only after the error certificate
+17. Add the regular-lattice multiplier coloring fast path.
+18. Evaluate mixed precision for image sweeps only after the error certificate
     includes arithmetic error.
 
 ## 13. Required validation before a SOTA claim
@@ -419,6 +671,11 @@ expose its real error.
 * zero conflict edges for periodic, nonperiodic, anisotropic, and disordered
   cells;
 * unpacked result agrees with the exact projector identity;
+* for every test projector, the input-side captured and residual operators
+  are positive, sum to $K$, and have the same residual trace as the present
+  output-side split;
+* unpacked square-root $P_B=I_B$ agrees with the complete-basis LDOS and has
+  zero residual;
 * packing mean converges to unpacked as $L$ grows;
 * reported packing and residual standard errors have calibrated coverage over
   at least 30 independent trials;
@@ -441,7 +698,9 @@ On identical operators, grids, seeds, and matvec or wall-time budgets compare
 * positive square-root Hutchinson;
 * XDiag/Diag++-style global low-rank plus residual estimation;
 * stochastic distance probing and hierarchical probing;
+* deterministic fixed-phase and randomized square-root identity probing;
 * the current periodic packed local capture;
+* the preferred input-side packed local capture;
 * unpacked local capture;
 * real/energy-space embedded-fragment control variates where applicable.
 
@@ -484,10 +743,11 @@ The design deliberately combines rather than renames established strengths:
 * positive estimators for full local spectral maps:
   <https://doi.org/10.1103/qb1w-44r1>.
 
-The proposed novelty remains the application-specific composition: learned
-energy-filtered local projectors, the exact LDOS restoration identity, and an
-adaptive distance-certified packing layer with a separate statistical error
-certificate.
+The proposed novelty remains the application-specific composition: filtered
+random vectors learn trace-optimal block-local projectors; the positive
+square-root split continuously connects low-rank residual sampling to
+full-rank identity probing; and a distance-certified packing layer supplies a
+separate statistical error certificate.
 
 ## 16. Disposition (2026-08-28)
 
@@ -496,7 +756,7 @@ following was adopted, deferred, or adapted.  Section 13's full validation
 battery remains the bar for any "SOTA" wording in the paper; nothing below
 claims it.
 
-**Adopted and landed (Phase A, plus two pieces of B/C):**
+**Adopted and landed (the original observability work):**
 
 1. *Global color bound* (12.1).  `G` is now bounded by the global region
    count (`MPI_Allreduce SUM`), not the per-rank maximum.  The G = 1
@@ -527,14 +787,19 @@ claims it.
 
 **Deferred, with reasons:**
 
+* *Positive square-root identity probing and the input-side local split*
+  (section 3 and Phase B).  These are now the highest-priority estimator A/B
+  tests.  They are algebraically stronger than the present output-side split,
+  but no production code or equal-work measurement exists yet; the paper must
+  not claim their cost or accuracy until those tests pass.
 * *Distributed directory + Jones-Plassmann coloring + zero-conflict audit*
-  (sections 6-7, Phase B).  Correct at scale, but heavy distributed
+  (sections 6-7, Phase C).  Correct at scale, but heavy distributed
   infrastructure; at current rank counts the audit above measures the same
   defect the certified coloring would fix, and the replica certificate
   bounds its damage.  Trigger: an audited negative gap that the replica
   average cannot absorb on a production system.
-* *Error-targeted routing, adaptive rank, kernel-envelope distance, and
-  cost-optimal (n_R, L)* (sections 4-5, 8-9, Phase C).  The 0.9 capture
+* *Error-targeted routing, adaptive rank, filter-envelope distance, and
+  cost-optimal (n_R, L)* (sections 4-5, 8-9, Phase D).  The 0.9 capture
   route stays: it is outcome-based (measured capture, not a Gram heuristic)
   and the rank-heuristic misroute it replaced is documented in the code.
   Per-fragment rank already adapts below the `local_capture` cap through
@@ -543,7 +808,7 @@ claims it.
   knobs stay the interface; the new diagnostics (route, packing SE, region
   and color counts, audited distance) are exactly the observability that
   interface would need, so it can be added without further estimator work.
-* *Strict three-domain randomness separation* (section 3.1).  The
+* *Strict three-domain randomness separation* (section 3.3).  The
   first/second-half split and cross-fitted LOO already separate basis
   construction from contraction; routing still reads the production
   capture.  Accepted as a known, documented second-order bias until the
