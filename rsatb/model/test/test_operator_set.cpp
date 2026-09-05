@@ -479,11 +479,9 @@ TEST(OperatorSetTest, DiagonalFallbackPositionUsesAtomicCoordinatesForAllOrbital
 TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     rmodel::LcaoConfig config;
     config.hamiltonian = rsatb::io::HamiltonianFile{
-        rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+        rsatb::test::data_path("diamond/hamiltonians.h5")};
     config.orbitals.dir = rsatb::test::data_path("diamond/");
     config.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    config.pseudopotentials.dir = rsatb::test::data_path("diamond/");
-    config.pseudopotentials.names = {"C_ONCV_PBE-1.0.upf"};
     auto model = rmodel::LcaoModel::Create(config, MPI_COMM_WORLD);
 
     // The basis comes from the model, so the cutoff and orbital count that used
@@ -492,7 +490,7 @@ TEST(OperatorSetTest, LcaoModelBuildsOverlapVelocityAndPositionCapabilities) {
     EXPECT_NEAR(model->basis().cutoff_radius[0], 3.7042, 1e-3);
 
     const auto structure = vbcsr::atomic::ReadStructure(
-        rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+        rsatb::test::data_path("diamond/conf.vasp"));
     auto atomic_data = std::unique_ptr<AtomicData>(
         AtomicData::from_points(structure.pos, structure.z, structure.cell, structure.pbc,
                                 model->basis().cutoff_radius, model->basis().type_norb,

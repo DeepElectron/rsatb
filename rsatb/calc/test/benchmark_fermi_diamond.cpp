@@ -23,7 +23,7 @@
 // the sharp edge the expansion actually has to resolve, which is the metallic
 // situation the method targets.
 //
-//   OMP_NUM_THREADS=8 ./benchmark_fermi_diamond [--poscar diamond_sc444.vasp]
+//   OMP_NUM_THREADS=8 ./benchmark_fermi_diamond [--supercell 4]
 
 #include "../fermi_dirac.hpp"
 #include "../preconditioner.hpp"
@@ -70,9 +70,12 @@ struct DiamondProblem {
     int n_orb = 0;
     std::vector<int> row_offset;  // global orbital offset of each block row
 
-    explicit DiamondProblem(const std::string& poscar) {
+    explicit DiamondProblem(int repeat) {
         const std::string data = rsatb::test::data_dir() + "diamond/";
-        atomic::Structure st = atomic::ReadPoscar(data + poscar);
+        atomic::Structure st = atomic::ReadPoscar(data + "conf.vasp");
+        const int primitive_n_atom = st.n_atom;
+        st.supercell = {{repeat, repeat, repeat}};
+        st = st.BuildSupercell();
 
         // 2s2p1d, r_cut = 7 au. The overlap reaches 2 r_cut, and that same
         // graph has to hold the file Hamiltonian -- any H block outside it is
@@ -104,13 +107,17 @@ struct DiamondProblem {
             n_atom, n_atom, 0, n_edge, n_edge, atom_index.data(), atom_type.data(),
             edge_index.data(), type_norb, edge_shift.data(), st.cell.data(),
             st.pos.data(), MPI_COMM_WORLD, {true, true, true}));
+        // The file holds the primitive cell; the reader folds it onto the
+        // repeated geometry through this provenance (hamiltonian_images.hpp).
+        ad->primitive_n_atom = primitive_n_atom;
+        ad->structure_supercell = {{repeat, repeat, repeat}};
 
         rsatb::model::lcao::Op2cEngine op(MPI_COMM_WORLD);
         op.init(1, 1, false, data, {"C_gga_7au_100Ry_2s2p1d.orb"}, "", {},
                 "fermi_diamond_opconst.log");
         s_img = op.build_overlap(*ad);
 
-        const std::string h5 = data + "H_" + poscar.substr(0, poscar.size() - 5) + ".h5";
+        const std::string h5 = data + "hamiltonians.h5";
         auto reader = rsatb::io::OpenHamiltonianFile(
             rsatb::io::HamiltonianFile{h5, rsatb::io::HamiltonianFormat::kDeeptbHdf5});
         h_img = rsatb::model::BuildHamiltonianImagesFromFile(*ad, *reader);
@@ -198,16 +205,16 @@ int main(int argc, char** argv) {
     // progress and one that is wedged look identical from outside.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
 
-    std::string poscar = "diamond_sc444.vasp";
+    int repeat = 4;
     bool adaptive_only = false;
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--poscar") == 0 && i + 1 < argc) poscar = argv[++i];
+        if (std::strcmp(argv[i], "--supercell") == 0 && i + 1 < argc) repeat = std::atoi(argv[++i]);
         if (std::strcmp(argv[i], "--adaptive-only") == 0) adaptive_only = true;
     }
 
-    std::printf("Building %s: H from the DeePTB file, S from op2c integrals.\n",
-                poscar.c_str());
-    DiamondProblem prob(poscar);
+    std::printf("Building diamond %dx%dx%d: H from the DeePTB file, S from op2c integrals.\n",
+                repeat, repeat, repeat);
+    DiamondProblem prob(repeat);
     std::printf("  %d orbitals, %d graph edges\n", prob.n_orb,
                 static_cast<int>(prob.ad->n_edge));
 

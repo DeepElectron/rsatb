@@ -1,20 +1,16 @@
 {
-  "_comment": "Diamond, 128-atom supercell, LCAO: density of states and AC conductivity from one setup. Both observables reuse the same S^-1/2 preconditioner and the same Chebyshev machinery, so asking for them together costs one setup instead of two. The pseudopotentials are what make the AC task legal: velocity is v = (i/hbar)[H, r] plus the non-local commutator, and without the .upf files the model reports velocity as unavailable rather than silently dropping the non-local term. A 4x4x4 supercell folds the Brillouin zone onto Gamma, which is why one k-point is enough here.",
+  "_comment": "Diamond, 128-atom supercell, LCAO: density of states and AC conductivity from one setup. Both observables reuse the same S^-1/2 preconditioner and the same Chebyshev machinery, so asking for them together costs one setup instead of two. The velocity the AC task needs is the commutator i[H, r] from the model's dipole integrals, so no pseudopotential files are involved. The 128-atom cell is the primitive cell tiled 4x4x4 at load ('supercell'), with the primitive-cell Hamiltonian folded onto it; the supercell folds the Brillouin zone onto Gamma, which is why one k-point is enough here.",
 
-  "structure": {"file": "../test/data/diamond/diamond_sc444.vasp"},
+  "structure": {"file": "../test/data/diamond/conf.vasp", "supercell": [4, 4, 4]},
 
   "model": {
     "type": "lcao",
     "hamiltonian": {
-      "path": "../test/data/diamond/H_diamond_sc444.h5",
+      "path": "../test/data/diamond/hamiltonians.h5",
       "format": "deeptb"
     },
     "orbitals": {
       "names": ["C_gga_7au_100Ry_2s2p1d.orb"],
-      "dir": "../test/data/diamond"
-    },
-    "pseudopotentials": {
-      "names": ["C_ONCV_PBE-1.0.upf"],
       "dir": "../test/data/diamond"
     },
     "spin": "none"

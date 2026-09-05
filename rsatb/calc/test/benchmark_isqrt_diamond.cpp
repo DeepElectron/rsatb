@@ -24,7 +24,7 @@
 // graph loop schedules the work (one dense problem per thread, single-threaded
 // BLAS). Run it as
 //
-//   OMP_NUM_THREADS=1 ./benchmark_isqrt_diamond [--poscar diamond_sc888.vasp]
+//   OMP_NUM_THREADS=1 ./benchmark_isqrt_diamond [--poscar conf.vasp]
 //                                              [--atoms 3] [--skip-spectrum]
 //                                              [--route legacy|eigen|band|auto]
 //                                              [--ns N] [--sptol X] [--tol X]
@@ -217,7 +217,7 @@ int main(int argc, char** argv) {
         return 2;
     }
 
-    std::string poscar = "diamond_sc888.vasp";
+    std::string poscar = "conf.vasp";
     std::string only_route;
     int n_atoms_sampled = 3;
     bool with_spectrum = true;
@@ -232,7 +232,8 @@ int main(int argc, char** argv) {
     // one structure on disk, and the supercell path gets exercised as a side
     // effect. This is how the figures in doc/design_isqrtm_memory.md section 8
     // were produced, and without it this benchmark could not reproduce them.
-    std::array<int, 3> supercell{{1, 1, 1}};
+    // The default is the 1024-atom cell those figures used.
+    std::array<int, 3> supercell{{8, 8, 8}};
     double ns_sptol = 1e-5;
     double ns_tol = 1e-5;
     for (int i = 1; i < argc; ++i) {

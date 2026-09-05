@@ -14,16 +14,15 @@ spectral window, the same gap.
 """
 from mpi4py import MPI  # noqa: F401  (initializes MPI before the extension)
 from rsatb import (HamiltonianFile, LcaoModel, OrbitalFiles,
-                   PreconditionerOptions, PseudopotentialFiles, RSATB,
+                   PreconditionerOptions, RSATB,
                    SetupOptions, Structure)
 
 GAP_LO, GAP_HI = 13.43, 17.78
 
-structure = Structure.from_file("./data/diamond/diamond_sc444.vasp")
+structure = Structure.from_file("./data/diamond/conf.vasp", supercell=[4, 4, 4])
 model = LcaoModel(
-    hamiltonian=HamiltonianFile("./data/diamond/H_diamond_sc444.h5", format="deeptb"),
+    hamiltonian=HamiltonianFile("./data/diamond/hamiltonians.h5", format="deeptb"),
     orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir="./data/diamond/"),
-    pseudopotentials=PseudopotentialFiles(["C_ONCV_PBE-1.0.upf"], dir="./data/diamond/"),
 )
 runner = RSATB(
     structure,

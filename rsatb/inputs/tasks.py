@@ -54,10 +54,7 @@ def _ldos(calc, task, options, result):
     out = calc.compute_rs_ldos(
         energies, task["eta"], spacing=task["spacing"], box_edge=task["box_edge"],
         n_samples=task["n_samples"], block=task["block"], seed=task["seed"],
-        fragment_core=task["fragment_core"], fragment_buffer=task["fragment_buffer"],
-        subspace_cv=task["subspace_cv"], subspace_filters=task["subspace_filters"],
-        local_capture=task["local_capture"], local_pack=task["local_pack"],
-        local_pack_replicas=task["local_pack_replicas"])
+        sketch_families=task["sketch_families"])
 
     # Compact and per-rank: 'point_index' says where this rank's values sit in
     # the flat grid, so the pieces reassemble by scattering, never by summing.
@@ -73,31 +70,17 @@ def _ldos(calc, task, options, result):
     result.scalars["filter_degree"] = int(out["filter_degree"])
     result.scalars["n_states"] = int(out["n_states"])
     result.scalars["sampler_residual"] = float(out["sampler_residual"])
-    if int(out["n_fragments"]):
-        result.scalars["n_fragments"] = int(out["n_fragments"])
-        result.scalars["correction_rms"] = float(np.max(out["correction_rms"]))
-        result.arrays["control_beta"] = out["control_beta"]
-    if len(out["subspace_capture"]):
-        # Keep the per-energy ranks beside the per-energy capture fractions.
-        # A single minimum is useful in a short summary, but it is not enough
-        # for a reproducible rank/capture study when one task contains several
-        # spectral windows.
-        result.scalars["subspace_rank"] = int(np.min(out["subspace_rank"]))
-        result.scalars["subspace_rank_min"] = int(np.min(out["subspace_rank"]))
-        result.scalars["subspace_rank_max"] = int(np.max(out["subspace_rank"]))
-        result.arrays["subspace_capture"] = out["subspace_capture"]
-        result.arrays["subspace_rank"] = out["subspace_rank"]
-    if int(out["local_regions"]):
-        # The local-capture pass actually ran for some energy: report which
-        # energies it served, its measured packing error bar, and the audited
-        # same-color distance of the packing geometry.
-        result.arrays["local_route"] = out["local_route"]
-        result.arrays["local_packing_se"] = out["local_packing_se"]
-        result.scalars["local_regions"] = int(out["local_regions"])
-        result.scalars["local_colors"] = int(out["local_colors"])
-        result.scalars["min_same_color_distance"] = float(
-            out["min_same_color_distance"])
-
+    # The survey estimator's own diagnostics: the capture fraction (1 =
+    # exact), the sketch rank the map was extrapolated from, and the error
+    # scale sqrt(2 (1 - c) / k) -- per energy, plus the worst of each.
+    result.arrays["capture"] = out["capture"]
+    result.arrays["sketch_rank"] = out["sketch_rank"]
+    result.arrays["predicted_rel_error"] = out["predicted_rel_error"]
+    if len(out["capture"]):
+        result.scalars["capture_min"] = float(np.min(out["capture"]))
+        result.scalars["sketch_rank_min"] = int(np.min(out["sketch_rank"]))
+        result.scalars["predicted_rel_error_max"] = float(
+            np.max(out["predicted_rel_error"]))
 
 def _pdos(calc, task, options, result):
     import numpy as np
@@ -124,7 +107,8 @@ def _density(calc, task, options, result):
         n_samples=task["n_samples"], block=task["block"], seed=task["seed"],
         fragment_core=task["fragment_core"], fragment_buffer=task["fragment_buffer"],
         energy_windows=task["energy_windows"],
-        fragment_coefficient=task["fragment_coefficient"])
+        fragment_coefficient=task["fragment_coefficient"],
+        fragment_workspace_mb=task["fragment_workspace_mb"])
 
     # Same compact per-rank layout as the ldos task, for the same reason.
     result.distributed = True

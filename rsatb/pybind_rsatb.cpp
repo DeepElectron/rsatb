@@ -702,7 +702,7 @@ PYBIND11_MODULE(_rsatb, m) {
                                       int n_samples, int block, unsigned long seed,
                                       double fragment_core, double fragment_buffer,
                                       int energy_windows, bool fit_fragment_coefficient,
-                                      bool complete_basis) {
+                                      bool complete_basis, int fragment_workspace_mb) {
              rsatb::calc::RealSpaceDensityOptions opt;
              opt.mu = mu;
              opt.kT = kT;
@@ -717,6 +717,7 @@ PYBIND11_MODULE(_rsatb, m) {
              opt.energy_windows = energy_windows;
              opt.fit_fragment_coefficient = fit_fragment_coefficient;
              opt.complete_basis = complete_basis;
+             opt.fragment_workspace_mb = fragment_workspace_mb;
              const auto res = self.compute_rs_density(std::move(opt));
 
              // Same compact per-rank layout as compute_rs_ldos: global point
@@ -750,13 +751,10 @@ PYBIND11_MODULE(_rsatb, m) {
             py::arg("fragment_core") = 4.5, py::arg("fragment_buffer") = 0.0,
             py::arg("energy_windows") = 1,
             py::arg("fit_fragment_coefficient") = true,
-            py::arg("complete_basis") = false)
+            py::arg("complete_basis") = false, py::arg("fragment_workspace_mb") = 0)
         .def("compute_rs_ldos", [](rsatb::RSATB& self, std::vector<double> energies, double eta,
                                    double spacing, int box_edge, int n_samples, int block,
-                                   unsigned long seed, double fragment_core,
-                                   double fragment_buffer, bool subspace_cv,
-                                   int subspace_filters, int local_capture,
-                                   int local_pack, int local_pack_replicas) {
+                                   unsigned long seed, int sketch_families) {
              rsatb::calc::RealSpaceLdosOptions opt;
              opt.energies = std::move(energies);
              opt.eta = eta;
@@ -765,13 +763,7 @@ PYBIND11_MODULE(_rsatb, m) {
              opt.n_samples = n_samples;
              opt.block = block;
              opt.seed = seed;
-             opt.fragment_core = fragment_core;
-             opt.fragment_buffer = fragment_buffer;
-             opt.subspace_cv = subspace_cv;
-             opt.subspace_filters = subspace_filters;
-             opt.local_capture = local_capture;
-             opt.local_pack = local_pack;
-             opt.local_pack_replicas = local_pack_replicas;
+             opt.sketch_families = sketch_families;
              const auto res = self.compute_rs_ldos(std::move(opt));
 
              // This rank's compact share: global point indices plus values.
@@ -800,35 +792,17 @@ PYBIND11_MODULE(_rsatb, m) {
              out["filter_degree"] = res.filter_degree;
              out["n_states"] = res.n_states;
              out["sampler_residual"] = res.sampler_residual;
-             out["n_fragments"] = res.n_fragments;
-             out["correction_rms"] = py::array_t<double>(
-                 static_cast<py::ssize_t>(res.correction_rms.size()),
-                 res.correction_rms.data());
-             out["control_beta"] = py::array_t<double>(
-                 static_cast<py::ssize_t>(res.control_beta.size()),
-                 res.control_beta.data());
-             out["subspace_capture"] = py::array_t<double>(
-                 static_cast<py::ssize_t>(res.subspace_capture.size()),
-                 res.subspace_capture.data());
-             out["subspace_rank"] = py::array_t<int>(
-                 static_cast<py::ssize_t>(res.subspace_rank.size()),
-                 res.subspace_rank.data());
-             out["local_route"] = py::array_t<int>(
-                 static_cast<py::ssize_t>(res.local_route.size()),
-                 res.local_route.data());
-             out["local_packing_se"] = py::array_t<double>(
-                 static_cast<py::ssize_t>(res.local_packing_se.size()),
-                 res.local_packing_se.data());
-             out["local_regions"] = res.local_regions;
-             out["local_colors"] = res.local_colors;
-             out["min_same_color_distance"] = res.min_same_color_distance;
+             out["capture"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.capture.size()), res.capture.data());
+             out["sketch_rank"] = py::array_t<int>(
+                 static_cast<py::ssize_t>(res.sketch_rank.size()), res.sketch_rank.data());
+             out["predicted_rel_error"] = py::array_t<double>(
+                 static_cast<py::ssize_t>(res.predicted_rel_error.size()),
+                 res.predicted_rel_error.data());
              return out;
          }, py::arg("energies"), py::arg("eta"), py::arg("spacing") = 0.4,
             py::arg("box_edge") = 0, py::arg("n_samples") = 64, py::arg("block") = 16,
-            py::arg("seed") = 12345, py::arg("fragment_core") = 4.5,
-            py::arg("fragment_buffer") = 0.0, py::arg("subspace_cv") = true,
-            py::arg("subspace_filters") = 4, py::arg("local_capture") = 0,
-            py::arg("local_pack") = 8, py::arg("local_pack_replicas") = 2)
+            py::arg("seed") = 12345, py::arg("sketch_families") = 6)
         .def("compute_ac", [](rsatb::RSATB& self, int nt, int n_kpm, double temp, double mu, std::string axis, std::string method, int block) {
              std::vector<double> ac_out;
              std::vector<double> omega_out;

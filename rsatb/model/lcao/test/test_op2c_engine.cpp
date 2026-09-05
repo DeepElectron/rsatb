@@ -1,5 +1,7 @@
 #include "../../model/lcao/op2c_engine.hpp"
 #include "../../../test_data_path.hpp"
+
+#include <fstream>
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include <gtest/gtest.h>
 #include <complex>
@@ -227,6 +229,12 @@ TEST(Op2cEngineTest, TestBuildVelocity) {
         if(rank==0) std::cout << "Skipping test requiring 2 processes" << std::endl;
         return;
     }
+    // op2c's explicit velocity is the beta-projector route (cross-check only;
+    // production velocity is the commutator, doc/position_commutator.md), so
+    // it needs a pseudopotential file the test data does not ship.
+    if (!std::ifstream(rsatb::test::data_path("diamond/C_ONCV_PBE-1.0.upf")).good()) {
+        GTEST_SKIP() << "explicit-integral velocity needs diamond/C_ONCV_PBE-1.0.upf";
+    }
     
     // 1. Setup AtomicData
     GlobalEnv env;
@@ -326,10 +334,8 @@ TEST(Op2cEngineTest, TestBuildOverlap) {
     
     std::string orb_dir = rsatb::test::data_path("diamond/");
     std::vector<std::string> orb_names = {"C_gga_7au_100Ry_2s2p1d.orb", "C_gga_7au_100Ry_2s2p1d.orb"};
-    std::string psd_dir = rsatb::test::data_path("diamond/");
-    std::vector<std::string> psd_names = {"C_ONCV_PBE-1.0.upf", "C_ONCV_PBE-1.0.upf"};
     
-    op_const.init(2, 1, false, orb_dir, orb_names, psd_dir, psd_names, "op_const_overlap.log");
+    op_const.init(2, 1, false, orb_dir, orb_names, "", {}, "op_const_overlap.log");
     
 
     

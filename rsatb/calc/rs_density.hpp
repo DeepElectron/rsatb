@@ -59,6 +59,7 @@ struct RealSpaceDensityOptions {
     /// systematic accuracy knob; 0 disables.
     double fragment_core = 4.5;    ///< Core bin edge, Angstrom.
     double fragment_buffer = 0.0;  ///< Dressing radius, Angstrom; 0 = off.
+    int fragment_workspace_mb = 0; ///< Fragment-build workspace cap; see rs_ldos.
     /// False gives the coefficient-one estimator, exactly unbiased for every
     /// fixed fragment. True retains the fitted legacy robustness heuristic.
     bool fit_fragment_coefficient = true;
@@ -126,6 +127,7 @@ inline std::vector<std::complex<double>> SqrtFermiTable(double mu, double kT,
                            : 1.0 / std::sqrt(1.0 + std::exp(u));
         },
         KpmKernel::None, /*trunc_eps=*/0.0);
+    TruncateTableRelative(table, 1e-4 * eps);
     return table;
 }
 
@@ -146,12 +148,14 @@ inline std::vector<std::complex<double>> SqrtFermiWindowTable(
         const double u = (x - mu_bar) / kT_bar;
         return u > 0.0 ? std::exp(-u) / (1.0 + std::exp(-u)) : 1.0 / (1.0 + std::exp(u));
     };
-    return chebyshev_coefficients_from_function(
+    auto table = chebyshev_coefficients_from_function(
         m,
         [&](double x) {
             return std::sqrt(std::max(0.0, fermi(x, hi_bar) - fermi(x, lo_bar)));
         },
         KpmKernel::None, /*trunc_eps=*/0.0);
+    TruncateTableRelative(table, 1e-4 * eps);
+    return table;
 }
 
 }  // namespace detail
@@ -173,10 +177,12 @@ inline RealSpaceDensityResult ComputeRealSpaceDensity(
         throw std::runtime_error("Real-space density needs a positive spin degeneracy.");
     }
 
-    // The shared knobs travel through the LDOS options struct the core reads.
-    // eta is set to kT so the profile's "broadening" line reports the
-    // smearing; the core itself never reads eta or energies.
-    RealSpaceLdosOptions base;
+    // The shared knobs travel through the engine options; eta is set to kT
+    // so the profile's "broadening" line reports the smearing (the engine
+    // itself never reads eta or energies outside the survey estimator, which
+    // the density never uses: the occupied manifold's rank is extensive, and
+    // the fragment surrogate is the density's variance lever).
+    MapEngineOptions base;
     base.eta = opt.kT;
     base.emin = opt.emin;
     base.emax = opt.emax;
@@ -190,13 +196,11 @@ inline RealSpaceDensityResult ComputeRealSpaceDensity(
     base.complete_basis = opt.complete_basis;
     base.certify_sampler = opt.certify_sampler;
     base.sampler = opt.sampler;
+    base.survey = false;
     base.fragment_core = opt.fragment_core;
     base.fragment_buffer = opt.fragment_buffer;
+    base.fragment_workspace_mb = opt.fragment_workspace_mb;
     base.fit_fragment_coefficient = opt.fit_fragment_coefficient;
-    // The Ritz-subspace control is the sharp-filter lever; the occupied
-    // manifold's rank is extensive, so no O(n_samples) sketch of it can
-    // correlate. Fragments and energy windows are the density's levers.
-    base.subspace_cv = false;
 
     const int n_win = std::max(1, opt.energy_windows);
     RealSpaceLdosResult raw = detail::FilteredSquareMap(

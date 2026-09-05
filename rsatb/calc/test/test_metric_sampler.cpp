@@ -130,9 +130,11 @@ struct DiamondIntegralsOverlap {
     std::unique_ptr<BlockSpMat<std::complex<double>>> S_gamma;
     std::unique_ptr<BlockSpMat<double>> S_real;
 
-    explicit DiamondIntegralsOverlap(const std::string& poscar = "diamond_sc444.vasp") {
+    explicit DiamondIntegralsOverlap(int repeat = 4) {
         const std::string data = rsatb::test::data_dir() + "diamond/";
-        vbcsr::atomic::Structure st = vbcsr::atomic::ReadPoscar(data + poscar);
+        vbcsr::atomic::Structure st = vbcsr::atomic::ReadPoscar(data + "conf.vasp");
+        st.supercell = {{repeat, repeat, repeat}};
+        st = st.BuildSupercell();
 
         // 2s2p1d orbital, r_cut = 7 au; the overlap pattern reaches 2 r_cut.
         const double rcut_ang = 7.0 * 0.529177210903;
@@ -404,11 +406,6 @@ TEST_F(MetricSamplerTest, DiamondSc444IntegralsAllRegimes) {
     int world = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &world);
     if (world != 1) GTEST_SKIP() << "serial fixture";
-    {
-        std::ifstream probe(rsatb::test::data_dir() +
-                            "diamond/diamond_sc444.vasp");
-        if (!probe.good()) GTEST_SKIP() << "missing diamond data";
-    }
 
     DiamondIntegralsOverlap diamond;
     printf("S: diamond sc444, op2c two-center integrals, N = %d\n",
@@ -454,13 +451,8 @@ TEST_F(MetricSamplerTest, DiamondSc888GraphSeedHeavy) {
     int world = 1;
     MPI_Comm_size(MPI_COMM_WORLD, &world);
     if (world != 1) GTEST_SKIP() << "serial fixture";
-    {
-        std::ifstream probe(rsatb::test::data_dir() +
-                            "diamond/diamond_sc888.vasp");
-        if (!probe.good()) GTEST_SKIP() << "missing diamond data";
-    }
 
-    DiamondIntegralsOverlap diamond("diamond_sc888.vasp");
+    DiamondIntegralsOverlap diamond(8);
     printf("S: diamond sc888, op2c two-center integrals, N = %d\n",
            diamond.graph().global_scalar_rows());
     fflush(stdout);

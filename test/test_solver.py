@@ -4,7 +4,6 @@ from rsatb import (
     LcaoModel,
     OrbitalFiles,
     PreconditionerOptions,
-    PseudopotentialFiles,
     RSATB,
     SetupOptions,
     Structure,
@@ -15,13 +14,12 @@ kpoints = [
 ]
 
 model = LcaoModel(
-    hamiltonian=HamiltonianFile("./data/diamond/C2.0/hamiltonians.h5", format="deeptb"),
+    hamiltonian=HamiltonianFile("./data/diamond/hamiltonians.h5", format="deeptb"),
     orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir="./data/diamond/"),
-    pseudopotentials=PseudopotentialFiles(["C_ONCV_PBE-1.0.upf"], dir="./data/diamond/"),
 )
 
 model_runner = RSATB(
-    Structure.from_file("./data/diamond/diamond_sc111.vasp"),
+    Structure.from_file("./data/diamond/conf.vasp"),
     model,
     SetupOptions(
         kpoints=kpoints,

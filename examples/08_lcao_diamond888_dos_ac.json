@@ -1,23 +1,18 @@
 {
-  "_comment": "Diamond, 1024-atom supercell, LCAO: density of states and AC conductivity from one setup. Both observables reuse the same S^-1/2 preconditioner and the same Chebyshev machinery, so asking for them together costs one setup instead of two. The pseudopotentials are what make the AC task legal: velocity is v = (i/hbar)[H, r] plus the non-local commutator, and without the .upf files the model reports velocity as unavailable rather than silently dropping the non-local term. An 8x8x8 supercell folds an 8x8x8 primitive-cell k-mesh onto Gamma, so a single k-point already samples the zone densely -- that is what makes the DOS a band spectrum rather than the comb of discrete levels a 4x4x4 cell gives. nsamples is lower than the smaller cell needs because the stochastic trace self-averages: its relative error falls as 1/sqrt(nsamples * dimension), and the dimension is 8x larger here.",
+  "_comment": "Diamond, 1024-atom supercell, LCAO: density of states and AC conductivity from one setup. Both observables reuse the same S^-1/2 preconditioner and the same Chebyshev machinery, so asking for them together costs one setup instead of two. The velocity the AC task needs is the commutator i[H, r] from the model's dipole integrals, so no pseudopotential files are involved. The 1024-atom cell is the primitive cell tiled 8x8x8 at load ('supercell'), with the primitive-cell Hamiltonian folded onto it. An 8x8x8 supercell folds an 8x8x8 primitive-cell k-mesh onto Gamma, so a single k-point already samples the zone densely -- that is what makes the DOS a band spectrum rather than the comb of discrete levels a 4x4x4 cell gives. nsamples is lower than the smaller cell needs because the stochastic trace self-averages: its relative error falls as 1/sqrt(nsamples * dimension), and the dimension is 8x larger here.",
   "structure": {
-    "file": "../test/data/diamond/diamond_sc888.vasp"
+    "file": "../test/data/diamond/conf.vasp",
+    "supercell": [8, 8, 8]
   },
   "model": {
     "type": "lcao",
     "hamiltonian": {
-      "path": "../test/data/diamond/H_diamond_sc888.h5",
+      "path": "../test/data/diamond/hamiltonians.h5",
       "format": "deeptb"
     },
     "orbitals": {
       "names": [
         "C_gga_7au_100Ry_2s2p1d.orb"
-      ],
-      "dir": "../test/data/diamond"
-    },
-    "pseudopotentials": {
-      "names": [
-        "C_ONCV_PBE-1.0.upf"
       ],
       "dir": "../test/data/diamond"
     },

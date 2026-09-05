@@ -90,13 +90,12 @@ TEMPLATES: Dict[str, dict] = {
     },
 
     "lcao": {
-        "structure": {"file": "data/diamond/diamond_sc111.vasp"},
+        "structure": {"file": "data/diamond/conf.vasp"},
         "model": {
             "type": "lcao",
-            "hamiltonian": {"path": "data/diamond/C2.0/hamiltonians.h5",
+            "hamiltonian": {"path": "data/diamond/hamiltonians.h5",
                             "format": "deeptb"},
             "orbitals": {"names": ["C_gga_7au_100Ry_2s2p1d.orb"], "dir": "data/diamond"},
-            "pseudopotentials": {"names": ["C_ONCV_PBE-1.0.upf"], "dir": "data/diamond"},
             "spin": "none",
         },
         "run": {

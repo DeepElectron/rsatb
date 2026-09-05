@@ -28,6 +28,8 @@
 // which is what this file now does, at Gamma where that formula is stated.
 #include "rsatb.hpp"
 #include "test_data_path.hpp"
+
+#include <fstream>
 #include "operator/lattice_moment.hpp"
 #include "model/sktb/sktb_model.hpp"
 #include "setup/operator_assembly.hpp"
@@ -665,10 +667,10 @@ void sk_band_velocity(bool with_overlap, bool triclinic = false) {
 // integrated by op2c from its own orbital and projector data -- the one case
 // where the two routes can genuinely disagree.
 void lcao_band_velocity(double kscale) {
-    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp"));
 
     rsatb::model::LcaoConfig cfg;
-    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
@@ -714,7 +716,7 @@ void lcao_band_velocity(double kscale) {
     {
         const size_t N = static_cast<size_t>(n);
         rsatb::model::LcaoConfig ref = cfg;
-        ref.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/overlaps.h5")};
+        ref.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/overlaps.h5")};
         auto ref_model = rsatb::model::LcaoModel::Create(ref, MPI_COMM_WORLD);
         auto img_file_S = ref_model->BuildHamiltonianImages(*ad);
         std::unique_ptr<Matrix> Sfile(
@@ -813,11 +815,11 @@ namespace {
 //     come from image handling;
 //   * a deviating element here names the mis-phased term directly.
 void lcao_gauge_forensics() {
-    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp"));
     structure.pbc = {false, false, false};   // kill every lattice image
 
     rsatb::model::LcaoConfig cfg;
-    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
@@ -936,10 +938,10 @@ std::vector<cd> densify_direct(Matrix& A, int n) {
 // breaks: which atom pair, diagonal vs off-diagonal, and how the deviation is
 // distributed. Any coherent pattern names the mis-phased contribution.
 void lcao_gauge_forensics_pbc() {
-    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp"));
 
     rsatb::model::LcaoConfig cfg;
-    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
@@ -1289,10 +1291,10 @@ void sk_offdiag_check(bool triclinic) {
 // Dump per-pair eigenbasis matrix elements of both conventions on diamond
 // LCAO over a Gamma-centered shifted k-grid, x component.
 void lcao_spectral_dump(int nk, const char* outfile) {
-    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+    auto structure = vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp"));
 
     rsatb::model::LcaoConfig cfg;
-    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
@@ -1381,6 +1383,15 @@ int main(int argc, char** argv) {
         MPI_Finalize();
         return 0;
     }
+    // Route (a) is op2c's explicit-integral velocity, which needs the beta
+    // projectors of a pseudopotential file the test data does not ship
+    // (production velocity is the commutator route and needs none).
+    if (!std::ifstream(rsatb::test::data_path("diamond/C_ONCV_PBE-1.0.upf")).good()) {
+        std::printf("probe_velocity_gauge: needs test/data/diamond/C_ONCV_PBE-1.0.upf "
+                    "for the explicit-integral route; nothing to do.\n");
+        MPI_Finalize();
+        return 0;
+    }
 
     if (argc > 1 && std::string(argv[1]) == std::string("--spectral")) {
         std::printf("SPECTRAL CONVENTION STUDY\n");
@@ -1406,7 +1417,7 @@ int main(int argc, char** argv) {
     std::vector<std::vector<double>> kpoints = {{0.0, 0.0, 0.0}};
 
     rsatb::model::LcaoConfig cfg;
-    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+    cfg.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
     cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
@@ -1417,7 +1428,7 @@ int main(int argc, char** argv) {
     opt.kpoints = kpoints;
     opt.compute_bounds = false;
 
-    rsatb::RSATB inst(vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp")),
+    rsatb::RSATB inst(vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp")),
                       *model, opt, 1, MPI_COMM_WORLD);
     auto* ops = inst.operators();
 

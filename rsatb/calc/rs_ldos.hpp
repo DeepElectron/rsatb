@@ -39,13 +39,20 @@
 //     one-alltoallv coefficient halo (GatherSetRows), the recursion vectors,
 //     and the map itself.
 //
-// Sampling error is the price of the full-cell scope, and it is the honest
-// trade: relative error ~ 1/sqrt(n_samples per resolution volume), it
-// averages down with samples the user controls, and the estimator is
-// positive so the noise can never produce a negative LDOS. For a noise-free
-// answer on a small system (validation), complete_basis sweeps the whole
-// identity instead of random draws and the estimator becomes exact up to the
-// filter truncation and the sampler certificate.
+// Squaring a random state carries a chi^2 noise floor of sqrt(2/n) per
+// point, so the LDOS map does not square the probes at all: it is the
+// survey-sampling estimator of doc/design_survey_sampling_ldos.md. Each
+// probe's sweep also yields a flat-top sketch of the energy window and the
+// sketch's exact filtered images, the map is the captured part
+// |Pi p(H) phi_r|^2 of the window divided by the capture fraction c measured
+// on the probes, and its relative error is sqrt(2 (1 - c) / k) with k the
+// sketch rank -- bounded at every system size, exact once the sketch spans
+// the window. The density (rs_density.hpp) keeps the plain squares behind a
+// fragment surrogate control variate; both run through the one engine
+// below. For a noise-free answer on a small system (validation),
+// complete_basis sweeps the whole identity instead of random draws and the
+// estimator becomes exact up to the filter truncation and the sampler
+// certificate.
 
 #include "../utils/profile.hpp"
 
@@ -57,7 +64,6 @@
 #include "preconditioner.hpp"
 #include "real_space_grid.hpp"
 
-#include "vbcsr/core/atomic/inertial_partition.hpp"
 
 #include <algorithm>
 #include <array>
@@ -77,120 +83,33 @@
 namespace rsatb {
 namespace calc {
 
+/// Options of the LDOS map: the survey-sampling estimator of
+/// doc/design_survey_sampling_ldos.md. Every probe's Chebyshev sweep yields
+/// the estimator filter p(H) xi (a sqrt-Gaussian of width eta), a flat-top
+/// sketch of the window q(H) xi with `sketch_families` Chebyshev modulations,
+/// and the sketch's exact images p(H) q(H) xi -- all tables on one recursion.
+/// The map is the captured part |Pi p(H) phi_r|^2 of the window's sketch,
+/// divided by the global capture fraction c. Unbiased for an isotropic sketch
+/// (the flat top makes it one); relative error sqrt(2 (1 - c) / k) with
+/// k = sketch_families x n_samples the sketch rank, bounded by sqrt(2 / k)
+/// at every system size, exact once k reaches the number of states in the
+/// window. Cost O(n_samples x degree x N) plus O(k^2 N + k^3).
 struct RealSpaceLdosOptions {
     std::vector<double> energies;  ///< Evaluation energies, eV, absolute.
-    double eta = 0.1;              ///< Gaussian broadening, eV.
+    double eta = 0.1;              ///< Gaussian broadening (std of the window), eV.
     double emin = 0.0;             ///< Lower bound of the (H, S) pencil, eV.
     double emax = 0.0;             ///< Upper bound, eV. Required: emax > emin.
     double bound_pad = 0.01;       ///< Fractional pad on the fitted interval.
     double spacing = 0.4;          ///< Grid spacing, Angstrom.
     int box_edge = 0;              ///< Grid box edge; 0 = physical default.
-    int n_samples = 64;            ///< Random states in the estimator.
-    int block = 16;                ///< States per Chebyshev sweep (SpMM width).
-    /// Fragment control variate (rs_fragment.hpp). `fragment_buffer` > 0
-    /// enables it: a deterministic local baseline map plus a stochastically
-    /// corrected remainder, cutting the pointwise sampling error by
-    /// sqrt(2 x residual fraction) at unchanged sweep cost. The buffer is the
-    /// systematic knob (error falls exponentially with it); the core edge
-    /// only amortizes the dense fragment solves. Sandwich form; fragments are
-    /// geometric objects over the global atom list, so the surrogate -- and
-    /// with the counter-based seeding, the whole estimate -- does not depend
-    /// on the rank count.
-    double fragment_core = 4.5;    ///< Core bin edge, Angstrom.
-    double fragment_buffer = 0.0;  ///< Dressing radius, Angstrom; 0 = off.
-    /// Keep the defining control-variate coefficient at one when false.
-    /// Fitting from the same finite sample is a robustness heuristic but is
-    /// not the exactly unbiased estimator; publication bias tests therefore
-    /// use false.  Retained as an option for legacy LDOS fragment runs.
-    bool fit_fragment_coefficient = true;
-    /// Subspace deflation, the sharp-filter complement of the fragments.
-    /// The filtered sample states ARE a spectrum-slicing sketch of the
-    /// energy window (Chebyshev-filtered subspace iteration with the
-    /// production filter itself, for zero extra sweeps), and because the
-    /// SQUARED filter rides the same recursion (SquaredTable; the
-    /// sqrt-Gaussian squares to the Gaussian, so no extra matvecs), the true
-    /// filtered image of the sketch basis is an EXACT linear combination of
-    /// stored states. That upgrades a regression control to an exact
-    /// orthogonal split: with Pi the projector on one half's filtered span,
-    ///
-    ///   n = sum_j |Phi Zt (p(M) q_j)|^2  +  E |Phi Zt p(M)(I - Pi) xi|^2,
-    ///
-    /// first term deterministic, second sampled with the OTHER half's seeds
-    /// (cross-fitted, so unbiased for any Pi) and row norms that can only
-    /// SHRINK -- never worse than plain pointwise, no fitted coefficient
-    /// needed. A first attempt that kept only a regression control measured
-    /// the trap this construction removes: a partial sketch shares only its
-    /// within-sketch interference with the estimator (variance factor
-    /// 1 - phi^2 at captured mass phi), while the split also removes the
-    /// sketch-to-rest cross term (factor (1 - phi)^2) -- at phi = 1/2 that
-    /// is 4x against 1.3x, and at the sparse windows where sharp-eta maps
-    /// are actually read (gaps, band edges, defect levels) phi -> 1 and the
-    /// chi^2 floor collapses to filter leakage. This is the Hutch++/XTrace
-    /// exact-sketch-plus-residual construction [Meyer et al. 2021;
-    /// Epperly-Tropp-Webber 2024] carried from traces to point maps, with
-    /// Krylov-aware reuse [Chen-Hallman 2023] of the sweep's own states.
-    /// Both operator forms: the construction is representation-independent
-    /// (design_subspace_deflation.md section 9). In the sandwich form the
-    /// seed covariance is I and the split is Euclidean; in the solve form
-    /// the seed covariance is S^-1, the sketch is whitened in the S metric
-    /// (Gram Y^T S Y), and the deflation contracts Q^T S c0 -- the same
-    /// algebra conjugated by S^{1/2}, with identical statistics. Inactive
-    /// for the complete-basis sweep and runs of fewer than two sample
-    /// blocks. The density task turns it off: the occupied manifold's rank
-    /// is extensive, so no O(n_samples) sketch captures it (fragments and
-    /// energy windows are the density's levers).
-    bool subspace_cv = true;
-    /// Sketch-rank multiplier of the deflation: each sample contributes its
-    /// filtered state AND its first `subspace_filters - 1` Chebyshev
-    /// modulations T_j(M) p_k(M) xi -- together the block-Krylov space of
-    /// the filtered states -- so the captured window rank grows J-fold at
-    /// ZERO extra matvecs (the modulated tables are coefficient shift-folds
-    /// riding the same recursion; costs are J extra accumulator axpys and
-    /// J-fold state storage). 1 = the bare filtered states.
-    int subspace_filters = 4;
-
-    /// Block-local capture: the through-the-wall mechanism for DENSE energy
-    /// windows. Global deflation's capacity J(n-w) is fixed while the
-    /// window rank m_eff grows with N; but m_eff's LOCAL rank is intensive
-    /// (participation law: ~ m_eff dim_F / N states are distinguishable on
-    /// a fragment of dim_F rows), so a capture basis built PER FRAGMENT
-    /// from the sketch's local SVD has total capacity sum_F r_F, unbounded
-    /// by the sketch width. Sandbox measurement (729-atom Al metal, 15309
-    /// orbitals, m_eff = 1772, sketch of 256 columns): plain 16.97%,
-    /// global deflation 14.23% (rank wall), block-local r = 40/64/96 per
-    /// fragment -> 4.91/0.71/0.08%. The price is information-theoretically
-    /// forced: a RESTRICTED basis vector's exact filtered image is not
-    /// spanned by the stored tables, so this mode runs dedicated image
-    /// sweeps -- local_pack fragment groups share sweep columns (far-apart
-    /// fragments, crosstalk decays with distance), giving image cost
-    /// local_capture x local_pack column-sweeps, independent of N.
-    /// Unbiasedness by sample splitting: the first half of the sample
-    /// blocks builds the bases, only the second half is contracted into
-    /// the estimate. 0 disables (default); typical dense-window setting
-    /// 64-96. Enabling it does NOT commit the cost: the global deflation
-    /// runs first for every energy, and only the energies whose measured
-    /// capture falls below the routing threshold pay for local bases and
-    /// image sweeps -- built from, and priced by, those routed energies
-    /// alone. result.local_route says which path served each energy.
-    int local_capture = 0;
-
-    /// Region groups sharing image-sweep columns under local_capture.
-    /// Column count = local_capture x local_pack x local_pack_replicas.
-    /// Regions are compact orbital-weighted RIB subdivisions of each rank's
-    /// already-owned atoms; their centers are assigned to a global spatial
-    /// coloring so nearby regions preferentially use different columns. The
-    /// color count is bounded by the GLOBAL region count, so many ranks with
-    /// one region each still spread across local_pack columns instead of
-    /// collapsing onto one.
-    int local_pack = 8;
-    /// Independent random-sign realizations of the packed image columns.
-    /// The reported map averages the replicas (packing crosstalk falls as
-    /// 1/replicas), and their spread is the packing error certificate:
-    /// result.local_packing_se is the between-replica standard error of the
-    /// captured part, an internal measurement one realization cannot give.
-    /// Image-sweep cost scales linearly. 1 = legacy single realization, no
-    /// certificate (local_packing_se stays 0).
-    int local_pack_replicas = 2;
+    int n_samples = 64;            ///< Probes n; the sketch rank is sketch_families x n.
+    int block = 16;                ///< Probes per Chebyshev sweep (SpMM width).
+    /// Chebyshev modulation families per probe, J. Each family lengthens the
+    /// sweep by degree/10 (the comb stride) and adds n columns to the sketch;
+    /// families of one probe are correlated draws (measured design effect
+    /// 1.0 at J = 6, 2.5 at J = 12), so J ~ 6 with probes supplying the rest
+    /// of the rank is the efficient setting.
+    int sketch_families = 6;
     double coeff_eps = 1e-8;       ///< Filter truncation eps_M (design 3.3).
     unsigned long seed = 12345;    ///< RNG seed; per-rank streams derive from it.
     bool complete_basis = false;   ///< Sweep the whole basis instead of
@@ -198,9 +117,44 @@ struct RealSpaceLdosOptions {
                                    ///< Validation mode -- it holds an O(N_atom)
                                    ///< index on every rank and costs N states.
     bool certify_sampler = true;   ///< Spend one extra propagation pair on the
-                                   ///< deterministic sampler bias certificate.
+                                   ///< solve-form sampler certificate.
     MetricSamplerOptions sampler;  ///< Options of the S^{-1}-covariance sampler.
 };
+
+/// What the shared sweep-and-square engine reads. Two estimators use it:
+/// the LDOS map (survey = true: sketch, images, captured part) and the
+/// electron density (survey = false: plain squares plus the fragment
+/// surrogate control variate of rs_fragment.hpp, enabled by
+/// fragment_buffer > 0). The two never combine.
+struct MapEngineOptions {
+    std::vector<double> energies;
+    double eta = 0.1;
+    double emin = 0.0;
+    double emax = 0.0;
+    double bound_pad = 0.01;
+    double spacing = 0.4;
+    int box_edge = 0;
+    int n_samples = 64;
+    int block = 16;
+    double coeff_eps = 1e-8;
+    unsigned long seed = 12345;
+    bool complete_basis = false;
+    bool certify_sampler = true;
+    MetricSamplerOptions sampler;
+    bool survey = false;           ///< LDOS: flat-top sketch and captured map.
+    int sketch_families = 6;       ///< J under survey.
+    /// Density: fragment surrogate control variate. The buffer is the
+    /// systematic knob (the residual falls exponentially with it); the core
+    /// edge amortizes the dense fragment solves; the workspace cap bounds the
+    /// fragments in flight (0 = one per thread); the fitted coefficient is
+    /// the per-box regression of the plain map on the surrogate (false keeps
+    /// the exactly unbiased coefficient one).
+    double fragment_core = 4.5;
+    double fragment_buffer = 0.0;
+    int fragment_workspace_mb = 0;
+    bool fit_fragment_coefficient = true;
+};
+
 
 /// The sizes a scaling study needs, measured rather than assumed.
 ///
@@ -239,7 +193,7 @@ struct RealSpaceLdosProfile {
     int n_states = 0;
     int block = 0;
     int filter_degree = 0;
-    int64_t matvecs = 0;          ///< filter_degree * number of blocks.
+    int64_t matvecs = 0;          ///< Sweep length (filter and sketch tables) x blocks.
     double span_ev = 0.0;
     double eta_ev = 0.0;
 };
@@ -249,50 +203,24 @@ struct RealSpaceLdosResult {
     GridDomain domain;                       ///< This rank's boxes.
     std::vector<std::vector<double>> ldos;   ///< [energy][owned point], states/eV/A^3.
     int filter_degree = 0;                   ///< Chebyshev terms per sweep.
-    int n_states = 0;                        ///< States actually swept.
+    int n_states = 0;                        ///< Probes actually swept.
     double sampler_residual = -1.0;          ///< ||W q(W)^2 xi - xi||/||xi||, or -1.
-    int n_fragments = 0;                     ///< Fragment count; 0 = plain estimator.
-    /// Per energy: rms over owned points of the STOCHASTIC CORRECTION -- the
-    /// part of the map the samples still carry after the fragment baseline.
-    /// Against the map's own rms this is the measured residual fraction, and
-    /// (x sqrt(2/n_samples)) the honest pointwise error scale.
+    /// Survey estimator, per energy: the global capture fraction c (1 = the
+    /// sketch spans the window and the map is exact), the sketch rank k the
+    /// map was extrapolated from, and the predicted relative rms error
+    /// sqrt(2 (1 - c) / k). Empty for the density engine.
+    std::vector<double> capture;
+    std::vector<int> sketch_rank;
+    std::vector<double> predicted_rel_error;
+    /// Density engine (fragment surrogate), per window: fragment count, rms of
+    /// the stochastic correction the samples still carry, and the fitted
+    /// control coefficient. Empty for the survey estimator.
+    int n_fragments = 0;
     std::vector<double> correction_rms;
-    /// Per energy: the regression coefficient of the control variate,
-    /// estimated from the samples. 1 means the fragment surrogate tracks the
-    /// estimator sample for sample (density-like filters); near 0 it is
-    /// uninformative at that energy (sharp filters at band edges, where the
-    /// fragment spectrum is boundary-modified) and the estimator falls back
-    /// toward the plain mean instead of importing the surrogate's variance.
     std::vector<double> control_beta;
-    /// Per energy: the fraction of the integrated map carried by the
-    /// deterministic deflated part (0 when inactive; -> 1 as the sketch
-    /// captures the window) and the captured rank (min over the two
-    /// cross-fitted halves).
-    std::vector<double> subspace_capture;
-    std::vector<int> subspace_rank;
-    /// Per energy: 1 when the block-local capture replaced the global
-    /// deflation for this energy, 0 when the global path met the routing
-    /// test (or local capture is disabled). The route is decided from the
-    /// measured global capture BEFORE any local image sweep is paid.
-    std::vector<int> local_route;
-    /// Per energy: rms over owned points of the between-replica standard
-    /// error of the packed captured part (local_pack_replicas >= 2 and a
-    /// locally routed energy; otherwise 0). This is a measured packing-noise
-    /// bar; correction_rms remains the residual-sampling scale and neither
-    /// substitutes for the other.
-    std::vector<double> local_packing_se;
-    /// Local-capture geometry of the run (0 / -1 when it never activated):
-    /// the global region count, the packing color count actually used, and
-    /// the audited minimum gap between same-color region bounding spheres
-    /// (minimum-image convention; negative = overlapping spheres shared a
-    /// color, the crosstalk signature to watch). The audit is skipped above
-    /// 16384 regions to keep setup metadata bounded; the distance then
-    /// reports -1 (unaudited), not a claim.
-    int local_regions = 0;
-    int local_colors = 0;
-    double min_same_color_distance = -1.0;
     RealSpaceLdosProfile profile;            ///< Sizes; see RealSpaceLdosProfile.
 };
+
 
 namespace detail {
 
@@ -300,11 +228,6 @@ namespace detail {
 /// degree M (design eqs. 3.3-3.5). The physical normalization
 /// (2 pi eta^2)^{-1/4} is folded in, so accumulating with these coefficients
 /// yields chi in eV^{-1/2} and |chi|^2 in the 1/eV the LDOS needs.
-/// Counter-based Rademacher draw: the sign of (seed, global row, state) is a
-/// pure function of its key, so every rank draws the identical value and the
-/// sampled estimate is invariant to the rank count and the partitioning --
-/// the property stateful per-rank streams cannot have. SplitMix64 finalizer
-/// chain; same construction class as the counter-based generators of Salmon
 /// Eigendecomposition of a symmetric matrix in place (ascending): a
 /// wrapper over dsyevd's two-call workspace dance, shared by every Gram
 /// eigensolve in this file. On exit `a` holds the eigenvectors
@@ -324,6 +247,11 @@ inline void SymEig(int n, double* a, double* w) {
     }
 }
 
+/// Counter-based Rademacher draw: the sign of (seed, global row, state) is a
+/// pure function of its key, so every rank draws the identical value and the
+/// sampled estimate is invariant to the rank count and the partitioning --
+/// the property stateful per-rank streams cannot have. SplitMix64 finalizer
+/// chain; same construction class as the counter-based generators of Salmon
 /// et al. (SC'11, "Parallel random numbers: as easy as 1, 2, 3").
 inline double RademacherSign(uint64_t seed, uint64_t global_row, uint64_t state) {
     auto mix = [](uint64_t x) {
@@ -336,9 +264,39 @@ inline double RademacherSign(uint64_t seed, uint64_t global_row, uint64_t state)
     return (h & 1ull) ? 1.0 : -1.0;
 }
 
+/// Drop the trailing coefficients of a filter table that fall below `floor`
+/// RELATIVE to its largest one (two consecutive ones, as the KPM truncation
+/// does): the degree the sweep runs to is the longest table actually needed.
+/// Callers pass a floor four orders below the coefficient tolerance their
+/// degree formula targets: the dropped tail then perturbs the filter at the
+/// level the untruncated table already had (measured: a floor equal to the
+/// tolerance itself moved the full-fragment density identity from 1e-11 to
+/// 1e-8 of the peak).
+inline void TruncateTableRelative(std::vector<std::complex<double>>& table, double floor_rel) {
+    if (table.size() < 2 || floor_rel <= 0.0) return;
+    double cmax = 0.0;
+    for (const auto& c : table) cmax = std::max(cmax, std::abs(c));
+    const double floor = floor_rel * cmax;
+    size_t keep = table.size();
+    for (size_t i = 0; i + 1 < table.size(); ++i) {
+        if (std::abs(table[i]) <= floor && std::abs(table[i + 1]) <= floor) {
+            keep = i + 1;
+            break;
+        }
+    }
+    table.resize(std::max<size_t>(1, keep));
+}
+
 inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
     const std::vector<double>& energies, double eta, double center, double half,
     double eps) {
+    // m is the centre-of-spectrum worst case: a window at x0 has angular width
+    // eta_bar / sqrt(1 - x0^2) and its coefficients reach eps at a degree
+    // smaller by that factor -- 0.5-0.65x for the band energies of a 200 eV
+    // LCAO spectrum. Each table is therefore TRUNCATED where its own
+    // coefficients fall below eps (the same tolerance m was sized for), and
+    // the shared sweep runs to the longest table actually needed: 1.6x fewer
+    // matvecs on silicon, identical results to eps.
     const int m = static_cast<int>(std::ceil((half / eta) * std::sqrt(std::log(1.0 / eps)))) + 8;
     const double norm = std::pow(2.0 * M_PI * eta * eta, -0.25);
     std::vector<std::vector<std::complex<double>>> tables;
@@ -353,49 +311,52 @@ inline std::vector<std::vector<std::complex<double>>> SqrtGaussianTables(
                 return std::exp(-d * d);
             },
             KpmKernel::None, /*trunc_eps=*/0.0);
+        TruncateTableRelative(table, 1e-4 * eps);
         for (auto& c : table) c *= norm;
         tables.push_back(std::move(table));
     }
     return tables;
 }
 
-/// Chebyshev series of T_j times a tabulated filter, from the product
-/// identity T_j T_m = (T_{m+j} + T_{|m-j|}) / 2 -- a shift-fold of the
-/// coefficients, degree grows by j only. These are the sketch-enrichment
-/// tables of the subspace deflation: {T_j(M) p(M) xi} spans the
-/// block-Krylov space of the filtered states, multiplying the capture rank
-/// at zero extra matvecs.
-inline std::vector<std::complex<double>> ChebyshevTimesTable(
-    int j, const std::vector<std::complex<double>>& t) {
-    if (j == 0) return t;
-    const int m = static_cast<int>(t.size());
-    std::vector<std::complex<double>> out(m + j, 0.0);
-    for (int i = 0; i < m; ++i) {
-        out[i + j] += 0.5 * t[i];
-        out[std::abs(i - j)] += 0.5 * t[i];
+/// Chebyshev tables of a flat-top window: 1 over |E - E_k| < 4 eta with erf
+/// edges of width eta (10-90 % over ~1.8 eta), 0 outside -- the sketch filter
+/// of the survey-sampling estimator. Same
+/// degree formula and truncation as the sqrt-Gaussian: the edge sets the
+/// degree, and it is the Gaussian's own width.
+inline std::vector<std::vector<std::complex<double>>> FlatTopTables(
+    const std::vector<double>& energies, double eta, double center, double half,
+    double eps) {
+    const int m = static_cast<int>(std::ceil((half / eta) * std::sqrt(std::log(1.0 / eps)))) + 8;
+    std::vector<std::vector<std::complex<double>>> tables;
+    tables.reserve(energies.size());
+    for (const double energy : energies) {
+        const double e_bar = (energy - center) / half;
+        const double eta_bar = eta / half;
+        auto table = chebyshev_coefficients_from_function(
+            m,
+            [e_bar, eta_bar](double x) {
+                const double lo = (x - (e_bar - 4.0 * eta_bar)) / eta_bar;
+                const double hi = (x - (e_bar + 4.0 * eta_bar)) / eta_bar;
+                return 0.5 * (std::erf(lo) - std::erf(hi));
+            },
+            KpmKernel::None, /*trunc_eps=*/0.0);
+        TruncateTableRelative(table, 1e-4 * eps);
+        tables.push_back(std::move(table));
     }
-    return out;
+    return tables;
 }
 
-/// Chebyshev series of the SQUARE of a tabulated filter, from the product
-/// identity T_i T_j = (T_{i+j} + T_{|i-j|}) / 2 -- exact at degree 2m - 1
-/// (the unconditional cap), then truncated at the tail. The truncated
-/// length is GUARANTEED, not hoped for (design section 4): for the
-/// Gaussian pair it is sqrt(2(1 - x0^2)) x the center-worst-case base
-/// degree -- at most sqrt(2), independent of eta/span/tolerance (all
-/// cancel in the ratio), and BELOW the base degree for probes at
-/// |x0| > 1/sqrt(2), where physical LCAO energies usually sit; for
-/// analyticity-limited filters (sqrt-Fermi) the ratio is ~1 (same
-/// Bernstein ellipse bounds both).
-inline std::vector<std::complex<double>> SquaredTable(
-    const std::vector<std::complex<double>>& t, double eps) {
-    const int m = static_cast<int>(t.size());
-    std::vector<double> a(m);
-    for (int i = 0; i < m; ++i) a[i] = t[i].real();
-    std::vector<double> q(2 * m - 1, 0.0);
-    for (int i = 0; i < m; ++i) {
-        for (int j = 0; j < m; ++j) {
-            const double v = 0.5 * a[i] * a[j];
+/// Chebyshev series of the product of two tabulated filters (real
+/// coefficients), from T_i T_j = (T_{i+j} + T_{|i-j|}) / 2, truncated where
+/// its tail falls below eps relative: the image table p q of the sketch.
+inline std::vector<std::complex<double>> ProductTable(
+    const std::vector<std::complex<double>>& ta,
+    const std::vector<std::complex<double>>& tb, double eps) {
+    const int ma = static_cast<int>(ta.size()), mb = static_cast<int>(tb.size());
+    std::vector<double> q(static_cast<size_t>(ma + mb - 1), 0.0);
+    for (int i = 0; i < ma; ++i) {
+        for (int j = 0; j < mb; ++j) {
+            const double v = 0.5 * ta[i].real() * tb[j].real();
             q[i + j] += v;
             q[std::abs(i - j)] += v;
         }
@@ -408,6 +369,23 @@ inline std::vector<std::complex<double>> SquaredTable(
     }
     std::vector<std::complex<double>> out(last + 1);
     for (int i = 0; i <= last; ++i) out[i] = q[i];
+    return out;
+}
+
+/// Chebyshev series of T_j times a tabulated filter, from the product
+/// identity T_j T_m = (T_{m+j} + T_{|m-j|}) / 2 -- a shift-fold of the
+/// coefficients, degree grows by j only. The sketch families of one probe
+/// are its sketch under T_0, T_s, T_2s, ... (s the comb stride), so J
+/// families cost J - 1 shift-folds and no extra matvec.
+inline std::vector<std::complex<double>> ChebyshevTimesTable(
+    int j, const std::vector<std::complex<double>>& t) {
+    if (j == 0) return t;
+    const int m = static_cast<int>(t.size());
+    std::vector<std::complex<double>> out(m + j, 0.0);
+    for (int i = 0; i < m; ++i) {
+        out[i + j] += 0.5 * t[i];
+        out[std::abs(i - j)] += 0.5 * t[i];
+    }
     return out;
 }
 
@@ -485,125 +463,18 @@ inline void ReportRealSpaceLdosProfile(const RealSpaceLdosProfile& p, MPI_Comm c
 
 namespace detail {
 
-/// One compact region used by the block-local LDOS projector.
+/// The engine shared by the LDOS map and the electron density: sweep a
+/// stochastic (or complete) basis through Chebyshev tables, one output
+/// channel per table. Under opt.survey the sweep also carries the sketch
+/// and image tables and the channel is the captured map; otherwise the
+/// channel is the mean square onto the grid, with the fragment surrogate
+/// control variate when opt.fragment_buffer > 0. The tables are built by
+/// the caller THROUGH the callback because the scaled interval (center,
+/// half) they must be fitted on is computed here, from emin/emax/bound_pad.
 ///
-/// Atom ownership is already fixed before the LDOS operator is constructed.
-/// These regions therefore subdivide only the atoms present on this rank;
-/// no atom migration or cross-rank projector reduction is introduced.
-struct LocalCaptureRegion {
-    std::vector<int> rows;            ///< Rank-local scalar orbital rows.
-    std::array<double, 3> center{};    ///< Orbital-weighted Cartesian center.
-    int orbital_rows = 0;
-    int rib_part = 0;                 ///< Stable leaf number within this rank.
-    /// Minimum original global atom id among the member atoms. Atoms are
-    /// uniquely owned, so this id is unique across ALL regions of the run and
-    /// independent of the rank count -- it keys the packing signs, keeping the
-    /// packed estimate invariant under repartitioning (the same property the
-    /// counter-based sample seeds have; design_adaptive_local_ldos.md 12.2).
-    uint64_t stable_id = 0;
-    /// Largest member-atom distance from the center: the bounding-sphere
-    /// radius the same-color distance audit measures gaps between.
-    double radius = 0.0;
-};
-
-/// Divide one rank's already-owned atoms into compact, orbital-balanced
-/// regions.  Recursive inertial bisection follows the shape of the final
-/// RIB/ParMETIS ownership domain instead of intersecting it with an unrelated
-/// global box grid.  `target_rows` controls the approximate scalar-orbital
-/// dimension of a region; indivisible atoms and weighted medians make it a
-/// target rather than a hard bound.  `global_atom_id` holds each atom's
-/// original global id (AtomicData::atom_index), which stamps every region
-/// with its rank-independent stable id.
-inline std::vector<LocalCaptureRegion> BuildLocalCaptureRegions(
-    const std::vector<double>& positions,
-    const std::vector<int>& orbital_weight,
-    const std::vector<int>& global_atom_id,
-    int target_rows) {
-    if (positions.size() % 3 != 0 || positions.size() / 3 != orbital_weight.size()) {
-        throw std::runtime_error(
-            "Local LDOS regions need one Cartesian position and orbital weight per atom.");
-    }
-    if (global_atom_id.size() != orbital_weight.size()) {
-        throw std::runtime_error(
-            "Local LDOS regions need one global atom id per atom.");
-    }
-    if (target_rows < 1) {
-        throw std::runtime_error("Local LDOS regions need target_rows >= 1.");
-    }
-    const int n_atom = static_cast<int>(orbital_weight.size());
-    if (n_atom == 0) return {};
-
-    int total_rows = 0;
-    std::vector<double> weights(static_cast<size_t>(n_atom), 0.0);
-    std::vector<int> row_offset(static_cast<size_t>(n_atom) + 1, 0);
-    for (int a = 0; a < n_atom; ++a) {
-        if (orbital_weight[a] < 1) {
-            throw std::runtime_error(
-                "Local LDOS regions need a positive orbital weight per atom.");
-        }
-        total_rows += orbital_weight[a];
-        weights[a] = static_cast<double>(orbital_weight[a]);
-        row_offset[a + 1] = total_rows;
-    }
-
-    const int n_part = std::max(
-        1, std::min(n_atom, static_cast<int>(std::lround(
-                                static_cast<double>(total_rows) / target_rows))));
-    const auto partition =
-        vbcsr::atomic::PartitionByInertia(positions, weights, n_part);
-
-    std::vector<LocalCaptureRegion> by_part(static_cast<size_t>(n_part));
-    for (int part = 0; part < n_part; ++part) {
-        by_part[part].rib_part = part;
-        by_part[part].stable_id = std::numeric_limits<uint64_t>::max();
-    }
-    for (int a = 0; a < n_atom; ++a) {
-        LocalCaptureRegion& region = by_part[partition.owner[a]];
-        const int weight = orbital_weight[a];
-        region.orbital_rows += weight;
-        for (int d = 0; d < 3; ++d) {
-            region.center[d] += weight * positions[3 * static_cast<size_t>(a) + d];
-        }
-        for (int row = row_offset[a]; row < row_offset[a + 1]; ++row) {
-            region.rows.push_back(row);
-        }
-        region.stable_id = std::min(
-            region.stable_id, static_cast<uint64_t>(global_atom_id[a]));
-    }
-
-    for (auto& region : by_part) {
-        if (region.orbital_rows == 0) continue;
-        for (double& x : region.center) x /= region.orbital_rows;
-    }
-    for (int a = 0; a < n_atom; ++a) {
-        LocalCaptureRegion& region = by_part[partition.owner[a]];
-        double d2 = 0.0;
-        for (int d = 0; d < 3; ++d) {
-            const double dx =
-                positions[3 * static_cast<size_t>(a) + d] - region.center[d];
-            d2 += dx * dx;
-        }
-        region.radius = std::max(region.radius, std::sqrt(d2));
-    }
-
-    std::vector<LocalCaptureRegion> regions;
-    regions.reserve(static_cast<size_t>(n_part));
-    for (auto& region : by_part) {
-        if (region.orbital_rows == 0) continue;
-        regions.push_back(std::move(region));
-    }
-    return regions;
-}
-
-/// The estimator shared by the LDOS map and the electron density: filter a
-/// stochastic (or complete) basis through Chebyshev tables, square onto the
-/// grid. One output channel per table; nothing here knows what the filter
-/// means. The tables are built by the caller THROUGH the callback because the
-/// scaled interval (center, half) they must be fitted on is computed here,
-/// from emin/emax/bound_pad.
-///
-/// opt.energies and opt.eta are NOT read; each wrapper validates and encodes
-/// its own filter physics into the tables. Everything else in opt applies.
+/// opt.energies and opt.eta are read only by the survey estimator (its
+/// sketch window); each wrapper validates and encodes its own filter physics
+/// into the tables.
 inline RealSpaceLdosResult FilteredSquareMap(
     vbcsr::atomic::AtomicData& atomic_data,
     vbcsr::BlockSpMat<double>& H,
@@ -611,7 +482,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
     vbcsr::BlockSpMat<double>& Zt,
     ChebyOpForm form,
     const OrbitalCollocation& collocation,
-    const RealSpaceLdosOptions& opt,
+    const MapEngineOptions& opt,
     const std::function<std::vector<std::vector<std::complex<double>>>(
         double center, double half)>& table_builder,
     MPI_Comm comm, FragmentBasisCache* fragment_cache = nullptr) {
@@ -633,6 +504,10 @@ inline RealSpaceLdosResult FilteredSquareMap(
     }
     if (form == ChebyOpForm::Solve && S == nullptr) {
         throw std::runtime_error("The solve-form real-space LDOS needs the overlap S.");
+    }
+    if (opt.survey && opt.fragment_buffer > 0.0) {
+        throw std::runtime_error(
+            "The survey LDOS estimator and the fragment surrogate never combine.");
     }
 
     int rank = 0, size = 1;
@@ -729,28 +604,33 @@ inline RealSpaceLdosResult FilteredSquareMap(
             chain.hi = sampler->q_hi();
         }
         RSATB_PHASE("rs_ldos/fragment_build");
-        // The basis (geometry + eigensolves) is table-independent; with a
-        // cache from the caller it is built once per setup and every task --
-        // all LDOS energies, all density windows -- reuses the same
-        // decomposition, paying only the per-table GEMMs of TablesToCv.
+        // The basis carries the per-table rows for THIS task's tables (the
+        // eigenvectors are not retained -- FragmentBasis::P); with a cache
+        // from the caller a later task with the same geometry, chain and
+        // tables reuses it, any other rebuilds.
         const FragmentBasis* fb = nullptr;
         if (fragment_cache != nullptr && fragment_cache->valid &&
             fragment_cache->core_edge == opt.fragment_core &&
             fragment_cache->buffer == opt.fragment_buffer &&
-            fragment_cache->solve_chain == chain.active()) {
+            fragment_cache->solve_chain == chain.active() &&
+            fragment_cache->basis.tables == tables &&
+            fragment_cache->basis.center == center &&
+            fragment_cache->basis.half == half) {
             fb = &fragment_cache->basis;
         } else if (fragment_cache != nullptr) {
-            fragment_cache->basis =
-                BuildFragmentBasis(atomic_data, H, Zt, opt.fragment_core,
-                                   opt.fragment_buffer, comm, chain);
+            fragment_cache->invalidate();
+            fragment_cache->basis = BuildFragmentBasis(
+                atomic_data, H, Zt, opt.fragment_core, opt.fragment_buffer, tables,
+                center, half, comm, chain, opt.fragment_workspace_mb);
             fragment_cache->valid = true;
             fragment_cache->core_edge = opt.fragment_core;
             fragment_cache->buffer = opt.fragment_buffer;
             fragment_cache->solve_chain = chain.active();
             fb = &fragment_cache->basis;
         } else {
-            local_basis = BuildFragmentBasis(atomic_data, H, Zt, opt.fragment_core,
-                                             opt.fragment_buffer, comm, chain);
+            local_basis = BuildFragmentBasis(
+                atomic_data, H, Zt, opt.fragment_core, opt.fragment_buffer, tables,
+                center, half, comm, chain, opt.fragment_workspace_mb);
             fb = &local_basis;
         }
         frag_cv = TablesToCv(*fb, tables, center, half);
@@ -1059,52 +939,40 @@ inline RealSpaceLdosResult FilteredSquareMap(
     std::vector<double> mom_xy, mom_yy;
     int64_t cv_blocks = 0;
 
-    // Ritz-subspace control (see the option comment): active only where its
-    // representation is defined and at least two sample blocks exist to
-    // cross-fit. When active, the per-block grids are STORED and the whole
-    // assembly (fragment control included) runs jointly after the subspace
-    // pass; when inactive, every path below is untouched.
-    const bool use_ritz =
-        opt.subspace_cv && !opt.complete_basis && n_total >= 2 * opt.block;
-    // Solve form: the seed covariance is S^-1, so the deflation whitens in
-    // the S metric -- Grams Y^T (S Y), contractions Q^T (S c0) -- and the
-    // grid stage consumes the states directly (no Zt). Same construction,
-    // conjugated (design section 9.1).
-    const bool metric_ritz = use_ritz && form == ChebyOpForm::Solve;
+    // The survey estimator stores every probe's filtered state and its
+    // sketch and image columns across the sweep and assembles the captured
+    // map afterwards; the density (and the complete-basis sweep, which is
+    // exact by itself) squares each block onto the grid as it comes.
+    const bool survey = opt.survey && !opt.complete_basis;
+    // Solve form: the seed covariance is S^-1, so the sketch is whitened in
+    // the S metric -- Grams Y^T (S Y) -- and the grid stage consumes the
+    // states directly (no Zt): the sandwich construction conjugated by
+    // S^{1/2}.
+    const bool survey_metric = survey && form == ChebyOpForm::Solve;
     std::vector<std::unique_ptr<DistMultiVector<double>>> y_store, z_store;
-    // Solve-form deflation: the colored seeds c0 = Zt q(W) xi, stored so the
-    // assembly can contract Q^T (S c0) per left-out block. The sandwich form
-    // regenerates its raw seeds from the counters instead.
-    std::unique_ptr<DistMultiVector<double>> c0_store;
-    std::vector<std::vector<std::vector<double>>> x_blk, c1_blk;  // [block][energy][pt]
     std::vector<std::pair<int, int>> blk_info;                    // (start, width)
-    // The deflation's table family, all riding the same recursion: per
-    // energy, the sketch tables T_j p_k (j = 0 is the estimator's own
-    // filter) and their exact p_k-images T_j p_k^2. Index layout:
-    //   main(k)        = k                                  (j = 0 sketch)
-    //   sketch(k, j)   = n_E + k (J-1) + (j-1),  j = 1..J-1
-    //   image(k, j)    = n_E J + k J + j,        j = 0..J-1
-    const int n_filt = use_ritz ? std::max(1, opt.subspace_filters) : 1;
-    std::vector<std::vector<std::complex<double>>> xtab;  // extra tables
+    // The survey's table family, all riding the same recursion: per energy
+    // k, the J sketch tables T_{js} q_k and their exact images T_{js} p_k q_k.
+    // Positions in xtab (and z_store):
+    //   sketch(k, j) = k J + j,          j = 0..J-1
+    //   image(k, j)  = n_E J + k J + j
+    const int J = survey ? std::max(1, opt.sketch_families) : 1;
+    std::vector<std::vector<std::complex<double>>> xtab;  // sketch + image tables
     int degree_all = degree;
-    auto idx_sketch = [&](int k, int j) { return k * (n_filt - 1) + (j - 1); };
-    auto idx_image = [&](int k, int j) {
-        return n_energy * (n_filt - 1) + k * n_filt + j;
-    };
-    if (use_ritz) {
-        // Modulation stride: consecutive T_1, T_2, ... are CONSTANTS across
-        // a ±5η window (they vary on the spectrum scale, the window is
-        // ~10η/h of it), so they enrich nothing where enrichment matters --
-        // measured as capture rank pinned at exactly n-w on a 485-state
-        // metallic window. T_j and T_{j'} decorrelate over the window once
-        // |j-j'| dθ ≳ π with dθ = (10η/h)/sqrt(1-x0²) the window's angular
-        // width, so the family is a frequency COMB j = 0, s, 2s, ... with
-        // s = π sqrt(1-x0²) h/(10η) ≈ degree/10. Each family is then a
-        // genuinely independent shape on the window and capacity truly
-        // multiplies by J. Cost: the image tables run the recursion to
-        // degree + (J-1)s ≈ degree (1 + J/10) -- capacity grows J-fold for
-        // a (1 + J/10)x sweep, the only superlinear knob in the stack
-        // (samples and the η-ladder both trade 2x cost for 2x capacity).
+    auto idx_sketch = [&](int k, int j) { return k * J + j; };
+    auto idx_image = [&](int k, int j) { return n_energy * J + k * J + j; };
+    std::vector<std::vector<std::complex<double>>> sketch_tables;
+    if (survey) {
+        // Comb stride: consecutive T_1, T_2, ... are constants across a
+        // +-5 eta window (they vary on the spectrum scale, the window is
+        // ~10 eta / h of it), so they would add no independent shape --
+        // measured as a sketch rank pinned at n on a 485-state metallic
+        // window. T_j and T_{j'} decorrelate over the window once
+        // |j - j'| dtheta >~ pi, dtheta = (10 eta / h) / sqrt(1 - x0^2) the
+        // window's angular width, so the family is the frequency comb
+        // j = 0, s, 2s, ... with s = pi sqrt(1 - x0^2) h / (10 eta) ~
+        // degree / 10. The image tables then run the recursion to
+        // degree + (J - 1) s ~ degree (1 + J / 10).
         std::vector<int> stride(n_energy, 1);
         for (int k = 0; k < n_energy; ++k) {
             const double x0 =
@@ -1114,15 +982,16 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 1, static_cast<int>(std::lround(
                        M_PI * std::sqrt(std::max(1.0 - x0 * x0, 1e-4)) / win)));
         }
+        sketch_tables = FlatTopTables(opt.energies, opt.eta, center, half, opt.coeff_eps);
         for (int k = 0; k < n_energy; ++k) {
-            for (int j = 1; j < n_filt; ++j) {
-                xtab.push_back(ChebyshevTimesTable(j * stride[k], tables[k]));
+            for (int j = 0; j < J; ++j) {
+                xtab.push_back(ChebyshevTimesTable(j * stride[k], sketch_tables[k]));
             }
         }
         for (int k = 0; k < n_energy; ++k) {
-            const auto p2 = SquaredTable(tables[k], opt.coeff_eps);
-            for (int j = 0; j < n_filt; ++j) {
-                xtab.push_back(ChebyshevTimesTable(j * stride[k], p2));
+            const auto pq = ProductTable(tables[k], sketch_tables[k], opt.coeff_eps);
+            for (int j = 0; j < J; ++j) {
+                xtab.push_back(ChebyshevTimesTable(j * stride[k], pq));
             }
         }
         for (const auto& t : xtab) {
@@ -1132,7 +1001,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
         z_store.resize(static_cast<size_t>(xtab.size()));
     }
 
-    if (frag_cv.enabled() && !use_ritz) {
+    if (frag_cv.enabled()) {
         cv_X.assign(n_energy, std::vector<double>(result.domain.n_point(), 0.0));
         cv_Y.assign(n_energy, std::vector<double>(result.domain.n_point(), 0.0));
         cv_PXY.assign(n_energy, std::vector<double>(result.domain.n_point(), 0.0));
@@ -1178,16 +1047,6 @@ inline RealSpaceLdosResult FilteredSquareMap(
         if (sampler) {
             sampler->Sample(*xi, *c0);
             v0->copy_from(*c0);
-            if (metric_ritz) {
-                if (!c0_store) {
-                    c0_store =
-                        std::make_unique<DistMultiVector<double>>(graph, n_total);
-                }
-                for (int row = 0; row < c0->local_rows; ++row) {
-                    std::copy(c0->row_data(row), c0->row_data(row) + blk,
-                              c0_store->row_data(row) + start);
-                }
-            }
         } else {
             v0->copy_from(*xi);
         }
@@ -1220,8 +1079,6 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 m_first += nb_buf;
                 nb_buf = 0;
             };
-            std::vector<double> dbg;
-            if (std::getenv("RSATB_SWEEP_CHECK") != nullptr) dbg.assign(L, 0.0);
             auto push = [&](const DistMultiVector<double>& v) {
                 // Per-row copy: DMV rows are stride v.ld, which the 64-byte
                 // alignment PADS whenever blk*8 is not a multiple of 64 --
@@ -1231,13 +1088,6 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 for (int row = 0; row < v.local_rows; ++row) {
                     std::copy(v.row_data(row), v.row_data(row) + blk,
                               dst + static_cast<size_t>(row) * blk);
-                }
-                if (!dbg.empty()) {
-                    const int m = m_first + nb_buf;
-                    if (m < static_cast<int>(tables[0].size())) {
-                        const double c = CoeffCast<double>::apply(tables[0][m]);
-                        for (size_t i2 = 0; i2 < L; ++i2) dbg[i2] += c * dst[i2];
-                    }
                 }
                 if (++nb_buf == B) flush();
             };
@@ -1254,78 +1104,6 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 v1->swap(*v2);
             }
             flush();
-            if (std::getenv("RSATB_SWEEP_CHECK") != nullptr && start == 0) {
-                // Redundant single-column re-sweep of table 0, old-style.
-                DistMultiVector<double> w0(graph, blk), w1(graph, blk),
-                    w2(graph, blk), ref(graph, blk);
-                w0.scale(0.0);
-                if (opt.complete_basis) {
-                    fill_identity(w0, start, blk);
-                } else {
-                    for (int row = 0; row < w0.local_rows; ++row) {
-                        double* r = w0.row_data(row);
-                        const uint64_t grow =
-                            static_cast<uint64_t>(seed_row_of_local[row]);
-                        for (int v = 0; v < blk; ++v) {
-                            r[v] = RademacherSign(opt.seed, grow,
-                                                  static_cast<uint64_t>(v));
-                        }
-                    }
-                }
-                ref.copy_from(w0);
-                ref.scale(CoeffCast<double>::apply(tables[0][0]));
-                if (degree_all > 1) {
-                    cheb->apply_op(w0, w1);
-                    if (1 < static_cast<int>(tables[0].size())) {
-                        ref.axpy(CoeffCast<double>::apply(tables[0][1]), w1);
-                    }
-                }
-                for (int m = 2; m < degree_all; ++m) {
-                    cheb->apply_op(w1, w2);
-                    w2.axpby(-1.0, w0, 2.0);
-                    if (m < static_cast<int>(tables[0].size())) {
-                        ref.axpy(CoeffCast<double>::apply(tables[0][m]), w2);
-                    }
-                    w0.swap(w1);
-                    w1.swap(w2);
-                }
-                double dmax = 0.0, rmax = 0.0;
-                const double* col = acc_all.data();
-                for (int row = 0; row < v0->local_rows; ++row) {
-                    for (int v = 0; v < blk; ++v) {
-                        const double a = col[static_cast<size_t>(row) * blk + v];
-                        const double b2 = ref.row_data(row)[v];
-                        dmax = std::max(dmax, std::abs(a - b2));
-                        rmax = std::max(rmax, std::abs(b2));
-                    }
-                }
-                double pmax = 0.0;
-                for (int row = 0; row < v0->local_rows; ++row) {
-                    for (int v = 0; v < blk; ++v) {
-                        pmax = std::max(
-                            pmax,
-                            std::abs(dbg[static_cast<size_t>(row) * blk + v] -
-                                     ref.row_data(row)[v]));
-                    }
-                }
-                int wrow = -1, wcol = -1;
-                double wd = 0.0;
-                for (int row = 0; row < v0->local_rows; ++row) {
-                    for (int v = 0; v < blk; ++v) {
-                        const double d2 =
-                            std::abs(dbg[static_cast<size_t>(row) * blk + v] -
-                                     ref.row_data(row)[v]);
-                        if (d2 > wd) { wd = d2; wrow = row; wcol = v; }
-                    }
-                }
-                std::fprintf(stderr,
-                             "[sweep-check] max|acc-ref|=%.3e max|push-ref|=%.3e "
-                             "ref_max=%.3e worst(row=%d col=%d) dbg=%.6e ref=%.6e\n",
-                             dmax, pmax, rmax, wrow, wcol,
-                             (wrow >= 0) ? dbg[static_cast<size_t>(wrow) * blk + wcol]
-                                         : 0.0,
-                             (wrow >= 0) ? ref.row_data(wrow)[wcol] : 0.0);
-            }
         }
 
         const int lr = v0->local_rows;  // this rank's scalar rows
@@ -1338,17 +1116,14 @@ inline RealSpaceLdosResult FilteredSquareMap(
         const double weight =
             opt.complete_basis ? static_cast<double>(blk)
                                : static_cast<double>(blk) / static_cast<double>(n_total);
-        if (use_ritz) {
-            if (frag_cv.enabled()) c1_blk.emplace_back(n_energy);
+        if (survey) {
             blk_info.emplace_back(start, blk);
         }
         for (int k = 0; k < n_energy; ++k) {
-            if (use_ritz) {
-                // Keep the filtered and squared-filtered coefficient states;
-                // the plain contraction is deferred to the deflation pass,
-                // which contracts the DEFLATED states instead -- a plain pass
-                // here would be thrown away. Only the fragment control's
-                // pass stays, its seeds being the raw Rademacher block.
+            if (survey) {
+                // Store the filtered probes and, once per block, every sketch
+                // and image column; the captured map is assembled from them
+                // after the sweep, and no probe is ever squared.
                 if (!y_store[k]) {
                     y_store[k] =
                         std::make_unique<DistMultiVector<double>>(graph, n_total);
@@ -1378,29 +1153,6 @@ inline RealSpaceLdosResult FilteredSquareMap(
                                       z_store[t]->row_data(row) + start);
                         }
                     }
-                }
-                if (frag_cv.enabled()) {
-                    if (k == 0) {
-                        xi_global.assign(
-                            static_cast<size_t>(frag_cv.n_global_rows()) * blk, 0.0);
-                        for (size_t ag = 0; ag + 1 < atom_prefix.size(); ++ag) {
-                            for (int64_t g = atom_prefix[ag]; g < atom_prefix[ag + 1]; ++g) {
-                                double* r = xi_global.data() + static_cast<size_t>(g) * blk;
-                                const uint64_t srow = static_cast<uint64_t>(
-                                    seed_row0_of_atom[ag] + (g - atom_prefix[ag]));
-                                for (int v = 0; v < blk; ++v) {
-                                    r[v] = RademacherSign(opt.seed, srow,
-                                                          static_cast<uint64_t>(start + v));
-                                }
-                            }
-                        }
-                    }
-                    frag_cv.Apply(k, xi_global, blk, chi0.get());
-                    GatherSetRows(atomic_data, *chi0, set, plan, comm, &coeffs);
-                    collocation.SquareVectorsOntoBoxes(atomic_data, set, coeffs, blk,
-                                                       result.grid, result.domain,
-                                                       &values0, &prof.grid_work);
-                    c1_blk.back()[k] = values0;
                 }
                 continue;
             }
@@ -1439,8 +1191,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 // Control variate: the same seed through the fragment
                 // operator, squared through the same path. X and Y accumulate
                 // toward their means; the per-block products feed the
-                // regression coefficient. Under the Ritz control everything
-                // is stored instead and assembled jointly below.
+                // regression coefficient.
                 if (k == 0) {
                     xi_global.assign(
                         static_cast<size_t>(frag_cv.n_global_rows()) * blk, 0.0);
@@ -1487,7 +1238,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
         ++n_blocks;
     }
 
-    if (frag_cv.enabled() && !use_ritz) {
+    if (frag_cv.enabled()) {
         result.correction_rms.assign(n_energy, 0.0);
         result.control_beta.assign(n_energy, 1.0);
         // Moments aggregate over ranks as well as points: beta must be one
@@ -1583,13 +1334,12 @@ inline RealSpaceLdosResult FilteredSquareMap(
         }
     }
 
-    if (use_ritz) {
-        RSATB_PHASE("rs_ldos/subspace_cv");
-        // The one grid pipeline every exact-part and remainder pass uses:
-        // metric-apply (Zt, sandwich form only -- the solve form's states
-        // already carry AO coefficients), coefficient halo, per-box square.
-        // `values` returns the MEAN of the squared columns on this rank's
-        // points.
+    if (survey) {
+        RSATB_PHASE("rs_ldos/survey");
+        // The one grid pipeline every square pass uses: metric-apply (Zt,
+        // sandwich form only -- the solve form's states already carry AO
+        // coefficients), coefficient halo, per-box square. `values` returns
+        // the MEAN of the squared columns on this rank's points.
         auto grid_square = [&](DistMultiVector<double>& x, int width) {
             if (form == ChebyOpForm::Sandwich) {
                 DistMultiVector<double> c(graph, width);
@@ -1603,28 +1353,18 @@ inline RealSpaceLdosResult FilteredSquareMap(
                                                &values, &prof.grid_work);
         };
         const int64_t npt = result.domain.n_point();
-        const int nb_total = static_cast<int>(blk_info.size());
         const int lr = y_store[0]->local_rows;
-        const int J = n_filt;
         const int m_all = J * n_total;
 
-        // LEAVE-ONE-BLOCK-OUT cross-fitting (the XTrace discipline): block
-        // b's seeds are deflated against the span of ALL OTHER samples'
-        // sketch families, so the capture rank reaches J (n - w) instead of
-        // the J n/2 a half-split allows -- the exactness cliff moves 2x at
-        // the same sweeps. Unbiasedness is untouched: the left-out basis
-        // never saw block b's seeds. The full sketch Gram is built ONCE;
-        // each left-out basis is a principal-submatrix eigensolve of it.
+        // The sketch families and their exact images as dense row-major
+        // blocks, column (j, i) = j n_total + i on both.
         std::vector<double> Ybig(static_cast<size_t>(lr) * m_all, 0.0);
         std::vector<double> Zbig(static_cast<size_t>(lr) * m_all, 0.0);
-        // Column (j, i) = j n_total + i; the image family uses the SAME map.
         auto fill_big = [&](int k) {
             for (int row = 0; row < lr; ++row) {
                 double* yd = Ybig.data() + static_cast<size_t>(row) * m_all;
                 double* zd = Zbig.data() + static_cast<size_t>(row) * m_all;
-                std::copy(y_store[k]->row_data(row),
-                          y_store[k]->row_data(row) + n_total, yd);
-                for (int jj = 1; jj < J; ++jj) {
+                for (int jj = 0; jj < J; ++jj) {
                     const double* src = z_store[idx_sketch(k, jj)]->row_data(row);
                     std::copy(src, src + n_total,
                               yd + static_cast<size_t>(jj) * n_total);
@@ -1637,442 +1377,17 @@ inline RealSpaceLdosResult FilteredSquareMap(
             }
         };
 
-        result.correction_rms.assign(n_energy, 0.0);
-        result.control_beta.assign(n_energy, 0.0);
-        result.subspace_capture.assign(n_energy, 0.0);
-        result.subspace_rank.assign(n_energy, 0);
-        result.local_route.assign(n_energy, 0);
-        result.local_packing_se.assign(n_energy, 0.0);
-
-        // Block-local capture, shared stage: ONE basis per fragment for the
-        // whole scan (per-fragment Gram accumulated over the ROUTED energies)
-        // and one image sweep per sign replica whose recursion accumulates
-        // every routed energy's squared-filter table -- the image cost is per
-        // scan, not per energy. Deferred into a lambda: the global pass below
-        // measures every energy's capture FIRST, and only if some energy
-        // actually routes local is any of this -- including the sweep, the
-        // expensive part -- paid at all, and then only for the tables of the
-        // routed energies (design_adaptive_local_ldos.md section 4).
-        std::vector<std::vector<double>> lc_U;      // per fragment, fl x r
-        std::vector<int> lc_rk, lc_grp;             // rank kept, packing group
-        std::vector<std::vector<int>> lc_rows;      // local scalar rows per fragment
-        // lc_W[replica][energy]; null where the energy routed global.
-        std::vector<std::vector<std::unique_ptr<DistMultiVector<double>>>> lc_W;
-        std::vector<std::unique_ptr<DistMultiVector<double>>> lc_X;  // per replica
-        int lc_nfrag = 0, lc_G = 1, lc_wimg = 0;
-        const int lc_nrep = std::max(1, opt.local_pack_replicas);
-        auto local_capture_setup = [&](const std::vector<int>& routed_k) {
-            RSATB_PHASE("rs_ldos/local_capture_setup");
-            const int nb_half = std::max(1, nb_total / 2);
-            std::vector<int> bcols;
-            for (int jj = 0; jj < J; ++jj) {
-                for (int b = 0; b < nb_half; ++b) {
-                    for (int i2 = blk_info[b].first;
-                         i2 < blk_info[b].first + blk_info[b].second; ++i2) {
-                        bcols.push_back(jj * n_total + i2);
-                    }
-                }
-            }
-            const int mb = static_cast<int>(bcols.size());
-            const int r_cap = opt.local_capture;
-            const int target_rows = std::max(256, 6 * r_cap);
-
-            // Atom ownership is the immutable starting point: RIB followed by
-            // the optional ParMETIS refinement has already distributed the
-            // operator rows. Subdivide ONLY this rank's owned atoms by a
-            // second, serial weighted RIB. This follows the actual ownership
-            // region and avoids the small slivers created when unrelated
-            // global fractional bins cut through an MPI boundary.
-            std::vector<double> owned_positions;
-            std::vector<int> owned_orbitals;
-            std::vector<int> owned_gids;
-            owned_positions.reserve(3 * static_cast<size_t>(atomic_data.n_atom));
-            owned_orbitals.reserve(static_cast<size_t>(atomic_data.n_atom));
-            owned_gids.reserve(static_cast<size_t>(atomic_data.n_atom));
-            for (int a = 0; a < atomic_data.n_atom; ++a) {
-                owned_positions.push_back(atomic_data.x[a]);
-                owned_positions.push_back(atomic_data.y[a]);
-                owned_positions.push_back(atomic_data.z[a]);
-                owned_orbitals.push_back(
-                    atomic_data.type_norb[atomic_data.atom_type[a]]);
-                owned_gids.push_back(atomic_data.atom_index[a]);
-            }
-            auto local_regions = BuildLocalCaptureRegions(
-                owned_positions, owned_orbitals, owned_gids, target_rows);
-            std::vector<std::array<double, 3>> frag_center;
-            std::vector<uint64_t> frag_sid;
-            std::vector<double> frag_rad;
-            lc_rows.reserve(local_regions.size());
-            frag_center.reserve(local_regions.size());
-            frag_sid.reserve(local_regions.size());
-            frag_rad.reserve(local_regions.size());
-            for (auto& region : local_regions) {
-                lc_rows.push_back(std::move(region.rows));
-                frag_center.push_back(region.center);
-                frag_sid.push_back(region.stable_id);
-                frag_rad.push_back(region.radius);
-            }
-            lc_nfrag = static_cast<int>(lc_rows.size());
-            size_t covered_rows = 0;
-            for (const auto& rows : lc_rows) covered_rows += rows.size();
-            if (covered_rows != static_cast<size_t>(lr)) {
-                throw std::runtime_error(
-                    "Local LDOS regions do not cover the owned operator rows.");
-            }
-
-            // DistMultiVector width is a communicator-wide property; every
-            // rank must agree on G. Bound the color count by the GLOBAL
-            // region count: the per-rank maximum used before collapsed one
-            // region on each of many ranks to a single shared color -- the
-            // exact G = 1 failure design_adaptive_local_ldos.md section 2
-            // names -- while the global count keeps local_pack colors alive
-            // whenever that many regions exist anywhere.
-            int n_regions_global = lc_nfrag;
-            if (comm != MPI_COMM_NULL) {
-                MPI_Allreduce(MPI_IN_PLACE, &n_regions_global, 1, MPI_INT,
-                              MPI_SUM, comm);
-            }
-            lc_G = std::max(
-                1, std::min(std::max(1, opt.local_pack), n_regions_global));
-            lc_wimg = lc_G * r_cap;
-            result.local_regions = n_regions_global;
-            result.local_colors = lc_G;
-            if (std::getenv("RSATB_DEBUG_SUBSPACE") != nullptr) {
-                size_t tot = 0;
-                std::vector<char> seen(static_cast<size_t>(lr), 0);
-                int dup = 0, oob = 0, min_rows = lr, max_rows = 0;
-                for (const auto& rows : lc_rows) {
-                    tot += rows.size();
-                    min_rows = std::min(min_rows, static_cast<int>(rows.size()));
-                    max_rows = std::max(max_rows, static_cast<int>(rows.size()));
-                    for (int rr : rows) {
-                        if (rr < 0 || rr >= lr) { ++oob; continue; }
-                        if (seen[rr]) ++dup;
-                        seen[rr] = 1;
-                    }
-                }
-                if (lc_rows.empty()) min_rows = 0;
-                std::fprintf(stderr,
-                             "[lc] local_rib nfrag=%d global=%d G=%d wimg=%d "
-                             "rows=%zu/%d range=%d..%d target=%d dup=%d oob=%d "
-                             "n_atom=%d\n",
-                             lc_nfrag, n_regions_global, lc_G, lc_wimg, tot, lr,
-                             min_rows, max_rows, target_rows, dup, oob,
-                             atomic_data.n_atom);
-            }
-
-            // Packing still needs a communicator-wide spatial color:
-            // a distributed image column contains regions from every rank.
-            // Color each local RIB region by the global fractional cell that
-            // contains its center. This does NOT define the region; it only
-            // keeps nearby regions out of the same packed column when the
-            // virtual lattice resolves them.
-            int gf[3] = {lc_G, 1, 1};
-            for (int g0 = 1; g0 * g0 * g0 <= lc_G; ++g0) {
-                if (lc_G % g0 != 0) continue;
-                const int rem = lc_G / g0;
-                for (int g1 = g0; g1 * g1 <= rem; ++g1) {
-                    if (rem % g1 != 0) continue;
-                    gf[0] = rem / g1;
-                    gf[1] = g1;
-                    gf[2] = g0;
-                }
-            }
-            const double virtual_count = std::max(
-                1.0, static_cast<double>(n_global_rows) / target_rows);
-            const int color_axis = std::max(
-                1, static_cast<int>(std::lround(std::cbrt(virtual_count))));
-            const auto cinv =
-                vbcsr::atomic::InvertCell3x3(atomic_data.cell.data());
-            lc_U.resize(lc_nfrag);
-            lc_rk.assign(lc_nfrag, 0);
-            lc_grp.assign(lc_nfrag, 0);
-            for (int f = 0; f < lc_nfrag; ++f) {
-                int cell_id[3];
-                for (int d = 0; d < 3; ++d) {
-                    double frac = frag_center[f][0] * cinv[0 + d] +
-                                  frag_center[f][1] * cinv[3 + d] +
-                                  frag_center[f][2] * cinv[6 + d];
-                    frac -= std::floor(frac);
-                    frac = std::round(frac * 1e9) * 1e-9;
-                    if (frac >= 1.0) frac -= 1.0;
-                    cell_id[d] = std::min(
-                        color_axis - 1, static_cast<int>(frac * color_axis));
-                }
-                lc_grp[f] = (cell_id[0] % gf[0]) +
-                            gf[0] * ((cell_id[1] % gf[1]) +
-                                     gf[1] * (cell_id[2] % gf[2]));
-                lc_grp[f] %= lc_G;
-            }
-
-            // Distance AUDIT of the periodic coloring. The virtual-cell color
-            // above is fast but is NOT a distance guarantee -- regions across
-            // an MPI or cell-fold boundary can be close and still share a
-            // color -- so measure what it achieved instead of trusting it:
-            // gather the compact region records (5 doubles each; one-time
-            // setup metadata, nothing per-application) and report the
-            // minimum-image gap between same-color bounding spheres.
-            // Negative means overlapping spheres share a packed column --
-            // crosstalk the sign replicas then have to average away, and the
-            // number a certified-coloring upgrade would fix first. Audited
-            // only up to 16384 regions so setup metadata stays bounded.
-            if (n_regions_global <= 16384) {
-                std::vector<double> rec(static_cast<size_t>(lc_nfrag) * 5);
-                for (int f = 0; f < lc_nfrag; ++f) {
-                    for (int d = 0; d < 3; ++d) rec[5 * f + d] = frag_center[f][d];
-                    rec[5 * f + 3] = frag_rad[f];
-                    rec[5 * f + 4] = static_cast<double>(lc_grp[f]);
-                }
-                std::vector<double> all_rec;
-                if (comm != MPI_COMM_NULL) {
-                    int n_ranks = 1;
-                    MPI_Comm_size(comm, &n_ranks);
-                    std::vector<int> counts(n_ranks, 0), displs(n_ranks + 1, 0);
-                    const int mine = static_cast<int>(rec.size());
-                    MPI_Allgather(&mine, 1, MPI_INT, counts.data(), 1, MPI_INT,
-                                  comm);
-                    for (int p = 0; p < n_ranks; ++p) {
-                        displs[p + 1] = displs[p] + counts[p];
-                    }
-                    all_rec.resize(static_cast<size_t>(displs[n_ranks]));
-                    MPI_Allgatherv(rec.data(), mine, MPI_DOUBLE, all_rec.data(),
-                                   counts.data(), displs.data(), MPI_DOUBLE,
-                                   comm);
-                } else {
-                    all_rec = rec;
-                }
-                const int n_all = static_cast<int>(all_rec.size() / 5);
-                double min_gap = std::numeric_limits<double>::infinity();
-                for (int b = 0; b < n_all; ++b) {
-                    for (int c = b + 1; c < n_all; ++c) {
-                        if (all_rec[5 * b + 4] != all_rec[5 * c + 4]) continue;
-                        double dr[3];
-                        for (int d = 0; d < 3; ++d) {
-                            dr[d] = all_rec[5 * b + d] - all_rec[5 * c + d];
-                        }
-                        double fr[3];
-                        for (int d = 0; d < 3; ++d) {
-                            fr[d] = dr[0] * cinv[0 + d] + dr[1] * cinv[3 + d] +
-                                    dr[2] * cinv[6 + d];
-                            if (atomic_data.pbc[d]) fr[d] -= std::round(fr[d]);
-                        }
-                        double d2 = 0.0;
-                        for (int cdim = 0; cdim < 3; ++cdim) {
-                            const double x = fr[0] * atomic_data.cell[0 + cdim] +
-                                             fr[1] * atomic_data.cell[3 + cdim] +
-                                             fr[2] * atomic_data.cell[6 + cdim];
-                            d2 += x * x;
-                        }
-                        min_gap = std::min(min_gap, std::sqrt(d2) -
-                                                        all_rec[5 * b + 3] -
-                                                        all_rec[5 * c + 3]);
-                    }
-                }
-                if (min_gap < std::numeric_limits<double>::infinity()) {
-                    result.min_same_color_distance = min_gap;
-                }
-            }
-            // Empty-window noise is excluded at the ENERGY level below
-            // (trace floor); within the trace-normalized shared Gram a
-            // relative eigenvalue cutoff is then sufficient.
-
-            // Per-fragment shared Grams over all energies.
-            std::vector<std::vector<double>> Gsh(lc_nfrag);
-            for (int f = 0; f < lc_nfrag; ++f) {
-                const int fl = static_cast<int>(lc_rows[f].size());
-                if (fl > 0) {
-                    Gsh[f].assign(static_cast<size_t>(fl) * fl, 0.0);
-                }
-            }
-            std::vector<double> Yf;
-            for (const int k : routed_k) {
-                fill_big(k);
-                // Only the ROUTED energies vote: a global-routed energy never
-                // reads this basis, and letting it vote would spend r_cap
-                // slots on windows the cheap path already served (the
-                // one-difficult-energy-taxes-the-scan failure the review's
-                // section 4 names).
-                // Trace-balance the energies: each window gets an equal vote
-                // in the shared basis, or a dense window's large-norm
-                // directions crowd sparse windows out of the r_cap slots
-                // (measured on silicon: the conduction energy fell from
-                // exact to 16% before this). An energy whose trace sits at
-                // the sweep's noise floor (empty window) is EXCLUDED -- its
-                // states are roundoff and must not enter the basis.
-                double tr_k = 0.0;
-                for (int row = 0; row < lr; ++row) {
-                    const double* src =
-                        Ybig.data() + static_cast<size_t>(row) * m_all;
-                    for (int a2 = 0; a2 < mb; ++a2) {
-                        tr_k += src[bcols[a2]] * src[bcols[a2]];
-                    }
-                }
-                if (comm != MPI_COMM_NULL) {
-                    MPI_Allreduce(MPI_IN_PLACE, &tr_k, 1, MPI_DOUBLE, MPI_SUM,
-                                  comm);
-                }
-                double l1_k = 0.0;
-                for (const auto& cc : tables[k]) l1_k += std::abs(cc);
-                if (tr_k < 1e-10 * l1_k * l1_k * mb) continue;
-                const double scale_k = 1.0 / tr_k;
-                for (int f = 0; f < lc_nfrag; ++f) {
-                    const auto& rows = lc_rows[f];
-                    const int fl = static_cast<int>(rows.size());
-                    if (fl <= 0) continue;
-                    Yf.assign(static_cast<size_t>(fl) * mb, 0.0);
-                    for (int row = 0; row < fl; ++row) {
-                        const double* src =
-                            Ybig.data() + static_cast<size_t>(rows[row]) * m_all;
-                        double* dst = Yf.data() + static_cast<size_t>(row) * mb;
-                        for (int a2 = 0; a2 < mb; ++a2) dst[a2] = src[bcols[a2]];
-                    }
-                    const double one = 1.0;
-                    dgemm_("T", "N", &fl, &fl, &mb, &scale_k, Yf.data(), &mb,
-                           Yf.data(), &mb, &one, Gsh[f].data(), &fl);
-                }
-            }
-            lc_X.resize(static_cast<size_t>(lc_nrep));
-            for (int rep = 0; rep < lc_nrep; ++rep) {
-                lc_X[rep] =
-                    std::make_unique<DistMultiVector<double>>(graph, lc_wimg);
-                lc_X[rep]->scale(0.0);
-            }
-            for (int f = 0; f < lc_nfrag; ++f) {
-                const auto& rows = lc_rows[f];
-                const int fl = static_cast<int>(rows.size());
-                if (fl <= 0) continue;
-                std::vector<double> sv(fl, 0.0);
-                SymEig(fl, Gsh[f].data(), sv.data());
-                const double smax = sv[fl - 1];
-                int r = 0;
-                for (int j2 = fl - 1; j2 >= 0 && r < r_cap; --j2) {
-                    if (sv[j2] > 1e-12 * smax && sv[j2] > 0.0) ++r;
-                    else break;
-                }
-                lc_rk[f] = r;
-                if (r == 0) continue;
-                auto& U = lc_U[f];
-                U.assign(static_cast<size_t>(fl) * r, 0.0);
-                for (int j2 = 0; j2 < r; ++j2) {
-                    const double* col =
-                        Gsh[f].data() + static_cast<size_t>(fl - r + j2) * fl;
-                    for (int row = 0; row < fl; ++row) {
-                        U[static_cast<size_t>(row) * r + j2] = col[row];
-                    }
-                }
-                // Random-sign packing: each fragment's basis vector carries a
-                // counter-hashed Rademacher sign inside its shared column.
-                // Own-fragment products see sigma^2 = 1 and are untouched;
-                // cross-fragment packing crosstalk becomes ZERO-MEAN and
-                // averages down ~ 1/sqrt(r) instead of accumulating as bias
-                // (measured on 729-atom Al: 4.9% -> the sign fix below).
-                // The estimator-state deflation uses the UNSIGNED stored U,
-                // which is independent of packing, so nothing else changes.
-                // The sign key is the region's STABLE id -- its minimum
-                // original global atom id, unique run-wide because atoms are
-                // uniquely owned -- never the MPI rank, so the packed
-                // estimate is invariant under repartitioning. Each replica
-                // is an independent sign realization of the same columns.
-                const int c0f = lc_grp[f] * r_cap;
-                std::vector<double> sgn(static_cast<size_t>(lc_nrep) * r);
-                for (int rep = 0; rep < lc_nrep; ++rep) {
-                    for (int j2 = 0; j2 < r; ++j2) {
-                        sgn[static_cast<size_t>(rep) * r + j2] = RademacherSign(
-                            opt.seed ^ 0x5ca1ab1eUL, frag_sid[f],
-                            (static_cast<uint64_t>(rep) << 32) |
-                                static_cast<uint64_t>(j2));
-                    }
-                }
-                for (int row = 0; row < fl; ++row) {
-                    for (int rep = 0; rep < lc_nrep; ++rep) {
-                        double* xr = lc_X[rep]->row_data(rows[row]);
-                        const double* sg = sgn.data() + static_cast<size_t>(rep) * r;
-                        for (int j2 = 0; j2 < r; ++j2) {
-                            xr[c0f + j2] +=
-                                sg[j2] * U[static_cast<size_t>(row) * r + j2];
-                        }
-                    }
-                }
-                Gsh[f].clear();
-                Gsh[f].shrink_to_fit();
-            }
-            // One image sweep per replica; only the ROUTED energies' squared
-            // tables ride it (a global-routed energy never reads lc_W).
-            std::vector<std::vector<std::complex<double>>> p2tabs(n_energy);
-            int dmax = 0;
-            for (const int k : routed_k) {
-                p2tabs[k] = SquaredTable(tables[k], opt.coeff_eps);
-                dmax = std::max(dmax, static_cast<int>(p2tabs[k].size()));
-            }
-            lc_W.clear();
-            lc_W.resize(static_cast<size_t>(lc_nrep));
-            {
-                RSATB_PHASE("rs_ldos/local_capture_sweep");
-                // The image columns must represent the seed COVARIANCE, not
-                // the bare squared filter: the split's deterministic
-                // complement pairs X against P built from W = C_p X with
-                // C_p = E[y y^T]. Sandwich: C_p = p^2(M), sweep X itself.
-                // Solve: C_p = p^2(B) S^-1, so the sweep is seeded with
-                // S^-1 X -- one CG per image column, the same solve the
-                // recursion pays per matvec (design section 9.2).
-                DistMultiVector<double> a0(graph, lc_wimg), a1(graph, lc_wimg),
-                    a2v(graph, lc_wimg);
-                for (int rep = 0; rep < lc_nrep; ++rep) {
-                    lc_W[rep].resize(n_energy);
-                    if (form == ChebyOpForm::Solve) {
-                        a0.scale(0.0);
-                        LinearSolver<double> s_solver(1e-8, 1000, false);
-                        s_solver.solve(*S, *lc_X[rep], a0);
-                    } else {
-                        a0.copy_from(*lc_X[rep]);
-                    }
-                    for (const int k : routed_k) {
-                        lc_W[rep][k] = std::make_unique<DistMultiVector<double>>(
-                            graph, lc_wimg);
-                        lc_W[rep][k]->copy_from(a0);
-                        lc_W[rep][k]->scale(
-                            CoeffCast<double>::apply(p2tabs[k][0]));
-                    }
-                    if (dmax > 1) {
-                        cheb->apply_op(a0, a1);
-                        for (const int k : routed_k) {
-                            if (1 < static_cast<int>(p2tabs[k].size())) {
-                                lc_W[rep][k]->axpy(
-                                    CoeffCast<double>::apply(p2tabs[k][1]), a1);
-                            }
-                        }
-                    }
-                    for (int m2 = 2; m2 < dmax; ++m2) {
-                        cheb->apply_op(a1, a2v);
-                        a2v.axpby(-1.0, a0, 2.0);
-                        for (const int k : routed_k) {
-                            if (m2 < static_cast<int>(p2tabs[k].size())) {
-                                lc_W[rep][k]->axpy(
-                                    CoeffCast<double>::apply(p2tabs[k][m2]),
-                                    a2v);
-                            }
-                        }
-                        a0.swap(a1);
-                        a1.swap(a2v);
-                    }
-                }
-            }
-        };
-        const bool frag_on = frag_cv.enabled();
-        std::vector<double> xbar(npt), c1bar(npt), exact_part(npt);
+        result.capture.assign(n_energy, 0.0);
+        result.sketch_rank.assign(n_energy, 0);
+        result.predicted_rel_error.assign(n_energy, 0.0);
         std::vector<double> G_all(static_cast<size_t>(m_all) * m_all);
-        x_blk.assign(nb_total, {});
-        for (int b = 0; b < nb_total; ++b) x_blk[b].assign(n_energy, {});
 
         // Solve form: the sketch family weighted by the metric, SY = S Ybig,
-        // refreshed per energy. It supplies both sides of the S-metric
-        // algebra -- the Gram Y^T (SY) and the contraction rows (SY)^T c0 --
-        // at one SpMM of m_all columns per energy, noise against the CG the
-        // sweep itself paid per matvec.
+        // refreshed per energy, so the Gram Y^T (S Y) whitens in the S metric.
         std::vector<double> SYbig;
         std::unique_ptr<DistMultiVector<double>> sy_in, sy_out;
         auto fill_sy = [&]() {
-            if (!metric_ritz) return;
+            if (!survey_metric) return;
             SYbig.resize(static_cast<size_t>(lr) * m_all);
             if (!sy_in) {
                 sy_in = std::make_unique<DistMultiVector<double>>(graph, m_all);
@@ -2095,7 +1410,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
             fill_sy();
             {
                 const double one = 1.0, zero = 0.0;
-                const double* right = metric_ritz ? SYbig.data() : Ybig.data();
+                const double* right = survey_metric ? SYbig.data() : Ybig.data();
                 dgemm_("N", "T", &m_all, &m_all, &lr, &one, Ybig.data(), &m_all,
                        right, &m_all, &zero, G_all.data(), &m_all);
             }
@@ -2103,7 +1418,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
                 MPI_Allreduce(MPI_IN_PLACE, G_all.data(), m_all * m_all, MPI_DOUBLE,
                               MPI_SUM, comm);
             }
-            if (metric_ritz) {
+            if (survey_metric) {
                 // Y^T S Y is symmetric exactly; the SpMM rounds it only.
                 for (int i2 = 0; i2 < m_all; ++i2) {
                     for (int j2 = 0; j2 < i2; ++j2) {
@@ -2135,400 +1450,196 @@ inline RealSpaceLdosResult FilteredSquareMap(
             // silicon's in-gap map is carried by band-edge tails whose sv
             // reaches down toward 1e-8 * (sum|c|)^2 (must keep).
             double tab_l1 = 0.0;
-            for (const auto& c : tables[k]) tab_l1 += std::abs(c);
+            for (const auto& c : sketch_tables[k]) tab_l1 += std::abs(c);
             const double s_floor = 1e-10 * tab_l1 * tab_l1;
 
-            std::fill(xbar.begin(), xbar.end(), 0.0);
-            std::fill(c1bar.begin(), c1bar.end(), 0.0);
-            std::fill(exact_part.begin(), exact_part.end(), 0.0);
-            int rank_min = m_all;
-            double s11 = 0.0, sx1 = 0.0;
-
-            for (int b = 0; b < nb_total; ++b) {
-                const int start = blk_info[b].first;
-                const int blk = blk_info[b].second;
-                const double wb = static_cast<double>(blk) / n_total;
-                // Left-out sketch columns: all (j, i) with sample i outside
-                // block b, in ascending column order.
-                std::vector<int> cols;
-                cols.reserve(m_all - J * blk);
-                for (int jj = 0; jj < J; ++jj) {
-                    for (int i2 = 0; i2 < n_total; ++i2) {
-                        if (i2 < start || i2 >= start + blk) {
-                            cols.push_back(jj * n_total + i2);
-                        }
-                    }
-                }
-                const int m = static_cast<int>(cols.size());
-
-                std::vector<double> G(static_cast<size_t>(m) * m);
-                for (int a2 = 0; a2 < m; ++a2) {
-                    for (int b2 = 0; b2 < m; ++b2) {
-                        G[static_cast<size_t>(a2) * m + b2] =
-                            G_all[static_cast<size_t>(cols[a2]) * m_all + cols[b2]];
-                    }
-                }
-                std::vector<double> sv(m, 0.0);
-                SymEig(m, G.data(), sv.data());
-                const double s_max = sv.empty() ? 0.0 : sv[m - 1];
-                int first = m;
-                for (int i2 = 0; i2 < m; ++i2) {
-                    if (sv[i2] > 1e-12 * s_max && sv[i2] > s_floor) {
-                        first = i2;
-                        break;
-                    }
-                }
-                const int r = m - first;
-                rank_min = std::min(rank_min, r);
-
-                DistMultiVector<double> yt(graph, blk);
-                for (int row = 0; row < lr; ++row) {
-                    std::copy(y_store[k]->row_data(row) + start,
-                              y_store[k]->row_data(row) + start + blk,
-                              yt.row_data(row));
-                }
-                if (r > 0) {
-                    // Left-out basis and its exact filtered image, through
-                    // compacted column copies of the big families.
-                    std::vector<double> B(static_cast<size_t>(m) * r);
-                    for (int j2 = 0; j2 < r; ++j2) {
-                        const double inv_s = 1.0 / std::sqrt(sv[first + j2]);
-                        for (int i2 = 0; i2 < m; ++i2) {
-                            B[static_cast<size_t>(j2) * m + i2] =
-                                G[static_cast<size_t>(first + j2) * m + i2] * inv_s;
-                        }
-                    }
-                    // The contraction rows Q: against raw seeds they are the
-                    // capture basis itself (sandwich, C = Q^T xi); in the S
-                    // metric they carry the weight, Q := (S Y)sub B, so that
-                    // C = Q^T c0 = (basis)^T S c0 -- the S-orthogonal
-                    // projection coefficients of the colored seed.
-                    std::vector<double> Ysub(static_cast<size_t>(lr) * m);
-                    std::vector<double> Zsub(static_cast<size_t>(lr) * m);
-#pragma omp parallel for
-                    for (int row = 0; row < lr; ++row) {
-                        const double* ys = metric_ritz
-                                               ? SYbig.data() +
-                                                     static_cast<size_t>(row) * m_all
-                                               : Ybig.data() +
-                                                     static_cast<size_t>(row) * m_all;
-                        const double* zs = Zbig.data() + static_cast<size_t>(row) * m_all;
-                        double* yd = Ysub.data() + static_cast<size_t>(row) * m;
-                        double* zd = Zsub.data() + static_cast<size_t>(row) * m;
-                        for (int a2 = 0; a2 < m; ++a2) {
-                            yd[a2] = ys[cols[a2]];
-                            zd[a2] = zs[cols[a2]];
-                        }
-                    }
-                    std::vector<double> Q(static_cast<size_t>(lr) * r);
-                    std::vector<double> U(static_cast<size_t>(lr) * r);
-                    {
-                        const double one = 1.0, zero = 0.0;
-                        dgemm_("T", "N", &r, &lr, &m, &one, B.data(), &m, Ysub.data(),
-                               &m, &zero, Q.data(), &r);
-                        dgemm_("T", "N", &r, &lr, &m, &one, B.data(), &m, Zsub.data(),
-                               &m, &zero, U.data(), &r);
-                    }
-
-                    // Exact map of this left-out capture, weighted by the
-                    // block's sample share.
-                    DistMultiVector<double> Ud(graph, r);
-                    for (int row = 0; row < lr; ++row) {
-                        std::copy(U.data() + static_cast<size_t>(row) * r,
-                                  U.data() + static_cast<size_t>(row + 1) * r,
-                                  Ud.row_data(row));
-                    }
-                    grid_square(Ud, r);
-                    for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                        exact_part[pnt] += wb * values[pnt] * static_cast<double>(r);
-                    }
-
-                    // Deflate the block's states against the left-out span.
-                    // The seed the coefficients contract: the raw counter
-                    // signs (sandwich, covariance I) or the stored colored
-                    // seeds (solve, covariance S^-1 -- Q already carries S).
-                    DistMultiVector<double> xib(graph, blk);
-                    if (metric_ritz) {
-                        for (int row = 0; row < lr; ++row) {
-                            std::copy(c0_store->row_data(row) + start,
-                                      c0_store->row_data(row) + start + blk,
-                                      xib.row_data(row));
-                        }
-                    } else {
-                        // Rebuilds the SAME draw the sweep made: keyed by the
-                        // invariant row, like every sign in this file.
-                        for (int row = 0; row < lr; ++row) {
-                            double* d = xib.row_data(row);
-                            const uint64_t grow =
-                                static_cast<uint64_t>(seed_row_of_local[row]);
-                            for (int v = 0; v < blk; ++v) {
-                                d[v] = RademacherSign(
-                                    opt.seed, grow, static_cast<uint64_t>(start + v));
-                            }
-                        }
-                    }
-                    std::vector<double> C(static_cast<size_t>(r) * blk, 0.0);
-                    {
-                        const double one = 1.0, zero = 0.0;
-                        dgemm_("N", "T", &r, &blk, &lr, &one, Q.data(), &r,
-                               xib.data.data(), &xib.ld, &zero, C.data(), &r);
-                    }
-                    if (comm != MPI_COMM_NULL) {
-                        MPI_Allreduce(MPI_IN_PLACE, C.data(), r * blk, MPI_DOUBLE,
-                                      MPI_SUM, comm);
-                    }
-                    {
-                        const double neg = -1.0, one = 1.0;
-                        dgemm_("T", "N", &blk, &lr, &r, &neg, C.data(), &r, U.data(),
-                               &r, &one, yt.data.data(), &yt.ld);
-                    }
-                }
-                grid_square(yt, blk);
-                x_blk[b][k] = values;
+            // The sketch basis: whiten the Gram, keep every direction above
+            // the floor. With a flat-top sketch the span is an isotropic
+            // random subspace of the window, so this rank IS the survey's
+            // sample size k (design_survey_sampling_ldos.md, Section 5).
+            // Eigen-decompose a COPY: G_all itself feeds the leave-one-block-
+            // out principal submatrices of the normalization below.
+            std::vector<double> Gfull(G_all);
+            std::vector<double> sv(m_all, 0.0);
+            SymEig(m_all, Gfull.data(), sv.data());
+            const double s_max = sv.empty() ? 0.0 : sv[m_all - 1];
+            int first = m_all;
+            for (int i2 = 0; i2 < m_all; ++i2) {
+                if (sv[i2] > 1e-12 * s_max && sv[i2] > s_floor) { first = i2; break; }
             }
-
-            // Assembly: per-block exact parts already accumulated; deflated
-            // mean plus the fragment control regressed against it.
-            result.subspace_rank[k] = rank_min;
-            for (int b = 0; b < nb_total; ++b) {
-                const double wb = static_cast<double>(blk_info[b].second) / n_total;
-                const double* xb = x_blk[b][k].data();
-                const double* c1 = frag_on ? c1_blk[b][k].data() : nullptr;
-                for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                    xbar[pnt] += wb * xb[pnt];
-                    if (frag_on) {
-                        const double v1 = c1[pnt] - base[k][pnt];
-                        c1bar[pnt] += wb * v1;
-                        s11 += v1 * v1;
-                        sx1 += v1 * xb[pnt];
-                    }
-                }
-            }
-            double beta = 0.0;
-            if (frag_on && nb_total > 1) {
-                double d11 = 0.0, dx1 = 0.0;
-                for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                    d11 += c1bar[pnt] * c1bar[pnt];
-                    dx1 += c1bar[pnt] * xbar[pnt];
-                }
-                double acc[4] = {s11, sx1, d11, dx1};
-                if (comm != MPI_COMM_NULL) {
-                    MPI_Allreduce(MPI_IN_PLACE, acc, 4, MPI_DOUBLE, MPI_SUM, comm);
-                }
-                const double nb = static_cast<double>(nb_total);
-                const double var = acc[0] - nb * acc[2];
-                const double cov = acc[1] - nb * acc[3];
-                if (var > 1e-300) beta = std::max(0.0, std::min(1.0, cov / var));
-            }
-            result.control_beta[k] = beta;
+            const int rk = m_all - first;
+            result.sketch_rank[k] = rk;
             double* out = result.ldos[k].data();
-            double sumsq = 0.0, sum_exact = 0.0, sum_perp = 0.0;
-            for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                out[pnt] = exact_part[pnt] + xbar[pnt] - beta * c1bar[pnt];
-                sumsq += xbar[pnt] * xbar[pnt];
-                sum_exact += exact_part[pnt];
-                sum_perp += xbar[pnt];
-            }
-            double n_pts = static_cast<double>(npt);
-            double acc[4] = {sumsq, sum_exact, sum_perp, n_pts};
-            if (comm != MPI_COMM_NULL) {
-                MPI_Allreduce(MPI_IN_PLACE, acc, 4, MPI_DOUBLE, MPI_SUM, comm);
-            }
-            result.correction_rms[k] = std::sqrt(acc[0] / std::max(1.0, acc[3]));
-            const double tot = acc[1] + acc[2];
-            result.subspace_capture[k] = (std::abs(tot) > 1e-300) ? acc[1] / tot : 0.0;
-            // Route by OUTCOME: the global stored-image deflation above is
-            // ~free and exact wherever the window under-fills the sketch; a
-            // measured capture below 0.9 means the window is dense beyond
-            // the global rank wall -- only then is the local-capture pass
-            // worth paying for, and its result replaces the global one for
-            // this energy. Rank heuristics on the sketch Gram were tried and
-            // are fragile (teeth collinearity thins the spectrum: a dense
-            // metallic window measured r_g = 196/256 and misrouted). Only
-            // the route is DECIDED here; the local pass itself -- including
-            // its image sweeps, the expensive part -- runs after this loop,
-            // and only if some energy actually routed local.
-            if (opt.local_capture > 0 && result.subspace_capture[k] < 0.9) {
-                result.local_route[k] = 1;
-            }
-        }
-
-        // Deferred block-local pass: setup (basis + image sweeps, priced by
-        // the routed energies alone) and the per-energy stages.
-        std::vector<int> routed_k;
-        for (int k = 0; k < n_energy; ++k) {
-            if (result.local_route[k] != 0) routed_k.push_back(k);
-        }
-        if (opt.local_capture > 0 && !routed_k.empty()) {
-            local_capture_setup(routed_k);
-            for (const int k : routed_k) {
-                // ---- Block-local capture, per-energy stage: the shared
-                // basis and this energy's image columns come from the setup
-                // pass above; here only small local algebra, per-replica
-                // grid squares (polarization product), and the deflated
-                // second-half contraction remain.
-                RSATB_PHASE("rs_ldos/local_capture");
-                const int nb_half = std::max(1, nb_total / 2);
-                const int r_cap = opt.local_capture;
-                // P = 2W - Pi W with the FULL block-diagonal projector:
-                // every fragment deflates its own row-block of EVERY image
-                // column. The within-fragment-only version misses the
-                // cross-fragment blocks of Pi C Pi -- exactly zero for the
-                // ORBITAL diagonal (disjoint rows), but the grid collocation
-                // smears across fragment boundaries through orbital tails
-                // and Zt's range, and in 3D the boundary shell is a large
-                // volume fraction (measured: a 21% integral-preserving
-                // shape error on Al before this correction).
-                // Per sign replica: its own captured map from its own image
-                // columns. `exact_part` carries the running replica MEAN (the
-                // reported captured part; crosstalk averages down 1/L) and
-                // `ex_m2` the Welford sum of squares, whose between-replica
-                // spread is the packing error certificate no single
-                // realization can provide.
-                std::fill(exact_part.begin(), exact_part.end(), 0.0);
-                std::vector<double> ex_m2(static_cast<size_t>(npt), 0.0);
-                std::vector<double> ex_rep(static_cast<size_t>(npt));
-                for (int rep = 0; rep < lc_nrep; ++rep) {
-                    DistMultiVector<double> Pv(graph, lc_wimg);
-                    Pv.copy_from(*lc_W[rep][k]);
-                    Pv.scale(2.0);
-                    for (int f = 0; f < lc_nfrag; ++f) {
-                        const int r = lc_rk[f];
-                        if (r == 0) continue;
-                        const auto& rows = lc_rows[f];
-                        const int fl = static_cast<int>(rows.size());
-                        std::vector<double> Wf(static_cast<size_t>(fl) * lc_wimg);
-                        for (int row = 0; row < fl; ++row) {
-                            std::copy(
-                                lc_W[rep][k]->row_data(rows[row]),
-                                lc_W[rep][k]->row_data(rows[row]) + lc_wimg,
-                                Wf.data() + static_cast<size_t>(row) * lc_wimg);
-                        }
-                        std::vector<double> S(static_cast<size_t>(r) * lc_wimg);
-                        {
-                            const double one = 1.0, zero = 0.0;
-                            dgemm_("N", "T", &lc_wimg, &r, &fl, &one, Wf.data(),
-                                   &lc_wimg, lc_U[f].data(), &r, &zero, S.data(),
-                                   &lc_wimg);
-                            dgemm_("N", "N", &lc_wimg, &fl, &r, &one, S.data(),
-                                   &lc_wimg, lc_U[f].data(), &r, &zero, Wf.data(),
-                                   &lc_wimg);
-                        }
-                        for (int row = 0; row < fl; ++row) {
-                            double* pr = Pv.row_data(rows[row]);
-                            const double* us =
-                                Wf.data() + static_cast<size_t>(row) * lc_wimg;
-                            for (int j2 = 0; j2 < lc_wimg; ++j2) pr[j2] -= us[j2];
-                        }
-                    }
-                    std::fill(ex_rep.begin(), ex_rep.end(), 0.0);
-                    {
-                        DistMultiVector<double> sumv(graph, lc_wimg);
-                        sumv.copy_from(*lc_X[rep]);
-                        sumv.axpy(1.0, Pv);
-                        grid_square(sumv, lc_wimg);
-                        for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                            ex_rep[pnt] += 0.25 * lc_wimg * values[pnt];
-                        }
-                        sumv.copy_from(*lc_X[rep]);
-                        sumv.axpy(-1.0, Pv);
-                        grid_square(sumv, lc_wimg);
-                        for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                            ex_rep[pnt] -= 0.25 * lc_wimg * values[pnt];
-                        }
-                    }
-                    for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                        const double delta = ex_rep[pnt] - exact_part[pnt];
-                        exact_part[pnt] += delta / (rep + 1);
-                        ex_m2[pnt] += delta * (ex_rep[pnt] - exact_part[pnt]);
+            std::fill(out, out + npt, 0.0);
+            double captured = 0.0, total = 1.0;   // probe energy, captured / all
+            if (rk > 0) {
+                std::vector<double> B(static_cast<size_t>(rk) * m_all);
+                // Captured part |Pi p phi_r|^2 = sum_j |phi_r^T u_j|^2 with
+                // u_j = p(H) Q e_j the exact images of the orthonormal sketch
+                // basis Q = Y B: images = Zbig B, one grid square.
+                for (int j2 = 0; j2 < rk; ++j2) {
+                    const double inv_s = 1.0 / std::sqrt(sv[first + j2]);
+                    for (int i2 = 0; i2 < m_all; ++i2) {
+                        B[static_cast<size_t>(j2) * m_all + i2] =
+                            Gfull[static_cast<size_t>(first + j2) * m_all + i2] * inv_s;
                     }
                 }
-
-                std::fill(xbar.begin(), xbar.end(), 0.0);
-                double n_est = 0.0;
-                for (int b = nb_half; b < nb_total; ++b) {
-                    n_est += static_cast<double>(blk_info[b].second);
+                std::vector<double> U(static_cast<size_t>(lr) * rk);
+                {
+                    const double one = 1.0, zero = 0.0;
+                    dgemm_("T", "N", &rk, &lr, &m_all, &one, B.data(), &m_all,
+                           Zbig.data(), &m_all, &zero, U.data(), &rk);
                 }
-                for (int b = nb_half; b < nb_total; ++b) {
-                    const int start = blk_info[b].first;
-                    const int blk = blk_info[b].second;
-                    DistMultiVector<double> yt(graph, blk);
-                    for (int row = 0; row < lr; ++row) {
-                        std::copy(y_store[k]->row_data(row) + start,
-                                  y_store[k]->row_data(row) + start + blk,
-                                  yt.row_data(row));
-                    }
-                    for (int f = 0; f < lc_nfrag; ++f) {
-                        const int r = lc_rk[f];
-                        if (r == 0) continue;
-                        const auto& rows = lc_rows[f];
-                        const int fl = static_cast<int>(rows.size());
-                        std::vector<double> Yb(static_cast<size_t>(fl) * blk);
-                        for (int row = 0; row < fl; ++row) {
-                            std::copy(yt.row_data(rows[row]),
-                                      yt.row_data(rows[row]) + blk,
-                                      Yb.data() + static_cast<size_t>(row) * blk);
-                        }
-                        std::vector<double> Cf(static_cast<size_t>(r) * blk);
-                        {
-                            const double one = 1.0, zero = 0.0, neg = -1.0;
-                            dgemm_("N", "T", &blk, &r, &fl, &one, Yb.data(),
-                                   &blk, lc_U[f].data(), &r, &zero, Cf.data(),
-                                   &blk);
-                            dgemm_("N", "N", &blk, &fl, &r, &neg, Cf.data(),
-                                   &blk, lc_U[f].data(), &r, &one, Yb.data(),
-                                   &blk);
-                        }
-                        for (int row = 0; row < fl; ++row) {
-                            std::copy(
-                                Yb.data() + static_cast<size_t>(row) * blk,
-                                Yb.data() + static_cast<size_t>(row) * blk + blk,
-                                yt.row_data(rows[row]));
-                        }
-                    }
-                    grid_square(yt, blk);
-                    const double wb = static_cast<double>(blk) / n_est;
-                    for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                        xbar[pnt] += wb * values[pnt];
-                    }
+                DistMultiVector<double> Ud(graph, rk);
+                for (int row = 0; row < lr; ++row) {
+                    std::copy(U.data() + static_cast<size_t>(row) * rk,
+                              U.data() + static_cast<size_t>(row + 1) * rk,
+                              Ud.row_data(row));
                 }
-                double* out = result.ldos[k].data();
-                double sums[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
-                int rank_min_loc = r_cap;
-                for (int f = 0; f < lc_nfrag; ++f) {
-                    if (!lc_rows[f].empty()) {
-                        rank_min_loc = std::min(rank_min_loc, lc_rk[f]);
-                    }
-                }
+                grid_square(Ud, rk);
                 for (int64_t pnt = 0; pnt < npt; ++pnt) {
-                    out[pnt] = exact_part[pnt] + xbar[pnt];
-                    sums[0] += xbar[pnt] * xbar[pnt];
-                    sums[1] += exact_part[pnt];
-                    sums[2] += exact_part[pnt] + xbar[pnt];
-                    sums[3] += 1.0;
-                    if (lc_nrep >= 2) {
-                        // se^2 of the replica mean at this point:
-                        // sample variance / L.
-                        sums[4] += ex_m2[pnt] /
-                                   (static_cast<double>(lc_nrep - 1) * lc_nrep);
+                    out[pnt] = values[pnt] * static_cast<double>(rk);
+                }
+            }
+            // The normalization c, measured in STATE space on the probes
+            // themselves: c = sum_l ||Pi p xi_l||^2 / sum_l ||p xi_l||^2 with
+            // ||Pi y||^2 = ||B^T (Y^T y)||^2 (Q = Y B orthonormal; S-metric in
+            // the solve form). Numerator and denominator share the probes,
+            // so the ratio carries none of the phase noise a grid integral
+            // would on a small window, and it is exactly 1 once the sketch
+            // spans the window (then Pi y = y for every probe).
+            if (rk > 0) {
+                std::vector<double> YtY(static_cast<size_t>(m_all) * n_total, 0.0);
+                std::vector<double> ystore(static_cast<size_t>(lr) * n_total);
+                for (int row = 0; row < lr; ++row) {
+                    std::copy(y_store[k]->row_data(row), y_store[k]->row_data(row) + n_total,
+                              ystore.data() + static_cast<size_t>(row) * n_total);
+                }
+                std::vector<double> systore;
+                const double* yl = ystore.data();
+                if (survey_metric) {
+                    // S y for the metric norms: one SpMM of n_total columns.
+                    DistMultiVector<double> sy_in2(graph, n_total), sy_out2(graph, n_total);
+                    for (int row = 0; row < lr; ++row) {
+                        std::copy(ystore.data() + static_cast<size_t>(row) * n_total,
+                                  ystore.data() + static_cast<size_t>(row + 1) * n_total,
+                                  sy_in2.row_data(row));
+                    }
+                    S->mult_dense(sy_in2, sy_out2);
+                    systore.resize(ystore.size());
+                    for (int row = 0; row < lr; ++row) {
+                        std::copy(sy_out2.row_data(row), sy_out2.row_data(row) + n_total,
+                                  systore.data() + static_cast<size_t>(row) * n_total);
+                    }
+                    yl = systore.data();
+                }
+                {
+                    // Y^T (S) y: rows of Ybig (m_all) against columns of y (n_total).
+                    const double one = 1.0, zero = 0.0;
+                    dgemm_("N", "T", &n_total, &m_all, &lr, &one, yl, &n_total,
+                           Ybig.data(), &m_all, &zero, YtY.data(), &n_total);
+                }
+                if (comm != MPI_COMM_NULL) {
+                    MPI_Allreduce(MPI_IN_PLACE, YtY.data(), m_all * n_total, MPI_DOUBLE,
+                                  MPI_SUM, comm);
+                }
+                // CROSS-FITTED: the capture of block b's probes is measured
+                // with the sketch of the OTHER blocks (a principal submatrix
+                // of the Gram), so no probe is projected onto columns it
+                // built -- the in-sample projection over-captures a probe's
+                // own state. Under isotropy the left-out capture is
+                // rank_{-b} / m_S; rescaled by rank / rank_{-b} it is the
+                // full sketch's c = rank / m_S, exactly 1 once the window is
+                // spanned (both ranks saturate at m_S).
+                std::vector<double> ynorm(n_total, 0.0);
+                for (int row = 0; row < lr; ++row) {
+                    for (int l = 0; l < n_total; ++l) {
+                        const size_t t = static_cast<size_t>(row) * n_total + l;
+                        ynorm[l] += ystore[t] * yl[t];
                     }
                 }
                 if (comm != MPI_COMM_NULL) {
-                    MPI_Allreduce(MPI_IN_PLACE, sums, 5, MPI_DOUBLE, MPI_SUM,
+                    MPI_Allreduce(MPI_IN_PLACE, ynorm.data(), n_total, MPI_DOUBLE, MPI_SUM,
                                   comm);
-                    MPI_Allreduce(MPI_IN_PLACE, &rank_min_loc, 1, MPI_INT,
-                                  MPI_MIN, comm);
                 }
-                result.correction_rms[k] =
-                    std::sqrt(sums[0] / std::max(1.0, sums[3]));
-                result.local_packing_se[k] =
-                    (lc_nrep >= 2) ? std::sqrt(sums[4] / std::max(1.0, sums[3]))
-                                   : 0.0;
-                result.control_beta[k] = 0.0;
-                result.subspace_capture[k] =
-                    (std::abs(sums[2]) > 1e-300) ? sums[1] / sums[2] : 0.0;
-                result.subspace_rank[k] = rank_min_loc;
+                double cap_w = 0.0, tot_w = 0.0;
+                const int nb_total = static_cast<int>(blk_info.size());
+                for (int bb = 0; bb < nb_total; ++bb) {
+                    const int start = blk_info[bb].first;
+                    const int blk = blk_info[bb].second;
+                    std::vector<int> cols;
+                    cols.reserve(m_all - J * blk);
+                    for (int jj = 0; jj < J; ++jj) {
+                        for (int i2 = 0; i2 < n_total; ++i2) {
+                            if (i2 < start || i2 >= start + blk) cols.push_back(jj * n_total + i2);
+                        }
+                    }
+                    const int m = static_cast<int>(cols.size());
+                    double blk_tot = 0.0;
+                    for (int l = start; l < start + blk; ++l) blk_tot += ynorm[l];
+                    tot_w += blk_tot;
+                    if (m == 0) continue;
+                    std::vector<double> Gs(static_cast<size_t>(m) * m);
+                    for (int a2 = 0; a2 < m; ++a2) {
+                        for (int b2 = 0; b2 < m; ++b2) {
+                            Gs[static_cast<size_t>(a2) * m + b2] =
+                                G_all[static_cast<size_t>(cols[a2]) * m_all + cols[b2]];
+                        }
+                    }
+                    std::vector<double> svs(m, 0.0);
+                    SymEig(m, Gs.data(), svs.data());
+                    const double smax = svs[m - 1];
+                    int f2 = m;
+                    for (int i2 = 0; i2 < m; ++i2) {
+                        if (svs[i2] > 1e-12 * smax && svs[i2] > s_floor) { f2 = i2; break; }
+                    }
+                    const int rs = m - f2;
+                    if (rs == 0) continue;
+                    // (B_{-b}^T) (Y_{-b}^T y_l) for l in block b: the rows of YtY at
+                    // the left-out columns, whitened by B_{-b}.
+                    double blk_cap = 0.0;
+                    for (int j2 = 0; j2 < rs; ++j2) {
+                        const double inv_s = 1.0 / std::sqrt(svs[f2 + j2]);
+                        const double* ev = Gs.data() + static_cast<size_t>(f2 + j2) * m;
+                        for (int l = start; l < start + blk; ++l) {
+                            double acc = 0.0;
+                            for (int a2 = 0; a2 < m; ++a2) {
+                                acc += ev[a2] * YtY[static_cast<size_t>(cols[a2]) * n_total + l];
+                            }
+                            acc *= inv_s;
+                            blk_cap += acc * acc;
+                        }
+                    }
+                    // Rescale the left-out capture to the full sketch's rank.
+                    cap_w += blk_cap * static_cast<double>(rk) / static_cast<double>(rs);
+                }
+                captured = std::min(cap_w, tot_w);
+                total = tot_w;
             }
+            const double c = (total > 1e-300) ? captured / total : 0.0;
+            result.capture[k] = c;
+            if (c > 1e-300) {
+                for (int64_t pnt = 0; pnt < npt; ++pnt) out[pnt] /= c;
+            }
+            result.predicted_rel_error[k] =
+                std::sqrt(2.0 * std::max(0.0, 1.0 - std::min(1.0, c)) / std::max(1, rk));
+        }
+    }
+
+    // Density engine: predicted relative rms error of the reported map from
+    // its own measurements -- the plain scale sqrt(2/n) reduced by the
+    // fragment control's fitted coefficient to sqrt(1 - beta^2) (measured:
+    // the unregressed X - Y scale under-predicted a beta ~ 0 window by 2x).
+    if (!survey && !opt.complete_basis && n_total > 0) {
+        result.predicted_rel_error.assign(n_energy, 0.0);
+        const bool have_beta = static_cast<int>(result.control_beta.size()) == n_energy;
+        for (int k = 0; k < n_energy; ++k) {
+            double resid = 1.0;
+            if (have_beta) {
+                const double beta = std::max(0.0, std::min(1.0, result.control_beta[k]));
+                resid = std::sqrt(std::max(0.0, 1.0 - beta * beta));
+            }
+            result.predicted_rel_error[k] = resid * std::sqrt(2.0 / n_total);
         }
     }
 
@@ -2536,7 +1647,7 @@ inline RealSpaceLdosResult FilteredSquareMap(
     prof.n_states = n_total;
     prof.block = opt.block;
     prof.filter_degree = degree;
-    prof.matvecs = static_cast<int64_t>(degree) * n_blocks;
+    prof.matvecs = static_cast<int64_t>(degree_all) * n_blocks;
     prof.span_ev = opt.emax - opt.emin;
     prof.eta_ev = opt.eta;
     // The grid stats accumulate over every (block, energy) pass; report the
@@ -2578,22 +1689,41 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(vbcsr::atomic::AtomicData& atomi
                                                 ChebyOpForm form,
                                                 const OrbitalCollocation& collocation,
                                                 const RealSpaceLdosOptions& opt,
-                                                MPI_Comm comm,
-                                                detail::FragmentBasisCache* fragment_cache =
-                                                    nullptr) {
+                                                MPI_Comm comm) {
     if (opt.energies.empty()) {
         throw std::runtime_error("Real-space LDOS needs at least one energy.");
     }
     if (!(opt.eta > 0.0)) {
         throw std::runtime_error("Real-space LDOS needs a positive broadening eta.");
     }
+    if (opt.sketch_families < 1) {
+        throw std::runtime_error("Real-space LDOS needs sketch_families >= 1.");
+    }
+    MapEngineOptions eng;
+    eng.energies = opt.energies;
+    eng.eta = opt.eta;
+    eng.emin = opt.emin;
+    eng.emax = opt.emax;
+    eng.bound_pad = opt.bound_pad;
+    eng.spacing = opt.spacing;
+    eng.box_edge = opt.box_edge;
+    eng.n_samples = opt.n_samples;
+    eng.block = opt.block;
+    eng.coeff_eps = opt.coeff_eps;
+    eng.seed = opt.seed;
+    eng.complete_basis = opt.complete_basis;
+    eng.certify_sampler = opt.certify_sampler;
+    eng.sampler = opt.sampler;
+    eng.survey = true;
+    eng.sketch_families = opt.sketch_families;
+    eng.fragment_buffer = 0.0;
     return detail::FilteredSquareMap(
-        atomic_data, H, S, Zt, form, collocation, opt,
+        atomic_data, H, S, Zt, form, collocation, eng,
         [&opt](double center, double half) {
             return detail::SqrtGaussianTables(opt.energies, opt.eta, center, half,
                                               opt.coeff_eps);
         },
-        comm, fragment_cache);
+        comm);
 }
 
 }  // namespace calc

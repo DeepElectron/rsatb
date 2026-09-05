@@ -249,15 +249,13 @@ std::vector<cd> densify_composite(const rsatb::op::VelocityAxis& axis,
 // route did.
 bool lcao_fsum_lock() {
     auto structure =
-        vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/diamond_sc111.vasp"));
+        vbcsr::atomic::ReadStructure(rsatb::test::data_path("diamond/conf.vasp"));
 
     rsatb::model::LcaoConfig cfg;
     cfg.hamiltonian =
-        rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+        rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/hamiltonians.h5")};
     cfg.orbitals.dir = rsatb::test::data_path("diamond/");
     cfg.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    cfg.pseudopotentials.dir = rsatb::test::data_path("diamond/");
-    cfg.pseudopotentials.names = {"C_ONCV_PBE-1.0.upf"};
     auto model = rsatb::model::LcaoModel::Create(cfg, MPI_COMM_WORLD);
 
     rsatb::model::SetupOptions opt;

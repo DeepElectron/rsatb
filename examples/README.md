@@ -34,8 +34,9 @@ padded by 0.5 eV — the analytic check. Omitting `overlap` leaves the basis
 orthogonal, which is why velocity and position come for free.
 
 **02 — LCAO.** Orbital files are required, not optional: an LCAO basis is
-non-orthogonal and they are what the overlap is computed from. Adding the
-pseudopotentials additionally enables the velocity operator. Nothing about the
+non-orthogonal and they are what the overlap is computed from. The velocity is
+the commutator i[H, r] from the model's dipole integrals, so no pseudopotential
+files are needed. Nothing about the
 basis is declared — the orbital count (13) and the graph cutoff (3.7042 Å) are
 read from `C_gga_7au_100Ry_2s2p1d.orb`; those two numbers used to be
 constructor arguments transcribed by hand. Uses the diamond test data.

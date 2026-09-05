@@ -99,7 +99,7 @@ effect of a mode name. It is now `operator_form="sandwich"` (previously `release
 
 | your input | class |
 |---|---|
-| Hamiltonian file + `.orb` + `.upf` | `LcaoModel` — always non-orthogonal |
+| Hamiltonian file + `.orb` (+ optional `.upf`) | `LcaoModel` — always non-orthogonal |
 | Slater-Koster parameters you write | `SktbModel` — orthogonal unless `overlap=` |
 | DFTB `.skf` parameter set | `DftbModel.from_skf_directory(...)` |
 | Hamiltonian file, already orthogonal | `TightBindingFileModel` |

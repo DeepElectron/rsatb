@@ -1430,14 +1430,13 @@ inline RealSpaceLdosResult ComputeRealSpaceLdos(const ObservableContext& context
     options.emin = pencil.emin;
     options.emax = pencil.emax;
     return ComputeRealSpaceLdos(atomic_data, pencil.H, pencil.s.get(), *pencil.zt,
-                                pencil.form, collocation, options, comm,
-                                context.fragment_cache);
+                                pencil.form, collocation, options, comm);
 }
 
 /// The real-space electron density, from the same Gamma pencil. Glue only --
 /// the method lives in rs_density.hpp; the same peel, factor reuse and bound
-/// fill as the LDOS adapter, because it is the same estimator under a
-/// different filter.
+/// fill as the LDOS adapter, plus the fragment basis cache the density's
+/// surrogate reuses across tasks of one setup.
 inline RealSpaceDensityResult ComputeRealSpaceDensity(const ObservableContext& context,
                                                       const std::vector<std::string>& orbital_files,
                                                       RealSpaceDensityOptions options) {

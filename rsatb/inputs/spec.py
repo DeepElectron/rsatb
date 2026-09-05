@@ -597,13 +597,18 @@ TASK = Union(
                                 default="atom"),
             }),
         "ldos": Obj(
-            "Local density of states on a real-space grid, by square-root "
-            "filtered stochastic Chebyshev expansion. Needs the radial orbital "
-            "files, so an LCAO model, at a single Gamma point.\n\n"
-            "One recursion serves every energy, so a dense window costs barely "
-            "more than one energy: the marginal cost of an energy point is one "
-            "AXPY per Chebyshev step. The map is non-negative everywhere by "
-            "construction, being a mean of squares.\n\n"
+            "Local density of states on a real-space grid, by the "
+            "survey-sampling estimator (doc/design_survey_sampling_ldos.md): a "
+            "flat-top Chebyshev sketch of the energy window and its exact "
+            "filtered images from one recursion per probe; the map is the "
+            "captured part of the window's sketch divided by its capture "
+            "fraction. Unbiased, non-negative, error sqrt(2 (1 - capture) / "
+            "rank) with rank = sketch_families x n_samples -- bounded by "
+            "sqrt(2 / rank) at every system size, exact once the rank reaches "
+            "the states in the window. Needs the radial orbital files, so an "
+            "LCAO model, at a single Gamma point.\n\n"
+            "One recursion serves every energy: the marginal cost of an energy "
+            "point is a few AXPYs per Chebyshev step.\n\n"
             "Written one file per rank -- <label>.rank00000.npz and so on -- "
             "because no rank holds the whole grid. Each file carries the grid "
             "shape, the energies, and its own points, so it is self-describing; "
@@ -626,10 +631,13 @@ TASK = Union(
                                    "which is what keeps the per-box orbital count "
                                    "bounded on a coarse grid.", minimum=0),
                               default=0),
-                "n_samples": F(_int("Random states in the estimator. Relative "
-                                    "noise falls as 1/sqrt(n_samples).",
-                                    minimum=1), default=64),
-                "block": F(_int("States per Chebyshev sweep, i.e. the SpMM width. "
+                "n_samples": F(_int("Random probes. The sketch rank is "
+                                    "sketch_families x n_samples and the error "
+                                    "scale sqrt(2 (1 - capture) / rank), so at "
+                                    "a fixed family count the noise falls as "
+                                    "1/sqrt(n_samples); this is the knob to buy "
+                                    "accuracy with.", minimum=1), default=64),
+                "block": F(_int("Probes per Chebyshev sweep, i.e. the SpMM width. "
                                 "Memory holds a few blocks of that many vectors.",
                                 minimum=1), default=16),
                 "seed": F(_int("Random seed. A run repeats exactly at the same "
@@ -639,63 +647,18 @@ TASK = Union(
                                "equivalent map, not an identical one -- the two "
                                "differ by the sampling error, which falls as "
                                "1/sqrt(n_samples).", minimum=0), default=12345),
-                "fragment_core": F(_num("Fragment control variate: core bin "
-                                        "edge; see the density task.",
-                                        unit="Angstrom", exclusive_minimum=0.0),
-                                   default=4.5),
-                "fragment_buffer": F(_num("Fragment control variate: dressing "
-                                          "radius; 0 disables. See the density "
-                                          "task; for the LDOS the gain grows "
-                                          "with eta, since the filter's "
-                                          "real-space reach ~v/eta is what the "
-                                          "fragments must capture.",
-                                          unit="Angstrom", minimum=0.0),
-                                     default=0.0),
-                "subspace_cv": F(_bool("Ritz-subspace control variate: the "
-                                       "filtered sample states double as a "
-                                       "spectrum-slicing sketch of the energy "
-                                       "window; cross-fitted halves correct "
-                                       "each other through exact low-rank Ritz "
-                                       "maps. Never worse than plain; "
-                                       "collapses the noise where the window "
-                                       "holds few states (gaps, band edges, "
-                                       "defect levels). Either operator form."),
-                                 default=True),
-                "subspace_filters": F(_int("Sketch-rank multiplier of the "
-                                           "deflation: each sample also "
-                                           "contributes its first J-1 "
-                                           "Chebyshev modulations (block-"
-                                           "Krylov family), growing the "
-                                           "captured window rank J-fold at "
-                                           "zero extra matvecs. 1 = bare "
-                                           "filtered states.", minimum=1),
-                                      default=4),
-                "local_capture": F(_int("Block-local capture rank per "
-                                        "fragment: per-fragment bases from "
-                                        "the sketch's local SVD with "
-                                        "dedicated image sweeps. Breaks the "
-                                        "global deflation's rank wall at "
-                                        "dense (metallic) windows; capacity "
-                                        "is intensive, so it holds at any "
-                                        "system size. 0 = off.", minimum=0),
-                                   default=0),
-                "local_pack": F(_int("Fragment groups sharing image-sweep "
-                                     "columns under local_capture; image "
-                                     "cost = local_capture x local_pack "
-                                     "column-sweeps. Smaller packs are "
-                                     "cheaper but bring packed fragments "
-                                     "closer (crosstalk bias from the "
-                                     "filter kernel tail).", minimum=1),
-                                default=8),
-                "local_pack_replicas": F(
-                    _int("Independent sign realizations of the packed image "
-                         "columns under local_capture. The map averages the "
-                         "replicas (crosstalk falls as 1/replicas) and their "
-                         "spread is reported as local_packing_se, a measured "
-                         "packing error bar. Image-sweep cost scales "
-                         "linearly; 1 = single realization, no error bar.",
-                         minimum=1),
-                    default=2),
+                "sketch_families": F(_int("Chebyshev modulation families per "
+                                          "probe, J. The sketch rank is "
+                                          "J x n_samples and the error scale "
+                                          "sqrt(2 (1 - capture) / rank); each "
+                                          "family lengthens the sweep by about "
+                                          "a tenth of the filter degree, and "
+                                          "families of one probe are correlated "
+                                          "draws (design effect 1.0 at J = 6, "
+                                          "2.5 at J = 12), so J ~ 6 with probes "
+                                          "supplying the rest of the rank is "
+                                          "the efficient setting.", minimum=1),
+                                     default=6),
             }),
         "density": Obj(
             "Electron density on a real-space grid: the ldos estimator with "
@@ -747,6 +710,12 @@ TASK = Union(
                                           "rank count.",
                                           unit="Angstrom", minimum=0.0),
                                      default=0.0),
+                "fragment_workspace_mb": F(_int("Workspace cap for the fragment build, "
+                                                "MB: bounds the fragments in flight by "
+                                                "the largest working set (Z panel |Z rows| "
+                                                "x |F|, N x |F| for a dense Z, plus the "
+                                                "nf x nf matrices). 0 = one per thread.",
+                                                minimum=0), default=0),
                 "fragment_coefficient": F(
                     _str("Coefficient multiplying the paired fragment "
                          "correction. 'fixed' uses coefficient one and is "

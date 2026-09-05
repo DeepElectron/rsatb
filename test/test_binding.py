@@ -81,7 +81,7 @@ def test_lcao_periodic_msd_runs_through_the_commutator_route():
     """
     data = os.path.join(os.path.dirname(__file__), "data", "diamond")
     orb = "C_gga_7au_100Ry_2s2p1d.orb"
-    h5 = os.path.join(data, "C2.0", "hamiltonians.h5")
+    h5 = os.path.join(data, "hamiltonians.h5")
     if not (os.path.exists(h5) and os.path.exists(os.path.join(data, orb))):
         import pytest
         pytest.skip("diamond LCAO fixture not present")
@@ -92,7 +92,7 @@ def test_lcao_periodic_msd_runs_through_the_commutator_route():
     )
     assert model.capabilities.velocity, "LCAO velocity must not require pseudopotentials"
 
-    structure = Structure.from_file(os.path.join(data, "diamond_sc111.vasp"))
+    structure = Structure.from_file(os.path.join(data, "conf.vasp"))
     rs = RSATB(structure, model,
                SetupOptions(kpoints=[[0.0, 0.0, 0.0]],
                             preconditioner=PreconditionerOptions()),

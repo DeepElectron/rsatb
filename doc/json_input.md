@@ -264,13 +264,26 @@ chosen. `density` is the `ldos` estimator with the filter replaced by the
 square root of the Fermi-Dirac occupation at `(mu, temp)`; like `ldos` it is
 Gamma-only, needs the radial orbital files, and writes one file per rank.
 
-`ldos` and `density` accept `fragment_buffer` (Angstrom; 0 = off, the
-default): the fragment control variate. A deterministic fragment baseline
-carries most of the map and the random samples correct only the residual, so
-the pointwise noise drops by orders of magnitude at the same sample count --
-systematically, with the buffer as the knob. The task reports `n_fragments`
-and `correction_rms` (the residual the samples still carry). Sandwich form,
-single rank; `fragment_core` sizes the dense per-fragment solves.
+The two tasks reduce their sampling noise by different means, each suited
+to what its filter selects. `ldos` is the survey-sampling estimator
+(`doc/design_survey_sampling_ldos.md`): every random state's sweep also
+yields a flat-top sketch of the energy window, the map is the captured part
+of the window divided by its measured capture fraction, and the relative
+error is `sqrt(2 (1 - capture) / rank)` with `rank = sketch_families x
+n_samples` -- bounded at every system size and exact once the rank reaches
+the number of states in the window. Use `sketch_families` of about 6 and buy
+accuracy with `n_samples`; raise `sketch_families` only to reach exactness on
+a small cell. The task reports `capture`, `sketch_rank` and
+`predicted_rel_error` per energy.
+
+`density` accepts `fragment_buffer` (Angstrom; 0 = off, the default): the
+fragment control variate. A deterministic fragment baseline carries most of
+the map and the random samples correct only the residual, so the pointwise
+noise falls exponentially with the buffer in gapped systems; the task reports
+`n_fragments`, `correction_rms` and `control_beta`. For metals, where no
+local surrogate helps, `energy_windows` splits the occupation into windows
+sampled separately from the same sweep, which removes the cross-window noise
+at no extra cost. `fragment_core` sizes the dense per-fragment solves.
 
 Two runs of the same observable need a `label` to tell their results apart:
 

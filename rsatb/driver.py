@@ -184,7 +184,8 @@ class RSATB:
     def compute_rs_density(self, mu, temp, spin_degeneracy=2.0, spacing=0.4,
                            box_edge=0, n_samples=64, block=16, seed=12345,
                            fragment_core=4.5, fragment_buffer=0.0,
-                           energy_windows=1, fragment_coefficient="fitted"):
+                           energy_windows=1, fragment_coefficient="fitted",
+                           fragment_workspace_mb=0):
         """
         Compute the electron density on a real-space grid.
 
@@ -238,7 +239,7 @@ class RSATB:
         out = self._cpp_obj.compute_rs_density(
             mu, kT, spin_degeneracy, spacing, box_edge, n_samples, block, seed,
             fragment_core, fragment_buffer, energy_windows,
-            fragment_coefficient == "fitted")
+            fragment_coefficient == "fitted", False, fragment_workspace_mb)
         if out["density"].shape[0] == out["n_point"]:
             full = np.zeros(out["n_point"])
             full[out["point_index"]] = out["density"]
@@ -246,59 +247,39 @@ class RSATB:
         return out
 
     def compute_rs_ldos(self, energies, eta, spacing=0.4, box_edge=0,
-                        n_samples=64, block=16, seed=12345,
-                        fragment_core=4.5, fragment_buffer=0.0,
-                        subspace_cv=True, subspace_filters=4, local_capture=0,
-                        local_pack=8, local_pack_replicas=2):
+                        n_samples=64, block=16, seed=12345, sketch_families=6):
         """
         Compute the full-cell LDOS map on a real-space grid.
 
-        Square-root-filtered stochastic estimator (Gamma-only; needs a model
-        with real-space orbitals, i.e. LCAO or DFTB with .orb files). One
-        Chebyshev sweep serves every requested energy, and the map is
-        non-negative pointwise by construction.
-
-        Choosing n_samples. With Rademacher draws the pointwise relative
-        standard error is
-
-            sigma_rel = sqrt(2 / n_samples)          (n = 2 / sigma^2)
-
-        so 20% needs 50 samples, 10% needs 200, 5% needs 800, and 1% needs
-        20000. Measured on diamond sc444 at 0.95x that bound, flat across
-        valence, gap and conduction energies. What does NOT appear in it is
-        as useful as what does: the error is independent of system size, of
-        the energy, of eta, and of the grid spacing -- refining the grid buys
-        resolution, never accuracy, and a denser grid is nearly free because
-        the Chebyshev sweep does not touch it.
-
-        Any quantity integrated over space converges much faster, because it
-        is a Hutchinson trace over the m_eff states inside the eta window:
-        roughly sqrt(2 / (n_samples * m_eff)). On sc444 that was a factor of
-        ~10 in the bands (m_eff ~ 100-200) and ~4 in the gap (m_eff ~ 15).
-        Budget for the map you want to look at, not for the integral.
+        Survey-sampling estimator (doc/design_survey_sampling_ldos.md;
+        Gamma-only; needs a model with real-space orbitals, i.e. LCAO or
+        DFTB with .orb files). Every probe's Chebyshev sweep yields the
+        sqrt-Gaussian filtered state, a flat-top sketch of the energy window
+        with ``sketch_families`` Chebyshev modulations, and the sketch's
+        exact filtered images; the map is the captured part of the window's
+        sketch divided by its global capture fraction. It is unbiased, its
+        relative error is sqrt(2 (1 - c) / k) with k = sketch_families x
+        n_samples the sketch rank and c the capture -- bounded by
+        sqrt(2 / k) at every system size -- and it is exact once k reaches
+        the number of states in the window. One sweep serves every energy.
 
         Args:
-            energies: Evaluation energies in eV, inside the spectral window.
-            eta (float): Gaussian broadening in eV; the filter degree scales
-                as (spectral span) / eta.
-            spacing (float): Grid spacing in Angstrom.
-            box_edge (int): Grid box edge in points; 0 picks a physical
-                (~2.4 A) default whatever the spacing.
-            n_samples (int): Random states; relative noise ~ 1/sqrt(n).
-            block (int): States per Chebyshev sweep (SpMM width).
-            seed (int): RNG seed, for reproducible maps.
-            subspace_cv (bool): Ritz-subspace control variate -- the filtered
-                sample states double as a spectrum-slicing sketch of the
-                energy window; cross-fitted halves correct each other through
-                exact rank-n/2 Ritz maps. Never worse than plain (fitted
-                coefficient); collapses the sampling noise where the window
-                holds few states (gaps, band edges, defect levels). Either
-                operator form (the solve form whitens the sketch in the S
-                metric); needs at least two sample blocks.
-            subspace_filters (int): sketch-rank multiplier of the deflation
-                -- each sample also contributes its first J-1 Chebyshev
-                modulations (the block-Krylov family), growing the captured
-                window rank J-fold at zero extra matvecs. 1 = bare states.
+            energies (list of float): Energies in eV (absolute).
+            eta (float): Gaussian broadening (standard deviation of the
+                window), eV.
+            spacing (float): Grid spacing, Angstrom.
+            box_edge (int): Grid box side in points; 0 picks the physical
+                default.
+            n_samples (int): Probes. The error scale is
+                sqrt(2 (1 - c) / (sketch_families * n_samples)).
+            block (int): Probes per Chebyshev sweep (SpMM width).
+            seed (int): Random seed; a run repeats exactly at any rank count.
+            sketch_families (int): Chebyshev modulation families per probe,
+                J. Each lengthens the sweep by ~degree/10 and adds
+                n_samples columns to the sketch; families of one probe are
+                correlated draws (design effect 1.0 at J = 6, 2.5 at
+                J = 12), so J ~ 6 with probes supplying the rest of the rank
+                is the efficient setting.
 
         Returns:
             dict with keys:
@@ -309,12 +290,14 @@ class RSATB:
                     RANK's share of the grid; ranks partition the points.
                 grid (serial runs only): ldos scattered to the full
                     (n_energy, n0, n1, n2) array.
+                capture, sketch_rank, predicted_rel_error: per energy, the
+                    capture fraction c (1 = exact), the sketch rank k, and
+                    sqrt(2 (1 - c) / k).
                 filter_degree, n_states, sampler_residual: diagnostics.
         """
         out = self._cpp_obj.compute_rs_ldos(
             list(energies), eta, spacing, box_edge, n_samples, block, seed,
-            fragment_core, fragment_buffer, subspace_cv, subspace_filters,
-            local_capture, local_pack, local_pack_replicas)
+            sketch_families)
         if out["ldos"].shape[1] == out["n_point"]:
             n_energy = out["ldos"].shape[0]
             full = np.zeros((n_energy, out["n_point"]))

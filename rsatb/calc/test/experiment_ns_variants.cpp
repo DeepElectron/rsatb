@@ -13,7 +13,7 @@
 // similarity transform of S^-1 H), so a variant that converges in its own
 // metric while leaving the adjoint metric high is not converging at all.
 //
-//   OMP_NUM_THREADS=... ./experiment_ns_variants [--poscar diamond_sc444.vasp]
+//   OMP_NUM_THREADS=... ./experiment_ns_variants [--supercell 4]
 //                                                [--steps 6] [--sptol 1e-5]
 //                                                [--kpoint kx ky kz] [--only NAME]
 //
@@ -82,12 +82,12 @@ double hermiticity_defect(const Matrix& z) {
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
 
-    std::string poscar = "diamond_sc444.vasp";
+    int repeat = 4;
     int max_steps = 6;
     double sptol = 1e-5;
     std::vector<double> kpoint = {0.0, 0.0, 0.0};
     for (int i = 1; i < argc; ++i) {
-        if (std::strcmp(argv[i], "--poscar") == 0 && i + 1 < argc) poscar = argv[++i];
+        if (std::strcmp(argv[i], "--supercell") == 0 && i + 1 < argc) repeat = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--steps") == 0 && i + 1 < argc) max_steps = std::atoi(argv[++i]);
         else if (std::strcmp(argv[i], "--sptol") == 0 && i + 1 < argc) sptol = std::atof(argv[++i]);
         else if (std::strcmp(argv[i], "--kpoint") == 0 && i + 3 < argc) {
@@ -98,7 +98,9 @@ int main(int argc, char** argv) {
 
     // ---- overlap, exactly as benchmark_isqrt_diamond builds it ------------
     const std::string data = rsatb::test::data_dir() + "diamond/";
-    vbcsr::atomic::Structure st = vbcsr::atomic::ReadPoscar(data + poscar);
+    vbcsr::atomic::Structure st = vbcsr::atomic::ReadPoscar(data + "conf.vasp");
+    st.supercell = {{repeat, repeat, repeat}};
+    st = st.BuildSupercell();
     const double rcut_ang = 7.0 * 0.529177210903;
     vbcsr::atomic::NeighborList nl;
     nl.build(st.pos, st.cell, {true, true, true}, 2.0 * rcut_ang + 1e-6);
@@ -129,8 +131,8 @@ int main(int argc, char** argv) {
     std::unique_ptr<vbcsr::atomic::ImageContainer<double>> img = op.build_overlap(ad);
     std::unique_ptr<Matrix> S(
         img->sample_k(kpoint, vbcsr::atomic::PhaseConvention::R_AND_POSITION));
-    std::printf("%s: %d atoms, sptol %.0e, k = (%.3f, %.3f, %.3f)\n",
-                poscar.c_str(), n_atom, sptol, kpoint[0], kpoint[1], kpoint[2]);
+    std::printf("diamond %dx%dx%d: %d atoms, sptol %.0e, k = (%.3f, %.3f, %.3f)\n",
+                repeat, repeat, repeat, n_atom, sptol, kpoint[0], kpoint[1], kpoint[2]);
 
     // ---- one seed per variant (deterministic, so all start identical) ----
     // 0: adjoint (X = Z^H S Z), 1: plain (X = Z S Z), 2: plain with Z

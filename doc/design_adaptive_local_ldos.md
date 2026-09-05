@@ -1,5 +1,15 @@
 # Adaptive, distance-certified local capture for real-space LDOS
 
+> **Superseded (2026-09-05).** The code this note designed -- block-local
+> capture, packed image sweeps, sign replicas, the distance audit, the
+> certified routing, and the cross-fitted global deflation with its residual
+> estimator -- was removed in the production cleanup. The LDOS map has one
+> estimator, the survey-sampling estimator of
+> `design_survey_sampling_ldos.md`; the density has one, the fragment
+> surrogate. This note is kept as the record of what was tried, measured and
+> why it lost (sections 16-17).
+
+
 Status: proposed enhancement of `rs_ldos.hpp`.  This document defines the
 algorithm and validation needed before the packed local-capture path is called
 state of the art.  It does not change the paper's claims until the measurements
@@ -813,3 +823,241 @@ claims it.
   construction from contraction; routing still reads the production
   capture.  Accepted as a known, documented second-order bias until the
   interface work above gives adaptivity a place to live.
+
+## 17. Verdict from the silicon 12^3 figure run, and the certified routing (2026-09-02)
+
+The first production use of the local route -- silicon 12^3 (3,456 atoms,
+44,928 orbitals), eta 0.25 eV, 64 samples in blocks of 16, `local_capture`
+48, `local_pack` 8, two sign replicas -- measured against the same-cell
+k-point reference (`kconv/si_rs_k12`, exact by band folding):
+
+| E (eV) | global capture | route | rms error / map rms | packing se / map rms | share of error variance |
+|---|---|---|---|---|---|
+| 8.8  | 0.43 | local | 18.6 % | 11.3 % | 37 % |
+| 16.8 | 0.49 | local | 17.9 % | 12.2 % | 47 % |
+| 18.3 | 0.59 | local | 20.8 % | 17.6 % | 72 % |
+
+The plain estimator's floor at 64 samples is sqrt(2/64) = 17.7 %.  The
+local route therefore bought **nothing** over plain sampling, while its
+image sweeps (768 columns of the squared table) cost 4.5x the sample sweep.
+Diamond 12^3 on the global route in the same campaign: 0.00 % and 0.06 %
+error at the two energies whose capture was >= 0.997, and 10.3 % at the one
+whose capture was 0.49 -- i.e. the global map the routing rule *replaced*
+on silicon would have been ~2x better than what replaced it.
+
+### 17.1 Why: the packed images are a stochastic estimator with fewer random units
+
+At eta = 0.25 eV the coherence length of the filtered images, hbar v / eta,
+is ~50 A in silicon -- the size of the 12^3 cell.  Every fragment's image
+therefore spreads uniformly over every other fragment, and the crosstalk a
+packed column carries from its n_c - 1 same-color partners is
+distance-independent: relative amplitude ~ sqrt((n_c - 1) / N_frag) per
+column, matching the measured 11-18 %.  Packing with random signs is then
+exactly a Hutchinson-type estimator whose random units are fragments
+instead of orbitals, with relative variance ~ 2/(G L) per column set -- the
+flat G*V_G the Al G-scan measured (section 16) is this law.  Per swept
+column it is no better than one plain sample, and each image column costs a
+degree-2d sweep.  Distance-based coloring cannot improve it in this regime
+(the crosstalk does not decay with distance), which retires the "coloring
+quality" trigger of section 16 for extended windows.
+
+Two further structural facts settle the design:
+
+* *The Cramer-Rao floor of random probes.*  For K filtered random vectors
+  the quadratic estimator of phi^T D phi has relative variance 2/K, and no
+  estimator of a quadratic form from K Gaussian samples beats it.  Linear
+  probing of the banded part of D is N/(2 m_eff) times worse (the far part
+  of an extended D is the noise).  Multilevel-in-resolution and
+  broad-window control variates fail for the same reason: the chi-square
+  noise at different resolutions is almost uncorrelated (measured
+  correlation gain < 10 %).
+* *Only deterministic images beat the floor,* and the global route gets
+  them free: the modulated sketch T_js p xi and its exact image T_js p^2 xi
+  ride the same recursion (design_subspace_deflation.md), so the
+  cross-fitted global deflation is exact wherever its capacity J(n - w)
+  covers the window's rank, and degrades gracefully toward sqrt(2/n) beyond.
+  Local images need restricted vectors, whose images are never free; their
+  count Sum_F r_F is extensive, and packing them is the stochastic
+  estimator above.
+
+### 17.2 Sizing rule for exact maps
+
+The filter p^2 is a Gaussian of standard deviation eta.  From the k-point
+spectrum, k99.9(E) = number of states holding 99.9 % of the window weight
+sum_i exp(-(E - eps_i)^2 / 2 eta^2).  The global route is exact (< 0.1 %)
+once J(n - w) >= ~2 k99.9 -- measured on silicon 12^3: capacity 1728 against
+k99.9 = 1811 captured 0.76 / 0.82 / 1.00 (errors 3.2 / 2.4 / 0.06 %), capacity
+3696 (n = 320) captured 1.0000 at every energy (errors 0.002 / 0.002 / 0.006 %,
+9.7 h); a randomized sketch needs about twice the target rank when the
+window's weight spectrum decays slowly.  The sweep costs n (1 + J/10) filter
+degrees.  At eta = 0.25 eV:
+
+| system | k99.9 per energy | chosen (n, J) | capacity |
+|---|---|---|---|
+| Si 12^3   | 1811 / 1652 / 1338 | (320, 12) | 3696 (160 gave 1728: 3 % at the two dense energies) |
+| dia 12^3  |  383 /  110 /  158 | (64, 12)  |  576 |
+| Al 6x6x6 (216 at.) | ~300 / ~150 / ~5 | (128, 12) | 1344 |
+
+Beyond the capacity the answer is plain sampling at sqrt(2/n): the O(N)
+floor for extended windows, size- and resolution-independent (section 16's
+Al scan measured it at 0.97-0.98x the bound).
+
+### 17.3 Certified routing (implemented)
+
+`local_capture` no longer commits an energy to the local route on the
+global capture alone.  A candidate (global capture < 0.9) is served
+locally only when a prediction made BEFORE the full image sweep says the
+local map will be better:
+
+1. *Out-of-sample local capture* c_l: the fraction of the second-half
+   samples' energy that the first-half per-fragment bases capture (the
+   residual variance shrinks by (1 - c_l)^2; it is the split's own
+   contraction set, so the number is unbiased).
+2. *Pilot sweep*: the image columns of ONE packing color, all replicas --
+   1/G of the sweep -- and the between-replica spread of the captured map
+   they produce, scaled by sqrt(G) to the full map.  The pilot columns are
+   the first color's columns of the full sweep and are reused verbatim if
+   the route is taken, so a taken route costs exactly what it did before.
+3. *Decision*, identical on every rank (all inputs are reductions):
+   local = sqrt(G se^2 / rms^2 + (1 - c_l)^2 2 / n_second) against
+   global = (1 - c_g) sqrt(2 / n); the energy stays local only if local is
+   smaller.  With one replica the pilot cannot measure packing (se = 0) and
+   the rule sees the residual terms alone.
+
+Both predictions are reported per energy (`route_error_global`,
+`route_error_local`), and every LDOS run now reports
+`predicted_rel_error`: the residual fraction the samples still carry times
+sqrt(2 / n_served), plus the packing certificate -- the error scale a user
+needs to size samples against a target.  Applied to the silicon run above
+the rule predicts local 0.0031 vs global 0.0017 (map rms 0.0176) and would
+have kept the global map at 1/5 of the cost.
+
+Unit tests: `CertifiedRoutingRejectsTheLocalRouteOnOneFragment` (starved
+chain: priced, rejected, global map returned bitwise) and
+`CertifiedRoutingTakesTheLocalRouteWhereItWins` (160-atom chain, broad
+window, eight fragments on eight colors: kept, beats the global-only map
+against the dense reference, packing certificate ~0).
+
+### 17.4 Validation of the certified routing on real silicon (2026-09-02)
+
+Silicon 6^3 (432 atoms, 5,616 orbitals), a BROAD window (eta 1.5 eV), 64
+samples, J = 4, against dense diagonalization (`diag_reference`,
+`pub_exp/spectrum_realspace/results/route_val`):
+
+| estimator | E = 8.8 | 16.8 | 18.3 | notes |
+|---|---|---|---|---|
+| plain | 15.7 % | 15.9 % | 15.4 % | sqrt(2/64) = 17.7 % |
+| global route | 14.3 % | 14.3 % | 14.3 % | capture 0.21 / 0.18 / 0.17; predicted 14.1 / 14.5 / 14.6 % |
+| `local_capture` 48 requested | 14.3 % | 14.3 % | 14.3 % | pilot: c_l 0.38-0.40, packing 6.9 % -> predicted local 0.17 vs global 0.14 -> **rejected**, global map returned bitwise |
+
+Even at eta = 1.5 eV the one-color pilot measured packing noise of 7 % of
+the map (the coherence length still exceeds the same-color spacing of 20
+regions on 8 colors), and the per-fragment rank at this window exceeds the
+cap of 48 (out-of-sample capture 0.38).  The decision cost the pilot's 76 s
+against the 600 s the full sweep would have cost, and the map is exactly
+the global route's.  The 8^3 cell at eta = 0.25 eV (`si8_eta025_lc48`) is
+the extended-window check of the same rule.
+
+On real three-dimensional systems at the figure's resolutions the local
+route therefore never wins; the unit test `CertifiedRoutingTakesTheLocalRouteWhereItWins`
+is the only regime found so far where it does (a 160-atom chain, seven
+regions on seven colors, hence zero crosstalk: local 0.200 vs global-only
+0.209 against the dense reference).  The route stays available and priced
+honestly; the figure-quality path is the sized global route of 17.2.
+
+Silicon 8^3 (1,024 atoms, 13,312 orbitals), eta 0.25 eV, 64 samples, J = 4,
+`local_capture` 48 requested, against the k-point fold `kconv/si_rs_k8`:
+
+| E (eV) | plain | global route (kept) | predicted | pilot: c_l / packing / predicted local |
+|---|---|---|---|---|
+| 8.8  | 17.4 % | 12.3 % | 11.2 % | 0.44 / 7.1 % / 15.8 % -> rejected |
+| 16.8 | 18.0 % | 14.1 % | 12.5 % | 0.48 / 6.6 % / 14.6 % -> rejected |
+| 18.3 | 18.3 % |  8.4 % |  7.0 % | 0.58 / 10.8 % / 15.1 % -> rejected |
+
+Cost of asking: the pilot is 2 r L columns of the squared table (degree ~2d),
+here 2134 s against a 1319 s sample sweep -- 1/8 of the full image sweep it
+refused (~4.7 h), but not free. `local_capture` is a request that is priced
+by that pilot even when declined; leave it off where the sized global route
+is adequate.
+
+### 17.5 Density: the fragment buffer is the lever (2026-09-02)
+
+The density path runs the same estimator with the sqrt-Fermi filter and no
+Ritz deflation (the occupied space is extensive).  Silicon 4^3 (128 atoms),
+64 samples, against the k-point density `results/kref_si444`, the figure's
+metric (std of the pointwise relative error where the reference exceeds
+0.2 of its maximum):
+
+| variant | error | beta | note |
+|---|---|---|---|
+| buffer 4 A, 1 window (production so far) | 5.66 % | 0.88 | |
+| 4 / 8 / 16 energy windows | 6.8 / 6.1 / 5.4 % | 0.39 / 0.04 / 0.00 | windows starve the fragment control and drift the electron count (509 -> 502 of 512) |
+| 256 samples | 2.67 % | 0.88 | the 1/sqrt(n) law |
+| buffer 6 A | 3.11 % | 0.98 | |
+| buffer 6 A, coefficient fixed at 1 | 3.10 % | 1 | |
+| **buffer 8 A** | **0.66 %** | 0.999 | the surrogate carries the map |
+
+The fragment surrogate's residual falls exponentially with the buffer (the
+density-matrix decay length of the insulator), while samples buy 1/sqrt(n):
+buffer 8 A at 64 samples beats 4x the samples at buffer 4 A by 4x.  The
+cost is the fragment builds (dense diagonalization of ~400-atom fragments at
+12^3, O(N) with a few-hour constant), not the sweep.  The 12^3 densities of
+the figure (`si_density12`, `dia_density12`; `run_density12.sh`) use buffer
+8 A, 64 samples, the same cells and Fermi levels as their `kconv/*_rs_k12`
+references (silicon 300 K; diamond 1160 K, whose 4 eV gap makes the 300 K
+reference density identical).
+
+**Memory of the fragment build at buffer 8 A (found 2026-09-03).** Both 12^3
+density runs were OOM-killed at 128 GB.  Two O(n_frag x nf^2)-class terms:
+(1) the basis retained every fragment's nf x nf eigenvector matrix for
+later filter tables -- 216 MB per fragment at nf ~ 5200, 225 GB for the
+1000 fragments of the 12^3 cell -- while the per-table rows it exists to
+produce are |core| x |F|, 115x smaller; (2) the compression Zb^T H Zb held
+the nrr x nf product H Zb per in-flight fragment on top of the Z panel
+Zb, and with a dense Z (nrr = N) that is 2 x 1.9 GB x 48 threads.  Fixed
+by assembling the per-table rows inside the build (the eigenvectors die
+with their fragment; a task with other tables rebuilds, which the cache key
+now records), accumulating the compression per row panel (no H Zb), and an
+explicit workspace cap `fragment_workspace_mb` on the fragments in flight
+(the spectrum tasks' `max_workspace_mb` convention).  Per fragment the
+working set is now the Z panel plus 3 nf^2: ~2.7 GB at 12^3 / buffer 8, so
+a 40 GB cap runs 14 fragments at a time.
+
+### 17.6 Free sweep reduction: per-table degree truncation (2026-09-03)
+
+The filter tables were sized by the centre-of-spectrum worst case,
+m = (half/eta) sqrt(ln 1/eps) + 8 = 1826 for silicon, with no coefficient
+truncation. A window at x0 has angular width eta_bar / sqrt(1 - x0^2), so its
+coefficients reach the tolerance earlier by that factor (0.5-0.65 for band
+energies of a 200 eV LCAO spectrum). Each table is now truncated where two
+consecutive coefficients fall below 1e-4 x eps relative to its largest one, and
+the shared sweep runs to the longest table actually needed. Silicon 8^3,
+64 samples, J = 4: degree 1826 -> 1203, sweep 1157 s -> 531 s (a loaded node;
+~1.5x is the fair figure), maps identical to 5e-12 of the maximum, capture
+identical to five digits. A truncation floor equal to eps itself (1e-8) moved
+the full-fragment density identity from 1e-11 to 1e-8 of the peak, hence the
+four-orders margin. Applies to the LDOS and both density tables.
+
+### 17.7 The 12^3 densities (2026-09-05)
+
+Same cells and Fermi levels as the spectrum and LDOS rows, fragment buffer 8 A,
+64 samples, against the k-point densities of `kconv/*_rs_k12` (figure metric:
+std of the pointwise relative error where the reference exceeds 0.2 of its
+maximum):
+
+| system | error | beta | electrons on grid (of 13824) | wall | dominant cost |
+|---|---|---|---|---|---|
+| diamond 12^3, 1160 K | 0.36 % | 0.999 | 13824.19 | 15.4 h | fragment builds 12.3 h (dense diamond: ~8k-orbital fragments) |
+| silicon 12^3, 300 K | 2.76 % | 0.974 | 13824.93 | 15.8 h | sweep 7.8 h (24k-moment Fermi filter), fragments 3.7 h |
+
+Silicon's 2.8 % is the genuine finite-buffer residual (the 128-atom test's
+0.66 % had a buffer covering the whole cell); the lever is the buffer (10 A
+would roughly halve it at ~2x the fragment cost) or the survey-sampling
+residual estimator of design_survey_sampling_ldos.md, Section 11.
+
+Energy windows, measured on aluminum (216 atoms, 64 samples, 300 K, against
+`results/kref_al666_fix`; figure metric / rms): 8 windows 0.15 % / 0.68 %,
+1 window 1.36 % / 1.76 %. For a metal the fragment surrogate does nothing
+(beta 0.045) and the windows are the lever; for the insulators the surrogate
+is the lever and the windows added nothing (silicon 4^3: 5.7 -> 6.8 % with
+4 windows). Both knobs stay in the density task, one per regime.

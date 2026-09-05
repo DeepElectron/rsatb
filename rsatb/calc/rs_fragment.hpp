@@ -1,8 +1,8 @@
 #ifndef RSATB_CALC_RS_FRAGMENT_HPP
 #define RSATB_CALC_RS_FRAGMENT_HPP
 
-// Fragment control variate for the filtered-square real-space estimators
-// (rs_ldos.hpp, rs_density.hpp).
+// Fragment control variate for the filtered-square real-space density
+// (rs_density.hpp, through the engine of rs_ldos.hpp).
 //
 // The stochastic map estimator n(r) = E[|Phi T xi|^2] carries an irreducible
 // chi^2 sampling floor: each map value is a SQUARED AMPLITUDE of one random
@@ -165,9 +165,9 @@ inline double ClenshawEval(const std::vector<std::complex<double>>& table, doubl
 /// per-fragment eigenbasis of the principal submatrix M[F, F], and the
 /// gauge-exact core factors. Everything here depends only on (Z, H,
 /// core_edge, buffer) -- never on a filter table -- so ONE build serves
-/// every task of a run (all LDOS energies AND the density windows); the
-/// per-table row blocks are assembled from it by TablesToCv at a cost of
-/// one small GEMM per fragment per table.
+/// every density task of a run (all its energy windows); the per-table row
+/// blocks are assembled from it by TablesToCv at a cost of one small GEMM
+/// per fragment per table.
 struct FragmentBasis {
     int n_frag = 0;
     int64_t sum_dom_orb = 0;   ///< Sum of fragment domain sizes (profile).
@@ -182,15 +182,20 @@ struct FragmentBasis {
     struct Frag {
         std::vector<double> a_eig;  ///< Compression eigenvalues, raw eV
                                     ///< (solve chain: nk kept pencil values).
-        std::vector<double> V;      ///< Eigenvectors, column-major nf x nf
-                                    ///< (sandwich chain only; solve stores K).
-        std::vector<double> ZcV;    ///< Z[core, F] V, column-major nc x nk.
-        /// Solve chain only: the right factor K = V^T W q(W), column-major
-        /// nk x nf, so that T0 = ZcV diag(p(eps)) K. Empty = sandwich chain,
-        /// whose right factor is V^T.
-        std::vector<double> K;
     };
     std::vector<Frag> frags;
+    /// The per-table operator rows P_k = Z[core, F] V g_k(eps) V^T (solve
+    /// chain: ZcV diag(g_k) K), [table][frag], column-major |core| x |F|.
+    /// Assembled INSIDE the build, fragment by fragment, so the nf x nf
+    /// eigenvector matrix never outlives its own eigensolve: retaining it
+    /// for later tables cost n_frag x nf^2 doubles -- 216 MB per fragment
+    /// at an 8 A buffer, 225 GB for the 12^3 silicon cell, the OOM that
+    /// killed the first 12^3 density runs -- where P is |core| x |F| per
+    /// table, 115x smaller. The price is that a task with different tables
+    /// rebuilds (one eigensolve per fragment), which the cache key records.
+    std::vector<std::vector<std::vector<double>>> P;
+    std::vector<std::vector<std::complex<double>>> tables;  ///< P's tables.
+    double center = 0.0, half = 0.0;                        ///< Their interval.
 };
 
 /// The solve-form surrogate chain: the estimator applies
@@ -229,8 +234,9 @@ struct FragmentBasisCache {
 /// scope).
 struct FragmentCv {
     const FragmentBasis* basis = nullptr;
-    std::vector<std::vector<std::vector<double>>> P;  ///< [table][frag],
-                                                      ///< column-major |core| x |F|.
+    /// The basis' per-table rows, [table][frag], column-major |core| x |F|;
+    /// owned by the basis (the cache), never copied.
+    const std::vector<std::vector<std::vector<double>>>* P = nullptr;
     /// Inverted domain index for the identity stream: every (global column,
     /// fragment, position-in-domain) triple of this rank's fragments, sorted
     /// by column. ApplyIdentity binary-searches a column block here instead
@@ -276,8 +282,8 @@ struct FragmentCv {
                     }
                 }
                 const double one = 1.0, zero = 0.0;
-                dgemm_("N", "N", &nc, &nv, &nd, &one, P[k][f].data(), &nc, x_dom.data(),
-                       &nd, &zero, y_core.data(), &nc);
+                dgemm_("N", "N", &nc, &nv, &nd, &one, (*P)[k][f].data(), &nc,
+                       x_dom.data(), &nd, &zero, y_core.data(), &nc);
                 for (int i = 0; i < nc; ++i) {
                     double* dst = chi0->row_data(basis->core_rows[f][i]);
                     for (int v = 0; v < nv; ++v) {
@@ -335,7 +341,7 @@ struct FragmentCv {
             const int nc = static_cast<int>(basis->core_rows[f].size());
             const int v = static_cast<int>(it->col - start);
             const double* col =
-                P[k][f].data() + static_cast<size_t>(it->pos) * nc;
+                (*P)[k][f].data() + static_cast<size_t>(it->pos) * nc;
             for (int i = 0; i < nc; ++i) {
                 chi0->row_data(basis->core_rows[f][i])[v] += col[i];
             }
@@ -354,16 +360,24 @@ struct FragmentCv {
 /// surrogate operator is identical at any rank count; the block payloads are
 /// fetched per fragment window. This rank keeps only fragments holding at
 /// least one of its owned core atoms and stores factors for those atoms
-/// only. No filter table enters here -- TablesToCv turns the basis into the
-/// per-table operator, so one build serves every task of a run.
-inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
-                                        vbcsr::BlockSpMat<double>& H,
-                                        vbcsr::BlockSpMat<double>& Z,
-                                        double core_edge, double buffer,
-                                        MPI_Comm comm,
-                                        const SolveChainSpec& chain = {}) {
+/// only. The filter `tables` (on the scaled interval `center`, `half`) enter
+/// here: the per-table rows are assembled from each fragment's eigensolve
+/// on the spot and the eigenvectors are dropped (see FragmentBasis::P).
+/// `workspace_mb` bounds the fragments in flight: each holds its Z panel
+/// Z[nr, F] (|Z row support| x |F| doubles -- with a dense Z that is N x
+/// |F|), the compression panel, and the nf x nf workspace; 0 = one per
+/// thread, the same cap convention as the spectrum tasks' max_workspace_mb.
+inline FragmentBasis BuildFragmentBasis(
+    const vbcsr::atomic::AtomicData& ad, vbcsr::BlockSpMat<double>& H,
+    vbcsr::BlockSpMat<double>& Z, double core_edge, double buffer,
+    const std::vector<std::vector<std::complex<double>>>& tables, double center,
+    double half, MPI_Comm comm, const SolveChainSpec& chain = {},
+    int workspace_mb = 0) {
     if (!(core_edge > 0.0) || !(buffer > 0.0)) {
         throw std::runtime_error("Fragment control variate needs positive core and buffer.");
+    }
+    if (tables.empty() || !(half > 0.0)) {
+        throw std::runtime_error("Fragment basis needs the task's filter tables.");
     }
     if (chain.active() && (chain.q.empty() || !(chain.hi > chain.lo))) {
         throw std::runtime_error(
@@ -603,6 +617,10 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
     basis.dom_rows.resize(n_mine);
     basis.core_rows.resize(n_mine);
     basis.frags.resize(n_mine);
+    basis.P.assign(tables.size(), std::vector<std::vector<double>>(n_mine));
+    basis.tables = tables;
+    basis.center = center;
+    basis.half = half;
     std::vector<int> nf_of(n_mine, 0);
     int eig_fail = 0;  // dsyevd info of the first failure; thrown after the loop
 
@@ -610,7 +628,24 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
     // windows (collective -- every rank runs the same batch count, short
     // ranks padding with empty requests), then one fragment per thread with
     // the BLAS sequential inside. Same structure as the graph seed's driver.
+    // The batch is bounded by the workspace cap against the LARGEST
+    // fragment's working set (Z panel + compression panel + nf x nf
+    // matrices), uniformly across ranks so the collectives stay aligned.
     int batch_size = std::max(1, omp_get_max_threads());
+    if (workspace_mb > 0) {
+        double max_bytes = 0.0;
+        for (int fi = 0; fi < n_mine; ++fi) {
+            double nrr = 0.0, nf = 0.0;
+            for (int a : frag_nr[fi]) nrr += ad.type_norb[gtype[a]];
+            for (int a : frag_dom[fi]) nf += ad.type_norb[gtype[a]];
+            const double bytes =
+                8.0 * (nrr * nf + 512.0 * (nrr + nf) + 3.0 * nf * nf);
+            max_bytes = std::max(max_bytes, bytes);
+        }
+        const double cap = 1048576.0 * static_cast<double>(workspace_mb);
+        const int fit = (max_bytes > 0.0) ? static_cast<int>(cap / max_bytes) : batch_size;
+        batch_size = std::max(1, std::min(batch_size, fit));
+    }
     int n_mine_max = n_mine;
     if (exchange) {
         int tmp_i = batch_size;
@@ -746,13 +781,17 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
             // full window was measured out) and, on the solve chain, the S
             // compression W_FF = W[F, F]. Symmetrized against accumulation
             // rounding.
+            // Per row panel R: out += Zb[R, :]^T (Op[R, nr] Zb) -- the
+            // accumulation runs on the nf x nf output directly, so the
+            // nrr x nf product Op Zb is never materialized (it doubled the
+            // per-fragment working set: 1.9 GB more per in-flight fragment
+            // at the 12^3 cell's dense Z and an 8 A buffer).
             constexpr int kPanelRows = 512;
-            std::vector<double> tmp(static_cast<size_t>(nrr) * nf, 0.0);
-            std::vector<double> panel;
+            std::vector<double> panel, prod;
             auto compress = [&](const std::vector<std::vector<int>>& op_of_row,
                                 const vbcsr::detail::FetchedBlockContext<double>& ctx,
                                 std::vector<double>& out) {
-                std::fill(tmp.begin(), tmp.end(), 0.0);
+                out.assign(static_cast<size_t>(nf) * nf, 0.0);
                 const double one = 1.0, zero = 0.0;
                 for (int a0 = 0; a0 < na;) {
                     int a1 = a0;
@@ -778,14 +817,14 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
                         }
                     }
                     if (any) {
+                        prod.assign(static_cast<size_t>(m) * nf, 0.0);
                         dgemm_("N", "N", &m, &nf, &nrr, &one, panel.data(), &m,
-                               Zb.data(), &nrr, &zero, tmp.data() + r_off[a0], &nrr);
+                               Zb.data(), &nrr, &zero, prod.data(), &m);
+                        dgemm_("T", "N", &nf, &nf, &m, &one, Zb.data() + r_off[a0],
+                               &nrr, prod.data(), &m, &one, out.data(), &nf);
                     }
                     a0 = a1;
                 }
-                out.assign(static_cast<size_t>(nf) * nf, 0.0);
-                dgemm_("T", "N", &nf, &nf, &nrr, &one, Zb.data(), &nrr, tmp.data(),
-                       &nrr, &zero, out.data(), &nf);
                 for (int i = 0; i < nf; ++i) {
                     for (int j = 0; j < i; ++j) {
                         const double v = 0.5 * (out[static_cast<size_t>(j) * nf + i] +
@@ -938,15 +977,39 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
                 dgemm_("N", "N", &nc, &nk, &nf, &one, Zc.data(), &nc, A.data(), &nf,
                        &zero, ZcV.data(), &nc);
             }
-            basis.frags[fi].a_eig = std::move(a_eig);
-            // The right factor: V^T for the sandwich chain, K for the solve
-            // chain (whose V is already folded into ZcV and never read again).
-            if (chain.active()) {
-                basis.frags[fi].K = std::move(Kfac);
-            } else {
-                basis.frags[fi].V = std::move(A);
+            // The per-table rows, assembled now: P_k = (ZcV diag(g_k)) R with
+            // R = V^T (sandwich) or K (solve chain), g_k the SAME Chebyshev
+            // series the recursion accumulates, evaluated at the compression
+            // eigenvalues on the task's scaled interval. V, K and ZcV die
+            // with this iteration.
+            {
+                const int nd_rows = chain.active() ? nf : nf;  // |F| scalar columns
+                std::vector<double> ZVg(static_cast<size_t>(nc) * nk);
+                for (size_t k = 0; k < tables.size(); ++k) {
+                    for (int j = 0; j < nk; ++j) {
+                        double x = (a_eig[j] - center) / half;
+                        x = std::max(-1.0, std::min(1.0, x));
+                        const double g = ClenshawEval(tables[k], x);
+                        for (int i = 0; i < nc; ++i) {
+                            ZVg[static_cast<size_t>(j) * nc + i] =
+                                ZcV[static_cast<size_t>(j) * nc + i] * g;
+                        }
+                    }
+                    std::vector<double> Pk(static_cast<size_t>(nc) * nd_rows, 0.0);
+                    const double one = 1.0, zero = 0.0;
+                    if (nc > 0 && nk > 0) {
+                        if (chain.active()) {
+                            dgemm_("N", "N", &nc, &nd_rows, &nk, &one, ZVg.data(), &nc,
+                                   Kfac.data(), &nk, &zero, Pk.data(), &nc);
+                        } else {
+                            dgemm_("N", "T", &nc, &nd_rows, &nk, &one, ZVg.data(), &nc,
+                                   A.data(), &nd_rows, &zero, Pk.data(), &nc);
+                        }
+                    }
+                    basis.P[k][fi] = std::move(Pk);
+                }
             }
-            basis.frags[fi].ZcV = std::move(ZcV);
+            basis.frags[fi].a_eig = std::move(a_eig);
             basis.dom_rows[fi] = std::move(dom_scalar);
             basis.core_rows[fi] = std::move(core_scalar);
             nf_of[fi] = nf;
@@ -969,57 +1032,20 @@ inline FragmentBasis BuildFragmentBasis(const vbcsr::atomic::AtomicData& ad,
     return basis;
 }
 
-/// The per-table operator from the basis: P_k = (ZcV diag(p_k(x_j))) V^T per
-/// fragment, one small GEMM each -- cheap enough that every task assembles
-/// its own tables while the eigensolves behind the basis are built once per
-/// run. The weights are point evaluations of the SAME Chebyshev series the
-/// recursion accumulates, at the compression eigenvalues mapped into the
-/// task's own scaled interval.
+/// The per-table operator as a view of the basis, which must have been
+/// built for exactly these tables on this interval (the build assembles P
+/// itself; see FragmentBasis::P). A mismatch is a caller error, not a
+/// silent recomputation.
 inline FragmentCv TablesToCv(const FragmentBasis& basis,
                              const std::vector<std::vector<std::complex<double>>>& tables,
                              double center, double half) {
+    if (basis.tables != tables || basis.center != center || basis.half != half) {
+        throw std::runtime_error(
+            "Fragment basis was built for different filter tables; rebuild it.");
+    }
     FragmentCv cv;
     cv.basis = &basis;
-    cv.P.assign(tables.size(), std::vector<std::vector<double>>(basis.n_frag));
-#pragma omp parallel
-    {
-        std::vector<double> ZVg;
-#pragma omp for schedule(dynamic)
-        for (int f = 0; f < basis.n_frag; ++f) {
-            const FragmentBasis::Frag& fr = basis.frags[f];
-            // nk = kept basis columns; nd = the domain's orbital count. Equal
-            // for the sandwich chain; the solve chain's rank filter on W_FF
-            // can keep fewer.
-            const int nk = static_cast<int>(fr.a_eig.size());
-            const int nc = static_cast<int>(basis.core_rows[f].size());
-            const int nd = fr.K.empty()
-                               ? nk
-                               : static_cast<int>(fr.K.size()) / std::max(1, nk);
-            if (nc == 0 || nk == 0) continue;
-            ZVg.resize(static_cast<size_t>(nc) * nk);
-            for (size_t k = 0; k < tables.size(); ++k) {
-                for (int j = 0; j < nk; ++j) {
-                    double x = (fr.a_eig[j] - center) / half;
-                    x = std::max(-1.0, std::min(1.0, x));
-                    const double g = ClenshawEval(tables[k], x);
-                    for (int i = 0; i < nc; ++i) {
-                        ZVg[static_cast<size_t>(j) * nc + i] =
-                            fr.ZcV[static_cast<size_t>(j) * nc + i] * g;
-                    }
-                }
-                std::vector<double> Pk(static_cast<size_t>(nc) * nd, 0.0);
-                const double one = 1.0, zero = 0.0;
-                if (fr.K.empty()) {
-                    dgemm_("N", "T", &nc, &nd, &nk, &one, ZVg.data(), &nc,
-                           fr.V.data(), &nd, &zero, Pk.data(), &nc);
-                } else {
-                    dgemm_("N", "N", &nc, &nd, &nk, &one, ZVg.data(), &nc,
-                           fr.K.data(), &nk, &zero, Pk.data(), &nc);
-                }
-                cv.P[k][f] = std::move(Pk);
-            }
-        }
-    }
+    cv.P = &basis.P;
     return cv;
 }
 

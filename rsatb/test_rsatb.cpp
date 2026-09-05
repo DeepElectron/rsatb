@@ -47,17 +47,15 @@ TEST(RSATBTest, TestSetupAndCompute) {
     // 1. Instantiate RSATB
     std::unique_ptr<RSATB> rsatb_inst;
 
-    const std::string vasp_file = rsatb::test::data_path("diamond/diamond_sc111.vasp");
+    const std::string vasp_file = rsatb::test::data_path("diamond/conf.vasp");
 
     // The basis -- orbital counts and cutoff radii -- is read from the orbital
     // files by the model, so nothing is declared here.
     model::LcaoConfig lcao_config;
     lcao_config.hamiltonian = rsatb::io::HamiltonianFile{
-        rsatb::test::data_path("diamond/C2.0/hamiltonians.h5")};
+        rsatb::test::data_path("diamond/hamiltonians.h5")};
     lcao_config.orbitals.dir = rsatb::test::data_path("diamond/");
     lcao_config.orbitals.names = {"C_gga_7au_100Ry_2s2p1d.orb"};
-    lcao_config.pseudopotentials.dir = rsatb::test::data_path("diamond/");
-    lcao_config.pseudopotentials.names = {"C_ONCV_PBE-1.0.upf"};
     auto lcao_model = model::LcaoModel::Create(lcao_config, MPI_COMM_WORLD);
 
     model::SetupOptions setup_options;

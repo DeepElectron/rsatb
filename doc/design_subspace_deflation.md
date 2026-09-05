@@ -1,5 +1,15 @@
 # Variance reduction for stochastic real-space maps: subspace deflation and block-local capture
 
+> **Superseded (2026-09-05).** The code this note designed -- block-local
+> capture, packed image sweeps, sign replicas, the distance audit, the
+> certified routing, and the cross-fitted global deflation with its residual
+> estimator -- was removed in the production cleanup. The LDOS map has one
+> estimator, the survey-sampling estimator of
+> `design_survey_sampling_ldos.md`; the density has one, the fragment
+> surrogate. This note is kept as the record of what was tried, measured and
+> why it lost (sections 16-17).
+
+
 Method notes. This document defines and derives, from scratch, the
 variance-reduction stack of `rsatb/calc/rs_ldos.hpp`:
 

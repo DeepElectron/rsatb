@@ -1,20 +1,16 @@
 {
-  "_comment": "LCAO: a precomputed Hamiltonian plus the numerical atomic orbitals it was written in. The orbital files are required, not optional -- an LCAO basis is non-orthogonal and they are what the overlap is computed from. Adding the pseudopotentials additionally enables the velocity operator. Nothing about the basis is declared: the orbital count (13) and the graph cutoff (3.7042 A) are read from the .orb file. Uses the diamond test data; paths are relative to this file, so it runs from anywhere.",
+  "_comment": "LCAO: a precomputed Hamiltonian plus the numerical atomic orbitals it was written in. The orbital files are required, not optional -- an LCAO basis is non-orthogonal and they are what the overlap is computed from. The velocity is the commutator i[H, r] built from the model's own dipole integrals, so no pseudopotential files are needed. Nothing about the basis is declared: the orbital count (13) and the graph cutoff (3.7042 A) are read from the .orb file. Uses the diamond test data; paths are relative to this file, so it runs from anywhere.",
 
-  "structure": {"file": "../test/data/diamond/diamond_sc111.vasp"},
+  "structure": {"file": "../test/data/diamond/conf.vasp"},
 
   "model": {
     "type": "lcao",
     "hamiltonian": {
-      "path": "../test/data/diamond/C2.0/hamiltonians.h5",
+      "path": "../test/data/diamond/hamiltonians.h5",
       "format": "deeptb"
     },
     "orbitals": {
       "names": ["C_gga_7au_100Ry_2s2p1d.orb"],
-      "dir": "../test/data/diamond"
-    },
-    "pseudopotentials": {
-      "names": ["C_ONCV_PBE-1.0.upf"],
       "dir": "../test/data/diamond"
     },
     "spin": "none"
