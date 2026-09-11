@@ -338,7 +338,8 @@ class RSATB:
 
         Returns:
             tuple: (ac_out, omega_out) as numpy arrays.
-            unit in S/m for ac_out and cm-1 for omega_out
+            unit in S/m for ac_out and cm-1 for omega_out. Spin-degenerate
+            (a factor 2 for spin is included), like every transport quantity.
         """
         ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis, method, block)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
@@ -419,7 +420,8 @@ class RSATB:
 
         Returns:
             tuple: (sigma_out, energy_out) with sigma_out shaped (n_k, n_moments, 6)
-                   in S/m and energy_out in eV.
+                   in S/m (spin-degenerate Kubo-Greenwood, factor 2 for spin
+                   included) and energy_out in eV.
                    Tensor-component order is (xx, xy, xz, yy, yz, zz).
         """
         sigma_out, energy_out = self._cpp_obj.compute_dc_spectrum(
@@ -454,8 +456,9 @@ class RSATB:
                 conservative default.
 
         Returns:
-            ndarray: Conductivity tensor shaped (n_k, 6) in S/m with component
-                     order (xx, xy, xz, yy, yz, zz).
+            ndarray: Conductivity tensor shaped (n_k, 6) in S/m (spin-degenerate,
+                     factor 2 for spin included) with component order
+                     (xx, xy, xz, yy, yz, zz).
         """
         sigma_out = self._cpp_obj.compute_dc(
             n_moments, mu, temp, formulation, axis, partition_sections, max_workspace_mb, kernel

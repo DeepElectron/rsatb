@@ -742,8 +742,9 @@ TASK = Union(
                                          minimum=1), default=1),
             }),
         "ac": Obj(
-            "AC conductivity, plus the dielectric function, refractive index "
-            "and absorption coefficient derived from it. Needs velocity.",
+            "AC conductivity (spin-degenerate, S/m), plus the dielectric "
+            "function, refractive index and absorption coefficient derived from "
+            "it. Needs velocity.",
             {
                 "label": LABEL,
                 "nt": F(_int("Time steps.", minimum=1), default=200),
@@ -765,8 +766,8 @@ TASK = Union(
                                 "saving saturates around 128.", minimum=1)),
             }),
         "dc": Obj(
-            "DC conductivity tensor at one chemical potential and temperature. "
-            "Needs velocity.",
+            "DC conductivity tensor at one chemical potential and temperature "
+            "(spin-degenerate Kubo-Greenwood, S/m). Needs velocity.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),
@@ -789,8 +790,8 @@ TASK = Union(
                                            "0 means unlimited.", minimum=0), default=0),
             }),
         "dc_spectrum": Obj(
-            "Zero-temperature DC conductivity across the Chebyshev energy grid. "
-            "Needs velocity.",
+            "Zero-temperature DC conductivity across the Chebyshev energy grid "
+            "(spin-degenerate Kubo-Greenwood, S/m). Needs velocity.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),

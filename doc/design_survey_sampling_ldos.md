@@ -225,6 +225,22 @@ Three conclusions.
 
 The Gaussian-sketch run reaches $c \approx 0.99$ on this small cell, so the kernel distortion of Section 5 is invisible here (it is a $(1-c)$ effect); it needs a cell with $c \ll 1$ to be seen.
 
+### 9.1 The production cells at 64 probes
+
+The figure runs (`pub_exp/spectrum_realspace`, 2026-09-05) use $n = 64$, $J = 6$ ($k = 384$) on every system, against the exact $k$-point fold of the same cell:
+
+| cell | $N$ | E (eV) | $c$ | survey error | eq. (10) |
+|---|---|---|---|---|---|
+| diamond $12^3$ | 44,928 | −0.42 / 13.03 / 17.82 | 0.66 / 1 / 1 | 6.7 / 0.00 / 0.01 % | 4.2 / 0 / 0 % |
+| silicon $12^3$ | 44,928 | 8.8 / 16.8 / 18.3 | 0.14 / 0.15 / 0.27 | 10.3 / 11.3 / 9.9 % | 6.7 / 6.7 / 6.2 % |
+| silicon $12^3$, $J = 12$ ($k = 768$) | 44,928 | 8.8 / 16.8 / 18.3 | 0.28 / 0.29 / 0.55 | 7.0 / 7.1 / 5.6 % | 4.3 / 4.3 / 3.4 % |
+| aluminium $6^3$ | 4,536 | −0.35 / 1.0 / 6.0 | 0.65 / 0.82 / 1 | 6.1 / 3.5 / 0.05 % | 4.3 / 3.1 / 0 % |
+| diamond $12^3$, $J = 12$ | 44,928 | −0.42 / 13.03 / 17.82 | 1 / 1 / 1 | 0.00 / 0.00 / 0.01 % | exact |
+| aluminium $6^3$, $J = 12$ | 4,536 | −0.35 / 1.0 / 6.0 | 0.905 / 1 / 1 | 5.0 (level −4.5) / 0.03 / 0.05 % | 1.6 / 0 / 0 % |
+| aluminium $12^3$ (1,728 atoms), $J = 12$ | 36,288 | −0.35 / 1.0 / 6.0 | 0.13 / 0.16 / 0.91 | 6.7 / 6.4 / 2.4 % | 4.8 / 4.7 / 1.6 % |
+
+Two things the $8^3$ validation could not show. First, the bound of Section 7 holds where it matters: silicon at $c \approx 0.15$ stays near 10 %, against 17.7 % for the plain estimator at the same 64 probes, and the two diamond windows whose rank fell below $k$ came out exact. Second, the design effect is not a property of $J$ alone. At $J = 6$ it was 1.0 on the $8^3$ cell, where the sketch held 96 % of the window, and it is about 2.5 on silicon $12^3$, where it holds 15 %. When the sketch nearly spans the window the correlation between a probe's families is irrelevant, because almost every direction is captured anyway; in the survey regime proper it is not, and six combs of one probe are worth about two and a half independent draws. Doubling the families on silicon to $J = 12$ ($k = 768$, the production setting for that cell) doubled the capture with the rank and lowered the error by the expected $\sqrt 2$, from 10 % to 7 %, at 1.19 times the sweep time; the design effect stayed at about 2.6. So at low capture the effect does not grow with $J$ between 6 and 12, and families remain the cheaper column. With 768 columns the diamond windows and the two upper aluminium windows are spanned outright and the maps are exact; the one aluminium window that is not ($c = 0.905$) shows the other face of a small cell: its 5 % is almost entirely a −4.5 % level error of the normalisation of Section 6, whose noise falls as $1/\sqrt{n\,m}$ and is therefore largest exactly where $m$ is smallest. On the 1,728-atom aluminium cell (the production cell since 2026-09-06, the same matrix size as the 12$^3$ semiconductors) that level error drops to +0.6 %, the capture falls to 0.13 as the window grows eightfold, and the error stays at 6.7 %: the size-independence of Section 7, measured on a metal. The rule of Section 10 therefore reads, for the survey regime at low capture, with $d_{\rm eff} \approx 2.5$ inserted into equation (10): a target $\epsilon$ needs $k \approx 5\,(1-c)/\epsilon^2$ columns, bought first with families up to about 12 and then with probes.
+
 ## 10. Choosing families or probes
 
 Both knobs buy sketch columns, $k = Jn$, and the map cost splits into a part that depends on how $k$ is split and a part that does not. The sweeps cost $n\,(1 + J/10)$ recursions: a probe is a full recursion, a family one more accumulation per step, about a tenth of one. The Gram matrix, its eigenproblem and the contraction onto the grid depend on $k$ alone. Per sketch column the sweep price is therefore

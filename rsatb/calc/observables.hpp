@@ -585,7 +585,10 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
         double scale = (ops.emax() - ops.emin()) / 2.0;
         double shift = (ops.emax() + ops.emin()) / 2.0;
         double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
-        double ac_prefactor = (double)context.atomic_data->norb() /
+        // Spin-degenerate optical conductivity (g_s = 2): the correlator is a
+        // per-spin trace; the dc spectrum carries the same g_s.
+        const double kSpinDegeneracy = 2.0;
+        double ac_prefactor = kSpinDegeneracy * (double)context.atomic_data->norb() /
                               TransportNormalizationVolume(*context.atomic_data, axis);
 
         const bool concurrent = (method == "concurrent");
@@ -710,7 +713,16 @@ inline void ComputeDcSpectrum(
         const auto dc_formulation = parse_dc_formulation(formulation);
         const double trace_prefactor = static_cast<double>(context.atomic_data->norb()) /
                                        TransportNormalizationVolume(*context.atomic_data, axis);
-        const double transport_prefactor =
+        // Kubo-Greenwood: sigma(E) = (pi e^2 / hbar Omega) g_s Tr[v delta(E-H) v delta(E-H)].
+        // The kernel accumulation below delivers (1/4) Tr[v delta v delta] per
+        // trace (its Chebyshev normalisation), hence the 4 (8 for Bastin); the
+        // 2 pi is the formula's pi times the spin degeneracy g_s = 2, so every
+        // transport quantity is the spin-degenerate SI value (the optical
+        // conductivity carries the same g_s). Measured against the dense
+        // Kubo sum on identical eigen-data: exactly 2 pi was missing before
+        // 2026-09-08 (pub_exp/transport/RESULTS.md).
+        const double kSpinDegeneracy = 2.0;
+        const double transport_prefactor = M_PI * kSpinDegeneracy *
             (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
 
         std::vector<double> local_sigma(ops.global_nk() * n_moments * 6, 0.0);
