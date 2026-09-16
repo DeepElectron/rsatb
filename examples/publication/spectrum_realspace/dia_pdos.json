@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "_comment": "Diamond, 12x12x12 of the 2-atom cell (3,456 atoms, 44,928 basis functions): total and orbital-resolved DOS, Lowdin populations, dE 0.3 eV, 128 samples.",
+  "structure": {
+    "file": "../../../test/data/diamond/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      12,
+      12,
+      12
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/diamond/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "C_gga_7au_100Ry_2s2p1d.orb"
+      ],
+      "dir": "../../../test/data/diamond"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 128,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "pdos",
+      "dE": 0.3,
+      "projection": "orbital_slot",
+      "label": "pdos_slot"
+    }
+  ],
+  "output": {
+    "dir": "results/dia_pdos",
+    "format": "npz",
+    "summary": true
+  }
+}

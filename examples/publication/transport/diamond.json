@@ -1,0 +1,107 @@
+{
+  "version": 1,
+  "_comment": "Diamond, 8x8x8 of the 2-atom cell (1,024 atoms, 13,312 basis functions): Kubo-Greenwood sigma(E), the finite-T dc point, the optical conductivity, the mean-square displacement and the quantum metric from one setup. 64 samples, sandwich form, Gamma; mu mid-gap.",
+  "structure": {
+    "file": "../../../test/data/diamond/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      8,
+      8,
+      8
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/diamond/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "C_gga_7au_100Ry_2s2p1d.orb"
+      ],
+      "dir": "../../../test/data/diamond"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "dc_spectrum",
+      "label": "dc_spectrum",
+      "n_moments": 1000,
+      "formulation": "greenwood",
+      "axis": "abc",
+      "kernel": "jackson"
+    },
+    {
+      "type": "dc",
+      "label": "dc",
+      "n_moments": 1000,
+      "mu": 15.418,
+      "temp": 300.0,
+      "formulation": "greenwood",
+      "axis": "abc",
+      "kernel": "jackson"
+    },
+    {
+      "type": "ac",
+      "label": "ac",
+      "nt": 600,
+      "n_kpm": 1000,
+      "temp": 300.0,
+      "mu": 15.418,
+      "axis": "abc",
+      "method": "concurrent"
+    },
+    {
+      "type": "msd",
+      "label": "msd",
+      "n_steps": 80,
+      "dt_fs": 0.5,
+      "n_kpm": 1000,
+      "axis": "x",
+      "method": "spectral",
+      "n_kpm_compute": 0
+    },
+    {
+      "type": "quantum_metric",
+      "label": "qmetric",
+      "nt": 600,
+      "n_kpm": 1000,
+      "temp": 0.0,
+      "mu": 15.418,
+      "axis": "abc"
+    }
+  ],
+  "output": {
+    "dir": "results/diamond",
+    "format": "npz",
+    "summary": true
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "_comment": "Diamond charge density, fragment-surrogate estimator, 64 samples; mu and the 1160 K smearing (a numerical knob, the gap is 4.3 eV) from the occupation search.",
+  "structure": {
+    "file": "../../../test/data/diamond/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      12,
+      12,
+      12
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/diamond/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "C_gga_7au_100Ry_2s2p1d.orb"
+      ],
+      "dir": "../../../test/data/diamond"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "density",
+      "mu": 13.995833,
+      "temp": 1160.5,
+      "spin_degeneracy": 2.0,
+      "spacing": 0.4,
+      "box_edge": 0,
+      "n_samples": 64,
+      "block": 16,
+      "seed": 12345,
+      "fragment_core": 4.5,
+      "fragment_buffer": 8.0,
+      "energy_windows": 1,
+      "fragment_workspace_mb": 40000
+    }
+  ],
+  "output": {
+    "dir": "results/dia_density",
+    "format": "npz",
+    "summary": true
+  }
+}

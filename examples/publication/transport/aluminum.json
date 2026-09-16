@@ -1,0 +1,109 @@
+{
+  "version": 1,
+  "_comment": "Aluminium, 9x9x9 of the 1-atom cell (729 atoms, 15,309 basis functions). 64 samples, sandwich form, Gamma; mu from the 12^3 k-point fold with 11 electrons per atom. The spectral span of this basis is ~640 eV, 4x the silicon and diamond cells, so the Chebyshev moment counts are 4x theirs for the same energy resolution: dc/dc_spectrum 4,000 moments (~0.15 eV Jackson), msd 4,000, and the ac/quantum-metric Fermi operator 16,000 (~0.06 eV against kT = 26 meV). max_workspace_mb partitions the FFT-Chebyshev row transform: at 15,309 basis x 4,000 moments the unpartitioned buffers need more memory than a 256 GB node has.",
+  "structure": {
+    "file": "../../../test/data/Al/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      9,
+      9,
+      9
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/Al/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "Al_gga_7au_100Ry_4s4p1d.orb"
+      ],
+      "dir": "../../../test/data/Al"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "dc_spectrum",
+      "label": "dc_spectrum",
+      "n_moments": 4000,
+      "formulation": "greenwood",
+      "axis": "abc",
+      "kernel": "jackson",
+      "max_workspace_mb": 20000
+    },
+    {
+      "type": "dc",
+      "label": "dc",
+      "n_moments": 4000,
+      "mu": 11.112081,
+      "temp": 300.0,
+      "formulation": "greenwood",
+      "axis": "abc",
+      "kernel": "jackson",
+      "max_workspace_mb": 20000
+    },
+    {
+      "type": "ac",
+      "label": "ac",
+      "nt": 600,
+      "n_kpm": 16000,
+      "temp": 300.0,
+      "mu": 11.112081,
+      "axis": "abc",
+      "method": "concurrent"
+    },
+    {
+      "type": "msd",
+      "label": "msd",
+      "n_steps": 80,
+      "dt_fs": 0.5,
+      "n_kpm": 4000,
+      "axis": "x",
+      "method": "spectral",
+      "n_kpm_compute": 0
+    },
+    {
+      "type": "quantum_metric",
+      "label": "qmetric",
+      "nt": 600,
+      "n_kpm": 16000,
+      "temp": 0.0,
+      "mu": 11.112081,
+      "axis": "abc"
+    }
+  ],
+  "output": {
+    "dir": "results/aluminum",
+    "format": "npz",
+    "summary": true
+  }
+}

@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "_comment": "Aluminium LDOS maps, survey-sampling estimator: 64 probes x 12 families, eta 0.25 eV, energies E_F - 4, E_F, E_F + 4 eV inside the free-electron-like band.",
+  "structure": {
+    "file": "../../../test/data/Al/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      12,
+      12,
+      12
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/Al/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "Al_gga_7au_100Ry_4s4p1d.orb"
+      ],
+      "dir": "../../../test/data/Al"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "ldos",
+      "energies": [
+        7.112081,
+        11.112081,
+        15.112081
+      ],
+      "eta": 0.25,
+      "spacing": 0.4,
+      "box_edge": 0,
+      "n_samples": 64,
+      "block": 16,
+      "seed": 12345,
+      "sketch_families": 12
+    }
+  ],
+  "output": {
+    "dir": "results/al_ldos",
+    "format": "npz",
+    "summary": true
+  }
+}

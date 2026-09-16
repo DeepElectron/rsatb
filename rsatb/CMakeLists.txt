@@ -654,18 +654,17 @@ if(RSATB_BUILD_TESTS)
         target_link_libraries(${_driver} PRIVATE ${RSATB_LINK_LIBS})
     endforeach()
 
-    # The publication reference tools (pub_exp/spectrum_realspace): dense and
-    # k-folded diagonalization, the independent answer every stochastic figure
-    # is validated against. They had no recorded build recipe at all -- the
-    # binaries beside the sources were the only artifacts -- so a compiler or
-    # header change could have left the references unbuildable without anyone
-    # noticing. Same objects and flags as the drivers above.
-    foreach(_ref diag_kpoint diag_reference)
-        add_executable(${_ref} ${CMAKE_CURRENT_SOURCE_DIR}/../pub_exp/spectrum_realspace/${_ref}.cpp
-                       $<TARGET_OBJECTS:backend>)
-        target_include_directories(${_ref} PRIVATE ${RSATB_INCLUDE_DIRS})
-        target_link_libraries(${_ref} PRIVATE ${RSATB_LINK_LIBS})
-    endforeach()
+    # The publication reference tool (examples/publication/spectrum_realspace):
+    # k-folded diagonalization of the primitive cell, the independent answer
+    # the stochastic spectrum and real-space figures are validated against.
+    # Built with the normal build so a compiler or header change cannot leave
+    # the reference unbuildable unnoticed. Same objects and flags as the
+    # drivers above.
+    add_executable(diag_kpoint
+                   ${CMAKE_CURRENT_SOURCE_DIR}/../examples/publication/spectrum_realspace/diag_kpoint.cpp
+                   $<TARGET_OBJECTS:backend>)
+    target_include_directories(diag_kpoint PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(diag_kpoint PRIVATE ${RSATB_LINK_LIBS})
 endif()
 
 # Python Module: _rsatb

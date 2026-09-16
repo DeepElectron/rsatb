@@ -1,0 +1,66 @@
+{
+  "version": 1,
+  "_comment": "Aluminium, 12x12x12 of the 1-atom cell (1,728 atoms, 36,288 basis functions): total and orbital-resolved DOS, Lowdin populations, dE 0.3 eV, 128 samples.",
+  "structure": {
+    "file": "../../../test/data/Al/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      12,
+      12,
+      12
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/Al/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "Al_gga_7au_100Ry_4s4p1d.orb"
+      ],
+      "dir": "../../../test/data/Al"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 128,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "pdos",
+      "label": "pdos_slot",
+      "dE": 0.3,
+      "projection": "orbital_slot"
+    }
+  ],
+  "output": {
+    "dir": "results/al_pdos",
+    "format": "npz",
+    "summary": true
+  }
+}

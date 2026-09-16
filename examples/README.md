@@ -25,6 +25,13 @@ anywhere. `rsatb doc` explains every key; the format reference is
 01 through 05 run as written: everything they read is in `data/`. 06 is the one
 that needs something you supply — a relaxed moiré unit cell — and says so.
 
+`publication/` holds the calculations of the paper, as run: the inputs, the
+run scripts, the diagonalization references and the figure scripts for the
+spectrum / real-space gallery (`publication/spectrum_realspace/`) and the
+transport figure (`publication/transport/`). They read the primitive cells in
+`test/data/` and are sized for a 48-core node with 256 GB, hours to days per
+run; each folder's README says what it reproduces and in which order.
+
 ## What each one is for
 
 **01 — SKTB.** Graphene, one pz orbital per carbon, a single −2.7 eV pp_pi

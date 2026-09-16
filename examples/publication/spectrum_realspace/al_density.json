@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "_comment": "Aluminium charge density, fragment-surrogate estimator, 64 samples; mu from the same-cell 12^3 k-point fold with 11 electrons per atom. Buffer 4 A and 8 energy windows: for a metal the windows are the lever.",
+  "structure": {
+    "file": "../../../test/data/Al/conf.vasp",
+    "pbc": [
+      true,
+      true,
+      true
+    ],
+    "supercell": [
+      12,
+      12,
+      12
+    ]
+  },
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {
+      "path": "../../../test/data/Al/hamiltonians.h5",
+      "format": "deeptb"
+    },
+    "orbitals": {
+      "names": [
+        "Al_gga_7au_100Ry_4s4p1d.orb"
+      ],
+      "dir": "../../../test/data/Al"
+    },
+    "spin": "none"
+  },
+  "run": {
+    "npar": 1,
+    "nsamples": 64,
+    "kpoints": {
+      "mesh": [
+        1,
+        1,
+        1
+      ]
+    },
+    "bounds": {
+      "mode": "auto",
+      "zero_tol": 1e-12,
+      "max_matvecs": 10000
+    },
+    "preconditioner": {
+      "operator_form": "sandwich",
+      "tol": 1e-07,
+      "sptol": 1e-05,
+      "maxiter": 20
+    }
+  },
+  "tasks": [
+    {
+      "type": "density",
+      "mu": 11.112081,
+      "temp": 300.0,
+      "spin_degeneracy": 2.0,
+      "spacing": 0.4,
+      "box_edge": 0,
+      "n_samples": 64,
+      "block": 16,
+      "seed": 12345,
+      "fragment_core": 4.5,
+      "fragment_buffer": 4.0,
+      "energy_windows": 8
+    }
+  ],
+  "output": {
+    "dir": "results/al_density",
+    "format": "npz",
+    "summary": true
+  }
+}
