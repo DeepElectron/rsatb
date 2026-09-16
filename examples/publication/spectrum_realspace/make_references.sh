@@ -19,11 +19,13 @@ export OMP_NUM_THREADS=${OMP_NUM_THREADS:-48}
 run() { # name system orb mesh [extra flags]
   local name=$1 sys=$2 orb=$3 mesh=$4; shift 4
   local out="$D/results/$name"
-  [ -f "$out/k_eigenvalues.f64" ] && { echo "cached $name"; return; }
+  [ -f "$out/done" ] && { echo "cached $name"; return; }
   mkdir -p "$out"
   "$DIAG_KPOINT" --poscar "$T/$sys/conf.vasp" --ham "$T/$sys/hamiltonians.h5" \
       --orb "$orb" --orbdir "$T/$sys" --kmesh "$mesh" --out "$out" "$@" > "$out/log" 2>&1
-  echo "done $name exit=$?"
+  local rc=$?
+  [ $rc -eq 0 ] && touch "$out/done"   # the sentinel, not the first file written: a fold interrupted mid-way is not cached
+  echo "done $name exit=$rc"
 }
 
 # converged spectra (DOS/PDOS only)

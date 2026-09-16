@@ -10,7 +10,7 @@ stochastic estimator with the commutator velocity at Γ; the quantum metric is
 computed in the same run.
 
 ```bash
-OMP_NUM_THREADS=48 ./run_production.sh     # diamond, silicon: about a day each; aluminium: days
+OMP_NUM_THREADS=48 ./run_production.sh     # diamond, silicon: about a day each; aluminium: est. a week
 ./make_references.sh                       # same-cell (minutes) and bulk (hours) references
 python plot_transport.py                   # fig_transport.png / .pdf
 ```
@@ -34,8 +34,11 @@ kernel's measured width, the Drude weight reported separately because the
 code's optical conductivity is the regular part. Every quantity is the
 spin-degenerate SI value.
 
-Measured on these runs: the sampling error is 1–4 % everywhere (median over
-significant points); the distance to the bulk is the finite cell, up to
-30–45 % pointwise for the gapped 1,024-atom cells at 0.15 eV resolution
-while the integrated spectral weights agree to 3–10 %, and 4–8 % for the
-metal, whose bands are dense at every energy.
+Measured on the diamond and silicon runs: the sampling error is 1–3 %
+(median over significant points); the distance to the bulk is the finite
+cell, up to 30–45 % pointwise for a 1,024-atom cell at 0.15 eV resolution
+while the integrated spectral weights agree to 3–10 %. The aluminium input
+is the 9×9×9 run of the 1-atom cell; at the time of writing it had not been
+run to completion here (an earlier 3×3×3 run of a superseded 27-atom model
+stood in for the metal row), so its cost above is an estimate and its
+deviations are not quoted.

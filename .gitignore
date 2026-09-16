@@ -192,6 +192,11 @@ _deps/
 .venv_test/
 build.log
 
+# What the publication examples leave behind (their results/ and figures are
+# already ignored above).
+examples/publication/**/production_status.txt
+examples/publication/**/*.pdf
+
 # The data the JSON examples read. Small, generated, and part of the example --
 # without it `rsatb run examples/*.json` does not run as written.
 !examples/data/**

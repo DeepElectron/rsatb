@@ -20,6 +20,7 @@ done_job() { # job -> 0 if its output exists
     *pdos*)    [ -f "$D/results/$1/pdos_slot.npz" ];;
     *density*) [ -f "$D/results/$1/density.rank00000.npz" ];;
     *ldos*)    [ -f "$D/results/$1/ldos.rank00000.npz" ];;
+    *)         echo "unknown job $1" >&2; exit 2;;
   esac
 }
 

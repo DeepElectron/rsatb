@@ -12,8 +12,9 @@
 #                            k-mesh, textbook Kubo sums, matched broadening
 #                            (results/bulk_<run>_curves.npz; hours).
 # Steps 2 and 3 read the run's outputs (its energy grids), so run
-# run_production.sh first. Idempotent per file.
-D="$(cd "$(dirname "$0")" && pwd)"; cd "$D"
+# run_production.sh first. Idempotent per file. Run with the rsatb environment
+# active (`python` must be the one rsatb is installed in).
+D="$(cd "$(dirname "$0")" && pwd)"; cd "$D"; mkdir -p results
 export OMP_NUM_THREADS=${OMP_NUM_THREADS:-24}
 for run in ${@:-diamond silicon aluminum}; do
   [ -f "results/ref_${run}_eig.npz" ]    || python gen_reference_ops.py "$run"

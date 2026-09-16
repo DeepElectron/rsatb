@@ -26,8 +26,8 @@ Every input reads the primitive cells in `test/data/` and tiles them at load
 (`structure.supercell`); the reference diagonalizes the same primitive cell on
 the same mesh and folds it, so a 12³ k-mesh is the 12³ supercell at Γ by band
 folding and the quoted deviation is the estimator's alone. The Fermi levels in
-the inputs come from the occupation search (diamond, silicon) and from the
-k-point fold with 11 electrons per atom (aluminium, μ = 11.112081 eV); the
+the inputs come from the same-cell k-point fold (`make_references.sh`, with
+4 electrons per C or Si atom and 11 per Al atom); the
 LDOS energies of aluminium are E_F − 4, E_F, E_F + 4 eV, those of the gapped
 systems sit in the valence band, at a band edge and in the conduction band.
 

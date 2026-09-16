@@ -3,10 +3,11 @@
 //
 // WHY THIS EXISTS. A Gamma-only calculation on an n x n x n supercell and the
 // primitive cell on an n x n x n Gamma-centred k-mesh are the SAME eigenproblem
-// -- band folding. So this program and diag_reference must agree exactly, while
-// sharing nothing but the file readers: one diagonalizes a 13312 x 13312 real
-// pencil once, the other a 26 x 26 complex pencil 512 times. Agreement between
-// them, and of both with the stochastic stack, closes the loop three ways.
+// -- band folding. So this program and a dense diagonalization of the
+// supercell must agree exactly, while sharing nothing but the file readers:
+// one diagonalizes a 13312 x 13312 real pencil once, the other a 26 x 26
+// complex pencil 512 times. Agreement between them, and of both with the
+// stochastic stack, closes the loop three ways.
 //
 // It is also the cheap route. sc888 costs two N=13312 dense diagonalizations
 // (~80 s each and 1.4 GB per matrix); the same physics here is 512 diagonal-
@@ -21,13 +22,13 @@
 //     result divided by the image count.
 //   * The real-space fold is NOT convention-free, so R_ONLY is used and the
 //     fold is SELF-CHECKED: the same fold applied to S(k) must reproduce the
-//     supercell overlap that diag_reference builds independently. If that
+//     supercell overlap built independently from the images. If that
 //     check passes the density fold is trustworthy; if it fails the program
 //     stops rather than emitting a plausible wrong map.
 //
 // Lowdin at each k: S(k) = U diag(s) U^H, H_perp(k) = S^-1/2 H S^-1/2, then a
 // standard Hermitian eigenproblem whose eigenvectors ARE the Lowdin
-// coefficients -- the same route diag_reference takes, in complex arithmetic.
+// coefficients -- the dense supercell route, in complex arithmetic.
 
 #include "calc/collocation.hpp"
 #include "calc/real_space_grid.hpp"

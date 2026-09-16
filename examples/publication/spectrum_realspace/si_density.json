@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "Silicon charge density, fragment-surrogate estimator, 64 samples; mu from the occupation search on this cell.",
+  "_comment": "Silicon charge density, fragment-surrogate estimator, 64 samples; mu from the same-cell k-point fold.",
   "structure": {
     "file": "../../../test/data/silicon/conf.vasp",
     "pbc": [

@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "_comment": "Diamond charge density, fragment-surrogate estimator, 64 samples; mu and the 1160 K smearing (a numerical knob, the gap is 4.3 eV) from the occupation search.",
+  "_comment": "Diamond charge density, fragment-surrogate estimator, 64 samples; mu from the same-cell k-point fold; the 1160 K smearing is a numerical knob (the gap is 4.3 eV).",
   "structure": {
     "file": "../../../test/data/diamond/conf.vasp",
     "pbc": [
