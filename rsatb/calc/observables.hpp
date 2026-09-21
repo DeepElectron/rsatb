@@ -24,6 +24,7 @@
 #include "rs_ldos.hpp"
 #include "fft.hpp"
 #include "fftcheb_transport.hpp"
+#include "metric_sampler.hpp"
 #include "msd.hpp"
 #include "msd_spectral.hpp"
 #include "occupation.hpp"
@@ -987,7 +988,38 @@ inline void ComputeMsdSpectrum(
                     n_kpm_compute);
             };
 
-            if (context.samples->nsamples == 1) {
+            // metric_density_moments uses <v|S T_n(S^-1 H)|v> in the Solve
+            // form.  Its stochastic trace is physical only when
+            // E[v v^H] is proportional to S^-1.  The setup-wide samples are
+            // white (identity covariance), which is correct for the
+            // orthogonal and Sandwich forms but would instead estimate
+            // Tr[S T_n] here.  Colour the MSD samples through the same
+            // certified S^-1/2 chain used by the real-space density/LDOS
+            // estimators.  A wrong covariance changes the energy-resolved
+            // amplitude while preserving an apparently perfect t^2 MSD --
+            // exactly the kind of silent bias this branch prevents.
+            if (cheby->form == ChebyOpForm::Solve) {
+                auto* overlap = gamma_state->overlap.get();
+                auto* isqrt = dynamic_cast<ISQRTMPreconditioner<ObservableScalar>*>(
+                    gamma_state->preconditioner.get());
+                if (overlap == nullptr || isqrt == nullptr) {
+                    throw std::runtime_error(
+                        "solve-form MSD needs S and its inverse-square-root factor "
+                        "to construct metric-correct stochastic samples.");
+                }
+                MetricSampler<ObservableScalar> sampler(
+                    *overlap, isqrt->factor(), MetricSamplerOptions{});
+                if (context.samples->nsamples == 1) {
+                    SampleVectors::Vector metric_sample(context.atomic_data->get_graph());
+                    sampler.Sample(*context.samples->sample_vec, metric_sample);
+                    run_msd_for_sample(metric_sample);
+                } else {
+                    SampleVectors::MultiVector metric_samples(
+                        context.atomic_data->get_graph(), context.samples->nsamples);
+                    sampler.Sample(*context.samples->sample_multi_vec, metric_samples);
+                    run_msd_for_sample(metric_samples);
+                }
+            } else if (context.samples->nsamples == 1) {
                 run_msd_for_sample(*context.samples->sample_vec);
             } else {
                 run_msd_for_sample(*context.samples->sample_multi_vec);

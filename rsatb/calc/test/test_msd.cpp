@@ -1,4 +1,5 @@
 #include "../msd.hpp"
+#include "../metric_sampler.hpp"
 #include "../msd_spectral.hpp"
 
 #include <gtest/gtest.h>
@@ -905,7 +906,7 @@ TEST(MSDTest, SpectralRouteLongWindowOrthogonal) {
 // velocity, and the stepwise commutator route on the same inputs.
 TEST(MSDTest, SpectralRouteMatchesDenseWithOverlap) {
     DistGraph graph = make_graph(MPI_COMM_WORLD, 2, true);
-    Matrix H(&graph), S(&graph), V(&graph);
+    Matrix H(&graph), S(&graph), V(&graph), Zm(&graph);
 
     const Dense2 h = {Scalar(-0.4, 0.0), Scalar(0.15, 0.2),
                       Scalar(0.15, -0.2), Scalar(0.35, 0.0)};
@@ -943,7 +944,24 @@ TEST(MSDTest, SpectralRouteMatchesDenseWithOverlap) {
     samples.set_col(0, r0);
     samples.set_col(1, r1);
 
-    std::vector<double> msd_spec, e_spec, msd_step, e_step;
+    // This is also the production solve-form sampling contract. Setup draws
+    // white vectors, while the S-weighted moment recurrence below requires
+    // covariance S^-1. MetricSampler turns a complete white basis into a
+    // complete metric basis for any invertible seed factor Zm. Keeping this
+    // check beside the dense solve reference prevents the two halves from
+    // drifting apart again: a raw white basis leaves the t-dependence intact
+    // but biases the energy-resolved MSD amplitude.
+    fill_matrix(Zm, {{lchol[0], lchol[1]}, {lchol[2], lchol[3]}});
+    Vector e0(&graph), e1(&graph);
+    fill_vector(e0, {Scalar(1.0, 0.0), Scalar(0.0, 0.0)});
+    fill_vector(e1, {Scalar(0.0, 0.0), Scalar(1.0, 0.0)});
+    MultiVector white(&graph, 2), metric_samples(&graph, 2);
+    white.set_col(0, e0);
+    white.set_col(1, e1);
+    MetricSampler<Scalar> metric_sampler(S, Zm);
+    metric_sampler.Sample(white, metric_samples);
+
+    std::vector<double> msd_spec, e_spec, msd_step, e_step, msd_sampled, e_sampled;
     {
         Chebyshev<Scalar> cheby(H, S, emin, emax);
         corr_msd_spectral(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
@@ -954,8 +972,18 @@ TEST(MSDTest, SpectralRouteMatchesDenseWithOverlap) {
         corr_msd(cheby, VelocityOp<Scalar>(V), samples, n_steps, dt_fs, n_kpm,
                  msd_step, e_step);
     }
+    {
+        Chebyshev<Scalar> cheby(H, S, emin, emax);
+        corr_msd_spectral(cheby, VelocityOp<Scalar>(V), metric_samples,
+                          n_steps, dt_fs, n_kpm, msd_sampled, e_sampled);
+    }
 
     ASSERT_EQ(msd_step.size(), msd_spec.size());
+    ASSERT_EQ(msd_sampled.size(), msd_spec.size());
+    for (size_t i = 0; i < msd_spec.size(); ++i) {
+        EXPECT_NEAR(msd_sampled[i], msd_spec[i],
+                    1e-6 * std::max(1.0, std::abs(msd_spec[i])));
+    }
 
     // Dense reference straight from the VAC definition: coefficient traces
     // are basis-invariant, so num_p(t) = (2 / hw^2) int_0^t (t - u)
