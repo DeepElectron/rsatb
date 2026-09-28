@@ -25,7 +25,6 @@ model_runner = RSATB(
         kpoints=kpoints,
         nsamples=1,
         preconditioner=PreconditionerOptions(
-            target="overlap",
             tol=1e-7,
             sptol=1e-5,
             maxiter=10,
