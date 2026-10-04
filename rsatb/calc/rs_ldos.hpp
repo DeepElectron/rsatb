@@ -1562,11 +1562,31 @@ inline RealSpaceLdosResult FilteredSquareMap(
                     MPI_Allreduce(MPI_IN_PLACE, ynorm.data(), n_total, MPI_DOUBLE, MPI_SUM,
                                   comm);
                 }
+                // The folds of the cross-fit are the sweep blocks when there
+                // are at least two of them. A run whose probes all fit in ONE
+                // block has nothing to leave out at block granularity: the
+                // left-out sketch is empty, every fold would be skipped, and
+                // c would come out 0 -- which once silently wrote maps scaled
+                // by c(E) with capture reported as 0 (n_samples = block = 16
+                // in production). So a single block is split into two halves
+                // and cross-fitted between them; a single probe cannot be
+                // cross-fitted at all and is refused.
+                std::vector<std::pair<int, int>> folds(blk_info);
+                if (folds.size() == 1) {
+                    const int start = folds[0].first, blk = folds[0].second;
+                    if (blk < 2) {
+                        throw std::runtime_error(
+                            "rs_ldos survey: the capture fraction is cross-fitted between "
+                            "probe folds, which needs at least 2 probes (n_samples = " +
+                            std::to_string(n_total) + ").");
+                    }
+                    folds = {{start, blk / 2}, {start + blk / 2, blk - blk / 2}};
+                }
                 double cap_w = 0.0, tot_w = 0.0;
-                const int nb_total = static_cast<int>(blk_info.size());
-                for (int bb = 0; bb < nb_total; ++bb) {
-                    const int start = blk_info[bb].first;
-                    const int blk = blk_info[bb].second;
+                int folds_used = 0;
+                for (const auto& fold : folds) {
+                    const int start = fold.first;
+                    const int blk = fold.second;
                     std::vector<int> cols;
                     cols.reserve(m_all - J * blk);
                     for (int jj = 0; jj < J; ++jj) {
@@ -1612,12 +1632,30 @@ inline RealSpaceLdosResult FilteredSquareMap(
                     }
                     // Rescale the left-out capture to the full sketch's rank.
                     cap_w += blk_cap * static_cast<double>(rk) / static_cast<double>(rs);
+                    ++folds_used;
+                }
+                if (folds_used == 0) {
+                    // The sketch has rank, so the window holds states, yet no
+                    // fold's left-out sketch did: the capture is unmeasured and
+                    // the captured map cannot be normalized. Say so rather than
+                    // write a map scaled by an unknown c(E).
+                    throw std::runtime_error(
+                        "rs_ldos survey: the capture fraction could not be cross-fitted at "
+                        "energy " + std::to_string(opt.energies[k]) + " eV (sketch rank " +
+                        std::to_string(rk) + ", " + std::to_string(folds.size()) +
+                        " folds, none with a left-out sketch of rank > 0).");
                 }
                 captured = std::min(cap_w, tot_w);
                 total = tot_w;
             }
             const double c = (total > 1e-300) ? captured / total : 0.0;
             result.capture[k] = c;
+            if (rk > 0 && !(c > 1e-300)) {
+                throw std::runtime_error(
+                    "rs_ldos survey: capture fraction is 0 at energy " +
+                    std::to_string(opt.energies[k]) + " eV although the sketch has rank " +
+                    std::to_string(rk) + "; refusing to write an unnormalized map.");
+            }
             if (c > 1e-300) {
                 for (int64_t pnt = 0; pnt < npt; ++pnt) out[pnt] /= c;
             }

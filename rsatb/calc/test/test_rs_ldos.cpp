@@ -648,6 +648,81 @@ TEST(RealSpaceLdosTest, SurveyEstimatorIsUnbiasedAndFollowsTheSurveyLaw) {
     EXPECT_GT(rel, 0.2 * res.predicted_rel_error[0]);
 }
 
+TEST(RealSpaceLdosTest, SurveyEstimatorCrossFitsWithinASingleBlock) {
+    // Regression: with n_samples == block there is one sweep block, and the
+    // cross-fitted capture used to leave out the whole sketch, skip the
+    // fold, and report c = 0 while writing the UNNORMALIZED captured map --
+    // maps scaled by c(E) with capture = 0 and no warning (seen in
+    // production at n_samples = block = 16). A single block must now be
+    // cross-fitted between its two halves and agree with the multi-block
+    // run on the same probes: a measured capture, and an integral that is
+    // unbiased against the dense reference.
+    int world = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &world);
+    if (world != 1) GTEST_SKIP() << "serial fixture";
+
+    ChainSystem sys(160);
+    DenseReference ref(sys);
+    const double spread = ref.eps.back() - ref.eps.front();
+    const int i0 = 2 * sys.n() / 3;
+
+    rsatb::calc::RealSpaceLdosOptions opt;
+    opt.eta = std::max((ref.eps[i0 + 100] - ref.eps[i0 - 100]) / 4.0, 0.002 * spread);
+    opt.energies = {ref.eps[i0]};
+    opt.emin = ref.eps.front();
+    opt.emax = ref.eps.back();
+    opt.spacing = 1.2;
+    opt.n_samples = 32;
+    opt.block = 32;   // one block: the case that broke
+    opt.sketch_families = 6;
+    opt.seed = 424242;
+    const auto res = rsatb::calc::ComputeRealSpaceLdos(
+        *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+        *sys.collocation, opt, MPI_COMM_WORLD);
+
+    ASSERT_EQ(res.capture.size(), 1u);
+    ASSERT_GT(res.sketch_rank[0], 0);
+    EXPECT_GT(res.capture[0], 0.05) << "a single block must still measure its capture";
+    ASSERT_LT(res.capture[0], 0.95) << "the window must exceed the sketch for this test";
+
+    std::vector<double> centers, radii;
+    for (int b = 0; b < res.grid.n_box(); ++b) {
+        const auto box = res.grid.BoxAt(b);
+        centers.insert(centers.end(), {box.center[0], box.center[1], box.center[2]});
+        radii.push_back(box.radius);
+    }
+    const auto set = rsatb::calc::BuildOrbitalSetForSpheres(*sys.ad, centers, radii,
+                                                            {sys.rcut}, MPI_COMM_WORLD);
+    const auto reference = ReferenceMap(sys, ref, set, res.grid, res.domain,
+                                        opt.energies[0], opt.eta);
+    double num = 0.0, den = 0.0, sum_est = 0.0, sum_ref = 0.0;
+    for (int64_t p = 0; p < res.domain.n_point(); ++p) {
+        ASSERT_TRUE(std::isfinite(res.ldos[0][p]));
+        const double d = res.ldos[0][p] - reference[p];
+        num += d * d;
+        den += reference[p] * reference[p];
+        sum_est += res.ldos[0][p];
+        sum_ref += reference[p];
+    }
+    const double rel = std::sqrt(num / den);
+    printf("  survey, single block: capture %.3f rank %d, rel L2 %.4f (predicted %.4f), "
+           "integral ratio %.4f\n", res.capture[0], res.sketch_rank[0], rel,
+           res.predicted_rel_error[0], sum_est / sum_ref);
+    // Two folds of 16 instead of four of 8: the cross-fit is noisier, so the
+    // integral tolerance is wider than the multi-block test's 12 %. Before the
+    // fix this ratio was c(E) ~ 0.4 and the capture 0.
+    EXPECT_NEAR(sum_est / sum_ref, 1.0, 0.2);
+    EXPECT_LT(rel, 2.5 * res.predicted_rel_error[0] + 0.01);
+
+    // A single probe cannot be cross-fitted at all and must be refused.
+    opt.n_samples = 1;
+    opt.block = 1;
+    EXPECT_THROW(rsatb::calc::ComputeRealSpaceLdos(
+                     *sys.ad, *sys.H, nullptr, *sys.Zt, rsatb::calc::ChebyOpForm::Sandwich,
+                     *sys.collocation, opt, MPI_COMM_WORLD),
+                 std::runtime_error);
+}
+
 TEST(RealSpaceLdosTest, SurveyEstimatorIsExactWhenTheSketchSpansTheWindow) {
     // With more sketch columns than window states the flat-top sketch spans
     // the window with probability one (no tails, no oversampling), the

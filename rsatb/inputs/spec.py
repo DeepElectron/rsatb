@@ -636,7 +636,9 @@ TASK = Union(
                                     "scale sqrt(2 (1 - capture) / rank), so at "
                                     "a fixed family count the noise falls as "
                                     "1/sqrt(n_samples); this is the knob to buy "
-                                    "accuracy with.", minimum=1), default=64),
+                                    "accuracy with. At least 2: the capture "
+                                    "fraction is cross-fitted between probe "
+                                    "folds.", minimum=2), default=64),
                 "block": F(_int("Probes per Chebyshev sweep, i.e. the SpMM width. "
                                 "Memory holds a few blocks of that many vectors.",
                                 minimum=1), default=16),
