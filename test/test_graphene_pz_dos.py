@@ -8,8 +8,7 @@ from pathlib import Path
 # the build happened in place.
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 
-from rsatb import (PreconditionerOptions, RSATB, SetupOptions, SkParameters, SktbModel,
-                   sk_spline)
+from rsatb import RSATB, SetupOptions, SkParameters, SktbModel, sk_spline
 
 rank = MPI.COMM_WORLD.Get_rank()
 if MPI.COMM_WORLD.Get_size() != 1:
@@ -86,7 +85,6 @@ model_runner = RSATB.from_graph(
         nsamples=1,
         compute_bounds=False,
         energy_bounds=(-8.6, 8.6),
-        preconditioner=PreconditionerOptions(target="none"),
     ),
     npar=1,
 )

@@ -1,4 +1,5 @@
 from mpi4py import MPI
+from pathlib import Path
 from rsatb import (
     HamiltonianFile,
     LcaoModel,
@@ -10,6 +11,7 @@ from rsatb import (
 )
 
 rank = MPI.COMM_WORLD.Get_rank()
+DIAMOND_DIR = Path(__file__).resolve().parent / "data" / "diamond"
 
 kpoints = [
     [0.5 , 0.5 , 0.5 ],
@@ -35,11 +37,11 @@ kpoints = [
     [0.5 , 0.  , 0.5 ]
     ]
 
-structure = Structure.from_file("./data/diamond/conf.vasp")
+structure = Structure.from_file(str(DIAMOND_DIR / "conf.vasp"))
 
 model = LcaoModel(
-    hamiltonian=HamiltonianFile("./data/diamond/hamiltonians.h5", format="deeptb"),
-    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir="./data/diamond/"),
+    hamiltonian=HamiltonianFile(str(DIAMOND_DIR / "hamiltonians.h5"), format="deeptb"),
+    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir=str(DIAMOND_DIR)),
 )
 
 # The basis is read from the orbital files, not declared by the caller. These

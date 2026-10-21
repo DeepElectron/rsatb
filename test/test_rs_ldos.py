@@ -12,17 +12,20 @@ operator too. The assertions below are chosen to fail on that mismatch: the
 spectral window is checked, and the LDOS is required to be strongly suppressed
 in diamond's gap, which a null-space-dominated spectrum has nowhere.
 """
+from pathlib import Path
+
 from mpi4py import MPI  # noqa: F401  (initializes MPI before the extension)
 from rsatb import (HamiltonianFile, LcaoModel, OrbitalFiles,
                    RSATB, SetupOptions, Structure)
 
 # Diamond in this basis: valence band -8.6 to 13.4 eV, then a 4.35 eV gap.
 GAP_LO, GAP_HI = 13.43, 17.78
+DIAMOND_DIR = Path(__file__).resolve().parent / "data" / "diamond"
 
-structure = Structure.from_file("./data/diamond/conf.vasp", supercell=[4, 4, 4])
+structure = Structure.from_file(str(DIAMOND_DIR / "conf.vasp"), supercell=[4, 4, 4])
 model = LcaoModel(
-    hamiltonian=HamiltonianFile("./data/diamond/hamiltonians.h5", format="deeptb"),
-    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir="./data/diamond/"),
+    hamiltonian=HamiltonianFile(str(DIAMOND_DIR / "hamiltonians.h5"), format="deeptb"),
+    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir=str(DIAMOND_DIR)),
 )
 runner = RSATB(structure, model, SetupOptions(kpoints=[[0.0, 0.0, 0.0]], nsamples=8),
                npar=1)

@@ -1,14 +1,17 @@
 import sys
 import os
+from pathlib import Path
 
-# Do NOT add local paths to sys.path to ensure we test the installed version
-# sys.path.append(os.path.abspath("rsatb"))
+# Test the Python sources in this checkout. The native extension may still come
+# from the active environment, but importing an older installed Python package
+# here would cache stale schema and capability rules for the rest of the suite.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 try:
     from rsatb import (DftbModel, HamiltonianFile, LcaoModel, OrbitalFiles, PreconditionerOptions,
                        PseudopotentialFiles, RSATB, SetupOptions, SkParameters, SktbModel,
                        Structure, sk_spline)
-    print("Successfully imported RSATB from installed package")
+    print("Successfully imported RSATB from the working tree")
 except ImportError as e:
     print(f"Failed to import RSATB: {e}")
     sys.exit(1)

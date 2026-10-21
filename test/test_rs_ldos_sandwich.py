@@ -12,17 +12,20 @@ has covariance I, and the metric reappears as one Z apply at read-out. So the
 map must come out with the same physics the solve form produces -- the same
 spectral window, the same gap.
 """
+from pathlib import Path
+
 from mpi4py import MPI  # noqa: F401  (initializes MPI before the extension)
 from rsatb import (HamiltonianFile, LcaoModel, OrbitalFiles,
                    PreconditionerOptions, RSATB,
                    SetupOptions, Structure)
 
 GAP_LO, GAP_HI = 13.43, 17.78
+DIAMOND_DIR = Path(__file__).resolve().parent / "data" / "diamond"
 
-structure = Structure.from_file("./data/diamond/conf.vasp", supercell=[4, 4, 4])
+structure = Structure.from_file(str(DIAMOND_DIR / "conf.vasp"), supercell=[4, 4, 4])
 model = LcaoModel(
-    hamiltonian=HamiltonianFile("./data/diamond/hamiltonians.h5", format="deeptb"),
-    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir="./data/diamond/"),
+    hamiltonian=HamiltonianFile(str(DIAMOND_DIR / "hamiltonians.h5"), format="deeptb"),
+    orbitals=OrbitalFiles(["C_gga_7au_100Ry_2s2p1d.orb"], dir=str(DIAMOND_DIR)),
 )
 runner = RSATB(
     structure,

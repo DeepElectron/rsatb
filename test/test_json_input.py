@@ -237,7 +237,8 @@ def test_msd_is_refused_on_a_non_orthogonal_model_without_velocity():
         if method:
             task["method"] = method
         _, issues = resolve({"model": model, "tasks": [task]})
-        assert any("velocity operator" in issue.message for issue in errors(issues))
+        assert any("velocity operator" in issue.message for issue in errors(issues)), [
+            str(issue) for issue in errors(issues)]
 
 
 def test_msd_is_allowed_on_lcao():

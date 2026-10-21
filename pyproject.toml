@@ -1,9 +1,21 @@
 [project]
 name = "rsatb"
 version = "0.1.0"
-description = "A random state method for abinitio tight-binding calculations"
+description = "A random state method for ab initio tight-binding calculations"
 readme = "README.md"
 requires-python = ">=3.9"
+authors = [
+    {name = "Zhanghao Zhouyin"},
+]
+license = {file = "LICENSE"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 dependencies = [
     "numpy>=1.22",
     "scipy>=1.8",
@@ -13,6 +25,10 @@ dependencies = [
 
 [project.scripts]
 rsatb = "rsatb.cli:main"
+
+[project.urls]
+Repository = "https://github.com/floatingCatty/rsatb"
+Issues = "https://github.com/floatingCatty/rsatb/issues"
 
 [build-system]
 requires = ["scikit-build-core>=0.8", "pybind11>=2.10", "mpi4py"]
@@ -54,7 +70,15 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["test"]
-python_files = ["test_*.py"]
+# The remaining test_*.py files are intentionally executable research/scale
+# drivers, not pytest modules; importing them would launch full calculations
+# during collection.
+python_files = [
+    "test_binding.py",
+    "test_json_input.py",
+    "test_supercell_bonds.py",
+    "test_transport_scale.py",
+]
 markers = [
     "mpi: needs MPI initialized (import mpi4py); skipped where it is not available",
 ]

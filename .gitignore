@@ -200,3 +200,7 @@ examples/publication/**/*.pdf
 # The data the JSON examples read. Small, generated, and part of the example --
 # without it `rsatb run examples/*.json` does not run as written.
 !examples/data/**
+
+# Curated publication figures used by the repository landing page.
+!doc/fig/
+!doc/fig/*.png

@@ -335,7 +335,7 @@ if(NOT TARGET PRIMME::PRIMME)
         FetchContent_Declare(
             primme
             GIT_REPOSITORY https://github.com/primme/primme.git
-            GIT_TAG        v3.2
+            GIT_TAG        8d0ca1812436665564e5fba82d2a485e96fd7627
             SOURCE_DIR     "${PRIMME_SOURCE_DIR}"
             BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/primme"
         )
@@ -386,7 +386,7 @@ else()
     FetchContent_Declare(
         vbcsr
         GIT_REPOSITORY https://github.com/DeepElectron/vbcsr.git
-        GIT_TAG        main
+        GIT_TAG        1d0dc39ecf596df43903091d73209d4a8316dbb6
         SOURCE_DIR     "${VBCSR_SOURCE_DIR}"
         BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/vbcsr"
     )
@@ -438,7 +438,7 @@ else()
     FetchContent_Declare(
         op2c
         GIT_REPOSITORY https://github.com/floatingCatty/op2c.git
-        GIT_TAG        main
+        GIT_TAG        594630c3981e3cf6c436e920e8fa5ee519f6f52e
         SOURCE_DIR     "${OP2C_SOURCE_DIR}"
         BINARY_DIR     "${CMAKE_BINARY_DIR}/extern/op2c"
     )

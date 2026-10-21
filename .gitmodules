@@ -1,0 +1,6 @@
+[submodule "rsatb/extern/primme"]
+	path = rsatb/extern/primme
+	url = https://github.com/primme/primme.git
+[submodule "rsatb/extern/vbcsr"]
+	path = rsatb/extern/vbcsr
+	url = https://github.com/DeepElectron/vbcsr.git

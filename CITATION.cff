@@ -1,0 +1,12 @@
+cff-version: 1.2.0
+message: "If you use RSATB, please cite this software. A paper citation will be added after publication."
+title: "RSATB: Random State Ab-initio Tight-Binding"
+type: software
+authors:
+  - family-names: Zhouyin
+    given-names: Zhanghao
+    affiliation: Department of Physics, McGill University
+    orcid: "https://orcid.org/0000-0002-0954-1650"
+version: 0.1.0
+license: Apache-2.0
+repository-code: "https://github.com/floatingCatty/rsatb"
