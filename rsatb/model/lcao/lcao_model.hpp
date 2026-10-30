@@ -130,7 +130,7 @@ public:
         if (io::NeedsBasisLayout(config_.hamiltonian.format)) {
             layout = FileLayout(atomic_data);
         }
-        auto reader = io::OpenHamiltonianFile(config_.hamiltonian, layout);
+        auto reader = io::OpenHamiltonianFile(config_.hamiltonian, layout, atomic_data.comm);
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }
 

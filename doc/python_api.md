@@ -129,6 +129,15 @@ listing the atoms in ABACUS's order, and a spin-degenerate (nspin=1) run. The
 overlap is computed from the orbital files as always; ABACUS's `srs1_nao.csr`
 and NextHam's `SR_atom_pairs.h5` are not read.
 
+Every format is read distributed: each MPI rank asks for exactly the blocks
+of its own atoms and holds nothing else. NextHam HDF5 and ABACUS's binary CSR
+are read in parallel, each rank reading only its rows. ABACUS's text CSR cannot
+be read out of order, so rank 0 parses it in one streaming pass and sends each
+rank its rows; its time does not drop with more ranks. Measured on a
+1728-atom, 4.3e7-nonzero Al file: NextHam 2.5 s on 1 rank and 0.23 s on 16,
+binary 3.0 s and 0.20 s, text about 20 s at any rank count
+(`calc/test/benchmark_hamiltonian_read.cpp`).
+
 For a neighbour list you already have, `RSATB.from_graph(...)` takes it
 directly. That is a **distributed** description — each rank passes its own
 atoms and edges — and the local counts are checked against the declared totals,

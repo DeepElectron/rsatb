@@ -15,6 +15,21 @@
 
 namespace rsatb::io {
 
+/// File access for an input that is only ever read: no HDF5 file lock.
+///
+/// HDF5 locks every file it opens. On an NFS mount without local locking --
+/// this machine's home -- taking that lock makes the client drop the file's
+/// cached pages, so every process re-fetches every byte over the wire: a
+/// first read of 288 MB took 2.45 s with the lock and 0.12 s without, and a
+/// 1728-atom NextHam read stayed at ~10 s on 1, 4 and 16 ranks alike. The
+/// lock guards against a concurrent writer, which a Hamiltonian input never
+/// has.
+inline H5::FileAccPropList ReadOnlyAccess() {
+    H5::FileAccPropList access;
+    H5Pset_file_locking(access.getId(), false, true);
+    return access;
+}
+
 class HDF5Handler {
 private:
     H5::H5File file;
@@ -148,7 +163,9 @@ private:
 
 public:
     explicit HDF5Handler(const std::string& FILE_NAME)
-        : FILE_NAME(FILE_NAME), file(FILE_NAME, H5F_ACC_RDONLY), group(file.openGroup("0")) {}
+        : FILE_NAME(FILE_NAME),
+          file(FILE_NAME, H5F_ACC_RDONLY, H5::FileCreatPropList::DEFAULT, ReadOnlyAccess()),
+          group(file.openGroup("0")) {}
 
     int read_from_ijR_dense(
         int i, int j, int Rx, int Ry, int Rz,

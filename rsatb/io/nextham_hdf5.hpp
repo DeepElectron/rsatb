@@ -9,6 +9,7 @@
 // unit). Datasets, with P atom pairs sorted by (i, j) and NR (pair, R) entries:
 //
 //   atom_basis_count [n_atom]    orbitals per atom
+//   atomic_numbers   [n_atom]    optional
 //   atom_pair_offset [n_atom+1]  pairs of atom i are [off[i], off[i+1])
 //   pair_indices     [P, 2]      (i, j)
 //   pair_offset      [P+1]       R entries of pair p are [off[p], off[p+1])
@@ -18,14 +19,17 @@
 //                                follow its R list, each row-major
 //
 // Blocks are in ABACUS's orbital order, so the reader takes the model's
-// FileBasisLayout to reorder them (abacus_convention.hpp), and cross-checks it
-// against the counts and atomic numbers the file records.
+// FileBasisLayout to reorder them (abacus_convention.hpp).
 //
-// Only one atom's pairs are resident at a time: the graph loops ask for one
-// atom's blocks together, so they are read as one contiguous slab.
+// The layout is indexed by atom row, which is what makes it scale: a rank
+// reads only the rows of the atoms it owns. Its rows are merged into runs of
+// consecutive file atoms, each run's pair metadata is read in one slab, and
+// its R lists and values in slabs of at most kSlabBytes -- every row once,
+// nothing about other ranks' atoms, and no array over the whole system.
 
 #include "abacus_convention.hpp"
 #include "hamiltonian_file.hpp"
+#include "hdf5.hpp"
 
 #include <H5Cpp.h>
 
@@ -33,7 +37,7 @@
 #include <array>
 #include <cmath>
 #include <cstdint>
-#include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -44,15 +48,18 @@ namespace io {
 class NextHamHdf5Reader : public HamiltonianReader {
 public:
     static constexpr const char* kFormatTag = "abacus_atom_pair_operator_v1";
+    /// Upper bound on the values one slab read holds.
+    static constexpr std::int64_t kSlabBytes = 64LL << 20;
 
-    /// Opens `path` against the model's basis.
+    /// Opens `path` against the model's basis. Not collective: every rank
+    /// opens the file independently and reads only what it asks for.
     ///
     /// Args:
     ///   path: A NextHam HR_atom_pairs.h5.
     ///   layout: The model's basis over the file's atoms.
     /// Throws:
     ///   std::runtime_error if the file is not a NextHam H(R) file, is spinor
-    ///   (nspin=4), or its atoms and orbital counts disagree with layout.
+    ///   (nspin=4), or its atom count or basis size disagrees with layout.
     NextHamHdf5Reader(const std::string& path, const FileBasisLayout& layout) : path_(path) {
         ValidateLayout(layout, "NextHam");
         RequireSpinlessLayout(layout, "NextHam");
@@ -60,14 +67,26 @@ public:
         orders_ = MakeAbacusOrbitalOrders(layout_);
         try {
             H5::Exception::dontPrint();
-            file_.openFile(path, H5F_ACC_RDONLY);
+            file_.openFile(path, H5F_ACC_RDONLY, ReadOnlyAccess());
             ReadHeader();
+            atom_pair_offset_ = file_.openDataSet("atom_pair_offset");
             pairs_ = file_.openDataSet("pair_indices");
             pair_offset_ = file_.openDataSet("pair_offset");
             shifts_ = file_.openDataSet("R");
             data_offset_ = file_.openDataSet("data_offset");
             data_ = file_.openDataSet("data");
             complex_data_ = data_.getTypeClass() == H5T_COMPOUND;
+            if (complex_data_) complex_type_ = ComplexMemoryType();
+            if (file_.nameExists("atomic_numbers")) {
+                atomic_numbers_ = file_.openDataSet("atomic_numbers");
+                has_atomic_numbers_ = true;
+            }
+            if (Extent(file_.openDataSet("atom_basis_count")) != layout_.n_atom() ||
+                Extent(atom_pair_offset_) != layout_.n_atom() + 1) {
+                throw Mismatch("has " + std::to_string(Extent(file_.openDataSet("atom_basis_count"))) +
+                               " atoms, but the structure has " +
+                               std::to_string(layout_.n_atom()) + ".");
+            }
         } catch (const H5::Exception& error) {
             throw std::runtime_error("Cannot read NextHam Hamiltonian file " + path + ": " +
                                      error.getDetailMsg());
@@ -83,52 +102,48 @@ public:
         return metadata;
     }
 
-    bool ReadBlock(int i, int j, const CellShift& shift, DenseBlock* out) const override {
-        if (out == nullptr) {
-            throw std::runtime_error("NextHamHdf5Reader::ReadBlock requires a non-null output block.");
-        }
-        if (i < 0 || i >= layout_.n_atom() || j < 0 || j >= layout_.n_atom()) {
-            throw std::runtime_error("NextHam block (" + std::to_string(i) + ", " +
-                                     std::to_string(j) + ") names an atom outside the file.");
+    void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const override {
+        // This rank's requests in (i, j, R) order, so a row's are adjacent.
+        std::vector<size_t> order(requests.size());
+        std::iota(order.begin(), order.end(), size_t{0});
+        std::sort(order.begin(), order.end(),
+                  [&](size_t a, size_t b) { return requests[a] < requests[b]; });
+        for (size_t k : order) {
+            const BlockKey& key = requests[k];
+            if (key.i < 0 || key.i >= layout_.n_atom() || key.j < 0 || key.j >= layout_.n_atom()) {
+                throw Mismatch("was asked for block (" + std::to_string(key.i) + ", " +
+                               std::to_string(key.j) + "), outside its atoms.");
+            }
         }
 
-        std::lock_guard<std::mutex> lock(mutex_);
-        LoadRow(i);
-
-        const auto pair = std::lower_bound(row_.columns.begin(), row_.columns.end(), j);
-        if (pair == row_.columns.end() || *pair != j) {
-            return false;
+        try {
+            size_t at = 0;
+            while (at < order.size()) {
+                // A run: consecutive file atoms that all have requests.
+                size_t end = at;
+                int last_atom = requests[order[at]].i;
+                while (end < order.size() && requests[order[end]].i <= last_atom + 1) {
+                    last_atom = requests[order[end]].i;
+                    ++end;
+                }
+                ReadRun(requests, order, at, end, sink);
+                at = end;
+            }
+        } catch (const H5::Exception& error) {
+            throw std::runtime_error("Cannot read NextHam Hamiltonian file " + path_ + ": " +
+                                     error.getDetailMsg());
         }
-        const size_t p = static_cast<size_t>(pair - row_.columns.begin());
-        const std::array<std::int64_t, 3> wanted{{shift[0], shift[1], shift[2]}};
-        for (std::int64_t q = row_.pair_offset[p]; q < row_.pair_offset[p + 1]; ++q) {
-            const size_t r = static_cast<size_t>(q - row_.pair_offset.front());
-            if (row_.shifts[r] != wanted) continue;
-
-            const int ni = layout_.AtomNorb(i);
-            const int nj = layout_.AtomNorb(j);
-            const size_t start = static_cast<size_t>(row_.data_offset[p] - row_.data_offset.front()) +
-                                 static_cast<size_t>(q - row_.pair_offset[p]) * ni * nj;
-            AbacusBlockToRsatb(orders_[layout_.atom_type[i]], orders_[layout_.atom_type[j]],
-                               row_.values.data() + start, energy_factor_, out);
-            return true;
-        }
-        return false;
     }
 
 private:
-    // One atom's pairs: their columns, R lists and values.
-    struct Row {
-        int atom = -1;
-        std::vector<int> columns;
-        std::vector<std::int64_t> pair_offset;
-        std::vector<std::int64_t> data_offset;
-        std::vector<std::array<std::int64_t, 3>> shifts;
-        std::vector<double> values;
-    };
-
     std::runtime_error Mismatch(const std::string& what) const {
         return std::runtime_error("NextHam Hamiltonian file " + path_ + " " + what);
+    }
+
+    static long long Extent(const H5::DataSet& dataset) {
+        hsize_t dims[2] = {0, 0};
+        dataset.getSpace().getSimpleExtentDims(dims);
+        return static_cast<long long>(dims[0]);
     }
 
     std::string StringAttribute(const std::string& name, const std::string& fallback) const {
@@ -146,14 +161,6 @@ private:
         long long value = 0;
         file_.openAttribute(name).read(H5::PredType::NATIVE_LLONG, &value);
         return value;
-    }
-
-    std::vector<std::int64_t> ReadWhole(const std::string& name) const {
-        H5::DataSet dataset = file_.openDataSet(name);
-        std::vector<std::int64_t> values(
-            static_cast<size_t>(dataset.getSpace().getSimpleExtentNpoints()));
-        dataset.read(values.data(), H5::PredType::NATIVE_INT64);
-        return values;
     }
 
     // Reads rows [begin, begin + count) of a 1D or 2D dataset; each element of
@@ -174,6 +181,12 @@ private:
         return values;
     }
 
+    std::vector<std::int64_t> ReadInts(const H5::DataSet& dataset, std::int64_t begin,
+                                       std::int64_t count, hsize_t width = 1) const {
+        return ReadSlab<std::int64_t>(dataset, H5::PredType::NATIVE_INT64,
+                                      static_cast<hsize_t>(begin), static_cast<hsize_t>(count), width);
+    }
+
     void ReadHeader() {
         const std::string tag = StringAttribute("format", "");
         if (tag == "pair_predictions_v1") {
@@ -191,10 +204,11 @@ private:
         if (op != "HR") {
             throw Mismatch("has operator '" + op + "', expected 'HR'.");
         }
-        if (IntegerAttribute("nspin") != 1) {
-            throw Mismatch("is an nspin=" + std::to_string(IntegerAttribute("nspin")) +
-                           " file. Spinor H(R) is complex, and rsatb's file-backed Hamiltonians "
-                           "are real-valued; only nspin=1 is supported.");
+        const long long nspin = IntegerAttribute("nspin");
+        if (nspin != 1) {
+            throw Mismatch("is an nspin=" + std::to_string(nspin) + " file. Spinor H(R) is "
+                           "complex, and rsatb's file-backed Hamiltonians are real-valued; only "
+                           "nspin=1 is supported.");
         }
 
         const std::string unit = StringAttribute("HR_unit", StringAttribute("unit", "eV"));
@@ -208,101 +222,141 @@ private:
             throw Mismatch("declares the energy unit '" + unit + "'; expected eV, Ry or Ha.");
         }
 
-        const auto counts = ReadWhole("atom_basis_count");
-        if (static_cast<int>(counts.size()) != layout_.n_atom()) {
-            throw Mismatch("has " + std::to_string(counts.size()) + " atoms, but the structure "
-                           "has " + std::to_string(layout_.n_atom()) + ".");
+        basis_num_ = static_cast<int>(IntegerAttribute("basis_num"));
+        const long long expected = layout_.AtomOffsets().back();
+        if (basis_num_ != expected) {
+            throw Mismatch("has " + std::to_string(basis_num_) + " orbitals, but the model's "
+                           "basis over this structure has " + std::to_string(expected) +
+                           ". Check the atom order and that the orbital files are the ones "
+                           "NextHam's ABACUS data used.");
         }
-        for (int atom = 0; atom < layout_.n_atom(); ++atom) {
-            if (counts[atom] != layout_.AtomNorb(atom)) {
-                throw Mismatch("gives atom " + std::to_string(atom) + " " +
-                               std::to_string(counts[atom]) + " orbitals, but the model's basis "
-                               "gives it " + std::to_string(layout_.AtomNorb(atom)) +
-                               ". Check the atom order and that the orbital files are the ones "
-                               "NextHam's ABACUS data used.");
-            }
-        }
-        if (file_.nameExists("atomic_numbers") && !layout_.type_atomic_number.empty()) {
-            const auto numbers = ReadWhole("atomic_numbers");
-            for (int atom = 0; atom < layout_.n_atom(); ++atom) {
-                const int expected = layout_.type_atomic_number[layout_.atom_type[atom]];
-                if (numbers[atom] != expected) {
-                    throw Mismatch("has Z=" + std::to_string(numbers[atom]) + " at atom " +
+    }
+
+    // Reads the rows of requests order[begin, end), whose atoms are consecutive.
+    void ReadRun(const std::vector<BlockKey>& requests, const std::vector<size_t>& order,
+                 size_t begin, size_t end, const BlockSink& sink) const {
+        const int first_atom = requests[order[begin]].i;
+        const int n_atom = requests[order[end - 1]].i - first_atom + 1;
+
+        // Pair metadata of the whole run: 40 bytes per pair.
+        const auto apo = ReadInts(atom_pair_offset_, first_atom, n_atom + 1);
+        const std::int64_t p0 = apo.front();
+        const std::int64_t n_pair = apo.back() - p0;
+        const auto pairs = ReadInts(pairs_, p0, n_pair, 2);
+        const auto pair_offset = ReadInts(pair_offset_, p0, n_pair + 1);
+        const auto data_offset = ReadInts(data_offset_, p0, n_pair + 1);
+        if (has_atomic_numbers_) {
+            const auto numbers = ReadInts(atomic_numbers_, first_atom, n_atom);
+            for (int a = 0; a < n_atom; ++a) {
+                const int atom = first_atom + a;
+                const int expected = layout_.type_atomic_number.empty()
+                    ? static_cast<int>(numbers[a])
+                    : layout_.type_atomic_number[layout_.atom_type[atom]];
+                if (numbers[a] != expected) {
+                    throw Mismatch("has Z=" + std::to_string(numbers[a]) + " at atom " +
                                    std::to_string(atom) + ", but the structure has Z=" +
                                    std::to_string(expected) + " there; the atom orders differ.");
                 }
             }
         }
-        basis_num_ = static_cast<int>(IntegerAttribute("basis_num"));
 
-        atom_pair_offset_ = ReadWhole("atom_pair_offset");
-        if (static_cast<int>(atom_pair_offset_.size()) != layout_.n_atom() + 1) {
-            throw Mismatch("has an atom_pair_offset of the wrong length.");
+        // Split the run's atoms into slabs of bounded value count.
+        const std::int64_t budget = kSlabBytes / static_cast<std::int64_t>(complex_data_ ? 16 : 8);
+        size_t request = begin;
+        int slab_first = 0;
+        while (slab_first < n_atom) {
+            int slab_end = slab_first + 1;
+            while (slab_end < n_atom &&
+                   data_offset[apo[slab_end + 1] - p0] - data_offset[apo[slab_first] - p0] <= budget) {
+                ++slab_end;
+            }
+            const std::int64_t q0 = apo[slab_first] - p0;   // first pair, run-relative
+            const std::int64_t q1 = apo[slab_end] - p0;
+            const std::int64_t r0 = pair_offset[q0];
+            const auto shifts = ReadInts(shifts_, r0, pair_offset[q1] - r0, 3);
+            const std::int64_t d0 = data_offset[q0];
+            const auto values = ReadValues(d0, data_offset[q1] - d0);
+
+            for (; request < end && requests[order[request]].i < first_atom + slab_end; ++request) {
+                const size_t k = order[request];
+                const BlockKey& key = requests[k];
+                const int a = key.i - first_atom;
+                // The atom's pairs, sorted by j.
+                std::int64_t lo = apo[a] - p0, hi = apo[a + 1] - p0;
+                while (lo < hi) {
+                    const std::int64_t mid = (lo + hi) / 2;
+                    if (pairs[2 * mid + 1] < key.j) lo = mid + 1; else hi = mid;
+                }
+                if (lo == apo[a + 1] - p0 || pairs[2 * lo + 1] != key.j) continue;
+                if (pairs[2 * lo] != key.i) throw Mismatch("lists a pair under the wrong atom row.");
+
+                const int ni = layout_.AtomNorb(key.i);
+                const int nj = layout_.AtomNorb(key.j);
+                const std::int64_t n_shift = pair_offset[lo + 1] - pair_offset[lo];
+                if (data_offset[lo + 1] - data_offset[lo] != n_shift * ni * nj) {
+                    throw Mismatch("stores blocks of pair (" + std::to_string(key.i) + ", " +
+                                   std::to_string(key.j) + ") that are not " + std::to_string(ni) +
+                                   "x" + std::to_string(nj) + ", the model's basis for it. Check "
+                                   "the atom order and the orbital files.");
+                }
+                for (std::int64_t q = 0; q < n_shift; ++q) {
+                    const std::int64_t r = pair_offset[lo] + q - r0;
+                    if (shifts[3 * r] != key.shift[0] || shifts[3 * r + 1] != key.shift[1] ||
+                        shifts[3 * r + 2] != key.shift[2]) {
+                        continue;
+                    }
+                    DenseBlock block;
+                    AbacusBlockToRsatb(orders_[layout_.atom_type[key.i]],
+                                       orders_[layout_.atom_type[key.j]],
+                                       values.data() + (data_offset[lo] - d0) + q * ni * nj,
+                                       energy_factor_, &block);
+                    sink(k, block);
+                    break;
+                }
+            }
+            slab_first = slab_end;
         }
     }
 
-    // Makes atom i's pairs resident. Called with mutex_ held.
-    void LoadRow(int i) const {
-        if (row_.atom == i) return;
-        Row row;
-        row.atom = i;
-        try {
-            const hsize_t begin = static_cast<hsize_t>(atom_pair_offset_[i]);
-            const hsize_t count = static_cast<hsize_t>(atom_pair_offset_[i + 1]) - begin;
-            const auto pairs = ReadSlab<std::int64_t>(pairs_, H5::PredType::NATIVE_INT64, begin, count, 2);
-            row.columns.resize(count);
-            for (hsize_t p = 0; p < count; ++p) {
-                if (pairs[2 * p] != i) throw Mismatch("lists a pair under the wrong atom row.");
-                row.columns[p] = static_cast<int>(pairs[2 * p + 1]);
-            }
-            row.pair_offset = ReadSlab<std::int64_t>(pair_offset_, H5::PredType::NATIVE_INT64, begin, count + 1, 1);
-            row.data_offset = ReadSlab<std::int64_t>(data_offset_, H5::PredType::NATIVE_INT64, begin, count + 1, 1);
+    // The memory type complex values are read into: {r, i} doubles at 0, 8,
+    // which is how h5py and NextHam's writer store complex128.
+    static H5::CompType ComplexMemoryType() {
+        H5::CompType memory(2 * sizeof(double));
+        memory.insertMember("r", 0, H5::PredType::NATIVE_DOUBLE);
+        memory.insertMember("i", sizeof(double), H5::PredType::NATIVE_DOUBLE);
+        return memory;
+    }
 
-            const hsize_t r_begin = static_cast<hsize_t>(row.pair_offset.front());
-            const hsize_t r_count = static_cast<hsize_t>(row.pair_offset.back()) - r_begin;
-            const auto shifts = ReadSlab<std::int64_t>(shifts_, H5::PredType::NATIVE_INT64, r_begin, r_count, 3);
-            row.shifts.resize(r_count);
-            for (hsize_t r = 0; r < r_count; ++r) {
-                row.shifts[r] = {{shifts[3 * r], shifts[3 * r + 1], shifts[3 * r + 2]}};
-            }
-
-            const hsize_t d_begin = static_cast<hsize_t>(row.data_offset.front());
-            const hsize_t d_count = static_cast<hsize_t>(row.data_offset.back()) - d_begin;
-            if (complex_data_) {
-                H5::CompType complex_type(2 * sizeof(double));
-                complex_type.insertMember("r", 0, H5::PredType::NATIVE_DOUBLE);
-                complex_type.insertMember("i", sizeof(double), H5::PredType::NATIVE_DOUBLE);
-                const auto raw = ReadSlab<double>(data_, complex_type, d_begin, d_count, 1, 2);
-                row.values.resize(d_count);
-                for (hsize_t v = 0; v < d_count; ++v) {
-                    if (std::abs(raw[2 * v + 1]) > 1e-12) {
-                        throw Mismatch("holds a complex H(R); rsatb's file-backed "
-                                       "Hamiltonians are real-valued.");
-                    }
-                    row.values[v] = raw[2 * v];
-                }
-            } else {
-                row.values = ReadSlab<double>(data_, H5::PredType::NATIVE_DOUBLE, d_begin, d_count, 1);
-            }
-        } catch (const H5::Exception& error) {
-            throw std::runtime_error("Cannot read NextHam Hamiltonian file " + path_ + ": " +
-                                     error.getDetailMsg());
+    // Values [begin, begin + count) of `data`, real parts.
+    std::vector<double> ReadValues(std::int64_t begin, std::int64_t count) const {
+        if (!complex_data_) {
+            return ReadSlab<double>(data_, H5::PredType::NATIVE_DOUBLE,
+                                    static_cast<hsize_t>(begin), static_cast<hsize_t>(count), 1);
         }
-        row_ = std::move(row);
+        const auto raw = ReadSlab<double>(data_, complex_type_, static_cast<hsize_t>(begin),
+                                          static_cast<hsize_t>(count), 1, 2);
+        std::vector<double> values(static_cast<size_t>(count));
+        for (std::int64_t v = 0; v < count; ++v) {
+            if (std::abs(raw[2 * v + 1]) > 1e-12) {
+                throw Mismatch("holds a complex H(R); rsatb's file-backed Hamiltonians are "
+                               "real-valued.");
+            }
+            values[v] = raw[2 * v];
+        }
+        return values;
     }
 
     std::string path_;
     FileBasisLayout layout_;
     std::vector<AbacusOrbitalOrder> orders_;
     H5::H5File file_;
-    H5::DataSet pairs_, pair_offset_, shifts_, data_offset_, data_;
+    H5::DataSet atom_pair_offset_, pairs_, pair_offset_, shifts_, data_offset_, data_;
+    H5::DataSet atomic_numbers_;
+    bool has_atomic_numbers_ = false;
     bool complex_data_ = false;
+    H5::CompType complex_type_;
     double energy_factor_ = 1.0;
     int basis_num_ = 0;
-    std::vector<std::int64_t> atom_pair_offset_;
-
-    mutable std::mutex mutex_;
-    mutable Row row_;
 };
 
 }  // namespace io

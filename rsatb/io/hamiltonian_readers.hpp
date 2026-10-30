@@ -18,13 +18,17 @@ namespace io {
 
 /// Opens `file` with the reader registered for its format.
 ///
+/// Collective over `comm`, as is every ReadBlocks call on the result.
+///
 /// Args:
 ///   file: The path and its format tag.
 ///   layout: The model's basis over the file's atoms, for formats where
 ///     NeedsBasisLayout is true; ignored by the others.
+///   comm: The ranks that will read the file together.
 inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(
     const HamiltonianFile& file,
-    const FileBasisLayout& layout
+    const FileBasisLayout& layout,
+    MPI_Comm comm
 ) {
     if (file.empty()) {
         throw std::runtime_error("Hamiltonian file path must not be empty.");
@@ -34,7 +38,7 @@ inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(
         case HamiltonianFormat::kDeeptbHdf5:
             return std::make_unique<DeeptbHdf5Reader>(file.path);
         case HamiltonianFormat::kAbacusCsr:
-            return std::make_unique<AbacusCsrReader>(file.path, layout);
+            return std::make_unique<AbacusCsrReader>(file.path, layout, comm);
         case HamiltonianFormat::kNextHamHdf5:
             return std::make_unique<NextHamHdf5Reader>(file.path, layout);
     }
@@ -43,10 +47,11 @@ inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(
         "No reader registered for Hamiltonian format '" + ToString(file.format) + "'.");
 }
 
-/// Opens `file` for a caller that has no basis layout to offer.
+/// Opens `file` for a caller that has no basis layout to offer. The formats
+/// that need none are read rank by rank, so this one is not collective.
 ///
 /// Throws:
-///   std::runtime_error for a format that needs one, naming why.
+///   std::runtime_error for a format that needs a layout, naming why.
 inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(const HamiltonianFile& file) {
     if (NeedsBasisLayout(file.format)) {
         throw std::runtime_error(
@@ -54,7 +59,7 @@ inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(const HamiltonianF
             "orbital order, which can only be converted knowing each atom's orbital shells; "
             "open it through a model that reads them from orbital files (LCAO).");
     }
-    return OpenHamiltonianFile(file, FileBasisLayout{});
+    return OpenHamiltonianFile(file, FileBasisLayout{}, MPI_COMM_SELF);
 }
 
 }  // namespace io

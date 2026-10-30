@@ -540,6 +540,12 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_hamiltonian_readers PRIVATE ${RSATB_INCLUDE_DIRS} io)
     target_link_libraries(test_hamiltonian_readers PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: benchmark_hamiltonian_read - distributed reads of a big-cell
+    # file against the tiled primitive cell (calc/test/make_big_hamiltonian_files.py)
+    add_executable(benchmark_hamiltonian_read calc/test/benchmark_hamiltonian_read.cpp)
+    target_include_directories(benchmark_hamiltonian_read PRIVATE ${RSATB_INCLUDE_DIRS})
+    target_link_libraries(benchmark_hamiltonian_read PRIVATE ${RSATB_LINK_LIBS})
+
     # TEMPORARY: velocity-gauge diagnostic, doc/position_commutator.md §7.
     # Delete with the file once the question is settled.
     add_executable(probe_velocity_gauge calc/test/probe_velocity_gauge.cpp $<TARGET_OBJECTS:backend>)

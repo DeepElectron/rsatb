@@ -12,6 +12,7 @@
 #include "vbcsr/core/atomic/periodic_table.hpp"
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <stdexcept>
@@ -162,11 +163,29 @@ struct DenseBlock {
     }
 };
 
-/// Reads real-space Hamiltonian blocks for one (i, j, R) triple at a time.
+/// One block a rank asks a file for: atom `i` to atom `j` in image `shift`,
+/// in the file's own atom numbering.
+struct BlockKey {
+    int i = 0;
+    int j = 0;
+    CellShift shift{{0, 0, 0}};
+
+    std::array<int, 5> Tuple() const { return {{i, j, shift[0], shift[1], shift[2]}}; }
+    bool operator<(const BlockKey& other) const { return Tuple() < other.Tuple(); }
+    bool operator==(const BlockKey& other) const { return Tuple() == other.Tuple(); }
+};
+
+/// Receives each block found, with the index of the request it answers.
+using BlockSink = std::function<void(size_t request, const DenseBlock& block)>;
+
+/// Reads real-space Hamiltonian blocks, a whole rank's worth at a time.
 ///
-/// Implementations must support concurrent ReadBlock calls from multiple
-/// threads, because the image-container build loops are OpenMP-parallel over
-/// atoms and edges.
+/// The read is one bulk request rather than a call per block because only the
+/// reader knows how its file is best read: sorted, coalesced slabs for an
+/// indexed HDF5 file, positioned reads of just the needed rows for a binary
+/// CSR, or one streaming pass on one rank for a text CSR that cannot be read
+/// out of order. Each rank asks only for its own blocks, and nothing a rank
+/// did not ask for has to stay resident there.
 class HamiltonianReader {
 public:
     virtual ~HamiltonianReader() = default;
@@ -174,16 +193,19 @@ public:
     virtual HamiltonianFormat format() const = 0;
     virtual FileMetadata metadata() const = 0;
 
-    /// Reads the block coupling atom `i` to atom `j` in image `shift`.
+    /// Reads the blocks this rank asks for and hands each one found to `sink`.
+    ///
+    /// Collective over the communicator the reader was opened with: every
+    /// rank calls it, once per read, with its own requests -- possibly none.
+    /// A request the file holds no block for is skipped, which is the normal
+    /// outcome for pairs outside the Hamiltonian's own cutoff. Blocks reach
+    /// the sink on the calling thread, at most once per request, in no
+    /// particular order.
     ///
     /// Args:
-    ///   i, j: Global atom indices.
-    ///   shift: Lattice image of atom `j`.
-    ///   out: Receives the block, row-major, when the return value is true.
-    /// Returns:
-    ///   False when the file holds no block for this triple, which is the
-    ///   normal outcome for pairs outside the Hamiltonian's own cutoff.
-    virtual bool ReadBlock(int i, int j, const CellShift& shift, DenseBlock* out) const = 0;
+    ///   requests: Distinct blocks this rank wants.
+    ///   sink: Called with (request index, block) for every block found.
+    virtual void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const = 0;
 };
 
 // The OpenHamiltonianFile factory lives in hamiltonian_readers.hpp, which is

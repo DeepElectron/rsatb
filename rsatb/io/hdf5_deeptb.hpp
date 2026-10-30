@@ -13,6 +13,7 @@
 
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace rsatb {
 namespace io {
@@ -36,11 +37,20 @@ public:
         return FileMetadata{};
     }
 
-    bool ReadBlock(int i, int j, const CellShift& shift, DenseBlock* out) const override {
-        if (out == nullptr) {
-            throw std::runtime_error("DeeptbHdf5Reader::ReadBlock requires a non-null output block.");
+    /// One dataset per block, so the requests are simply read in turn; there
+    /// is no layout to coalesce and nothing collective.
+    void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const override {
+        DenseBlock block;
+        for (size_t request = 0; request < requests.size(); ++request) {
+            const BlockKey& key = requests[request];
+            if (ReadBlock(key.i, key.j, key.shift, &block)) {
+                sink(request, block);
+            }
         }
+    }
 
+private:
+    bool ReadBlock(int i, int j, const CellShift& shift, DenseBlock* out) const {
         int rows = 0;
         int cols = 0;
         double* values = nullptr;
@@ -64,7 +74,6 @@ public:
         return true;
     }
 
-private:
     std::string path_;
     // HDF5Handler has no default constructor and opens eagerly, so it is held
     // behind a pointer to keep this class movable.

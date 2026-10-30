@@ -18,10 +18,9 @@
 #include "vbcsr/core/atomic/image_container.hpp"
 #include "vbcsr/core/block_csr.hpp"
 
+#include <algorithm>
 #include <array>
-#include <map>
 #include <memory>
-#include <set>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -64,9 +63,14 @@ inline std::vector<int> FileAtomTypes(vbcsr::atomic::AtomicData& ad) {
 /// Builds H(R) by asking the reader for the block behind every graph edge.
 ///
 /// The atomic graph decides which blocks are wanted; the file supplies their
-/// values. A block whose dimensions disagree with the basis the model declared
-/// is an error naming both, because the alternative is a silently truncated
-/// Hamiltonian.
+/// values. Each rank collects the distinct file blocks behind its own onsite
+/// terms and edges and asks for them in one ReadBlocks call, so the reader can
+/// read them in the order its file favours, and a tiled structure reads each
+/// primitive block once however many images it lands in. A block whose
+/// dimensions disagree with the basis the model declared is an error naming
+/// both, because the alternative is a silently truncated Hamiltonian.
+///
+/// Collective over the reader's communicator: every rank must call it.
 ///
 /// Args:
 ///   ad: The atomic graph, which fixes the (i, j, R) blocks to ask for.
@@ -76,10 +80,10 @@ inline std::vector<int> FileAtomTypes(vbcsr::atomic::AtomicData& ad) {
 /// Throws:
 ///   std::runtime_error if a block's dimensions disagree with the basis.
 inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildHamiltonianImagesFromFile(
-vbcsr::atomic::AtomicData& ad,
-const rsatb::io::HamiltonianReader& reader
+    vbcsr::atomic::AtomicData& ad,
+    const rsatb::io::HamiltonianReader& reader
 ) {
-auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
+    auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
 
     // Every reader addresses blocks as (i, j, R) over the file's own cell, with
     // atom j in image R, so one mapping folds a tiled structure onto any of
@@ -107,150 +111,113 @@ auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
         }
     }
 
-    // A repeated structure asks for the same primitive blocks once per image.
-    // Cache those blocks on each rank so geometry expansion does not multiply
-    // physical HDF5 reads by the supercell volume.
-    using FileKey = std::array<int, 5>;  // i, j, Rx, Ry, Rz
-    std::map<FileKey, rsatb::io::DenseBlock> block_cache;
-    std::set<FileKey> missing_blocks;
-
-    auto read_block = [&](int atom_i, int atom_j, rsatb::io::CellShift shift,
-                          rsatb::io::DenseBlock* block) {
+    // Expanded atom -> (file atom, image of its primitive cell).
+    auto decode_atom = [&](int expanded_atom, int* file_atom, std::array<int, 3>* image) {
         if (!repeated) {
-            return reader.ReadBlock(atom_i, atom_j, shift, block);
+            *file_atom = expanded_atom;
+            *image = {{0, 0, 0}};
+            return;
         }
-
-        auto decode_atom = [&](int expanded_atom, int* primitive_atom,
-                               std::array<int, 3>* image) {
-            if (expanded_atom < 0 || expanded_atom >= static_cast<int>(expected_atoms)) {
-                throw std::runtime_error(
-                    "Expanded atom index is outside the supercell mapping.");
-            }
-            *primitive_atom = expanded_atom % ad.primitive_n_atom;
-            int flat_image = expanded_atom / ad.primitive_n_atom;
-            (*image)[2] = flat_image % repetitions[2];
-            flat_image /= repetitions[2];
-            (*image)[1] = flat_image % repetitions[1];
-            flat_image /= repetitions[1];
-            (*image)[0] = flat_image;
-        };
-
-        int primitive_i = 0;
-        int primitive_j = 0;
-        std::array<int, 3> image_i{{0, 0, 0}};
-        std::array<int, 3> image_j{{0, 0, 0}};
-        decode_atom(atom_i, &primitive_i, &image_i);
-        decode_atom(atom_j, &primitive_j, &image_j);
-        for (int axis = 0; axis < 3; ++axis) {
-            shift[axis] = image_j[axis] - image_i[axis] + repetitions[axis] * shift[axis];
+        if (expanded_atom < 0 || expanded_atom >= static_cast<int>(expected_atoms)) {
+            throw std::runtime_error("Expanded atom index is outside the supercell mapping.");
         }
-
-        const FileKey key{{primitive_i, primitive_j, shift[0], shift[1], shift[2]}};
-        const auto cached = block_cache.find(key);
-        if (cached != block_cache.end()) {
-            *block = cached->second;
-            return true;
-        }
-        if (missing_blocks.count(key) != 0) {
-            return false;
-        }
-        if (!reader.ReadBlock(primitive_i, primitive_j, shift, block)) {
-            missing_blocks.insert(key);
-            return false;
-        }
-        block_cache.emplace(key, *block);
-        return true;
+        *file_atom = expanded_atom % ad.primitive_n_atom;
+        int flat_image = expanded_atom / ad.primitive_n_atom;
+        (*image)[2] = flat_image % repetitions[2];
+        flat_image /= repetitions[2];
+        (*image)[1] = flat_image % repetitions[1];
+        flat_image /= repetitions[1];
+        (*image)[0] = flat_image;
     };
 
-    // The first dimension mismatch is recorded and rethrown after both loops,
-    // so one bad block does not abort the read half-way. The critical section
-    // keeps this correct if these loops are ever threaded again.
-    std::string mismatch;
-    auto record_mismatch = [&mismatch](const std::string& message) {
-        #pragma omp critical(rsatb_hamiltonian_reader_mismatch)
-        {
-            if (mismatch.empty()) mismatch = message;
+    // Where one file block lands in this rank's images.
+    struct Placement {
+        rsatb::io::BlockKey key;      // the file block
+        std::array<int, 3> shift;     // the graph image it lands in
+        int global_i, global_j;
+        int inorb, jnorb;
+        int atom_i, atom_j;           // expanded indices, for messages
+    };
+    std::vector<Placement> placements;
+
+    auto place = [&](int local_i, int local_j, const std::array<int, 3>& shift) {
+        int inorb, jnorb, atom_i, atom_j;
+        ad.get_atom_norb(local_i, &inorb);
+        ad.get_atom_norb(local_j, &jnorb);
+        if (inorb <= 0 || jnorb <= 0) return;
+        ad.get_atom_id(local_i, &atom_i);  // original (unpartitioned) index
+        ad.get_atom_id(local_j, &atom_j);
+
+        Placement at;
+        std::array<int, 3> image_i, image_j;
+        decode_atom(atom_i, &at.key.i, &image_i);
+        decode_atom(atom_j, &at.key.j, &image_j);
+        for (int axis = 0; axis < 3; ++axis) {
+            at.key.shift[axis] = image_j[axis] - image_i[axis] + repetitions[axis] * shift[axis];
         }
+        at.shift = shift;
+        at.global_i = ad.get_global_index(local_i);
+        at.global_j = ad.get_global_index(local_j);
+        at.inorb = inorb;
+        at.jnorb = jnorb;
+        at.atom_i = atom_i;
+        at.atom_j = atom_j;
+        placements.push_back(at);
     };
 
     int nstart, nend;
     ad.get_vertex_range_local(&nstart, &nend);
-
-    // Onsite blocks.
-    //
-    // Deliberately serial. HDF5 is built thread-safe here, which means a single
-    // global mutex around every API call: threads gain no concurrency and only
-    // contend. Measured on diamond sc888 (150528 datasets), reading this file
-    // takes 12.4s on 1 thread and degrades monotonically to 55.5s on 96 --
-    // 4.5x slower for doing the same work. The assembly that follows each read
-    // is far cheaper than the read, so there is nothing left worth threading.
-    //
-    // Real parallelism for this file comes from MPI ranks, which own disjoint
-    // vertex ranges and open the file independently.
-    {
-        rsatb::io::DenseBlock block;
-        for (int i = nstart; i < nend; ++i) {
-            if (ad.atom_is_ghost(i)) continue;
-
-            int inorb;
-            ad.get_atom_norb(i, &inorb);
-            int atom_idx;
-            ad.get_atom_id(i, &atom_idx);  // original (unpartitioned) index
-
-            if (!read_block(atom_idx, atom_idx, {0, 0, 0}, &block)) continue;
-            if (block.rows != inorb || block.cols != inorb) {
-                record_mismatch(
-                    "Hamiltonian file onsite block for atom " + std::to_string(atom_idx) +
-                    " is " + std::to_string(block.rows) + "x" + std::to_string(block.cols) +
-                    ", but the model basis expects " + std::to_string(inorb) + "x" +
-                    std::to_string(inorb) + ".");
-                continue;
-            }
-
-            const int global_i = ad.get_global_index(i);
-            img->add_block({0, 0, 0}, global_i, global_i, block.values.data(),
-                           inorb, inorb, vbcsr::AssemblyMode::ADD, vbcsr::MatrixLayout::RowMajor);
-        }
+    for (int i = nstart; i < nend; ++i) {
+        if (!ad.atom_is_ghost(i)) place(i, i, {{0, 0, 0}});
     }
-
-    // Edge blocks
     int estart, eend;
     ad.get_edge_range_local(&estart, &eend);
-    // Serial for the same reason as the onsite loop above.
-    {
-        rsatb::io::DenseBlock block;
-        for (int ie = estart; ie < eend; ++ie) {
-            int i, j;
-            ad.get_connected_atoms(ie, &i, &j);
+    for (int ie = estart; ie < eend; ++ie) {
+        int i, j, Rx, Ry, Rz;
+        ad.get_connected_atoms(ie, &i, &j);
+        ad.get_edge_shift_vec(ie, &Rx, &Ry, &Rz);
+        place(i, j, {{Rx, Ry, Rz}});
+    }
 
-            int inorb, jnorb;
-            ad.get_atom_norb(i, &inorb);
-            ad.get_atom_norb(j, &jnorb);
-            if (inorb <= 0 || jnorb <= 0) continue;
-
-            int Rx, Ry, Rz;
-            ad.get_edge_shift_vec(ie, &Rx, &Ry, &Rz);
-
-            int atom_i, atom_j;
-            ad.get_atom_id(i, &atom_i);
-            ad.get_atom_id(j, &atom_j);
-
-            if (!read_block(atom_i, atom_j, {Rx, Ry, Rz}, &block)) continue;
-            if (block.rows != inorb || block.cols != jnorb) {
-                record_mismatch(
-                    "Hamiltonian file block (" + std::to_string(atom_i) + ", " +
-                    std::to_string(atom_j) + ") is " + std::to_string(block.rows) + "x" +
-                    std::to_string(block.cols) + ", but the model basis expects " +
-                    std::to_string(inorb) + "x" + std::to_string(jnorb) + ".");
-                continue;
-            }
-
-            const int global_i = ad.get_global_index(i);
-            const int global_j = ad.get_global_index(j);
-            img->add_block({Rx, Ry, Rz}, global_i, global_j, block.values.data(),
-                           inorb, jnorb, vbcsr::AssemblyMode::ADD, vbcsr::MatrixLayout::RowMajor);
+    // One request per distinct file block; placements first[k] .. first[k + 1]
+    // are the ones request k feeds.
+    std::sort(placements.begin(), placements.end(),
+              [](const Placement& a, const Placement& b) { return a.key < b.key; });
+    std::vector<rsatb::io::BlockKey> requests;
+    std::vector<size_t> first;
+    for (size_t p = 0; p < placements.size(); ++p) {
+        if (p == 0 || !(placements[p].key == placements[p - 1].key)) {
+            requests.push_back(placements[p].key);
+            first.push_back(p);
         }
     }
+    first.push_back(placements.size());
+
+    // The first dimension mismatch is recorded and rethrown after the read, so
+    // one bad block does not abandon a collective read half-way.
+    //
+    // Serial within a rank on purpose. HDF5 is built thread-safe here, which
+    // is one global mutex around every API call: on diamond sc888 (150528
+    // DeePTB datasets) the read took 12.4 s on 1 thread and 55.5 s on 96.
+    // Parallelism comes from MPI ranks, which each read only their own blocks.
+    std::string mismatch;
+    reader.ReadBlocks(requests, [&](size_t request, const rsatb::io::DenseBlock& block) {
+        for (size_t p = first[request]; p < first[request + 1]; ++p) {
+            const Placement& at = placements[p];
+            if (block.rows != at.inorb || block.cols != at.jnorb) {
+                if (mismatch.empty()) {
+                    mismatch = "Hamiltonian file block (" + std::to_string(at.atom_i) + ", " +
+                               std::to_string(at.atom_j) + ") is " + std::to_string(block.rows) +
+                               "x" + std::to_string(block.cols) + ", but the model basis expects " +
+                               std::to_string(at.inorb) + "x" + std::to_string(at.jnorb) + ".";
+                }
+                continue;
+            }
+            img->add_block({at.shift[0], at.shift[1], at.shift[2]}, at.global_i, at.global_j, block.values.data(),
+                           at.inorb, at.jnorb, vbcsr::AssemblyMode::ADD,
+                           vbcsr::MatrixLayout::RowMajor);
+        }
+    });
 
     if (!mismatch.empty()) {
         throw std::runtime_error(mismatch);

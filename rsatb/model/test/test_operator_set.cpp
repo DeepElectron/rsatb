@@ -122,12 +122,18 @@ public:
         return {};
     }
 
-    bool ReadBlock(int i, int j, const rsatb::io::CellShift& shift,
-                   rsatb::io::DenseBlock* out) const override {
-        ++calls[Key{{i, j, shift[0], shift[1], shift[2]}}];
-        out->Resize(1, 1);
-        out->values[0] = (shift[0] == 0) ? 2.0 : -1.0;
-        return std::abs(shift[0]) <= 1 && shift[1] == 0 && shift[2] == 0;
+    // Records how often each file block is requested: a tiled structure must
+    // ask for every primitive block once, however many images it fills.
+    void ReadBlocks(const std::vector<rsatb::io::BlockKey>& requests,
+                    const rsatb::io::BlockSink& sink) const override {
+        rsatb::io::DenseBlock out;
+        for (size_t k = 0; k < requests.size(); ++k) {
+            const auto& shift = requests[k].shift;
+            ++calls[requests[k].Tuple()];
+            out.Resize(1, 1);
+            out.values[0] = (shift[0] == 0) ? 2.0 : -1.0;
+            if (std::abs(shift[0]) <= 1 && shift[1] == 0 && shift[2] == 0) sink(k, out);
+        }
     }
 
     mutable std::map<Key, int> calls;
