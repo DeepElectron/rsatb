@@ -74,7 +74,7 @@ using op::LatticeMomentTriplet;
 /// test can hand it images it built by hand and a stub builder, and assert the
 /// caching and the bounds without a model, a file, or op2c.
 struct OperatorAssembly {
-    std::unique_ptr<ImageContainer<double>> hamiltonian_images;
+    op::HamiltonianImages hamiltonian_images;  // real, or complex with spin-orbit
     std::unique_ptr<ImageContainer<double>> overlap_images;
     VelocityBuilder velocity_builder;
     PositionBuilder position_builder;
@@ -168,8 +168,8 @@ public:
         return bounds_ready_;
     }
 
-    const ImageContainer<double>* hamiltonian_images() const {
-        return hamiltonian_images_.get();
+    const op::HamiltonianImages& hamiltonian_images() const {
+        return hamiltonian_images_;
     }
 
     const ImageContainer<double>* overlap_images() const {
@@ -256,7 +256,7 @@ public:
                     "No Hamiltonian image data is configured for first-lattice-moment construction.");
             }
             state.first_lattice_moment =
-                op::BuildLatticeMoment(*atomic_data_, *hamiltonian_images_);
+                hamiltonian_images_.Visit([&](auto& images) { return op::BuildLatticeMoment(*atomic_data_, images); });
         }
         return *state.first_lattice_moment;
     }
@@ -290,7 +290,7 @@ private:
             // one merged row could not say whether H or S sampling carried it.
             if (hamiltonian_images_) {
                 RSATB_PHASE("setup/hamiltonian_sample_k");
-                state.hamiltonian.reset(hamiltonian_images_->sample_k(state.kpoint, PhaseConvention::R_AND_POSITION));
+                state.hamiltonian.reset(hamiltonian_images_.sample_k(state.kpoint, PhaseConvention::R_AND_POSITION));
             }
             if (overlap_images_) {
                 RSATB_PHASE("setup/overlap_sample_k");
@@ -449,7 +449,7 @@ private:
     MPI_Comm comm_ = MPI_COMM_NULL;
     bool verbose_ = false;
 
-    std::unique_ptr<ImageContainer<double>> hamiltonian_images_;
+    op::HamiltonianImages hamiltonian_images_;
     std::unique_ptr<ImageContainer<double>> overlap_images_;
     VelocityBuilder velocity_builder_;
     PositionBuilder position_builder_;

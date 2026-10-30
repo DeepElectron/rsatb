@@ -113,6 +113,12 @@ struct ObservableContext {
     /// This rank's sub-communicator; complete results are broadcast within it.
     MPI_Comm sub_comm = MPI_COMM_NULL;
     bool verbose = false;
+    /// Spin components per spatial orbital in the basis: 1, or 2 for spinor.
+    int spin_components = 1;
+
+    /// States per basis function: 2 when the basis holds one spin and both
+    /// are degenerate, 1 when it is a spinor basis holding both explicitly.
+    double SpinDegeneracy() const { return spin_components == 2 ? 1.0 : 2.0; }
 
     setup::OperatorSet& RequireOperators() const {
         if (operators == nullptr) {
@@ -586,10 +592,11 @@ inline void ComputeAc(const ObservableContext& context, int nt, int n_kpm, doubl
         double scale = (ops.emax() - ops.emin()) / 2.0;
         double shift = (ops.emax() + ops.emin()) / 2.0;
         double beta = (temp > 0.0) ? (1.0 / (temp * 8.617333262e-5)) : std::numeric_limits<double>::infinity();
-        // Spin-degenerate optical conductivity (g_s = 2): the correlator is a
-        // per-spin trace; the dc spectrum carries the same g_s.
-        const double kSpinDegeneracy = 2.0;
-        double ac_prefactor = kSpinDegeneracy * (double)context.atomic_data->norb() /
+        // The correlator is a trace over the basis. A spin-degenerate basis
+        // holds one spin, so g_s = 2; a spinor basis holds both, g_s = 1. The
+        // dc spectrum carries the same g_s.
+        const double spin_degeneracy = context.SpinDegeneracy();
+        double ac_prefactor = spin_degeneracy * (double)context.atomic_data->norb() /
                               TransportNormalizationVolume(*context.atomic_data, axis);
 
         const bool concurrent = (method == "concurrent");
@@ -717,13 +724,14 @@ inline void ComputeDcSpectrum(
         // Kubo-Greenwood: sigma(E) = (pi e^2 / hbar Omega) g_s Tr[v delta(E-H) v delta(E-H)].
         // The kernel accumulation below delivers (1/4) Tr[v delta v delta] per
         // trace (its Chebyshev normalisation), hence the 4 (8 for Bastin); the
-        // 2 pi is the formula's pi times the spin degeneracy g_s = 2, so every
-        // transport quantity is the spin-degenerate SI value (the optical
-        // conductivity carries the same g_s). Measured against the dense
-        // Kubo sum on identical eigen-data: exactly 2 pi was missing before
-        // 2026-09-08 (pub_exp/transport/RESULTS.md).
-        const double kSpinDegeneracy = 2.0;
-        const double transport_prefactor = M_PI * kSpinDegeneracy *
+        // 2 pi is the formula's pi times the spin degeneracy g_s = 2 of a
+        // spin-degenerate basis, so every transport quantity is the SI value
+        // with both spins (the optical conductivity carries the same g_s); a
+        // spinor basis traces both spins itself, g_s = 1. Measured against the
+        // dense Kubo sum on identical eigen-data: exactly 2 pi was missing
+        // before 2026-09-08 (pub_exp/transport/RESULTS.md).
+        const double spin_degeneracy = context.SpinDegeneracy();
+        const double transport_prefactor = M_PI * spin_degeneracy *
             (dc_formulation == DCFormulation::Greenwood ? 4.0 : 8.0) * trace_prefactor;
 
         std::vector<double> local_sigma(ops.global_nk() * n_moments * 6, 0.0);
@@ -1377,6 +1385,14 @@ struct GammaPencil {
 
 inline GammaPencil PeelGammaPencil(const ObservableContext& context, const std::string& task) {
     auto& ops = context.RequireOperators();
+    // The real-space path peels H to a real Gamma matrix and contracts real
+    // coefficients against one spatial orbital per basis function. A spinor
+    // H is complex and doubles every orbital; neither is implemented there.
+    if (context.spin_components != 1) {
+        throw std::runtime_error(
+            task + " is implemented for a spin-degenerate basis only; this model is spinor "
+            "(spin-orbit), whose Gamma H is complex and whose orbitals carry two spin components.");
+    }
     if (!ops.has_bounds()) {
         throw std::runtime_error(
             "Spectral bound is not computed yet. Set it true during Setup stage for random "

@@ -267,7 +267,7 @@ TEST(OperatorSetTest, Hdf5ModelBuildsHamiltonianAndBounds) {
     OperatorAssembly artifacts;
     artifacts.hamiltonian_images = rsatb::model::BuildHamiltonianImagesFromFile(*atomic_data, *reader);
     artifacts.velocity_builder =
-        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images);
 
     auto operators = OperatorSet::FromParts(
         *atomic_data,
@@ -297,7 +297,7 @@ TEST(OperatorSetTest, DeeptbPrimitiveBlocksMapIntoSupercellIndicesAndShifts) {
     RecordingDeeptbReader reader;
 
     auto images = rsatb::model::BuildHamiltonianImagesFromFile(*atomic_data, reader);
-    ASSERT_NE(images, nullptr);
+    ASSERT_TRUE(static_cast<bool>(images));
 
     const RecordingDeeptbReader::Key onsite{{0, 0, 0, 0, 0}};
     const RecordingDeeptbReader::Key left{{0, 0, -1, 0, 0}};
@@ -309,12 +309,12 @@ TEST(OperatorSetTest, DeeptbPrimitiveBlocksMapIntoSupercellIndicesAndShifts) {
 
     // Assembly remains in supercell indexing: internal copy-to-copy hoppings
     // are R=0, while the two boundary hoppings live at supercell R=+-1.
-    EXPECT_NE(images->image_blocks.find(std::vector<int>{0, 0, 0}),
-              images->image_blocks.end());
-    EXPECT_NE(images->image_blocks.find(std::vector<int>{-1, 0, 0}),
-              images->image_blocks.end());
-    EXPECT_NE(images->image_blocks.find(std::vector<int>{1, 0, 0}),
-              images->image_blocks.end());
+    EXPECT_NE(images.real().image_blocks.find(std::vector<int>{0, 0, 0}),
+              images.real().image_blocks.end());
+    EXPECT_NE(images.real().image_blocks.find(std::vector<int>{-1, 0, 0}),
+              images.real().image_blocks.end());
+    EXPECT_NE(images.real().image_blocks.find(std::vector<int>{1, 0, 0}),
+              images.real().image_blocks.end());
 }
 
 TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacements) {
@@ -323,7 +323,7 @@ TEST(OperatorSetTest, OrthogonalVelocityFallbackUsesHamiltonianImageDisplacement
     OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
     artifacts.velocity_builder =
-        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images);
 
     auto operators = OperatorSet::FromParts(
         *atomic_data,
@@ -435,7 +435,7 @@ TEST(OperatorSetTest, FirstLatticeMomentUsesImageShiftWeights) {
     OperatorAssembly artifacts;
     artifacts.hamiltonian_images = make_periodic_scalar_h_images(*atomic_data, 0.2, 0.75, 0.25);
     artifacts.velocity_builder =
-        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images.get());
+        rsatb::op::MakeCommutatorVelocityBuilder(artifacts.hamiltonian_images);
 
     auto operators = OperatorSet::FromParts(
         *atomic_data,

@@ -17,6 +17,12 @@
 // transformed this way, matches op2c's overlap to the 1e-8 the file prints;
 // untransformed it is off by 5e-2.
 //
+// A spinor (nspin=4) basis interleaves spin inside every orbital, index
+// 2 * orbital + s, in ABACUS, NextHam and rsatb alike, so the same map acts on
+// the orbital index with spin riding along. Checked against ABACUS's own GaAs
+// spin-orbit S(R): op2c's S (x) I2 matches it to 7e-7, spin off-diagonal
+// exactly zero.
+//
 // Energies are in Rydberg, converted with ABACUS's own factor so that what
 // rsatb reports agrees with what ABACUS printed in eV.
 
@@ -40,9 +46,16 @@ struct AbacusOrbitalOrder {
 
 /// Builds the gather that turns one atom's ABACUS orbitals into rsatb's.
 ///
+/// A spinor basis interleaves spin inside each orbital in both conventions
+/// (index 2 * orbital + s), so spin rides along: rsatb orbital 2k + s comes
+/// from ABACUS orbital 2 src(k) + s with the sign of k. The spin basis itself
+/// (up, down along z) is the same in both and needs no rotation.
+///
 /// Args:
 ///   shells: The atom's shell angular momenta in block order.
-inline AbacusOrbitalOrder MakeAbacusOrbitalOrder(const std::vector<int>& shells) {
+///   spin_components: 1, or 2 for a spinor basis.
+inline AbacusOrbitalOrder MakeAbacusOrbitalOrder(const std::vector<int>& shells,
+                                                 int spin_components = 1) {
     AbacusOrbitalOrder order;
     int offset = 0;
     for (int l : shells) {
@@ -53,8 +66,10 @@ inline AbacusOrbitalOrder MakeAbacusOrbitalOrder(const std::vector<int>& shells)
             const int am = m < 0 ? -m : m;
             // ABACUS position within the shell: 0 for m=0, 2m-1 for +m, 2m for -m.
             const int position = m == 0 ? 0 : (m > 0 ? 2 * m - 1 : 2 * am);
-            order.source.push_back(offset + position);
-            order.sign.push_back(am % 2 == 0 ? 1.0 : -1.0);
+            for (int s = 0; s < spin_components; ++s) {
+                order.source.push_back(spin_components * (offset + position) + s);
+                order.sign.push_back(am % 2 == 0 ? 1.0 : -1.0);
+            }
         }
         offset += 2 * l + 1;
     }
@@ -66,7 +81,7 @@ inline std::vector<AbacusOrbitalOrder> MakeAbacusOrbitalOrders(const FileBasisLa
     std::vector<AbacusOrbitalOrder> orders;
     orders.reserve(layout.type_shells.size());
     for (const auto& shells : layout.type_shells) {
-        orders.push_back(MakeAbacusOrbitalOrder(shells));
+        orders.push_back(MakeAbacusOrbitalOrder(shells, layout.spin_components));
     }
     return orders;
 }
@@ -78,37 +93,34 @@ inline std::vector<AbacusOrbitalOrder> MakeAbacusOrbitalOrders(const FileBasisLa
 ///   abacus: The ABACUS block, row-major, rows.source.size() x cols.source.size().
 ///   factor: Unit conversion applied on the way.
 ///   out: Receives the rsatb block.
-inline void AbacusBlockToRsatb(
+template <typename T>
+void AbacusBlockToRsatb(
     const AbacusOrbitalOrder& rows,
     const AbacusOrbitalOrder& cols,
-    const double* abacus,
+    const T* abacus,
     double factor,
-    DenseBlock* out
+    DenseBlockOf<T>* out
 ) {
     const int n_row = static_cast<int>(rows.source.size());
     const int n_col = static_cast<int>(cols.source.size());
     out->Resize(n_row, n_col);
     for (int a = 0; a < n_row; ++a) {
-        const double* in_row = abacus + static_cast<size_t>(rows.source[a]) * n_col;
+        const T* in_row = abacus + static_cast<size_t>(rows.source[a]) * n_col;
         const double row_factor = factor * rows.sign[a];
-        double* out_row = out->values.data() + static_cast<size_t>(a) * n_col;
+        T* out_row = out->values.data() + static_cast<size_t>(a) * n_col;
         for (int b = 0; b < n_col; ++b) {
-            out_row[b] = row_factor * cols.sign[b] * in_row[cols.source[b]];
+            out_row[b] = (row_factor * cols.sign[b]) * in_row[cols.source[b]];
         }
     }
 }
 
-/// Rejects a spinor layout for a format whose spinor H(R) is complex.
-///
-/// ABACUS nspin=4 and NextHam nspin=4 matrices are complex, and file-backed
-/// Hamiltonians in rsatb are real-valued, so there is nothing correct to
-/// return; failing names the reason instead of reading half of the data.
-inline void RequireSpinlessLayout(const FileBasisLayout& layout, const std::string& format) {
-    if (layout.spin_components != 1) {
-        throw std::runtime_error(
-            "The " + format + " reader supports spin-degenerate Hamiltonians only: a spinor "
-            "(nspin=4) H(R) is complex, and rsatb's file-backed Hamiltonians are real-valued.");
+/// Whether a layout is a spinor basis, whose ABACUS and NextHam H(R) is complex.
+inline bool IsSpinor(const FileBasisLayout& layout) {
+    if (layout.spin_components != 1 && layout.spin_components != 2) {
+        throw std::runtime_error("A basis has 1 or 2 spin components, not " +
+                                 std::to_string(layout.spin_components) + ".");
     }
+    return layout.spin_components == 2;
 }
 
 /// Checks that a layout is complete enough to index a file by.

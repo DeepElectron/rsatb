@@ -45,9 +45,10 @@ struct LatticeMomentTriplet {
 };
 
 /// Builds M_alpha for one axis by weighting each image by its Cartesian shift.
-inline std::unique_ptr<LatticeMomentAxis::Matrix> BuildLatticeMomentAxis(
+template <typename T>
+std::unique_ptr<LatticeMomentAxis::Matrix> BuildLatticeMomentAxis(
     vbcsr::atomic::AtomicData& atomic_data,
-    vbcsr::atomic::ImageContainer<double>& images,
+    vbcsr::atomic::ImageContainer<T>& images,
     int axis
 ) {
     auto result = std::unique_ptr<LatticeMomentAxis::Matrix>(
@@ -65,9 +66,10 @@ inline std::unique_ptr<LatticeMomentAxis::Matrix> BuildLatticeMomentAxis(
 /// An axis is populated iff at least one image carries a lattice translation
 /// along it; otherwise the sum is identically zero and the axis stays absent,
 /// so a consumer that needs it fails by name rather than reading zeros.
-inline std::unique_ptr<LatticeMomentTriplet> BuildLatticeMoment(
+template <typename T>
+std::unique_ptr<LatticeMomentTriplet> BuildLatticeMoment(
     vbcsr::atomic::AtomicData& atomic_data,
-    vbcsr::atomic::ImageContainer<double>& hamiltonian_images
+    vbcsr::atomic::ImageContainer<T>& hamiltonian_images
 ) {
     RequireImagesMatchGraph(atomic_data, hamiltonian_images, "First-lattice-moment construction");
 

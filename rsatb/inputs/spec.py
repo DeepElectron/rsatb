@@ -72,7 +72,8 @@ HAMILTONIAN_FILE = Obj(
                          "HR_atom_pairs.h5. Both of the latter are in ABACUS's orbital "
                          "order, which is converted using the orbital files, so they "
                          "need the 'lcao' model, a structure listing the atoms in "
-                         "ABACUS's order, and a spin-degenerate (nspin=1) run.",
+                         "ABACUS's order, and spin 'spinorbit' for an nspin=4 "
+                         "(spin-orbit) run, which gives a complex H(R).",
                          choices=("deeptb", "abacus", "nextham")), default="deeptb"),
     })
 
@@ -751,7 +752,7 @@ TASK = Union(
                                          minimum=1), default=1),
             }),
         "ac": Obj(
-            "AC conductivity (spin-degenerate, S/m), plus the dielectric "
+            "AC conductivity (S/m, both spins), plus the dielectric "
             "function, refractive index and absorption coefficient derived from "
             "it. Needs velocity.",
             {
@@ -776,7 +777,7 @@ TASK = Union(
             }),
         "dc": Obj(
             "DC conductivity tensor at one chemical potential and temperature "
-            "(spin-degenerate Kubo-Greenwood, S/m). Needs velocity.",
+            "(Kubo-Greenwood over both spins, S/m). Needs velocity.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),
@@ -800,7 +801,7 @@ TASK = Union(
             }),
         "dc_spectrum": Obj(
             "Zero-temperature DC conductivity across the Chebyshev energy grid "
-            "(spin-degenerate Kubo-Greenwood, S/m). Needs velocity.",
+            "(Kubo-Greenwood over both spins, S/m). Needs velocity.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),

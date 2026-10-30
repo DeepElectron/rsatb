@@ -292,7 +292,7 @@ int main(int argc, char** argv) {
             std::unique_ptr<BlockSpMat<cd>> sk(
                 s_img->sample_k({k[0], k[1], k[2]}, vbcsr::atomic::PhaseConvention::R_ONLY));
             std::unique_ptr<BlockSpMat<cd>> hk(
-                h_img->sample_k({k[0], k[1], k[2]}, vbcsr::atomic::PhaseConvention::R_ONLY));
+                h_img.sample_k({k[0], k[1], k[2]}, vbcsr::atomic::PhaseConvention::R_ONLY));
 
             std::vector<cd> U = densify(*sk, Np, norb);
             std::vector<double> s;

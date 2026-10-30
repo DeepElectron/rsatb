@@ -124,7 +124,7 @@ std::vector<std::complex<double>> GammaBlock(
 ) {
     auto images = model.BuildHamiltonianImages(atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
-        images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
+        images.sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
 
     const int start = gamma->row_ptr()[row];
     const int end = gamma->row_ptr()[row + 1];
@@ -309,7 +309,7 @@ TEST(SkfTest, TwoSpeciesCarbonHydrogenBuildsThePhysicalSigmaBond) {
 
     auto images = model->BuildHamiltonianImages(*atomic_data);
     std::unique_ptr<BlockSpMat<std::complex<double>>> gamma(
-        images->sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
+        images.sample_k({0.0, 0.0, 0.0}, PhaseConvention::R_AND_POSITION));
 
     // Locate the carbon (4 orbitals) and hydrogen (1 orbital) rows.
     int carbon = -1;

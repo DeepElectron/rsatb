@@ -234,7 +234,8 @@ void validate_on_orthogonal_sk() {
     runtime.world_size = 1;
     auto ops = rsatb::setup::BuildOperatorSet(*ad, MPI_COMM_WORLD, false, *model, options, runtime);
 
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
     auto H1m = rsatb::op::BuildLatticeMomentAxis(*ad, *img_H, 0);
 
     Matrix* H = ops->hamiltonian_k(0);
@@ -635,7 +636,8 @@ void sk_band_velocity(bool with_overlap, bool triclinic = false) {
     runtime.world_size = 1;
     auto ops = rsatb::setup::BuildOperatorSet(*ad, MPI_COMM_WORLD, false, *model, options, runtime);
 
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
     auto img_S = with_overlap ? model->BuildOverlapImages(*ad) : nullptr;
     auto H1 = bond_moment_at_k(*ad, *img_H, kAxis, kGeneralK);
     auto S1 = img_S ? bond_moment_at_k(*ad, *img_S, kAxis, kGeneralK) : nullptr;
@@ -692,7 +694,8 @@ void lcao_band_velocity(double kscale) {
     auto* ops = inst.operators();
     auto* ad = inst.atomic_data();
 
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
     auto img_S = model->BuildOverlapImages(*ad);
     auto H1 = bond_moment_at_k(*ad, *img_H, kAxis, kbase);
     auto S1 = bond_moment_at_k(*ad, *img_S, kAxis, kbase);
@@ -718,7 +721,8 @@ void lcao_band_velocity(double kscale) {
         rsatb::model::LcaoConfig ref = cfg;
         ref.hamiltonian = rsatb::io::HamiltonianFile{rsatb::test::data_path("diamond/overlaps.h5")};
         auto ref_model = rsatb::model::LcaoModel::Create(ref, MPI_COMM_WORLD);
-        auto img_file_S = ref_model->BuildHamiltonianImages(*ad);
+        auto img_file_S_held = ref_model->BuildHamiltonianImages(*ad);
+        auto* img_file_S = &img_file_S_held.real();
         std::unique_ptr<Matrix> Sfile(
             img_file_S->sample_k(kbase, vbcsr::atomic::PhaseConvention::R_AND_POSITION));
         const auto A = densify(*Sfile, n);
@@ -1265,7 +1269,8 @@ void sk_offdiag_check(bool triclinic) {
     runtime.world_rank = 0;
     runtime.world_size = 1;
     auto ops = rsatb::setup::BuildOperatorSet(*ad, MPI_COMM_WORLD, false, *model, options, runtime);
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
 
     Matrix* H = ops->hamiltonian_k(0);
     Matrix* Va = ops->velocity_state(0).x.matrix.get();
@@ -1273,7 +1278,7 @@ void sk_offdiag_check(bool triclinic) {
     const int n = H->graph->global_scalar_rows();
     const size_t N = static_cast<size_t>(n);
 
-    const auto S0C = assemble_S0C(*ad, H, nullptr, nullptr, Xdiag, img_H.get(), nullptr, kGeneralK, n);
+    const auto S0C = assemble_S0C(*ad, H, nullptr, nullptr, Xdiag, img_H, nullptr, kGeneralK, n);
     const auto va = densify(*Va, n);
 
     double num = 0.0, den = 0.0;
@@ -1311,7 +1316,8 @@ void lcao_spectral_dump(int nk, const char* outfile) {
     rsatb::RSATB inst(structure, *model, opt, 1, MPI_COMM_WORLD);
     auto* ops = inst.operators();
     auto* ad = inst.atomic_data();
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
     auto img_S = model->BuildOverlapImages(*ad);
 
     std::FILE* out = std::fopen(outfile, "w");
@@ -1334,9 +1340,9 @@ void lcao_spectral_dump(int nk, const char* outfile) {
         std::vector<cd> Cv;
         if (!gen_eig(Hd, Sd, n, E, Cv)) { std::printf("  k %d eigensolve failed\n", kidx); continue; }
 
-        const auto S0C = assemble_S0C(*ad, H, S, X0, nullptr, img_H.get(), img_S.get(),
+        const auto S0C = assemble_S0C(*ad, H, S, X0, nullptr, img_H, img_S.get(),
                                       opt.kpoints[kidx], n);
-        const auto S0C_nd = assemble_S0C(*ad, H, S, X0, nullptr, img_H.get(), img_S.get(),
+        const auto S0C_nd = assemble_S0C(*ad, H, S, X0, nullptr, img_H, img_S.get(),
                                          opt.kpoints[kidx], n, /*include_dipole=*/false);
         std::vector<cd> vnd(N * N);
         for (size_t t = 0; t < N * N; ++t) vnd[t] = cd(0.0, 1.0) * S0C_nd[t];
@@ -1433,7 +1439,8 @@ int main(int argc, char** argv) {
     auto* ops = inst.operators();
 
     auto* ad = inst.atomic_data();
-    auto img_H = model->BuildHamiltonianImages(*ad);
+    auto img_H_held = model->BuildHamiltonianImages(*ad);
+    auto* img_H = &img_H_held.real();
     auto img_S = model->BuildOverlapImages(*ad);
     auto H1m = rsatb::op::BuildLatticeMomentAxis(*ad, *img_H, 0);
     auto S1m = rsatb::op::BuildLatticeMomentAxis(*ad, *img_S, 0);
@@ -1560,7 +1567,7 @@ int main(int argc, char** argv) {
     // the diagonal-position approximation -- so it should be CLOSE to C, not
     // equal. Wildly different would mean C is simply wrong.
     {
-        auto builder = rsatb::op::MakeCommutatorVelocityBuilder(img_H.get());
+        auto builder = rsatb::op::MakeCommutatorVelocityBuilder(img_H_held);
         auto triplet = builder(*ad, rsatb::op::KPoint{{0.0, 0.0, 0.0}});
         if (triplet && triplet->x.matrix) {
             auto Dh = densify(*triplet->x.matrix, n);

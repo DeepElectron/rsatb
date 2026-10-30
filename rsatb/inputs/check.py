@@ -51,6 +51,8 @@ _NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric", "msd")
 _NEEDS_GAMMA_ONLY = ("ldos",)
 _NEEDS_GAMMA = ("msd",)
 _NEEDS_ORBITAL_FILES = ("ldos",)
+# The real-space maps work on a real Gamma H over spatial orbitals.
+_SPIN_DEGENERATE_ONLY = ("ldos", "density")
 
 
 def capabilities(model: dict) -> Dict[str, bool]:
@@ -215,6 +217,16 @@ def check_consistency(document: dict) -> List[Issue]:
                 "order; the orthogonal tb_file model cannot use it".format(file_format),
                 hint="use model.type 'lcao' with the .orb files the run used"))
 
+    # A spinor basis carries a complex H(R), which the ABACUS and NextHam
+    # readers deliver and the DeePTB reader does not; and the real-space tasks
+    # are spin-degenerate only.
+    spinor = model.get("spin", "none") in ("noncollinear", "spinorbit")
+    if spinor and family == "lcao" and model.get("hamiltonian", {}).get("format", "deeptb") == "deeptb":
+        issues.append(Issue(
+            "model.spin",
+            "a spinor basis needs a complex H(R), which the 'deeptb' reader does not read",
+            hint="use the 'abacus' or 'nextham' format for an nspin=4 (spin-orbit) H(R)"))
+
     labels = {}
     for index, task in enumerate(tasks):
         kind = task.get("type", "")
@@ -232,6 +244,12 @@ def check_consistency(document: dict) -> List[Issue]:
                 where, "'{}' needs the velocity operator, which the '{}' model with "
                        "these inputs does not supply".format(kind, family),
                 hint=why))
+        if kind in _SPIN_DEGENERATE_ONLY and spinor:
+            issues.append(Issue(
+                where, "'{}' is implemented for a spin-degenerate basis only, and this "
+                       "model is spinor (spin '{}')".format(kind, model.get("spin")),
+                hint="the spectral and transport tasks support spin-orbit; real-space "
+                     "maps do not yet"))
         if kind in _NEEDS_ORBITAL_FILES and family != "lcao":
             issues.append(Issue(
                 where, "'{}' needs the radial orbital files, which only an LCAO model "

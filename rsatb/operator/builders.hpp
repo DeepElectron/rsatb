@@ -14,6 +14,7 @@
 
 #include "commutator_velocity.hpp"
 #include "diagonal_position.hpp"
+#include "images.hpp"
 #include "types.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
@@ -25,15 +26,19 @@ namespace rsatb {
 namespace op {
 
 /// v = (i/hbar) [H, r], from images the caller keeps alive.
-inline VelocityBuilder MakeCommutatorVelocityBuilder(
-    const vbcsr::atomic::ImageContainer<double>* hamiltonian_images
-) {
-    if (hamiltonian_images == nullptr) {
+///
+/// The builder captures the container itself, which does not move when the
+/// HamiltonianImages holding it does.
+inline VelocityBuilder MakeCommutatorVelocityBuilder(const HamiltonianImages& hamiltonian_images) {
+    if (!hamiltonian_images) {
         throw std::runtime_error("Commutator velocity construction requires Hamiltonian images.");
     }
-    return [hamiltonian_images](vbcsr::atomic::AtomicData& atomic_data, const KPoint& kpoint) {
-        return BuildCommutatorVelocity(atomic_data, *hamiltonian_images, kpoint);
-    };
+    return hamiltonian_images.Visit([](const auto& images) -> VelocityBuilder {
+        const auto* held = &images;
+        return [held](vbcsr::atomic::AtomicData& atomic_data, const KPoint& kpoint) {
+            return BuildCommutatorVelocity(atomic_data, *held, kpoint);
+        };
+    });
 }
 
 /// r as a diagonal over atom coordinates.

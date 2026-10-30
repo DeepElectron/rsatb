@@ -160,7 +160,7 @@ int main(int argc, char** argv) {
             const double t_read = MaxOverRanks(MPI_Wtime() - t0);
             const double peak = MaxOverRanks(PeakMb() - base);
             const double least = -MaxOverRanks(-(PeakMb() - base));
-            const double diff = MaxOverRanks(MaxDifference(*reference, *images));
+            const double diff = MaxOverRanks(MaxDifference(reference.real(), images.real()));
             if (rank == 0) {
                 const std::string name = file.first.substr(file.first.find_last_of('/') + 1);
                 std::printf("%-7s %-26s open %6.3f s  read %7.3f s  peak +%5.0f..%5.0f MB/rank  max|dH| %.2e\n",

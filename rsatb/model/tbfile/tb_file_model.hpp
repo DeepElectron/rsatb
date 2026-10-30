@@ -94,7 +94,7 @@ public:
         };
     }
 
-    std::unique_ptr<ImageContainer> BuildHamiltonianImages(AtomicData& atomic_data) const override {
+    HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const override {
         auto reader = io::OpenHamiltonianFile(hamiltonian_);
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }

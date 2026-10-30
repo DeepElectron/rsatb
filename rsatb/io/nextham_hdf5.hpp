@@ -36,10 +36,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace rsatb {
@@ -58,12 +60,13 @@ public:
     ///   path: A NextHam HR_atom_pairs.h5.
     ///   layout: The model's basis over the file's atoms.
     /// Throws:
-    ///   std::runtime_error if the file is not a NextHam H(R) file, is spinor
-    ///   (nspin=4), or its atom count or basis size disagrees with layout.
+    ///   std::runtime_error if the file is not a NextHam H(R) file, its nspin
+    ///   disagrees with the layout's spin (nspin=4 is a spinor basis), or its
+    ///   atom count or basis size disagrees with layout.
     NextHamHdf5Reader(const std::string& path, const FileBasisLayout& layout) : path_(path) {
         ValidateLayout(layout, "NextHam");
-        RequireSpinlessLayout(layout, "NextHam");
         layout_ = layout;
+        spinor_ = IsSpinor(layout_);
         orders_ = MakeAbacusOrbitalOrders(layout_);
         try {
             H5::Exception::dontPrint();
@@ -98,11 +101,26 @@ public:
     FileMetadata metadata() const override {
         FileMetadata metadata;
         metadata.n_orbital_total = basis_num_;
-        metadata.n_spin_component = 1;
+        metadata.n_spin_component = layout_.spin_components;
         return metadata;
     }
 
+    bool complex_blocks() const override { return spinor_; }
+
     void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const override {
+        if (spinor_) throw Mismatch("is read as spinor (nspin=4): its blocks are complex.");
+        Read<double>(requests, sink);
+    }
+
+    void ReadComplexBlocks(const std::vector<BlockKey>& requests,
+                           const ComplexBlockSink& sink) const override {
+        if (!spinor_) throw Mismatch("is read as spin-degenerate (nspin=1): its blocks are real.");
+        Read<std::complex<double>>(requests, sink);
+    }
+
+private:
+    template <typename V>
+    void Read(const std::vector<BlockKey>& requests, const BlockSinkOf<V>& sink) const {
         // This rank's requests in (i, j, R) order, so a row's are adjacent.
         std::vector<size_t> order(requests.size());
         std::iota(order.begin(), order.end(), size_t{0});
@@ -126,7 +144,7 @@ public:
                     last_atom = requests[order[end]].i;
                     ++end;
                 }
-                ReadRun(requests, order, at, end, sink);
+                ReadRun<V>(requests, order, at, end, sink);
                 at = end;
             }
         } catch (const H5::Exception& error) {
@@ -135,7 +153,6 @@ public:
         }
     }
 
-private:
     std::runtime_error Mismatch(const std::string& what) const {
         return std::runtime_error("NextHam Hamiltonian file " + path_ + " " + what);
     }
@@ -205,10 +222,17 @@ private:
             throw Mismatch("has operator '" + op + "', expected 'HR'.");
         }
         const long long nspin = IntegerAttribute("nspin");
-        if (nspin != 1) {
-            throw Mismatch("is an nspin=" + std::to_string(nspin) + " file. Spinor H(R) is "
-                           "complex, and rsatb's file-backed Hamiltonians are real-valued; only "
-                           "nspin=1 is supported.");
+        if (nspin != (spinor_ ? 4 : 1)) {
+            throw Mismatch("is an nspin=" + std::to_string(nspin) + " file, but the model's spin "
+                           "setting makes it read as nspin=" + (spinor_ ? "4" : "1") + ". Use spin "
+                           "'spinorbit' for an nspin=4 (spin-orbit) file and 'none' for nspin=1.");
+        }
+        if (spinor_) {
+            const std::string order = StringAttribute("spin_order", "orbital_interleaved");
+            if (order != "orbital_interleaved") {
+                throw Mismatch("has spin_order '" + order + "'; rsatb's spinor basis is "
+                               "orbital_interleaved.");
+            }
         }
 
         const std::string unit = StringAttribute("HR_unit", StringAttribute("unit", "eV"));
@@ -233,8 +257,9 @@ private:
     }
 
     // Reads the rows of requests order[begin, end), whose atoms are consecutive.
+    template <typename V>
     void ReadRun(const std::vector<BlockKey>& requests, const std::vector<size_t>& order,
-                 size_t begin, size_t end, const BlockSink& sink) const {
+                 size_t begin, size_t end, const BlockSinkOf<V>& sink) const {
         const int first_atom = requests[order[begin]].i;
         const int n_atom = requests[order[end - 1]].i - first_atom + 1;
 
@@ -275,7 +300,7 @@ private:
             const std::int64_t r0 = pair_offset[q0];
             const auto shifts = ReadInts(shifts_, r0, pair_offset[q1] - r0, 3);
             const std::int64_t d0 = data_offset[q0];
-            const auto values = ReadValues(d0, data_offset[q1] - d0);
+            const auto values = ReadValues<V>(d0, data_offset[q1] - d0);
 
             for (; request < end && requests[order[request]].i < first_atom + slab_end; ++request) {
                 const size_t k = order[request];
@@ -305,7 +330,7 @@ private:
                         shifts[3 * r + 2] != key.shift[2]) {
                         continue;
                     }
-                    DenseBlock block;
+                    DenseBlockOf<V> block;
                     AbacusBlockToRsatb(orders_[layout_.atom_type[key.i]],
                                        orders_[layout_.atom_type[key.j]],
                                        values.data() + (data_offset[lo] - d0) + q * ni * nj,
@@ -327,27 +352,36 @@ private:
         return memory;
     }
 
-    // Values [begin, begin + count) of `data`, real parts.
-    std::vector<double> ReadValues(std::int64_t begin, std::int64_t count) const {
-        if (!complex_data_) {
-            return ReadSlab<double>(data_, H5::PredType::NATIVE_DOUBLE,
-                                    static_cast<hsize_t>(begin), static_cast<hsize_t>(count), 1);
-        }
-        const auto raw = ReadSlab<double>(data_, complex_type_, static_cast<hsize_t>(begin),
-                                          static_cast<hsize_t>(count), 1, 2);
-        std::vector<double> values(static_cast<size_t>(count));
-        for (std::int64_t v = 0; v < count; ++v) {
-            if (std::abs(raw[2 * v + 1]) > 1e-12) {
-                throw Mismatch("holds a complex H(R); rsatb's file-backed Hamiltonians are "
-                               "real-valued.");
+    // Values [begin, begin + count) of `data`, as V.
+    //
+    // A spin-degenerate H(R) is real, and NextHam stores it complex with zero
+    // imaginary parts; a nonzero one means the file is not what its nspin
+    // says. A spinor H(R) is read as stored.
+    template <typename V>
+    std::vector<V> ReadValues(std::int64_t begin, std::int64_t count) const {
+        const hsize_t first = static_cast<hsize_t>(begin), n = static_cast<hsize_t>(count);
+        if constexpr (std::is_same_v<V, double>) {
+            if (!complex_data_) return ReadSlab<double>(data_, H5::PredType::NATIVE_DOUBLE, first, n, 1);
+            const auto raw = ReadSlab<double>(data_, complex_type_, first, n, 1, 2);
+            std::vector<double> values(static_cast<size_t>(count));
+            for (std::int64_t v = 0; v < count; ++v) {
+                if (std::abs(raw[2 * v + 1]) > 1e-12) {
+                    throw Mismatch("is nspin=1 but holds a complex H(R).");
+                }
+                values[v] = raw[2 * v];
             }
-            values[v] = raw[2 * v];
+            return values;
+        } else {
+            if (!complex_data_) {
+                throw Mismatch("is nspin=4 but stores real values; a spinor H(R) is complex.");
+            }
+            return ReadSlab<V>(data_, complex_type_, first, n, 1);
         }
-        return values;
     }
 
     std::string path_;
     FileBasisLayout layout_;
+    bool spinor_ = false;
     std::vector<AbacusOrbitalOrder> orders_;
     H5::H5File file_;
     H5::DataSet atom_pair_offset_, pairs_, pair_offset_, shifts_, data_offset_, data_;

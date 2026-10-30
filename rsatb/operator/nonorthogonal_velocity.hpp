@@ -52,9 +52,10 @@ namespace op {
 /// Throws:
 ///   std::runtime_error if the position triplet lacks matrices (an orthogonal
 ///   diagonal cannot dress a non-orthogonal commutator) or graphs mismatch.
-inline std::unique_ptr<VelocityTriplet> BuildNonorthogonalCommutatorVelocity(
+template <typename T>
+std::unique_ptr<VelocityTriplet> BuildNonorthogonalCommutatorVelocity(
     vbcsr::atomic::AtomicData& atomic_data,
-    const vbcsr::atomic::ImageContainer<double>& hamiltonian_images,
+    const vbcsr::atomic::ImageContainer<T>& hamiltonian_images,
     const vbcsr::atomic::ImageContainer<double>& overlap_images,
     const PositionTriplet& position,
     VelocityTriplet::Matrix& overlap_k,

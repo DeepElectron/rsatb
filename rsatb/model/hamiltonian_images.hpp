@@ -13,6 +13,7 @@
 // format means adding a reader, not touching this.
 
 #include "../io/hamiltonian_file.hpp"
+#include "../operator/images.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
 #include "vbcsr/core/atomic/image_container.hpp"
@@ -23,6 +24,7 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace rsatb {
@@ -79,11 +81,12 @@ inline std::vector<int> FileAtomTypes(vbcsr::atomic::AtomicData& ad) {
 ///   The assembled image container.
 /// Throws:
 ///   std::runtime_error if a block's dimensions disagree with the basis.
-inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildHamiltonianImagesFromFile(
+template <typename T>
+std::unique_ptr<vbcsr::atomic::ImageContainer<T>> BuildHamiltonianImagesFromFileOf(
     vbcsr::atomic::AtomicData& ad,
     const rsatb::io::HamiltonianReader& reader
 ) {
-    auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
+    auto img = std::make_unique<vbcsr::atomic::ImageContainer<T>>(&ad);
 
     // Every reader addresses blocks as (i, j, R) over the file's own cell, with
     // atom j in image R, so one mapping folds a tiled structure onto any of
@@ -201,7 +204,7 @@ inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildHamiltonianIm
     // DeePTB datasets) the read took 12.4 s on 1 thread and 55.5 s on 96.
     // Parallelism comes from MPI ranks, which each read only their own blocks.
     std::string mismatch;
-    reader.ReadBlocks(requests, [&](size_t request, const rsatb::io::DenseBlock& block) {
+    auto place_block = [&](size_t request, const rsatb::io::DenseBlockOf<T>& block) {
         for (size_t p = first[request]; p < first[request + 1]; ++p) {
             const Placement& at = placements[p];
             if (block.rows != at.inorb || block.cols != at.jnorb) {
@@ -217,7 +220,12 @@ inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildHamiltonianIm
                            at.inorb, at.jnorb, vbcsr::AssemblyMode::ADD,
                            vbcsr::MatrixLayout::RowMajor);
         }
-    });
+    };
+    if constexpr (std::is_same_v<T, double>) {
+        reader.ReadBlocks(requests, place_block);
+    } else {
+        reader.ReadComplexBlocks(requests, place_block);
+    }
 
     if (!mismatch.empty()) {
         throw std::runtime_error(mismatch);
@@ -225,6 +233,18 @@ inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildHamiltonianIm
 
     img->assemble();
     return img;
+}
+
+/// Builds H(R) from a file: real, or complex when the reader's blocks are
+/// (a spin-orbit H(R) in a spinor basis). See BuildHamiltonianImagesFromFileOf.
+inline op::HamiltonianImages BuildHamiltonianImagesFromFile(
+    vbcsr::atomic::AtomicData& ad,
+    const rsatb::io::HamiltonianReader& reader
+) {
+    if (reader.complex_blocks()) {
+        return BuildHamiltonianImagesFromFileOf<std::complex<double>>(ad, reader);
+    }
+    return BuildHamiltonianImagesFromFileOf<double>(ad, reader);
 }
 
 }  // namespace model

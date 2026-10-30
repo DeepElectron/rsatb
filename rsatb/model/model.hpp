@@ -15,6 +15,7 @@
 #include "basis_spec.hpp"
 #include "operator_source.hpp"
 
+#include "../operator/images.hpp"
 #include "../operator/types.hpp"
 
 #include "vbcsr/core/atomic/atomic_data.hpp"
@@ -31,6 +32,7 @@ namespace model {
 class Model {
 public:
     using ImageContainer = vbcsr::atomic::ImageContainer<double>;
+    using HamiltonianImages = op::HamiltonianImages;
     using AtomicData = vbcsr::atomic::AtomicData;
     using KPoint = op::KPoint;
     using VelocityTriplet = op::VelocityTriplet;
@@ -71,9 +73,9 @@ public:
     /// radial shape.
     virtual std::vector<std::string> RealSpaceOrbitalFiles() const { return {}; }
 
-    /// Builds the real-space Hamiltonian images H(R).
-    virtual std::unique_ptr<ImageContainer> BuildHamiltonianImages(
-        AtomicData& atomic_data) const = 0;
+    /// Builds the real-space Hamiltonian images H(R): real for a
+    /// spin-degenerate basis, complex for a spinor one (op/images.hpp).
+    virtual HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const = 0;
 
     /// Builds the real-space overlap images S(R).
     ///

@@ -124,8 +124,13 @@ written.
 (ABACUS's `out_mat_hs2` sparse H(R), `hrs1_nao.csr` or the older
 `data-HR-sparse_SPIN0.csr`, text or binary) or `"nextham"` (NextHam's
 `HR_atom_pairs.h5`). The last two are in ABACUS's orbital order and are
-converted using the `.orb` files' shells, so they need `LcaoModel`, a structure
-listing the atoms in ABACUS's order, and a spin-degenerate (nspin=1) run. The
+converted using the `.orb` files' shells, so they need `LcaoModel` and a
+structure listing the atoms in ABACUS's order. An nspin=4 (spin-orbit) file is
+read with `spin="spinorbit"`: H(R) is then complex, the basis is spinor with
+spin interleaved inside each orbital (index 2*orbital + s), S and the position
+operator are S (x) I2 and r (x) I2, and the transport prefactors drop the
+spin-degeneracy factor 2 they apply to a spin-degenerate basis. The
+real-space `ldos` and `density` tasks are spin-degenerate only. The
 overlap is computed from the orbital files as always; ABACUS's `srs1_nao.csr`
 and NextHam's `SR_atom_pairs.h5` are not read.
 

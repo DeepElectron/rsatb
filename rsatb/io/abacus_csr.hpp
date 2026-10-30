@@ -13,7 +13,13 @@
 //           "Matrix number of H(R): nR", then per R "Rx Ry Rz nnz" and, when
 //           nnz > 0, nnz values, nnz columns and n + 1 row offsets.
 //   binary: int32 step, n, nR; per R int32 Rx, Ry, Rz, nnz and, when nnz > 0,
-//           nnz float64 values, nnz int32 columns, n + 1 int32 row offsets.
+//           nnz values, nnz int32 columns, n + 1 int32 row offsets.
+//
+// Values are real for a spin-degenerate run and complex for nspin = 4, where
+// the basis is a spinor one, spin interleaved inside each orbital: text writes
+// them "(re,im)", binary as two float64. Which one the file holds is fixed by
+// the basis it is read against (FileBasisLayout::spin_components), and a file
+// that disagrees is an error naming the fix.
 //
 // A binary R with nnz = 0 is followed by nothing in current ABACUS; older
 // versions wrote an all-zero row-offset array there, and both are accepted.
@@ -46,6 +52,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <complex>
 #include <cstdint>
 #include <cstring>
 #include <fstream>
@@ -55,6 +62,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <vector>
 
 namespace rsatb {
@@ -182,7 +190,8 @@ public:
     ///
     /// Args:
     ///   path: An ABACUS H(R) file, e.g. OUT.<suffix>/hrs1_nao.csr.
-    ///   layout: The model's basis over the file's atoms.
+    ///   layout: The model's basis over the file's atoms; a spinor one means
+    ///     the file must hold nspin = 4 complex values.
     ///   comm: The ranks that will read it.
     /// Throws:
     ///   std::runtime_error, on every rank, if the file is malformed or its
@@ -190,8 +199,8 @@ public:
     AbacusCsrReader(const std::string& path, const FileBasisLayout& layout, MPI_Comm comm)
         : path_(path), comm_(comm) {
         ValidateLayout(layout, "ABACUS");
-        RequireSpinlessLayout(layout, "ABACUS");
         layout_ = layout;
+        complex_ = IsSpinor(layout_);
         orders_ = MakeAbacusOrbitalOrders(layout_);
         offsets_ = layout_.AtomOffsets();
         MPI_Comm_rank(comm_, &rank_);
@@ -225,27 +234,25 @@ public:
     FileMetadata metadata() const override {
         FileMetadata metadata;
         metadata.n_orbital_total = static_cast<int>(dimension_);
+        metadata.n_spin_component = layout_.spin_components;
         return metadata;
     }
 
-    void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const override {
-        std::string error;
-        for (const BlockKey& key : requests) {
-            if (key.i < 0 || key.i >= layout_.n_atom() || key.j < 0 || key.j >= layout_.n_atom()) {
-                error = "ABACUS Hamiltonian file " + path_ + " was asked for block (" +
-                        std::to_string(key.i) + ", " + std::to_string(key.j) +
-                        "), outside its " + std::to_string(layout_.n_atom()) + " atoms.";
-                break;
-            }
-        }
-        abacus_detail::AgreeOrThrow(comm_, error);
+    bool complex_blocks() const override { return complex_; }
 
-        const auto rows = GroupByRow(requests);
-        if (binary_) {
-            ReadBinaryRows(rows, sink);
-        } else {
-            ReadTextRows(rows, sink);
+    void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const override {
+        if (complex_) {
+            throw std::runtime_error("ABACUS file " + path_ + " is read as spinor: its blocks are complex.");
         }
+        Read<double>(requests, sink);
+    }
+
+    void ReadComplexBlocks(const std::vector<BlockKey>& requests,
+                           const ComplexBlockSink& sink) const override {
+        if (!complex_) {
+            throw std::runtime_error("ABACUS file " + path_ + " is read as spin-degenerate: its blocks are real.");
+        }
+        Read<std::complex<double>>(requests, sink);
     }
 
 private:
@@ -267,6 +274,15 @@ private:
         return std::runtime_error("Malformed ABACUS Hamiltonian file " + path_ + ": " + what);
     }
 
+    // Bytes of one value in the binary layout.
+    std::int64_t ValueBytes() const { return complex_ ? 16 : 8; }
+
+    // What a misread most likely means, for the binary checks that catch it.
+    std::string ValueHint() const {
+        return complex_ ? " (a spin-degenerate file read as spinor does not parse as complex data)"
+                        : " (a complex nspin=4 file does not parse as real data)";
+    }
+
     void CheckDimension(long long dimension) const {
         if (dimension <= 0) {
             throw Malformed("non-positive matrix dimension " + std::to_string(dimension) + ".");
@@ -277,8 +293,8 @@ private:
                 ", but the model's basis over the " + std::to_string(layout_.n_atom()) +
                 " atoms of this structure has " + std::to_string(offsets_.back()) +
                 " orbitals. Check that the structure lists the atoms in ABACUS's order, that "
-                "the orbital files are the ones ABACUS used, and that the run was "
-                "spin-degenerate (nspin=4 doubles the dimension).");
+                "the orbital files are the ones ABACUS used, and that the spin setting matches "
+                "the run (nspin=4 doubles the dimension: use spin 'spinorbit').");
         }
     }
 
@@ -297,6 +313,27 @@ private:
                     throw Malformed("a row's column indices are not in ascending order.");
                 }
             }
+        }
+    }
+
+    template <typename V>
+    void Read(const std::vector<BlockKey>& requests, const BlockSinkOf<V>& sink) const {
+        std::string error;
+        for (const BlockKey& key : requests) {
+            if (key.i < 0 || key.i >= layout_.n_atom() || key.j < 0 || key.j >= layout_.n_atom()) {
+                error = "ABACUS Hamiltonian file " + path_ + " was asked for block (" +
+                        std::to_string(key.i) + ", " + std::to_string(key.j) +
+                        "), outside its " + std::to_string(layout_.n_atom()) + " atoms.";
+                break;
+            }
+        }
+        abacus_detail::AgreeOrThrow(comm_, error);
+
+        const auto rows = GroupByRow(requests);
+        if (binary_) {
+            ReadBinaryRows<V>(rows, sink);
+        } else {
+            ReadTextRows<V>(rows, sink);
         }
     }
 
@@ -330,8 +367,7 @@ private:
         std::int64_t at = 0;
         auto read_ints = [&](std::int32_t* out, int count, const char* what) {
             if (at + 4 * count > size) {
-                throw Malformed(std::string("the file ends inside ") + what +
-                                " (a complex nspin=4 file does not parse as real data).");
+                throw Malformed(std::string("the file ends inside ") + what + ValueHint() + ".");
             }
             in.seekg(at);
             in.read(reinterpret_cast<char*>(out), 4 * count);
@@ -369,12 +405,11 @@ private:
                 continue;
             }
             record.values = at;
-            record.columns = at + 8 * record.nnz;
+            record.columns = at + ValueBytes() * record.nnz;
             record.row_offsets = record.columns + 4 * record.nnz;
             at = record.row_offsets + offsets_bytes;
             if (at > size) {
-                throw Malformed("the file ends inside an R record (a complex nspin=4 file does "
-                                "not parse as real data).");
+                throw Malformed("the file ends inside an R record" + ValueHint() + ".");
             }
             std::int32_t first = -1, last = -1;
             in.seekg(record.row_offsets);
@@ -382,14 +417,13 @@ private:
             in.seekg(record.row_offsets + 4 * n);
             in.read(reinterpret_cast<char*>(&last), 4);
             if (first != 0 || last != record.nnz) {
-                throw Malformed("row offsets do not span the nonzeros (a complex nspin=4 file "
-                                "does not parse as real data).");
+                throw Malformed("row offsets do not span the nonzeros" + ValueHint() + ".");
             }
             records_.push_back(record);
         }
         if (at != size) {
             throw Malformed(std::to_string(size - at) + " bytes follow the last R record (a "
-                            "multi-step MD file, or complex nspin=4 data read as real).");
+                            "multi-step MD file, or values of the wrong kind" + ValueHint() + ").");
         }
         return {{1, n, header[2]}};
     }
@@ -421,18 +455,18 @@ private:
     /// Args:
     ///   row: The requests for this (R, atom).
     ///   row_ptr: na + 1 offsets into cols / values, one per row of the atom.
-    template <typename Offset>
+    template <typename V, typename Offset>
     void EmitRows(const RowRequest& row, const Offset* row_ptr, const std::int32_t* cols,
-                  const double* values, const BlockSink& sink) const {
+                  const V* values, const BlockSinkOf<V>& sink) const {
         const int ni = layout_.AtomNorb(row.atom);
-        std::vector<double> abacus;
-        DenseBlock block;
+        std::vector<V> abacus;
+        DenseBlockOf<V> block;
         for (const auto& wanted : row.columns) {
             const int j = wanted.first;
             const int nj = layout_.AtomNorb(j);
             const std::int32_t lo = static_cast<std::int32_t>(offsets_[j]);
             const std::int32_t hi = lo + nj;
-            abacus.assign(static_cast<size_t>(ni) * nj, 0.0);
+            abacus.assign(static_cast<size_t>(ni) * nj, V(0));
             bool found = false;
             for (int a = 0; a < ni; ++a) {
                 const std::int32_t* begin = cols + row_ptr[a];
@@ -451,7 +485,8 @@ private:
 
     // --- binary: positioned reads on every rank -----------------------------
 
-    void ReadBinaryRows(const std::vector<RowRequest>& rows, const BlockSink& sink) const {
+    template <typename V>
+    void ReadBinaryRows(const std::vector<RowRequest>& rows, const BlockSinkOf<V>& sink) const {
         std::string error;
         try {
             std::ifstream in(path_, std::ios::binary);
@@ -466,7 +501,7 @@ private:
                 }
                 const auto record = record_of_.find(rows[at].shift);
                 if (record != record_of_.end()) {
-                    ReadBinaryRun(&in, records_[record->second], rows, at, end, sink);
+                    ReadBinaryRun<V>(&in, records_[record->second], rows, at, end, sink);
                 }
                 at = end;
             }
@@ -476,8 +511,10 @@ private:
         abacus_detail::AgreeOrThrow(comm_, error);
     }
 
+    template <typename V>
     void ReadBinaryRun(std::ifstream* in, const Record& record, const std::vector<RowRequest>& rows,
-                       size_t begin, size_t end, const BlockSink& sink) const {
+                       size_t begin, size_t end, const BlockSinkOf<V>& sink) const {
+        static_assert(sizeof(V) == 8 || sizeof(V) == 16, "ABACUS values are float64 or complex128.");
         const std::int64_t first_row = offsets_[rows[begin].atom];
         const std::int64_t n_rows = offsets_[rows[end - 1].atom + 1] - first_row;
         std::vector<std::int32_t> ptr(static_cast<size_t>(n_rows + 1));
@@ -490,37 +527,57 @@ private:
         }
 
         std::vector<std::int32_t> cols(static_cast<size_t>(count));
-        std::vector<double> values(static_cast<size_t>(count));
+        std::vector<V> values(static_cast<size_t>(count));
         in->seekg(record.columns + 4 * k0);
         in->read(reinterpret_cast<char*>(cols.data()), 4 * count);
-        in->seekg(record.values + 8 * k0);
-        in->read(reinterpret_cast<char*>(values.data()), 8 * count);
+        in->seekg(record.values + static_cast<std::int64_t>(sizeof(V)) * k0);
+        in->read(reinterpret_cast<char*>(values.data()), static_cast<std::int64_t>(sizeof(V)) * count);
         if (!*in) throw Malformed("a read ran past the end of the file.");
 
         std::vector<std::int64_t> row_ptr(ptr.size());
         for (size_t a = 0; a < ptr.size(); ++a) row_ptr[a] = ptr[a] - k0;
         CheckRows(row_ptr.data(), n_rows, cols.data());
         for (size_t r = begin; r < end; ++r) {
-            EmitRows(rows[r], row_ptr.data() + (offsets_[rows[r].atom] - first_row), cols.data(),
-                     values.data(), sink);
+            EmitRows<V>(rows[r], row_ptr.data() + (offsets_[rows[r].atom] - first_row), cols.data(),
+                        values.data(), sink);
         }
     }
 
     // --- text: one streaming pass on rank 0 ---------------------------------
 
     template <typename T>
-    T Parse(std::string_view token, const char* what) const {
+    T ParseNumber(std::string_view token, const char* what) const {
         T value{};
         const auto result = std::from_chars(token.data(), token.data() + token.size(), value);
         if (result.ec != std::errc() || result.ptr != token.data() + token.size()) {
-            if (!token.empty() && token[0] == '(') {
-                throw std::runtime_error(
-                    "ABACUS Hamiltonian file " + path_ + " holds complex values, as an nspin=4 "
-                    "run writes; rsatb's file-backed Hamiltonians are real-valued.");
-            }
             throw Malformed(std::string("expected ") + what + ", read '" + std::string(token) + "'.");
         }
         return value;
+    }
+
+    // One value token: "x" for a spin-degenerate run, "(re,im)" for nspin=4.
+    template <typename V>
+    V ParseValue(std::string_view token) const {
+        const bool parenthesised = !token.empty() && token.front() == '(';
+        if constexpr (std::is_same_v<V, double>) {
+            if (parenthesised) {
+                throw std::runtime_error(
+                    "ABACUS Hamiltonian file " + path_ + " holds complex values, as an nspin=4 run "
+                    "writes; read it with spin 'spinorbit'.");
+            }
+            return ParseNumber<double>(token, "a value");
+        } else {
+            const size_t comma = token.find(',');
+            if (!parenthesised || token.back() != ')' || comma == std::string_view::npos) {
+                throw std::runtime_error(
+                    "ABACUS Hamiltonian file " + path_ + " is read as spinor (nspin=4), whose values "
+                    "are '(re,im)', but holds '" + std::string(token) + "': it is from a "
+                    "spin-degenerate run.");
+            }
+            return V(ParseNumber<double>(token.substr(1, comma - 1), "a real part"),
+                     ParseNumber<double>(token.substr(comma + 1, token.size() - comma - 2),
+                                         "an imaginary part"));
+        }
     }
 
     std::string_view NextToken(abacus_detail::Tokens* tokens, const char* what) const {
@@ -555,7 +612,8 @@ private:
         if (*n_records < 0) throw Malformed("negative R count.");
     }
 
-    void ReadTextRows(const std::vector<RowRequest>& rows, const BlockSink& sink) const {
+    template <typename V>
+    void ReadTextRows(const std::vector<RowRequest>& rows, const BlockSinkOf<V>& sink) const {
         int n_rank = 1;
         MPI_Comm_size(comm_, &n_rank);
 
@@ -602,7 +660,7 @@ private:
         abacus_detail::AgreeOrThrow(comm_, error);
 
         const std::int64_t n = dimension_;
-        std::vector<double> values;
+        std::vector<V> values;
         std::vector<std::int32_t> cols, ptr;
         std::map<std::array<int, 3>, int> seen;
         for (long long record = 0; record < n_records_; ++record) {
@@ -612,10 +670,10 @@ private:
             if (rank_ == 0) {
                 try {
                     for (int axis = 0; axis < 3; ++axis) {
-                        head[axis] = Parse<int>(NextToken(tokens.get(), "an R header"), "an R component");
+                        head[axis] = ParseNumber<int>(NextToken(tokens.get(), "an R header"), "an R component");
                     }
                     const long long nnz =
-                        Parse<long long>(NextToken(tokens.get(), "an R header"), "a nonzero count");
+                        ParseNumber<long long>(NextToken(tokens.get(), "an R header"), "a nonzero count");
                     if (nnz < 0) throw Malformed("negative nonzero count.");
                     if (seen[{{head[0], head[1], head[2]}}]++) {
                         throw Malformed("lattice vector (" + std::to_string(head[0]) + ", " +
@@ -627,9 +685,9 @@ private:
                         values.resize(static_cast<size_t>(nnz));
                         cols.resize(static_cast<size_t>(nnz));
                         ptr.resize(static_cast<size_t>(n + 1));
-                        for (auto& v : values) v = Parse<double>(NextToken(tokens.get(), "the values"), "a value");
-                        for (auto& c : cols) c = Parse<std::int32_t>(NextToken(tokens.get(), "the columns"), "a column index");
-                        for (auto& p : ptr) p = Parse<std::int32_t>(NextToken(tokens.get(), "the row offsets"), "a row offset");
+                        for (auto& v : values) v = ParseValue<V>(NextToken(tokens.get(), "the values"));
+                        for (auto& c : cols) c = ParseNumber<std::int32_t>(NextToken(tokens.get(), "the columns"), "a column index");
+                        for (auto& p : ptr) p = ParseNumber<std::int32_t>(NextToken(tokens.get(), "the row offsets"), "a row offset");
                         if (ptr.front() != 0 || ptr.back() != nnz) {
                             throw Malformed("row offsets do not span the nonzeros.");
                         }
@@ -646,16 +704,16 @@ private:
 
             const auto own = local.find(shift);
             if (rank_ == 0) {
-                SendRows(shift, wanted, values, cols, ptr);
+                SendRows<V>(shift, wanted, values, cols, ptr);
                 if (own != local.end()) {
                     for (const RowRequest* row : own->second) {
-                        EmitRows(*row, ptr.data() + offsets_[row->atom], cols.data(), values.data(), sink);
+                        EmitRows<V>(*row, ptr.data() + offsets_[row->atom], cols.data(), values.data(), sink);
                     }
                 }
             } else if (own != local.end()) {
                 const auto payload = abacus_detail::RecvBytes(0, comm_);
                 try {
-                    EmitPayload(payload, own->second, sink);
+                    EmitPayload<V>(payload, own->second, sink);
                 } catch (const std::exception& e) {
                     error = e.what();
                 }
@@ -679,9 +737,10 @@ private:
 
     // Rank 0: sends every other rank that wants rows of this checked record
     // exactly those rows, one message per rank.
+    template <typename V>
     void SendRows(const std::array<int, 3>& shift,
                   const std::map<std::array<int, 3>, std::vector<std::pair<int, int>>>& wanted,
-                  const std::vector<double>& values, const std::vector<std::int32_t>& cols,
+                  const std::vector<V>& values, const std::vector<std::int32_t>& cols,
                   const std::vector<std::int32_t>& ptr) const {
         const auto targets = wanted.find(shift);
         if (targets == wanted.end()) return;
@@ -708,16 +767,17 @@ private:
     }
 
     // A rank's rows of one R, in the order it asked for them.
+    template <typename V>
     void EmitPayload(const std::vector<char>& payload, const std::vector<const RowRequest*>& rows,
-                     const BlockSink& sink) const {
+                     const BlockSinkOf<V>& sink) const {
         size_t cursor = 0;
         for (const RowRequest* row : rows) {
             const int na = layout_.AtomNorb(row->atom);
             const auto row_ptr = abacus_detail::Take<std::int64_t>(payload, &cursor, static_cast<size_t>(na) + 1);
             const size_t count = static_cast<size_t>(row_ptr[na]);
             const auto cols = abacus_detail::Take<std::int32_t>(payload, &cursor, count);
-            const auto values = abacus_detail::Take<double>(payload, &cursor, count);
-            EmitRows(*row, row_ptr.data(), cols.data(), values.data(), sink);
+            const auto values = abacus_detail::Take<V>(payload, &cursor, count);
+            EmitRows<V>(*row, row_ptr.data(), cols.data(), values.data(), sink);
         }
     }
 
@@ -725,6 +785,7 @@ private:
     MPI_Comm comm_;
     int rank_ = 0;
     FileBasisLayout layout_;
+    bool complex_ = false;
     std::vector<AbacusOrbitalOrder> orders_;
     std::vector<long long> offsets_;
     bool binary_ = false;

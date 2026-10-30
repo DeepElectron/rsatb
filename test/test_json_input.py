@@ -297,6 +297,36 @@ def test_abacus_order_hamiltonians_are_refused_by_tb_file(file_format):
     assert paths(errors(issues)) == ["model.hamiltonian.format"]
 
 
+def _spinor_lcao(file_format, tasks=()):
+    return {
+        "structure": {"file": "a.vasp"},
+        "model": {"type": "lcao", "spin": "spinorbit",
+                  "hamiltonian": {"path": "h", "format": file_format},
+                  "orbitals": {"names": ["Ga.orb", "As.orb"]}},
+        "tasks": list(tasks),
+    }
+
+
+@pytest.mark.parametrize("file_format", ["abacus", "nextham"])
+def test_a_spin_orbit_hamiltonian_is_read_from_abacus_order_files(file_format):
+    _, issues = check.resolve(_spinor_lcao(file_format), check_paths=False)
+    assert errors(issues) == []
+
+
+def test_a_spin_orbit_hamiltonian_is_not_read_from_deeptb():
+    _, issues = check.resolve(_spinor_lcao("deeptb"), check_paths=False)
+    assert paths(errors(issues)) == ["model.spin"]
+
+
+@pytest.mark.parametrize("kind", ["ldos", "density"])
+def test_real_space_maps_refuse_a_spinor_basis(kind):
+    task = {"type": kind}
+    task.update({"ldos": {"energies": [0.0], "eta": 0.1},
+                 "density": {"mu": 0.0, "temp": 300.0}}[kind])
+    _, issues = check.resolve(_spinor_lcao("abacus", [task]), check_paths=False)
+    assert "tasks[0]" in paths(errors(issues))
+
+
 def test_bounds_mode_fixed_needs_an_energy_window():
     _, issues = resolve({"run": {"bounds": {"mode": "fixed"}}})
     assert any("emin, emax" in issue.message for issue in errors(issues))

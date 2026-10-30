@@ -4,7 +4,9 @@
 // every layout these readers accept -- ABACUS text, ABACUS binary (with the
 // older zero-row-offset record for an empty R), and NextHam HDF5 in eV -- and
 // each reader must return the same blocks: ABACUS's, put into rsatb's orbital
-// order and converted to eV. The orbital map itself is pinned against the
+// order and converted to eV. That is done twice: spin-degenerate (real
+// values) and spinor (nspin=4: complex values, spin interleaved inside each
+// orbital, twice the orbitals). The orbital map itself is pinned against the
 // convention written out by hand.
 //
 // Run it on several ranks too (mpirun -np 3): each rank asks for a different
@@ -21,27 +23,37 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstdint>
 #include <cstdio>
 #include <fstream>
 #include <map>
 #include <random>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace {
 
 using rsatb::io::AbacusOrbitalOrder;
 using rsatb::io::BlockKey;
-using rsatb::io::DenseBlock;
+using rsatb::io::DenseBlockOf;
 using rsatb::io::FileBasisLayout;
 using rsatb::io::HamiltonianFile;
 using rsatb::io::HamiltonianFormat;
+using Complex = std::complex<double>;
 using Shift = std::array<int, 3>;
 
-const std::string kText = "/tmp/rsatb_test_abacus_text.csr";
-const std::string kBinary = "/tmp/rsatb_test_abacus_binary.csr";
-const std::string kNextHam = "/tmp/rsatb_test_nextham.h5";
+template <typename V>
+constexpr bool kSpinor = std::is_same_v<V, Complex>;
+
+template <typename V>
+std::string Path(const std::string& what) {
+    return "/tmp/rsatb_test_" + what + (kSpinor<V> ? "_spinor" : "");
+}
+template <typename V> std::string TextPath() { return Path<V>("abacus_text.csr"); }
+template <typename V> std::string BinaryPath() { return Path<V>("abacus_binary.csr"); }
+template <typename V> std::string NextHamPath() { return Path<V>("nextham.h5"); }
 
 int Rank() {
     int rank = 0;
@@ -55,40 +67,44 @@ int Size() {
     return size;
 }
 
-// Two species, an s+p atom (4 orbitals, Z = 6) and an s+p+d atom (9, Z = 14),
-// as atoms C Si Si C: a 26-orbital basis.
+// Two species, an s+p atom (4 spatial orbitals, Z = 6) and an s+p+d atom (9,
+// Z = 14), as atoms C Si Si C: a 26-orbital basis, 52 as spinors.
+template <typename V>
 FileBasisLayout FourAtomLayout() {
     FileBasisLayout layout;
     layout.type_shells = {{0, 1}, {0, 1, 2}};
     layout.type_atomic_number = {6, 14};
     layout.atom_type = {0, 1, 1, 0};
+    layout.spin_components = kSpinor<V> ? 2 : 1;
     return layout;
 }
 
-// The synthetic H(R): random ABACUS-order matrices over the 26-orbital basis,
-// in Ry, with a third of the entries zero so rows are genuinely sparse.
-// R = (0, 0, 1) is present but empty, and R = (0, -1, 1) couples only atom 0
-// to atoms 1 and 2.
+// The synthetic H(R): random ABACUS-order matrices over the basis, in Ry,
+// with a third of the entries zero so rows are genuinely sparse. R = (0, 0, 1)
+// is present but empty, and R = (0, -1, 1) couples only atom 0 to atoms 1, 2.
+template <typename V>
 struct Fixture {
-    int n = 26;
-    std::array<int, 5> offsets{{0, 4, 13, 22, 26}};
+    int c = kSpinor<V> ? 2 : 1;
+    int n = 26 * c;
+    std::array<int, 5> offsets{{0, 4 * c, 13 * c, 22 * c, 26 * c}};
     std::vector<Shift> shifts = {{{0, 0, 0}}, {{1, 0, 0}}, {{-1, 0, 0}}, {{0, 0, 1}}, {{0, -1, 1}}};
-    std::map<Shift, std::vector<double>> dense;  // row-major n x n
+    std::map<Shift, std::vector<V>> dense;  // row-major n x n
 
     Fixture() {
         std::mt19937 engine(7);
         std::uniform_real_distribution<double> value(-1.0, 1.0);
         for (const auto& r : shifts) {
-            std::vector<double> m(static_cast<size_t>(n * n), 0.0);
+            std::vector<V> m(static_cast<size_t>(n * n), V(0));
             if (r != Shift{{0, 0, 1}}) {
                 for (auto& x : m) {
-                    const double v = value(engine);
-                    x = std::abs(v) < 0.33 ? 0.0 : v;
+                    const double re = value(engine);
+                    if (std::abs(re) < 0.33) continue;
+                    if constexpr (kSpinor<V>) x = V(re, value(engine)); else x = re;
                 }
                 if (r == Shift{{0, -1, 1}}) {
                     for (int a = 0; a < n; ++a)
                         for (int b = 0; b < n; ++b)
-                            if (!(a < 4 && b >= 4 && b < 22)) m[a * n + b] = 0.0;
+                            if (!(a < offsets[1] && b >= offsets[1] && b < offsets[3])) m[a * n + b] = V(0);
                 }
             }
             dense[r] = m;
@@ -97,20 +113,20 @@ struct Fixture {
 
     int Nnz(const Shift& r) const {
         int count = 0;
-        for (double x : dense.at(r)) count += x != 0.0;
+        for (const V& x : dense.at(r)) count += x != V(0);
         return count;
     }
 
     // The ABACUS-order block of atoms (i, j), or empty if it is all zero.
-    std::vector<double> AbacusBlock(int i, int j, const Shift& r) const {
-        std::vector<double> block;
+    std::vector<V> AbacusBlock(int i, int j, const Shift& r) const {
+        std::vector<V> block;
         bool any = false;
         for (int a = offsets[i]; a < offsets[i + 1]; ++a)
             for (int b = offsets[j]; b < offsets[j + 1]; ++b) {
                 block.push_back(dense.at(r)[a * n + b]);
-                any = any || block.back() != 0.0;
+                any = any || block.back() != V(0);
             }
-        return any ? block : std::vector<double>{};
+        return any ? block : std::vector<V>{};
     }
 
     // Every (i, j, R) of the fixture, plus one the file cannot hold.
@@ -124,23 +140,33 @@ struct Fixture {
     }
 };
 
-void WriteText(const Fixture& f) {
-    std::ofstream out(kText);
+// ABACUS's text value: "x", or "(re,im)" for nspin=4.
+std::string TextValue(double x) {
+    char buffer[64];
+    std::snprintf(buffer, sizeof(buffer), "%.17g", x);
+    return buffer;
+}
+std::string TextValue(const Complex& x) {
+    return "(" + TextValue(x.real()) + "," + TextValue(x.imag()) + ")";
+}
+
+template <typename V>
+void WriteText(const Fixture<V>& f) {
+    std::ofstream out(TextPath<V>());
     out << "STEP: 0\nMatrix Dimension of H(R): " << f.n << "\nMatrix number of H(R): "
         << f.shifts.size() << "\n";
-    out.precision(17);
     for (const auto& r : f.shifts) {
         out << r[0] << " " << r[1] << " " << r[2] << " " << f.Nnz(r) << "\n";
         if (f.Nnz(r) == 0) continue;  // current ABACUS writes nothing more
         const auto& m = f.dense.at(r);
         std::vector<int> offsets{0};
         for (int a = 0; a < f.n * f.n; ++a)
-            if (m[a] != 0.0) out << " " << m[a];
+            if (m[a] != V(0)) out << " " << TextValue(m[a]);
         out << "\n";
         for (int a = 0; a < f.n; ++a) {
             int row = 0;
             for (int b = 0; b < f.n; ++b)
-                if (m[a * f.n + b] != 0.0) {
+                if (m[a * f.n + b] != V(0)) {
                     out << " " << b;
                     ++row;
                 }
@@ -152,8 +178,9 @@ void WriteText(const Fixture& f) {
     }
 }
 
-void WriteBinary(const Fixture& f) {
-    std::ofstream out(kBinary, std::ios::binary);
+template <typename V>
+void WriteBinary(const Fixture<V>& f) {
+    std::ofstream out(BinaryPath<V>(), std::ios::binary);
     auto put = [&](std::int32_t x) { out.write(reinterpret_cast<const char*>(&x), 4); };
     put(0);
     put(f.n);
@@ -166,15 +193,15 @@ void WriteBinary(const Fixture& f) {
             for (int a = 0; a <= f.n; ++a) put(0);
             continue;
         }
-        for (double x : m)
-            if (x != 0.0) out.write(reinterpret_cast<const char*>(&x), 8);
+        for (const V& x : m)
+            if (x != V(0)) out.write(reinterpret_cast<const char*>(&x), sizeof(V));
         for (int a = 0; a < f.n; ++a)
             for (int b = 0; b < f.n; ++b)
-                if (m[a * f.n + b] != 0.0) put(b);
+                if (m[a * f.n + b] != V(0)) put(b);
         std::int32_t total = 0;
         put(0);
         for (int a = 0; a < f.n; ++a) {
-            for (int b = 0; b < f.n; ++b) total += m[a * f.n + b] != 0.0;
+            for (int b = 0; b < f.n; ++b) total += m[a * f.n + b] != V(0);
             put(total);
         }
     }
@@ -198,8 +225,9 @@ void WriteInt64(H5::H5File& file, const std::string& name, const std::vector<std
 }
 
 // Writes the fixture the way NextHam's write_pair_hdf5 does, in eV.
-void WriteNextHam(const Fixture& f, const std::string& op, long long nspin) {
-    H5::H5File file(kNextHam, H5F_ACC_TRUNC);
+template <typename V>
+void WriteNextHam(const Fixture<V>& f, const std::string& op, long long nspin) {
+    H5::H5File file(NextHamPath<V>(), H5F_ACC_TRUNC);
     WriteStringAttribute(file, "format", "abacus_atom_pair_operator_v1");
     WriteStringAttribute(file, "operator", op);
     WriteStringAttribute(file, "HR_unit", "eV");
@@ -220,9 +248,10 @@ void WriteNextHam(const Fixture& f, const std::string& op, long long nspin) {
             pairs.push_back(j);
             for (const auto& r : present) {
                 shifts.insert(shifts.end(), {r[0], r[1], r[2]});
-                for (double x : f.AbacusBlock(i, j, r)) {
-                    data.push_back(x * rsatb::io::kAbacusEvPerRydberg);
-                    data.push_back(0.0);
+                for (const V& x : f.AbacusBlock(i, j, r)) {
+                    const Complex z = Complex(x) * rsatb::io::kAbacusEvPerRydberg;
+                    data.push_back(z.real());
+                    data.push_back(z.imag());
                 }
             }
             pair_offset.push_back(static_cast<std::int64_t>(shifts.size() / 3));
@@ -230,8 +259,9 @@ void WriteNextHam(const Fixture& f, const std::string& op, long long nspin) {
         }
         atom_pair_offset.push_back(static_cast<std::int64_t>(pairs.size() / 2));
     }
-    WriteInt64(file, "atom_basis_count", {4, 9, 9, 4}, 1);
-    WriteInt64(file, "atom_basis_start", {0, 4, 13, 22}, 1);
+    const std::int64_t c = f.c;
+    WriteInt64(file, "atom_basis_count", {4 * c, 9 * c, 9 * c, 4 * c}, 1);
+    WriteInt64(file, "atom_basis_start", {0, 4 * c, 13 * c, 22 * c}, 1);
     WriteInt64(file, "atomic_numbers", {6, 14, 14, 6}, 1);
     WriteInt64(file, "atom_pair_offset", atom_pair_offset, 1);
     WriteInt64(file, "pair_indices", pairs, 2);
@@ -261,24 +291,33 @@ std::vector<BlockKey> ShareOf(const std::vector<BlockKey>& keys) {
     return mine;
 }
 
+template <typename V>
+void Read(const rsatb::io::HamiltonianReader& reader, const std::vector<BlockKey>& requests,
+          const rsatb::io::BlockSinkOf<V>& sink) {
+    if constexpr (kSpinor<V>) reader.ReadComplexBlocks(requests, sink);
+    else reader.ReadBlocks(requests, sink);
+}
+
 // Reads `requests`, and checks every answer against ABACUS's block in rsatb order.
-void ExpectFixtureBlocks(const rsatb::io::HamiltonianReader& reader, const Fixture& f,
+template <typename V>
+void ExpectFixtureBlocks(const rsatb::io::HamiltonianReader& reader, const Fixture<V>& f,
                          const std::vector<BlockKey>& requests) {
-    const auto layout = FourAtomLayout();
+    const auto layout = FourAtomLayout<V>();
     const auto orders = rsatb::io::MakeAbacusOrbitalOrders(layout);
+    EXPECT_EQ(reader.complex_blocks(), kSpinor<V>);
     std::vector<int> answered(requests.size(), 0);
-    reader.ReadBlocks(requests, [&](size_t k, const DenseBlock& got) {
+    Read<V>(reader, requests, [&](size_t k, const DenseBlockOf<V>& got) {
         ++answered[k];
         const BlockKey& key = requests[k];
         const auto abacus = f.AbacusBlock(key.i, key.j, key.shift);
         ASSERT_FALSE(abacus.empty()) << "a block the file does not hold was returned";
-        DenseBlock want;
+        DenseBlockOf<V> want;
         rsatb::io::AbacusBlockToRsatb(orders[layout.atom_type[key.i]], orders[layout.atom_type[key.j]],
                                       abacus.data(), rsatb::io::kAbacusEvPerRydberg, &want);
         ASSERT_EQ(got.rows, want.rows);
         ASSERT_EQ(got.cols, want.cols);
         for (size_t v = 0; v < want.values.size(); ++v) {
-            EXPECT_NEAR(got.values[v], want.values[v], 1e-12) << "entry " << v;
+            EXPECT_NEAR(std::abs(got.values[v] - want.values[v]), 0.0, 1e-12) << "entry " << v;
         }
     });
     for (size_t k = 0; k < requests.size(); ++k) {
@@ -303,19 +342,24 @@ TEST(AbacusOrbitalOrder, MatchesTheConventionWrittenOut) {
     // Shells are laid out one after another: s p -> s at 0, p at 1..3.
     const AbacusOrbitalOrder sp = rsatb::io::MakeAbacusOrbitalOrder({0, 1});
     EXPECT_EQ(sp.source, (std::vector<int>{0, 3, 1, 2}));
+
+    // Spinor: spin rides inside each orbital, 2 * orbital + s on both sides.
+    const AbacusOrbitalOrder p2 = rsatb::io::MakeAbacusOrbitalOrder({1}, 2);
+    EXPECT_EQ(p2.source, (std::vector<int>{4, 5, 0, 1, 2, 3}));
+    EXPECT_EQ(p2.sign, (std::vector<double>{-1, -1, 1, 1, -1, -1}));
 }
 
 class EveryLayout : public ::testing::TestWithParam<std::string> {};
 
-TEST_P(EveryLayout, EachRankGetsExactlyItsShare) {
-    const Fixture f;
-    OnRootThenBarrier([&] { WriteText(f); WriteBinary(f); WriteNextHam(f, "HR", 1); });
-    const std::string& which = GetParam();
+template <typename V>
+void EachRankGetsExactlyItsShare(const std::string& which) {
+    const Fixture<V> f;
+    OnRootThenBarrier([&] { WriteText(f); WriteBinary(f); WriteNextHam(f, "HR", kSpinor<V> ? 4 : 1); });
     const HamiltonianFile file = which == "nextham"
-        ? HamiltonianFile{kNextHam, HamiltonianFormat::kNextHamHdf5}
-        : HamiltonianFile{which == "text" ? kText : kBinary, HamiltonianFormat::kAbacusCsr};
-    auto reader = rsatb::io::OpenHamiltonianFile(file, FourAtomLayout(), MPI_COMM_WORLD);
-    EXPECT_EQ(*reader->metadata().n_orbital_total, 26);
+        ? HamiltonianFile{NextHamPath<V>(), HamiltonianFormat::kNextHamHdf5}
+        : HamiltonianFile{which == "text" ? TextPath<V>() : BinaryPath<V>(), HamiltonianFormat::kAbacusCsr};
+    auto reader = rsatb::io::OpenHamiltonianFile(file, FourAtomLayout<V>(), MPI_COMM_WORLD);
+    EXPECT_EQ(*reader->metadata().n_orbital_total, f.n);
     ExpectFixtureBlocks(*reader, f, ShareOf(f.AllKeys()));
 
     // A second read, in which only rank 0 asks for anything, still takes
@@ -323,70 +367,89 @@ TEST_P(EveryLayout, EachRankGetsExactlyItsShare) {
     ExpectFixtureBlocks(*reader, f, Rank() == 0 ? f.AllKeys() : std::vector<BlockKey>{});
 }
 
+TEST_P(EveryLayout, EachRankGetsExactlyItsShare) {
+    SCOPED_TRACE("spin-degenerate");
+    EachRankGetsExactlyItsShare<double>(GetParam());
+}
+
+TEST_P(EveryLayout, EachRankGetsExactlyItsShareAsSpinor) {
+    SCOPED_TRACE("spinor");
+    EachRankGetsExactlyItsShare<Complex>(GetParam());
+}
+
 INSTANTIATE_TEST_SUITE_P(Readers, EveryLayout, ::testing::Values("text", "binary", "nextham"));
 
 TEST(AbacusCsrReader, RejectsABasisOfTheWrongSizeOnEveryRank) {
-    const Fixture f;
+    const Fixture<double> f;
     OnRootThenBarrier([&] { WriteText(f); WriteBinary(f); });
-    auto layout = FourAtomLayout();
+    auto layout = FourAtomLayout<double>();
     layout.atom_type = {1, 1, 1, 1};  // 36 orbitals, the file has 26
-    EXPECT_THROW(rsatb::io::AbacusCsrReader(kText, layout, MPI_COMM_WORLD), std::runtime_error);
-    EXPECT_THROW(rsatb::io::AbacusCsrReader(kBinary, layout, MPI_COMM_WORLD), std::runtime_error);
+    EXPECT_THROW(rsatb::io::AbacusCsrReader(TextPath<double>(), layout, MPI_COMM_WORLD), std::runtime_error);
+    EXPECT_THROW(rsatb::io::AbacusCsrReader(BinaryPath<double>(), layout, MPI_COMM_WORLD), std::runtime_error);
 }
 
-TEST(AbacusCsrReader, RejectsComplexTextOnEveryRank) {
-    OnRootThenBarrier([] {
-        std::ofstream out(kText);
-        out << "STEP: 0\nMatrix Dimension of H(R): 26\nMatrix number of H(R): 1\n0 0 0 1\n"
-            << " (1.0,0.5)\n 0\n 0";
-        for (int a = 0; a < 26; ++a) out << " 1";
-        out << "\n";
-    });
-    rsatb::io::AbacusCsrReader reader(kText, FourAtomLayout(), MPI_COMM_WORLD);
-    EXPECT_THROW(reader.ReadBlocks(ShareOf({BlockKey{0, 0, {{0, 0, 0}}}}), [](size_t, const DenseBlock&) {}),
+TEST(AbacusCsrReader, RejectsValuesOfTheWrongKindOnEveryRank) {
+    const Fixture<double> real;
+    const Fixture<Complex> spinor;
+    OnRootThenBarrier([&] { WriteText(real); WriteText(spinor); WriteBinary(spinor); });
+    auto ignore_real = [](size_t, const rsatb::io::DenseBlock&) {};
+    auto ignore_complex = [](size_t, const rsatb::io::ComplexDenseBlock&) {};
+
+    // Complex nspin=4 text read as spin-degenerate: the 52-orbital file does
+    // not fit the 26-orbital basis.
+    EXPECT_THROW(rsatb::io::AbacusCsrReader(TextPath<Complex>(), FourAtomLayout<double>(), MPI_COMM_WORLD),
                  std::runtime_error);
+    // Real text read as spinor, under a spinor layout of the same total size
+    // (13 spatial orbitals, 26 as spinors), so the dimension passes and the
+    // value parser has to notice the missing "(re,im)".
+    FileBasisLayout fitting;
+    fitting.type_shells = {{0, 1}, {0, 1, 2}};
+    fitting.type_atomic_number = {6, 14};
+    fitting.atom_type = {1, 0};  // 9 + 4 = 13 spatial, 26 as spinors: the real file's size
+    fitting.spin_components = 2;
+    rsatb::io::AbacusCsrReader real_as_spinor(TextPath<double>(), fitting, MPI_COMM_WORLD);
+    EXPECT_THROW(real_as_spinor.ReadComplexBlocks(ShareOf({BlockKey{0, 0, {{0, 0, 0}}}}), ignore_complex),
+                 std::runtime_error);
+
+    // A spinor reader is not asked for real blocks, nor a real one for complex.
+    rsatb::io::AbacusCsrReader spinor_reader(BinaryPath<Complex>(), FourAtomLayout<Complex>(), MPI_COMM_WORLD);
+    EXPECT_THROW(spinor_reader.ReadBlocks({}, ignore_real), std::runtime_error);
 }
 
-TEST(AbacusCsrReader, RejectsASpinorLayout) {
-    const Fixture f;
-    OnRootThenBarrier([&] { WriteText(f); });
-    auto layout = FourAtomLayout();
-    layout.spin_components = 2;
-    EXPECT_THROW(rsatb::io::AbacusCsrReader(kText, layout, MPI_COMM_WORLD), std::runtime_error);
-}
-
-TEST(NextHamHdf5Reader, RejectsOverlapSpinorAndMismatchedFiles) {
-    const Fixture f;
-    auto ignore = [](size_t, const DenseBlock&) {};
+TEST(NextHamHdf5Reader, RejectsOverlapSpinMismatchAndMismatchedFiles) {
+    const Fixture<double> f;
+    auto ignore = [](size_t, const rsatb::io::DenseBlock&) {};
     const auto keys = ShareOf(f.AllKeys());
 
     OnRootThenBarrier([&] { WriteNextHam(f, "SR", 1); });
-    EXPECT_THROW(rsatb::io::NextHamHdf5Reader(kNextHam, FourAtomLayout()), std::runtime_error);
+    EXPECT_THROW(rsatb::io::NextHamHdf5Reader(NextHamPath<double>(), FourAtomLayout<double>()), std::runtime_error);
     MPI_Barrier(MPI_COMM_WORLD);
 
+    // An nspin=4 file read as spin-degenerate, and an nspin=1 one as spinor.
     OnRootThenBarrier([&] { WriteNextHam(f, "HR", 4); });
-    EXPECT_THROW(rsatb::io::NextHamHdf5Reader(kNextHam, FourAtomLayout()), std::runtime_error);
+    EXPECT_THROW(rsatb::io::NextHamHdf5Reader(NextHamPath<double>(), FourAtomLayout<double>()), std::runtime_error);
     MPI_Barrier(MPI_COMM_WORLD);
-
     OnRootThenBarrier([&] { WriteNextHam(f, "HR", 1); });
+    EXPECT_THROW(rsatb::io::NextHamHdf5Reader(NextHamPath<double>(), FourAtomLayout<Complex>()), std::runtime_error);
+
     // Same total size, but per-atom orbital counts that disagree with the file.
-    auto swapped = FourAtomLayout();
+    auto swapped = FourAtomLayout<double>();
     swapped.atom_type = {1, 0, 0, 1};
     swapped.type_atomic_number = {14, 6};
-    rsatb::io::NextHamHdf5Reader swapped_reader(kNextHam, swapped);
+    rsatb::io::NextHamHdf5Reader swapped_reader(NextHamPath<double>(), swapped);
     EXPECT_THROW(swapped_reader.ReadBlocks(keys, ignore), std::runtime_error);
 
-    auto wrong_species = FourAtomLayout();
+    auto wrong_species = FourAtomLayout<double>();
     wrong_species.type_atomic_number = {6, 32};  // the file records Z = 14
-    rsatb::io::NextHamHdf5Reader species_reader(kNextHam, wrong_species);
+    rsatb::io::NextHamHdf5Reader species_reader(NextHamPath<double>(), wrong_species);
     EXPECT_THROW(species_reader.ReadBlocks(f.AllKeys(), ignore), std::runtime_error);
     MPI_Barrier(MPI_COMM_WORLD);
 }
 
 TEST(OpenHamiltonianFile, AbacusOrderFormatsNeedALayout) {
-    EXPECT_THROW(rsatb::io::OpenHamiltonianFile(HamiltonianFile{kText, HamiltonianFormat::kAbacusCsr}),
+    EXPECT_THROW(rsatb::io::OpenHamiltonianFile(HamiltonianFile{TextPath<double>(), HamiltonianFormat::kAbacusCsr}),
                  std::runtime_error);
-    EXPECT_THROW(rsatb::io::OpenHamiltonianFile(HamiltonianFile{kNextHam, HamiltonianFormat::kNextHamHdf5}),
+    EXPECT_THROW(rsatb::io::OpenHamiltonianFile(HamiltonianFile{NextHamPath<double>(), HamiltonianFormat::kNextHamHdf5}),
                  std::runtime_error);
     EXPECT_EQ(rsatb::io::ParseHamiltonianFormat(" NextHam "), HamiltonianFormat::kNextHamHdf5);
     EXPECT_EQ(rsatb::io::ParseHamiltonianFormat("abacus"), HamiltonianFormat::kAbacusCsr);
@@ -404,7 +467,10 @@ int main(int argc, char** argv) {
     const int result = RUN_ALL_TESTS();
     MPI_Barrier(MPI_COMM_WORLD);
     if (Rank() == 0) {
-        for (const auto& path : {kText, kBinary, kNextHam}) std::remove(path.c_str());
+        for (const auto& path : {TextPath<double>(), BinaryPath<double>(), NextHamPath<double>(),
+                                 TextPath<Complex>(), BinaryPath<Complex>(), NextHamPath<Complex>()}) {
+            std::remove(path.c_str());
+        }
     }
     int failed = result != 0, any = 0;
     MPI_Allreduce(&failed, &any, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);

@@ -197,6 +197,7 @@ public:
         // Retained rather than re-derived: the real-space observables need the
         // radials themselves, and the model is not kept past setup.
         orbital_files_ = model.RealSpaceOrbitalFiles();
+        spin_components_ = model.spin().Components();
 
         // Reported against wall time since the clock started, so the table shows
         // what the named phases did not account for. An unattributed remainder
@@ -556,6 +557,7 @@ private:
         context.sub_comm = sub_comm_;
         context.fragment_cache = &fragment_basis_cache_;
         context.verbose = util::Log::enabled(util::LogLevel::kDebug);
+        context.spin_components = spin_components_;
         return context;
     }
 
@@ -591,6 +593,9 @@ private:
     calc::detail::FragmentBasisCache fragment_basis_cache_;
     /// Radial orbital files of the model last set up, empty if it has none.
     std::vector<std::string> orbital_files_;
+    // Spin components per spatial orbital of the model's basis, which sets
+    // the spin degeneracy the observables apply.
+    int spin_components_ = 1;
     calc::SampleVectors sampling_;
 };
 

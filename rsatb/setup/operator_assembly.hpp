@@ -94,20 +94,24 @@ inline std::unique_ptr<OperatorSet> BuildOperatorSet(
             // model for its dipole matrices; Validate() has already
             // guaranteed a position exists whenever an overlap does.
             if (parts.overlap_images) {
-                parts.velocity_builder =
-                    [&model, h_images = parts.hamiltonian_images.get(),
-                     s_images = parts.overlap_images.get()](
-                        vbcsr::atomic::AtomicData& atomic_data, const op::KPoint& kpoint) {
-                        auto position = model.BuildPosition(atomic_data, kpoint);
-                        std::unique_ptr<op::VelocityTriplet::Matrix> overlap_k(
-                            s_images->sample_k(kpoint,
-                                               vbcsr::atomic::PhaseConvention::R_AND_POSITION));
-                        return op::BuildNonorthogonalCommutatorVelocity(
-                            atomic_data, *h_images, *s_images, *position, *overlap_k, kpoint);
-                    };
+                // Captures the H container itself (real or complex), which
+                // stays put when `parts` is moved into the operator set.
+                parts.velocity_builder = parts.hamiltonian_images.Visit(
+                    [&model, s_images = parts.overlap_images.get()](const auto& images)
+                        -> op::VelocityBuilder {
+                        const auto* h_images = &images;
+                        return [&model, h_images, s_images](
+                                   vbcsr::atomic::AtomicData& atomic_data, const op::KPoint& kpoint) {
+                            auto position = model.BuildPosition(atomic_data, kpoint);
+                            std::unique_ptr<op::VelocityTriplet::Matrix> overlap_k(
+                                s_images->sample_k(kpoint,
+                                                   vbcsr::atomic::PhaseConvention::R_AND_POSITION));
+                            return op::BuildNonorthogonalCommutatorVelocity(
+                                atomic_data, *h_images, *s_images, *position, *overlap_k, kpoint);
+                        };
+                    });
             } else {
-                parts.velocity_builder = op::MakeCommutatorVelocityBuilder(
-                    parts.hamiltonian_images.get());
+                parts.velocity_builder = op::MakeCommutatorVelocityBuilder(parts.hamiltonian_images);
             }
             break;
         case OperatorSource::kUnavailable:

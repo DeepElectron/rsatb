@@ -111,9 +111,10 @@ enum class MomentWeight { kDisplacement, kKetPosition };
 /// Throws:
 ///   std::runtime_error if the k-point is malformed or the images do not
 ///   belong to this graph.
-inline void AccumulateBondMoment(
+template <typename T>
+void AccumulateBondMoment(
     vbcsr::atomic::AtomicData& atomic_data,
-    const vbcsr::atomic::ImageContainer<double>& images,
+    const vbcsr::atomic::ImageContainer<T>& images,
     const KPoint& kpoint,
     std::complex<double> factor,
     MomentWeight weighting,
@@ -193,7 +194,7 @@ inline void AccumulateBondMoment(
                     shift_x + delta_x, shift_y + delta_y, shift_z + delta_z};
 
                 const int n_elem = static_cast<int>(image_matrix->block_size_elements(k));
-                const double* block_data = image_matrix->block_data(k);
+                const T* block_data = image_matrix->block_data(k);
 
                 for (int axis = 0; axis < 3; ++axis) {
                     if (axes_out[axis] == nullptr) continue;
@@ -236,9 +237,10 @@ inline void AccumulateBondMoment(
 /// Throws:
 ///   std::runtime_error if the k-point is malformed or the images do not
 ///   belong to this graph.
-inline std::unique_ptr<VelocityTriplet> BuildCommutatorVelocity(
+template <typename T>
+std::unique_ptr<VelocityTriplet> BuildCommutatorVelocity(
     vbcsr::atomic::AtomicData& atomic_data,
-    const vbcsr::atomic::ImageContainer<double>& hamiltonian_images,
+    const vbcsr::atomic::ImageContainer<T>& hamiltonian_images,
     const KPoint& kpoint
 ) {
     auto triplet = std::make_unique<VelocityTriplet>();

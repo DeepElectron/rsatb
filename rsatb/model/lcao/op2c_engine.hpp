@@ -46,6 +46,7 @@ public:
     std::unique_ptr<Op2c> op2c_;
     MPI_Comm comm;
     int rank;
+    int spin_components_ = 1;
 
     Op2cEngine(MPI_Comm c = MPI_COMM_WORLD) : comm(c) {
         MPI_Comm_rank(comm, &rank);
@@ -118,6 +119,35 @@ public:
 
     bool has_beta_projectors() const {
         return op2c_ && op2c_->tcbd.beta_;
+    }
+
+    /// Sets how many spin components each spatial orbital carries in the
+    /// AtomicData blocks: 1, or 2 for a spinor basis.
+    ///
+    /// op2c integrates spatial orbitals. In a spinor basis, interleaved by spin
+    /// (index 2 * orbital + s), the overlap and position are spin-diagonal and
+    /// spin-independent -- S (x) I2, r (x) I2 -- so every spatial block is
+    /// computed once and expanded on the way into the spinor-sized block.
+    void set_spin_components(int components) {
+        if (components != 1 && components != 2) {
+            throw std::runtime_error("Op2cEngine: a basis has 1 or 2 spin components.");
+        }
+        spin_components_ = components;
+    }
+
+    int spin_components() const { return spin_components_; }
+
+    /// Expands a spatial a x b block to the (C a) x (C b) spin-diagonal one.
+    std::vector<double> SpinDiagonal(const std::vector<double>& spatial, int a, int b) const {
+        const int c = spin_components_;
+        if (c == 1) return spatial;
+        std::vector<double> out(static_cast<size_t>(c * a) * (c * b), 0.0);
+        for (int p = 0; p < a; ++p)
+            for (int q = 0; q < b; ++q)
+                for (int s = 0; s < c; ++s)
+                    out[static_cast<size_t>(c * p + s) * (c * b) + (c * q + s)] =
+                        spatial[static_cast<size_t>(p) * b + q];
+        return out;
     }
 
     /// Returns the loaded orbital basis, or nullptr before init().
@@ -221,16 +251,18 @@ public:
             int itype;
             ad.get_atom_type(i, &itype);
 
-            // On-site
-            std::vector<double> vS(inorb*inorb);
-            
+            // On-site; op2c fills the spatial block.
+            const int ni = inorb / spin_components_;
+            std::vector<double> vS(ni*ni);
+
             op2c_->overlap(itype, itype, vR, false, vS, nullptr, nullptr, nullptr);
-            
+            const auto block = SpinDiagonal(vS, ni, ni);
+
             // Set blocks
             int global_i = ad.get_global_index(i);
             std::vector<int> R = {0, 0, 0};
             try {
-                img->add_block(R, global_i, global_i, vS.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+                img->add_block(R, global_i, global_i, block.data(), inorb, inorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
             } catch (const std::exception& error) {
                 record_failure(error.what());
             }
@@ -273,16 +305,19 @@ public:
                 
                 vR *= 1.8897259886;
                 
-                std::vector<double> vS(inorb*jnorb);
-                
+                const int ni = inorb / spin_components_;
+                const int nj = jnorb / spin_components_;
+                std::vector<double> vS(ni*nj);
+
                 op2c_->overlap(itype, jtype, vR, false, vS, nullptr, nullptr, nullptr);
-                
+                const auto block = SpinDiagonal(vS, ni, nj);
+
                 // Set blocks
                 int global_i = ad.get_global_index(i);
                 int global_j = ad.get_global_index(j);
                 std::vector<int> R = {Rx_, Ry_, Rz_};
                 try {
-                    img->add_block(R, global_i, global_j, vS.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
+                    img->add_block(R, global_i, global_j, block.data(), inorb, jnorb, AssemblyMode::ADD, MatrixLayout::RowMajor);
                 } catch (const std::exception& error) {
                     record_failure(error.what());
                 }
@@ -335,16 +370,18 @@ public:
             ad.get_pos(i, &xi, &yi, &zi);
             ModuleBase::Vector3<double> Ri(xi * bohr_per_angstrom, yi * bohr_per_angstrom, zi * bohr_per_angstrom);
 
-            std::vector<double> vS(inorb * inorb), vX, vY, vZ;
-            if (X) vX.resize(inorb * inorb);
-            if (Y) vY.resize(inorb * inorb);
-            if (Z) vZ.resize(inorb * inorb);
+            // op2c fills spatial blocks; the spinor ones are r (x) I2.
+            const int ni = inorb / spin_components_;
+            std::vector<double> vS(ni * ni), vX, vY, vZ;
+            if (X) vX.resize(ni * ni);
+            if (Y) vY.resize(ni * ni);
+            if (Z) vZ.resize(ni * ni);
 
             op2c_->overlap_position(itype, itype, Ri, Ri, false, vS, vX, vY, vZ);
 
-            if (X) op::AddLocalBlock(*X, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
-            if (Y) op::AddLocalBlock(*Y, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
-            if (Z) op::AddLocalBlock(*Z, ad, i, i, 0, 0, 0, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+            if (X) op::AddLocalBlock(*X, ad, i, i, 0, 0, 0, Kx, Ky, Kz, SpinDiagonal(vX, ni, ni).data(), angstrom_per_bohr);
+            if (Y) op::AddLocalBlock(*Y, ad, i, i, 0, 0, 0, Kx, Ky, Kz, SpinDiagonal(vY, ni, ni).data(), angstrom_per_bohr);
+            if (Z) op::AddLocalBlock(*Z, ad, i, i, 0, 0, 0, Kx, Ky, Kz, SpinDiagonal(vZ, ni, ni).data(), angstrom_per_bohr);
 
             const auto& edges = ad.get_atom_edges(i);
             for (int ie : edges) {
@@ -366,16 +403,17 @@ public:
                 double frx = rx, fry = ry, frz = rz;
                 ad.invert_cell(&frx, &fry, &frz);
 
-                vS.assign(inorb * jnorb, 0.0);
-                if (X) vX.assign(inorb * jnorb, 0.0);
-                if (Y) vY.assign(inorb * jnorb, 0.0);
-                if (Z) vZ.assign(inorb * jnorb, 0.0);
+                const int nj = jnorb / spin_components_;
+                vS.assign(ni * nj, 0.0);
+                if (X) vX.assign(ni * nj, 0.0);
+                if (Y) vY.assign(ni * nj, 0.0);
+                if (Z) vZ.assign(ni * nj, 0.0);
 
                 op2c_->overlap_position(itype, jtype, Ri, Rj, false, vS, vX, vY, vZ);
 
-                if (X) op::AddLocalBlock(*X, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vX.data(), angstrom_per_bohr);
-                if (Y) op::AddLocalBlock(*Y, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vY.data(), angstrom_per_bohr);
-                if (Z) op::AddLocalBlock(*Z, ad, i, j, frx, fry, frz, Kx, Ky, Kz, vZ.data(), angstrom_per_bohr);
+                if (X) op::AddLocalBlock(*X, ad, i, j, frx, fry, frz, Kx, Ky, Kz, SpinDiagonal(vX, ni, nj).data(), angstrom_per_bohr);
+                if (Y) op::AddLocalBlock(*Y, ad, i, j, frx, fry, frz, Kx, Ky, Kz, SpinDiagonal(vY, ni, nj).data(), angstrom_per_bohr);
+                if (Z) op::AddLocalBlock(*Z, ad, i, j, frx, fry, frz, Kx, Ky, Kz, SpinDiagonal(vZ, ni, nj).data(), angstrom_per_bohr);
             }
         }
 
@@ -397,6 +435,14 @@ public:
             throw std::runtime_error(
                 "build_overlap_velocity requires beta projectors (pseudopotentials); "
                 "none are loaded, so the non-local commutator term cannot be built.");
+        }
+        // This explicit-integral route is a spatial cross-check of the
+        // commutator velocity production uses; its spinor form would need the
+        // spin-orbit projectors (npol = 2), which it has never been built with.
+        if (spin_components_ != 1) {
+            throw std::runtime_error(
+                "build_overlap_velocity is spin-degenerate only; for a spinor basis the "
+                "velocity comes from the commutator route.");
         }
 
         auto img_S = std::make_unique<ImageContainer<double>>(&ad);

@@ -87,6 +87,16 @@ public:
                 std::to_string(config.orbitals.names.size()) + " orbital files, " +
                 std::to_string(config.pseudopotentials.names.size()) + " pseudopotential files).");
         }
+        // A spinor H(R) is complex and interleaved by spin. The ABACUS and
+        // NextHam readers deliver exactly that; DeePTB spinor files are
+        // spin-block per atom and its reader is real-only.
+        if (config.spin.IsSpinor() &&
+            config.hamiltonian.format == io::HamiltonianFormat::kDeeptbHdf5) {
+            throw std::runtime_error(
+                "LCAO with a spinor basis (spin '" + ToString(config.spin.treatment) +
+                "') reads its complex H(R) from the 'abacus' or 'nextham' formats; the "
+                "'deeptb' reader is spin-degenerate only.");
+        }
 
         auto model = std::unique_ptr<LcaoModel>(new LcaoModel(std::move(config), comm));
         model->InitializeIntegrals();
@@ -124,7 +134,7 @@ public:
         };
     }
 
-    std::unique_ptr<ImageContainer> BuildHamiltonianImages(AtomicData& atomic_data) const override {
+    HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const override {
         RSATB_PHASE("setup/hamiltonian_read");
         io::FileBasisLayout layout;
         if (io::NeedsBasisLayout(config_.hamiltonian.format)) {
@@ -212,6 +222,7 @@ private:
             config_.pseudopotentials.names,
             config_.log_file);
 
+        integrals_->set_spin_components(config_.spin.Components());
         has_velocity_ = !config_.pseudopotentials.empty() && integrals_->has_beta_projectors();
     }
 

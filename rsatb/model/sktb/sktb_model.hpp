@@ -64,7 +64,7 @@ public:
         };
     }
 
-    std::unique_ptr<ImageContainer> BuildHamiltonianImages(AtomicData& atomic_data) const override {
+    HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const override {
         return construction_->build_hamiltonian_images(atomic_data);
     }
 

@@ -12,6 +12,7 @@
 #include "vbcsr/core/atomic/periodic_table.hpp"
 
 #include <array>
+#include <complex>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -121,7 +122,9 @@ struct FileBasisLayout {
     std::vector<int> type_atomic_number;
     /// Per atom: its type.
     std::vector<int> atom_type;
-    /// Basis-size multiplier for one spatial orbital; 2 for a spinor basis.
+    /// Basis-size multiplier for one spatial orbital; 2 for a spinor basis,
+    /// whose orbitals are interleaved by spin -- index 2 * orbital + s, s = 0
+    /// for up -- as ABACUS, NextHam and op2c's spinor integrals lay them out.
     int spin_components = 1;
 
     int n_atom() const { return static_cast<int>(atom_type.size()); }
@@ -151,17 +154,21 @@ struct FileBasisLayout {
 using CellShift = std::array<int, 3>;
 
 /// A dense matrix block in row-major order.
-struct DenseBlock {
+template <typename T>
+struct DenseBlockOf {
     int rows = 0;
     int cols = 0;
-    std::vector<double> values;
+    std::vector<T> values;
 
     void Resize(int n_rows, int n_cols) {
         rows = n_rows;
         cols = n_cols;
-        values.assign(static_cast<size_t>(n_rows) * static_cast<size_t>(n_cols), 0.0);
+        values.assign(static_cast<size_t>(n_rows) * static_cast<size_t>(n_cols), T(0));
     }
 };
+
+using DenseBlock = DenseBlockOf<double>;
+using ComplexDenseBlock = DenseBlockOf<std::complex<double>>;
 
 /// One block a rank asks a file for: atom `i` to atom `j` in image `shift`,
 /// in the file's own atom numbering.
@@ -176,7 +183,10 @@ struct BlockKey {
 };
 
 /// Receives each block found, with the index of the request it answers.
-using BlockSink = std::function<void(size_t request, const DenseBlock& block)>;
+template <typename T>
+using BlockSinkOf = std::function<void(size_t request, const DenseBlockOf<T>& block)>;
+using BlockSink = BlockSinkOf<double>;
+using ComplexBlockSink = BlockSinkOf<std::complex<double>>;
 
 /// Reads real-space Hamiltonian blocks, a whole rank's worth at a time.
 ///
@@ -205,7 +215,22 @@ public:
     /// Args:
     ///   requests: Distinct blocks this rank wants.
     ///   sink: Called with (request index, block) for every block found.
+    /// Throws:
+    ///   std::runtime_error if the blocks are complex (complex_blocks()).
     virtual void ReadBlocks(const std::vector<BlockKey>& requests, const BlockSink& sink) const = 0;
+
+    /// Whether this file's blocks are complex: a spin-orbit H(R) in a spinor
+    /// basis. Fixed by the basis the reader was opened against, never by
+    /// looking at the values.
+    virtual bool complex_blocks() const { return false; }
+
+    /// ReadBlocks for complex blocks; same contract.
+    virtual void ReadComplexBlocks(const std::vector<BlockKey>& requests,
+                                   const ComplexBlockSink& sink) const {
+        (void)requests;
+        (void)sink;
+        throw std::runtime_error("The " + ToString(format()) + " reader has no complex blocks.");
+    }
 };
 
 // The OpenHamiltonianFile factory lives in hamiltonian_readers.hpp, which is

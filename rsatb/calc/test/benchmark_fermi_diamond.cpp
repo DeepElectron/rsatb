@@ -65,7 +65,8 @@ constexpr double kBoltzmann = 8.617333262e-5;  // eV/K
 // The diamond problem: one graph, H from the file, S from the integrals.
 struct DiamondProblem {
     std::unique_ptr<atomic::AtomicData> ad;
-    std::unique_ptr<atomic::ImageContainer<double>> s_img, h_img;
+    std::unique_ptr<atomic::ImageContainer<double>> s_img;
+    rsatb::op::HamiltonianImages h_img;
     std::unique_ptr<BlockSpMat<double>> S, H;
     int n_orb = 0;
     std::vector<int> row_offset;  // global orbital offset of each block row
@@ -123,7 +124,7 @@ struct DiamondProblem {
         h_img = rsatb::model::BuildHamiltonianImagesFromFile(*ad, *reader);
 
         S.reset(RealAtGamma(*s_img));
-        H.reset(RealAtGamma(*h_img));
+        H.reset(RealAtGamma(h_img.real()));
 
         const DistGraph* g = S->graph;
         const int n_block = static_cast<int>(g->owned_global_indices.size());
