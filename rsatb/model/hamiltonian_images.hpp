@@ -24,9 +24,42 @@
 #include <set>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace rsatb {
 namespace model {
+
+/// Returns the type of every atom in a Hamiltonian file's numbering.
+///
+/// The file indexes the structure's atoms in their own order, over the
+/// primitive cell when the structure is tiled; BuildHamiltonianImagesFromFile
+/// folds expanded atom a onto file atom a % primitive_n_atom. A rank holds
+/// only its owned and ghost atoms, so the types are combined across ranks.
+///
+/// Args:
+///   ad: The atomic graph.
+/// Throws:
+///   std::runtime_error if some file atom is held by no rank.
+inline std::vector<int> FileAtomTypes(vbcsr::atomic::AtomicData& ad) {
+    const auto repetitions = ad.structure_supercell;
+    const bool repeated =
+        repetitions[0] > 1 || repetitions[1] > 1 || repetitions[2] > 1;
+    const int n_file = repeated ? ad.primitive_n_atom : ad.N_atom;
+
+    std::vector<int> types(static_cast<size_t>(n_file), -1);
+    for (size_t local = 0; local < ad.atom_type.size(); ++local) {
+        const int file_atom = ad.atom_index[local] % n_file;
+        types[static_cast<size_t>(file_atom)] = ad.atom_type[local];
+    }
+    MPI_Allreduce(MPI_IN_PLACE, types.data(), n_file, MPI_INT, MPI_MAX, ad.comm);
+    for (int atom = 0; atom < n_file; ++atom) {
+        if (types[static_cast<size_t>(atom)] < 0) {
+            throw std::runtime_error(
+                "Hamiltonian file atom " + std::to_string(atom) + " is held by no rank.");
+        }
+    }
+    return types;
+}
 
 /// Builds H(R) by asking the reader for the block behind every graph edge.
 ///
@@ -48,15 +81,12 @@ const rsatb::io::HamiltonianReader& reader
 ) {
 auto img = std::make_unique<vbcsr::atomic::ImageContainer<double>>(&ad);
 
+    // Every reader addresses blocks as (i, j, R) over the file's own cell, with
+    // atom j in image R, so one mapping folds a tiled structure onto any of
+    // them.
     const auto repetitions = ad.structure_supercell;
     const bool repeated =
         repetitions[0] > 1 || repetitions[1] > 1 || repetitions[2] > 1;
-    if (repeated && reader.format() != rsatb::io::HamiltonianFormat::kDeeptbHdf5) {
-        throw std::runtime_error(
-            "Supercell expansion of a file-backed Hamiltonian is currently supported "
-            "only for the DeePTB HDF5 (i,j,R) layout; format '" +
-            rsatb::io::ToString(reader.format()) + "' has not defined that mapping.");
-    }
 
     size_t expected_atoms = static_cast<size_t>(ad.primitive_n_atom);
     if (repeated) {

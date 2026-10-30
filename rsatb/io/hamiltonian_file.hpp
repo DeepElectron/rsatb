@@ -26,12 +26,25 @@ enum class HamiltonianFormat {
     /// DeePTB HDF5: group "0", one dataset per block named "i_j_Rx_Ry_Rz",
     /// shaped [m, n] for real data or [m, n, 2] for complex.
     kDeeptbHdf5,
+    /// ABACUS sparse H(R) (`out_mat_hs2`): one CSR matrix per lattice vector R
+    /// over the whole basis, text or binary, in Rydberg and ABACUS orbital
+    /// order. `hrs1_nao.csr` in current ABACUS, `data-HR-sparse_SPIN0.csr`
+    /// before.
+    kAbacusCsr,
+    /// NextHam HDF5 (`abacus_atom_pair_operator_v1`, `HR_atom_pairs.h5`):
+    /// sorted atom pairs, each with its R list and dense blocks, in ABACUS
+    /// orbital order with the energy unit declared in the file.
+    kNextHamHdf5,
 };
 
 inline std::string ToString(HamiltonianFormat format) {
     switch (format) {
         case HamiltonianFormat::kDeeptbHdf5:
             return "deeptb";
+        case HamiltonianFormat::kAbacusCsr:
+            return "abacus";
+        case HamiltonianFormat::kNextHamHdf5:
+            return "nextham";
     }
     throw std::runtime_error("Unhandled HamiltonianFormat.");
 }
@@ -39,14 +52,38 @@ inline std::string ToString(HamiltonianFormat format) {
 /// Parses a user-facing format name.
 ///
 /// Args:
-///   raw_name: Case-insensitive tag, e.g. "deeptb".
+///   raw_name: Case-insensitive tag: "deeptb", "abacus" or "nextham".
 inline HamiltonianFormat ParseHamiltonianFormat(const std::string& raw_name) {
     const std::string name = vbcsr::atomic::LowerCopy(vbcsr::atomic::TrimCopy(raw_name));
     if (name == "deeptb" || name == "deeptb_hdf5") {
         return HamiltonianFormat::kDeeptbHdf5;
     }
+    if (name == "abacus") {
+        return HamiltonianFormat::kAbacusCsr;
+    }
+    if (name == "nextham") {
+        return HamiltonianFormat::kNextHamHdf5;
+    }
     throw std::runtime_error(
-        "Unsupported Hamiltonian file format '" + raw_name + "'. Supported formats: deeptb.");
+        "Unsupported Hamiltonian file format '" + raw_name +
+        "'. Supported formats: deeptb, abacus, nextham.");
+}
+
+/// Whether a format's reader needs the model's FileBasisLayout.
+///
+/// DeePTB blocks are self-describing and already in rsatb's orbital order.
+/// ABACUS and NextHam blocks are in ABACUS's order, which can only be undone
+/// knowing each atom's shells, and ABACUS CSR does not even record where one
+/// atom's orbitals end and the next one's begin.
+inline bool NeedsBasisLayout(HamiltonianFormat format) {
+    switch (format) {
+        case HamiltonianFormat::kDeeptbHdf5:
+            return false;
+        case HamiltonianFormat::kAbacusCsr:
+        case HamiltonianFormat::kNextHamHdf5:
+            return true;
+    }
+    throw std::runtime_error("Unhandled HamiltonianFormat.");
 }
 
 /// A real-space Hamiltonian file and the layout it uses.
@@ -66,6 +103,48 @@ struct FileMetadata {
     std::optional<int> n_orbital_total;
     std::optional<std::vector<int>> type_norb;
     std::optional<int> n_spin_component;
+};
+
+/// The per-atom basis a file is indexed by, as the model knows it.
+///
+/// Atoms are numbered as the file numbers them: the structure's own order,
+/// over the primitive cell when the structure is tiled. Within an atom the
+/// orbitals run shell by shell in rsatb's order -- L outer, zeta inner, m
+/// inner-most -- which ABACUS shares, so `type_shells` also locates every
+/// shell inside an ABACUS block.
+struct FileBasisLayout {
+    /// Per type: the angular momentum of each radial shell, in block order.
+    /// A 2s2p1d basis is {0, 0, 1, 1, 2}.
+    std::vector<std::vector<int>> type_shells;
+    /// Per type: the atomic number, to cross-check files that record species.
+    std::vector<int> type_atomic_number;
+    /// Per atom: its type.
+    std::vector<int> atom_type;
+    /// Basis-size multiplier for one spatial orbital; 2 for a spinor basis.
+    int spin_components = 1;
+
+    int n_atom() const { return static_cast<int>(atom_type.size()); }
+
+    /// Spatial orbitals of one type, before the spin expansion.
+    int TypeSpatialNorb(int type) const {
+        int norb = 0;
+        for (int l : type_shells.at(static_cast<size_t>(type))) norb += 2 * l + 1;
+        return norb;
+    }
+
+    /// Orbitals of one atom, spin-expanded: the dimension of its blocks.
+    int AtomNorb(int atom) const {
+        return TypeSpatialNorb(atom_type.at(static_cast<size_t>(atom))) * spin_components;
+    }
+
+    /// First basis index of every atom, plus the total dimension at the end.
+    std::vector<long long> AtomOffsets() const {
+        std::vector<long long> offsets(atom_type.size() + 1, 0);
+        for (size_t atom = 0; atom < atom_type.size(); ++atom) {
+            offsets[atom + 1] = offsets[atom] + AtomNorb(static_cast<int>(atom));
+        }
+        return offsets;
+    }
 };
 
 using CellShift = std::array<int, 3>;

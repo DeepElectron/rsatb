@@ -115,11 +115,19 @@ Structure.from_arrays(pos=[...], z=[6, 6], cell=[...], pbc=[True, True, False])
 ```
 
 `supercell=[nx, ny, nz]` belongs to the structure. `RSATB` expands the
-coordinates immediately before it builds the atomic graph and operators. For
-a DeePTB HDF5 Hamiltonian, primitive `(i,j,R)` blocks are mapped into the
-expanded atom and image indexing during the read; no expanded HDF5 file is
-written. Other Hamiltonian formats must define their own mapping before they
-can be used with this tag.
+coordinates immediately before it builds the atomic graph and operators. A
+Hamiltonian file's primitive `(i,j,R)` blocks are mapped into the expanded atom
+and image indexing during the read, whatever its format; no expanded file is
+written.
+
+`HamiltonianFile(path, format=...)` takes `"deeptb"` (DeePTB HDF5), `"abacus"`
+(ABACUS's `out_mat_hs2` sparse H(R), `hrs1_nao.csr` or the older
+`data-HR-sparse_SPIN0.csr`, text or binary) or `"nextham"` (NextHam's
+`HR_atom_pairs.h5`). The last two are in ABACUS's orbital order and are
+converted using the `.orb` files' shells, so they need `LcaoModel`, a structure
+listing the atoms in ABACUS's order, and a spin-degenerate (nspin=1) run. The
+overlap is computed from the orbital files as always; ABACUS's `srs1_nao.csr`
+and NextHam's `SR_atom_pairs.h5` are not read.
 
 For a neighbour list you already have, `RSATB.from_graph(...)` takes it
 directly. That is a **distributed** description — each rank passes its own

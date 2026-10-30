@@ -273,6 +273,30 @@ def test_deeptb_tiling_is_allowed_for_a_file_backed_hamiltonian():
     assert errors(issues) == []
 
 
+@pytest.mark.parametrize("file_format", ["abacus", "nextham"])
+def test_abacus_order_hamiltonians_tile_under_lcao(file_format):
+    document = {
+        "structure": {"file": "a.vasp", "supercell": [2, 2, 2]},
+        "model": {"type": "lcao",
+                  "hamiltonian": {"path": "hrs1_nao.csr", "format": file_format},
+                  "orbitals": {"names": ["Al.orb"]}},
+    }
+    _, issues = check.resolve(document, check_paths=False)
+    assert errors(issues) == []
+
+
+@pytest.mark.parametrize("file_format", ["abacus", "nextham"])
+def test_abacus_order_hamiltonians_are_refused_by_tb_file(file_format):
+    document = {
+        "structure": {"file": "a.vasp"},
+        "model": {"type": "tb_file",
+                  "hamiltonian": {"path": "h", "format": file_format},
+                  "type_symbols": ["Al"], "type_norb": [21], "cutoff_radius": [3.7]},
+    }
+    _, issues = check.resolve(document, check_paths=False)
+    assert paths(errors(issues)) == ["model.hamiltonian.format"]
+
+
 def test_bounds_mode_fixed_needs_an_energy_window():
     _, issues = resolve({"run": {"bounds": {"mode": "fixed"}}})
     assert any("emin, emax" in issue.message for issue in errors(issues))

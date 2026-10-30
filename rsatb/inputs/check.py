@@ -203,20 +203,17 @@ def check_consistency(document: dict) -> List[Issue]:
     kpoints = run.get("kpoints", [[0.0, 0.0, 0.0]])
     n_kpoint = len(_kpoint_list(kpoints))
 
-    # File-backed repetition needs a declared primitive (i,j,R) convention.
-    # DeePTB is currently the only registered format and its convention is
-    # mapped during operator construction. Future formats remain opt-in here.
-    supercell = document.get("structure", {}).get("supercell", [1, 1, 1])
-    if any(n > 1 for n in supercell) and family in ("lcao", "tb_file"):
-        file_format = document.get("model", {}).get("hamiltonian", {}).get(
-            "format", "deeptb")
-        if file_format != "deeptb":
+    # ABACUS and NextHam files are LCAO Hamiltonians in ABACUS's orbital order:
+    # non-orthogonal, and only convertible knowing each atom's shells, which
+    # the orbital files supply. An orthogonal tb_file model has neither.
+    if family == "tb_file":
+        file_format = model.get("hamiltonian", {}).get("format", "deeptb")
+        if file_format in ("abacus", "nextham"):
             issues.append(Issue(
-                "structure.supercell",
-                "the '{}' Hamiltonian format has not defined how primitive (i,j,R) "
-                "blocks map into a supercell".format(file_format),
-                hint="use the DeePTB HDF5 format, or supply a Hamiltonian already "
-                     "indexed for the expanded structure"))
+                "model.hamiltonian.format",
+                "a '{}' file is a non-orthogonal LCAO Hamiltonian in ABACUS's orbital "
+                "order; the orthogonal tb_file model cannot use it".format(file_format),
+                hint="use model.type 'lcao' with the .orb files the run used"))
 
     labels = {}
     for index, task in enumerate(tasks):

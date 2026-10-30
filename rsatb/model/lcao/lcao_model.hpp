@@ -126,7 +126,11 @@ public:
 
     std::unique_ptr<ImageContainer> BuildHamiltonianImages(AtomicData& atomic_data) const override {
         RSATB_PHASE("setup/hamiltonian_read");
-        auto reader = io::OpenHamiltonianFile(config_.hamiltonian);
+        io::FileBasisLayout layout;
+        if (io::NeedsBasisLayout(config_.hamiltonian.format)) {
+            layout = FileLayout(atomic_data);
+        }
+        auto reader = io::OpenHamiltonianFile(config_.hamiltonian, layout);
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }
 
@@ -241,6 +245,29 @@ private:
             basis_.cutoff_radius.push_back(
                 orbitals->rcut_max(type) * lcao::kAngstromPerBohr);
         }
+    }
+
+    /// The basis over the Hamiltonian file's atoms, shell by shell.
+    ///
+    /// The shells come from the same orbital files the overlap is built from,
+    /// so a file written in another orbital convention (ABACUS's) is converted
+    /// against exactly the basis op2c uses.
+    io::FileBasisLayout FileLayout(AtomicData& atomic_data) const {
+        const auto* orbitals = integrals_->orbital_radials();
+        io::FileBasisLayout layout;
+        for (size_t type = 0; type < basis_.n_type(); ++type) {
+            std::vector<int> shells;
+            const int itype = static_cast<int>(type);
+            for (int l = 0; l <= orbitals->lmax(itype); ++l) {
+                shells.insert(shells.end(), orbitals->nzeta(itype, l), l);
+            }
+            layout.type_shells.push_back(std::move(shells));
+            layout.type_atomic_number.push_back(
+                vbcsr::atomic::AtomicNumber(basis_.type_symbols[type]));
+        }
+        layout.atom_type = FileAtomTypes(atomic_data);
+        layout.spin_components = config_.spin.Components();
+        return layout;
     }
 
     LcaoConfig config_;

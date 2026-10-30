@@ -535,6 +535,11 @@ if(RSATB_BUILD_TESTS)
     target_include_directories(test_hdf5_io PRIVATE ${RSATB_INCLUDE_DIRS})
     target_link_libraries(test_hdf5_io PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
 
+    # Executable: test_hamiltonian_readers - ABACUS CSR and NextHam HDF5
+    add_executable(test_hamiltonian_readers io/test_hamiltonian_readers.cpp)
+    target_include_directories(test_hamiltonian_readers PRIVATE ${RSATB_INCLUDE_DIRS} io)
+    target_link_libraries(test_hamiltonian_readers PRIVATE ${RSATB_LINK_LIBS} GTest::gtest)
+
     # TEMPORARY: velocity-gauge diagnostic, doc/position_commutator.md §7.
     # Delete with the file once the question is settled.
     add_executable(probe_velocity_gauge calc/test/probe_velocity_gauge.cpp $<TARGET_OBJECTS:backend>)

@@ -65,8 +65,15 @@ HAMILTONIAN_FILE = Obj(
         "path": F(_path("Path to the Hamiltonian file, relative to the input file's "
                         "directory unless absolute."), required=True),
         "format": F(_str("On-disk layout. 'deeptb' is HDF5 with a single group '0' "
-                         "holding datasets named 'i_j_Rx_Ry_Rz'.",
-                         choices=("deeptb",)), default="deeptb"),
+                         "holding datasets named 'i_j_Rx_Ry_Rz'. 'abacus' is ABACUS's "
+                         "sparse H(R) from out_mat_hs2 (hrs1_nao.csr; data-HR-sparse_SPIN0.csr "
+                         "in older versions), text or binary, "
+                         "in Rydberg. 'nextham' is NextHam's post-processed "
+                         "HR_atom_pairs.h5. Both of the latter are in ABACUS's orbital "
+                         "order, which is converted using the orbital files, so they "
+                         "need the 'lcao' model, a structure listing the atoms in "
+                         "ABACUS's order, and a spin-degenerate (nspin=1) run.",
+                         choices=("deeptb", "abacus", "nextham")), default="deeptb"),
     })
 
 

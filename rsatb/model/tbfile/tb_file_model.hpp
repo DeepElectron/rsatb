@@ -51,6 +51,12 @@ public:
             throw std::runtime_error(
                 "Tight-binding file setup requires a Hamiltonian file. Set model.hamiltonian.path.");
         }
+        if (io::NeedsBasisLayout(config.hamiltonian.format)) {
+            throw std::runtime_error(
+                "The '" + io::ToString(config.hamiltonian.format) + "' Hamiltonian format "
+                "carries an LCAO Hamiltonian, which is non-orthogonal and in ABACUS's orbital "
+                "order; use the 'lcao' model with the orbital files it was computed in.");
+        }
 
         BasisSpec basis;
         basis.type_symbols = std::move(config.type_symbols);
