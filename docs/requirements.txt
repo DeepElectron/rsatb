@@ -1,0 +1,10 @@
+# Documentation toolchain. The site build imports only the pure-Python input
+# layer (rsatb/inputs), so the compiled solver is not needed.
+#   pip install -r docs/requirements.txt
+#   mkdocs serve            # live preview at http://127.0.0.1:8000
+#   mkdocs build --strict   # what CI runs
+mkdocs>=1.6,<2
+mkdocs-material>=9.5,<10
+mkdocstrings[python]>=0.26
+mkdocs-llmstxt>=0.2
+ruff  # signature formatting in the Python API reference

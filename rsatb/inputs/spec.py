@@ -335,9 +335,9 @@ MODEL = Union(
             "was written in.\n\n"
             "An LCAO basis is non-orthogonal, so the orbital files are "
             "required, not optional: they are what the overlap is computed "
-            "from. Adding pseudopotentials additionally enables the velocity "
-            "operator. Orbital counts and cutoff radii are read from the .orb "
-            "files.",
+            "from. The velocity is the commutator i[H, r], built from the "
+            "orbitals' own dipole integrals, so it is always available. "
+            "Orbital counts and cutoff radii are read from the .orb files.",
             {
                 "hamiltonian": F(HAMILTONIAN_FILE, required=True),
                 "orbitals": F(Obj(
@@ -351,8 +351,9 @@ MODEL = Union(
                     }), required=True),
                 "pseudopotentials": F(Obj(
                     "Pseudopotential files, in the same order as the orbital "
-                    "files. Optional: supplying them enables the velocity "
-                    "operator, and so the conductivity observables.",
+                    "files. Optional and not needed for production: they only "
+                    "enable the explicit-integral velocity used to cross-check "
+                    "the commutator velocity.",
                     {
                         "names": F(Array(_str("File name."), "One .upf file per species."),
                                    default=[]),

@@ -1,0 +1,32 @@
+{
+  "_comment": "Clean graphene, 128 x 128 tiling (32,768 atoms): DOS, zero-temperature DC conductivity spectrum, and the mean-square displacement from one setup.",
+  "structure": {
+    "positions": [[0.0, 0.0, 10.0], [0.0, 1.42, 10.0]],
+    "symbols": ["C", "C"],
+    "cell": [[2.4595, 0.0, 0.0], [1.22975, 2.13, 0.0], [0.0, 0.0, 20.0]],
+    "pbc": [true, true, false],
+    "supercell": [128, 128, 1]
+  },
+  "model": {
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {
+        "C-C": {"pp_pi": {"kind": "exp_poly", "coeffs": [-2.7], "lambda": 0.0,
+                          "r_on": 1.5, "r_cut": 1.7}}
+      }
+    }
+  },
+  "run": {
+    "nsamples": 4,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "bounds": {"mode": "fixed", "energy": [-9.0, 9.0]}
+  },
+  "tasks": [
+    {"type": "dos", "dE": 0.1},
+    {"type": "dc_spectrum", "n_moments": 256, "kernel": "jackson", "axis": "ab"},
+    {"type": "msd", "n_steps": 50, "dt_fs": 2.0, "n_kpm": 256, "axis": "x"}
+  ],
+  "output": {"dir": "results/graphene_transport"}
+}

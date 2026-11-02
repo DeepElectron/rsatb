@@ -1,0 +1,21 @@
+{
+  "_comment": "Diamond 4x4x4 supercell (128 atoms), LCAO: Fermi level, electron density and LDOS on a real-space grid. Real-space tasks are Gamma-only and need every cell width above twice the orbital cutoff (2 x 3.70 A). The density filter degree scales as span/kT, so a 3000 K smearing -- harmless for a 4.5 eV gap -- keeps it to minutes.",
+  "structure": {"file": "../../test/data/diamond/conf.vasp", "supercell": [4, 4, 4]},
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {"path": "../../test/data/diamond/hamiltonians.h5", "format": "deeptb"},
+    "orbitals": {"names": ["C_gga_7au_100Ry_2s2p1d.orb"], "dir": "../../test/data/diamond"}
+  },
+  "run": {
+    "nsamples": 16,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "preconditioner": {"operator_form": "sandwich"}
+  },
+  "tasks": [
+    {"type": "fermi_level", "n_electrons": 256, "temp": 3000.0},
+    {"type": "density", "mu": 16.2253, "temp": 3000.0, "spacing": 0.25, "n_samples": 32},
+    {"type": "ldos", "energies": {"min": 8.0, "max": 20.0, "n": 7}, "eta": 0.5,
+     "spacing": 0.25, "n_samples": 32}
+  ],
+  "output": {"dir": "results/diamond_realspace"}
+}
