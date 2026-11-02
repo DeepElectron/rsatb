@@ -1,34 +1,30 @@
 ---
-description: Tutorial — the dftb model from a directory of .skf files, and the tb_file model for an orthogonal H(R) such as a DeePTB Slater-Koster export.
+description: Tutorial 3 — the dftb model from a directory of .skf files, and the tb_file model for a ready-made orthogonal tight-binding Hamiltonian.
 ---
 
-<p class="rs-kicker">Tutorial 6</p>
+<p class="rs-kicker">Tutorial 3 · The basics</p>
 
-# DFTB and file Hamiltonians
+# Other model types
 
 <div class="rs-lead" markdown>
-The last two model families. `dftb` reads Slater-Koster tables from `.skf`
-files; `tb_file` reads an orthogonal $H(\mathbf R)$ that some other program
-already built. Both run every spectral task; what they can and cannot do
-beyond that follows from their operators.
+RSATB reads four kinds of Hamiltonian. You have met hand-written models and
+DFT models; this page covers the other two — DFTB parameter files and
+ready-made tight-binding files — in one short example each.
 </div>
 
-## DFTB parameter sets
+<div class="rs-chips">
+  <span class="rs-chip rs-chip--beginner">Beginner</span>
+  <span class="rs-chip">&lt; 1 min</span>
+  <span class="rs-chip">Models: dftb, tb_file</span>
+</div>
+
+## DFTB parameter files
+
+DFTB parameter sets ship as a directory of `.skf` files, one per pair of
+elements. Point `skf_dir` at the directory and name the orbitals each element
+uses:
 
 <!-- rsatb-input: examples/03_dftb_skf.json -->
-
-- **`skf_dir`** holds one file per *ordered* species pair: `C-C.skf`,
-  `C-H.skf`, `H-C.skf`, …. The example ships a small synthetic `C-C.skf` so it
-  runs with no downloads; for real work, point it at a released set such as
-  mio or 3ob.
-- **`basis` is declared.** A `.skf` file tabulates all ten channels up to $d$
-  whether the parameterization uses them or not, so the file cannot say which
-  shells belong to the basis. DFTB+ takes the same information from its input.
-- **`heteronuclear`** decides what to do with a mixed-shell channel whose
-  reading the declared bases do not force; the default refuses rather than
-  guesses.
-- **`run.kpoints`** is a Gamma-centred $2\times2\times2$ mesh; the DOS comes
-  back with eight rows, in mesh order.
 
 ```bash
 rsatb run examples/03_dftb_skf.json
@@ -38,28 +34,22 @@ rsatb run examples/03_dftb_skf.json
   model         dftb  C
   capabilities  non-orthogonal
   k-points      8 (2x2x2 mesh)
-  ...
   basis         C · 4 orbitals · cutoff 1.500 Å
-  bounds        [-22.268290, -1.472636] eV
 ```
 
-`capabilities: non-orthogonal` and nothing else: DFTB data always carries an
-overlap but no dipole integrals, so there is no velocity or position operator
-and the transport tasks are unavailable. `rsatb check` says so if you ask for
-one.
+`kpoints` here is a $2 \times 2 \times 2$ mesh, so the result has eight rows.
 
-## An orthogonal H(R) from a file
+!!! note "Use a real parameter set for real work"
+    The example ships a small synthetic `C-C.skf` so it runs without
+    downloads. For research, point `skf_dir` at a released set such as mio
+    or 3ob.
+
+## A ready-made tight-binding file
+
+If another program already produced an orthogonal Hamiltonian $H(\mathbf R)$ —
+for example a DeePTB Slater-Koster export — read it directly:
 
 <!-- rsatb-input: examples/04_tb_file_chain.json -->
-
-`tb_file` is the one model that must be told its basis, because its file
-formats carry no basis header: `type_symbols`, `type_norb` (spin-expanded) and
-`cutoff_radius` per species. The cutoff decides the graph — an edge exists
-when $d \le r_i + r_j$ — so 1.1 Å per atom reaches the neighbour at 2.0 Å but
-not the one at 4.0 Å.
-
-The data is a 1D chain with $\varepsilon_0 = +0.5$ eV and $t = -1$ eV, whose
-band is $E(k) = \varepsilon_0 + 2t\cos(ka)$:
 
 ```bash
 rsatb run examples/04_tb_file_chain.json
@@ -68,24 +58,31 @@ rsatb run examples/04_tb_file_chain.json
 ```text
   model         tb_file
   capabilities  orthogonal, velocity, position
-  k-points      11 (line through 2 vertices)
-  ...
   bounds        [-2.000000, 3.000000] eV
 ```
 
-The band runs from $\varepsilon_0 + 2t = -1.5$ eV to $\varepsilon_0 - 2t = 2.5$
-eV; the window adds the 0.5 eV pad on both sides. Because the basis is
-orthogonal, the position operator comes from the coordinates and the velocity
-from the commutator, so a `tb_file` model runs every transport task.
+The file holds a 1D chain whose band runs from −1.5 to 2.5 eV; with RSATB's
+0.5 eV padding that is exactly the reported range.
 
-## Which to use
+This is the one model type where you **declare the basis yourself**
+(`type_norb`, `cutoff_radius`), because these files don't record it.
 
-| | `dftb` | `tb_file` |
-|---|---|---|
-| Source | DFTB parameter sets | DeePTB SK exports, any orthogonal TB |
-| Overlap | yes | no |
-| Basis | declared in `basis` | declared as `type_norb` + `cutoff_radius` |
-| Transport tasks | no | yes |
+## Which one do I need?
 
-The full comparison of all four families is in
-[Choose a model](../guides/choose-model.md).
+| You have | Use |
+|---|---|
+| hopping parameters you can write down | `sktb` ([Tutorial 1](graphene-dos.md)) |
+| output of a DFT code, plus orbital files | `lcao` ([Tutorial 2](lcao-diamond.md)) |
+| a DFTB parameter set | `dftb` |
+| a ready-made orthogonal $H(\mathbf R)$ file | `tb_file` |
+
+??? deep "Under the hood: what each model can compute"
+    DFTB data always includes an overlap but no position information, so a
+    `dftb` model computes densities of states and populations, but not
+    conductivities or optical spectra. A `tb_file` model is orthogonal, so it
+    gets the velocity operator for free and can run every transport task.
+    The full table is in [Choose a model](../guides/choose-model.md).
+
+## Try next
+
+Continue to [Tutorial 4](transport.md): how electrons move.

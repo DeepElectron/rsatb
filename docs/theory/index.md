@@ -7,10 +7,20 @@ description: The numerical methods behind RSATB — stochastic traces, Chebyshev
 # How RSATB works
 
 <div class="rs-lead" markdown>
+Background for the curious. You don't need any of this to use RSATB — the
+tutorials and guides stand on their own — but it explains what the settings
+mean and why the method scales.
+</div>
+
+!!! tip "The short version"
+    RSATB never diagonalizes the Hamiltonian. It applies the Hamiltonian to a
+    few random vectors many times over, using Chebyshev polynomials, and
+    averages. That costs time in proportion to the number of atoms, which is
+    why million-atom systems are within reach.
+
 Every observable RSATB computes is a trace of a matrix function of the
 Hamiltonian, or a diagonal of one. Three ideas make those traces affordable at
 millions of orbitals; a fourth carries them to response functions.
-</div>
 
 $$
 \rho(E) = \operatorname{Tr}\,\delta(E-\hat H), \qquad

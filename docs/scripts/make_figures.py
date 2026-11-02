@@ -153,19 +153,17 @@ def _spark(e, rho):
     y = 68.0 - rho / rho.max() * 60.0
     step = max(1, len(x) // 300)
     pts = " ".join("{:.1f},{:.1f}".format(a, b) for a, b in zip(x[::step], y[::step]))
+    # Colours come from the stylesheet (classes line / fill-top / base), so
+    # the trace follows the light and dark schemes.
     SPARK.write_text(
         '<svg class="rs-spark" viewBox="0 0 400 72" preserveAspectRatio="none" aria-hidden="true">'
-        '<defs><linearGradient id="rs-spark-g" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#4fd1e0" stop-opacity=".25"/>'
-        '<stop offset=".5" stop-color="#4fd1e0"/>'
-        '<stop offset="1" stop-color="#4fd1e0" stop-opacity=".25"/></linearGradient>'
-        '<linearGradient id="rs-spark-f" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#4fd1e0" stop-opacity=".18"/>'
-        '<stop offset="1" stop-color="#4fd1e0" stop-opacity="0"/></linearGradient></defs>'
+        '<defs><linearGradient id="rs-spark-f" x1="0" y1="0" x2="0" y2="1">'
+        '<stop class="fill-top" offset="0" stop-opacity=".22"/>'
+        '<stop class="fill-top" offset="1" stop-opacity="0"/></linearGradient></defs>'
         '<polygon points="0,68 {pts} 400,68" fill="url(#rs-spark-f)"/>'
-        '<polyline points="{pts}" fill="none" stroke="url(#rs-spark-g)" stroke-width="1.4" '
-        'vector-effect="non-scaling-stroke"/>'
-        '<line x1="0" y1="68.5" x2="400" y2="68.5" stroke="#2a3344" stroke-width="1" '
+        '<polyline class="line" points="{pts}" fill="none" stroke-width="1.6" '
+        'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
+        '<line class="base" x1="0" y1="68.5" x2="400" y2="68.5" stroke-width="1" '
         'vector-effect="non-scaling-stroke"/></svg>\n'.format(pts=pts))
     print("wrote", SPARK.relative_to(ROOT))
 

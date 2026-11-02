@@ -549,7 +549,7 @@ def _expand_includes(markdown: str, page_src: str) -> str:
         with open(path) as handle:
             document = json.load(handle)
         _validate(document, "{} (including {})".format(page_src, rel), os.path.dirname(path))
-        body = _report.pretty_json(_strip_comments(document), width=60)
+        body = _report.pretty_json(_strip_comments(document), width=68)
         indent = match.group("indent")
         block = '```json title="{}"\n{}\n```'.format(rel, body)
         # Marked so the validation pass below does not check it a second time

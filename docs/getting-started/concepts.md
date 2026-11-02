@@ -1,161 +1,105 @@
 ---
-description: The five sections of an RSATB input, how a run proceeds from setup to tasks, and the rules every input follows.
+description: The five sections of an RSATB input file, what each controls, and the few rules every input follows.
 ---
 
-<p class="rs-kicker">Getting started</p>
+<p class="rs-kicker">Get started</p>
 
-# Anatomy of an input
+# How an input works
 
 <div class="rs-lead" markdown>
-Every RSATB input answers five questions, one per section. Learn them once
-and every example, template and tutorial reads the same way.
+Every RSATB calculation is one JSON file with up to five sections. Learn
+them once and every example, template and tutorial reads the same way.
 </div>
+
+## The five sections
 
 ```json
 {
   "structure": { },   // where the atoms are
   "model":     { },   // what the Hamiltonian is
-  "run":       { },   // how the calculation is carried out
-  "tasks":     [ ],   // which observables to compute
-  "output":    { }    // where results go
+  "run":       { },   // how to run: k-points, sampling, ...
+  "tasks":     [ ],   // what to compute
+  "output":    { }    // where to write results
 }
 ```
 
-`structure` and `model` are required; `run`, `tasks` and `output` have
-defaults. The sections line up one-for-one with the Python objects the
-library is built from — `Structure`, a model, `SetupOptions` and the
-`compute_*` methods — so a JSON key maps onto a constructor argument, never
-onto a private translation layer.
+Only `structure` and `model` are required; the others have sensible defaults.
 
-## The sections
+<div class="grid cards rs-grid-2" markdown>
 
-<div class="grid cards" markdown>
+-   :material-atom-variant:{ .lg } **[`structure`](../reference/input/structure.md)**
 
--   **[`structure`](../reference/input/structure.md)** — where the atoms are
+    A structure file (POSCAR, CIF, XYZ) or atoms written inline. Add
+    `supercell` to repeat the cell.
 
-    ---
+-   :material-function-variant:{ .lg } **[`model`](../reference/input/model/index.md)**
 
-    A file (POSCAR, CIF, XYZ) or inline positions, symbols and cell, plus an
-    optional `supercell` tiling. Coordinates are used exactly as written:
-    nothing is wrapped, sorted or renumbered, because a Hamiltonian file's
-    atom indexing refers to that order.
+    The Hamiltonian: hand-written parameters, DFT output, DFTB files, or a
+    tight-binding file.
 
--   **[`model`](../reference/input/model/index.md)** — what the Hamiltonian is
+-   :material-tune-variant:{ .lg } **[`run`](../reference/input/run.md)**
 
-    ---
+    Which k-points, how many random vectors, and a few numerical settings.
 
-    One of four families, selected by `type`: Slater-Koster parameters
-    (`sktb`), DFTB tables (`dftb`), a DFT Hamiltonian with its orbitals
-    (`lcao`) or an orthogonal H(R) file (`tb_file`).
+-   :material-format-list-checks:{ .lg } **[`tasks`](../reference/input/tasks/index.md)**
 
--   **[`run`](../reference/input/run.md)** — how it is carried out
-
-    ---
-
-    k-points, the number of random vectors (`nsamples`), the spectral window
-    (`bounds`), the overlap treatment (`preconditioner`) and k-point
-    parallelism (`npar`).
-
--   **[`tasks`](../reference/input/tasks/index.md)** — what to compute
-
-    ---
-
-    A list of observables, run in order against one setup. Each is selected
-    by `type` and configured by its own keys.
+    A list of what to compute, in order — a density of states, a
+    conductivity, a map…
 
 </div>
 
-[`output`](../reference/input/output.md) sets the directory, a file-name
-prefix and the archive format.
+## What happens when you run
 
-## What happens in a run
+1. **Check.** The input is validated first; a run never starts on a broken
+   input.
+2. **Set up once.** RSATB builds the Hamiltonian for your structure and
+   finds its energy range.
+3. **Compute each task** in order, writing its result file as soon as it
+   finishes.
 
-```mermaid
-flowchart LR
-  A[input.json] --> B{rsatb check}
-  B -- errors --> X[refuse to start]
-  B -- valid --> C
-  subgraph C[setup — once]
-    direction TB
-    C1[atomic graph<br/>from cutoffs] --> C2[H&#40;k&#41;, S&#40;k&#41;<br/>per k-point]
-    C2 --> C3[S^-1/2 factor<br/>non-orthogonal only]
-    C3 --> C4[spectral window<br/>PRIMME or fixed]
-  end
-  C --> D[task 1] --> E[task 2] --> F[…]
-  D -.-> O[(dos.npz)]
-  E -.-> P[(ac.npz)]
-  F -.-> S[(summary.json)]
-```
+Because the setup is shared, asking for several tasks in one input costs much
+less than running them separately.
 
-**Setup runs once.** The atomic graph is built from the model's cutoffs and
-distributed across ranks; the Hamiltonian (and overlap) are assembled at each
-k-point; a non-orthogonal model gets its $S^{-1/2}$ factor; and the spectral
-window that every Chebyshev expansion is scaled to is estimated. **Tasks then
-run in order** against that setup, each writing its archive as soon as it
-finishes. Asking for a DOS and an optical spectrum in one input therefore costs
-one setup, not two.
+## Four rules worth knowing
 
-At the end, a profile table reports where the wall time and peak memory went:
+- **Typos are errors.** An unknown key stops the check with a suggestion, so
+  a misspelling never silently changes your calculation.
+- **Comments are allowed.** Any key starting with `_`, such as `"_comment"`,
+  is ignored.
+- **Paths are relative to the input file,** so an input and its data can be
+  moved together.
+- **Units are fixed:** eV, Å, K and fs.
 
-```text
-  phase                                 wall(s)  peak(GB)       %    calls
-  setup/spectral_bounds                    0.74      0.14   45.8%        1
-  setup/isqrt_ns_ZH_S_Z                    0.24      0.14   14.9%       11
-  setup/overlap_sample_k                   0.16      0.14    9.9%       11
-  ...
-```
+## Which model can compute what
 
-## What a model can compute
+Some observables need extra ingredients from the model. `rsatb check` tells
+you if a request isn't possible.
 
-Which observables are available follows from the operators a model supplies.
-`rsatb check` reports a mismatch before anything runs.
-
-| `model.type` | overlap | velocity | position |
+| Model | Density of states | Conductivity & optics | Real-space maps |
 |---|:---:|:---:|:---:|
-| `sktb` without `overlap` | — | ✓ | ✓ |
-| `sktb` with `overlap` | ✓ | — | — |
-| `lcao` | ✓ | ✓ | ✓ |
+| `sktb` (no overlap) | ✓ | ✓ | — |
+| `lcao` (DFT) | ✓ | ✓ | ✓ |
 | `dftb` | ✓ | — | — |
-| `tb_file` | — | ✓ | ✓ |
+| `tb_file` | ✓ | ✓ | — |
 
-Conductivities (`dc`, `dc_spectrum`, `ac`), the quantum metric and the
-mean-square displacement need **velocity**. The real-space maps (`ldos`,
-`density`) need the radial orbital files, so an `lcao` model, at a single
-Gamma point.
+More detail: [Choose a model](../guides/choose-model.md).
 
-## Rules every input follows
+??? deep "Under the hood: the setup in detail"
+    During setup RSATB builds the atomic neighbour graph from the model's
+    orbital ranges and distributes it across processes; assembles $H$ (and,
+    for overlapping orbitals, $S$) at each k-point; builds $S^{-1/2}$ when
+    needed; and estimates the energy range that every calculation is scaled
+    to. A profile table at the end of each run shows how long each phase
+    took. Background: [Theory](../theory/index.md).
 
-**Unknown keys are errors.** Enums are closed and every issue names its exact
-path. A typo fails loudly instead of silently becoming a default.
+## Commands at a glance
 
-**Comments are keys that start with `_`.** `"_comment"`, `"_why_this_mesh"`
-and the like are carried through uninterpreted, at any depth, so an input can
-explain itself.
+| Command | What it does |
+|---|---|
+| `rsatb template NAME -o FILE` | write a working input to start from |
+| `rsatb check FILE` | validate an input (no solver or MPI needed) |
+| `rsatb show FILE` | print the input with every default filled in |
+| `rsatb run FILE` | run the calculation |
+| `rsatb doc [TOPIC]` | explain any part of the input format |
 
-**Paths are relative to the input file.** An input and its data can move
-together; the working directory does not matter.
-
-**Nothing is declared that can be derived.** Orbital counts and graph cutoffs
-come from the model's parameters or basis files. Only `tb_file` must be told
-its basis, because its file formats carry no basis header.
-
-**Units are fixed.** Energies in eV, lengths in Å, temperatures in K, times in
-fs. k-points are fractional coordinates of the reciprocal lattice.
-
-**Verbosity is not part of the input.** How loud a run is describes the
-invocation, not the calculation, so it is the `--log-level` flag
-(`silent`, `summary`, `progress`, `debug`) and never an input key.
-
-## The commands
-
-| Command | Needs the solver | What it does |
-|---|:---:|---|
-| `rsatb doc [topic]` | no | explain the format, in full or one topic |
-| `rsatb template NAME -o FILE` | no | write a working input to start from |
-| `rsatb check FILE` | no | validate schema, files and consistency |
-| `rsatb show FILE` | no | print the input with every default filled in |
-| `rsatb schema` | no | export the schema as JSON Schema |
-| `rsatb run FILE` | yes | set up and compute |
-| `rsatb info` | — | what this build supports |
-
-Full flags are on the [Command line](../reference/cli.md) page.
+All flags: [Command line](../reference/cli.md).

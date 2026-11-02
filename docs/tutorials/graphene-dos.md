@@ -1,76 +1,79 @@
 ---
-description: Tutorial — the density of states of graphene from a Slater-Koster model, tiled to 32,768 atoms and validated against the exact result.
+description: Tutorial 1 — the density of states of graphene from a hand-written Slater-Koster model, scaled to 32,768 atoms and checked against the exact result.
 ---
 
-<p class="rs-kicker">Tutorial 1</p>
+<p class="rs-kicker">Tutorial 1 · The basics</p>
 
 # Graphene density of states
 
 <div class="rs-lead" markdown>
-The simplest model with real physics in it: one $p_z$ orbital per carbon and
-a nearest-neighbour hopping. You will write it inline, check it against an
-analytic answer, scale it to 32,768 atoms, and see what the resolution and the
-number of random vectors control.
+Your first real calculation: write a small graphene model by hand, run it,
+then make it 16,000 times bigger with a one-line change.
 </div>
 
-**You will learn:** the `sktb` model · supercells · `energy_bounds` · the
-`dos` task and its resolution · labelling two runs of one task.
+<div class="rs-chips">
+  <span class="rs-chip rs-chip--beginner">Beginner</span>
+  <span class="rs-chip">≈ 2 min</span>
+  <span class="rs-chip">Model: sktb</span>
+</div>
 
-## The model
+<div class="rs-learn" markdown>
+**You will learn** how a model is written, how to make a large system from a
+small cell, and how to set the energy resolution of a density of states.
+</div>
 
-Graphene's $\pi$ bands come from one $p_z$ orbital per atom coupled to its
-three neighbours by $t = V_{pp\pi} = -2.7$ eV:
+## Step 1 — a two-atom cell
 
-$$
-E_\pm(\mathbf k) = \pm |t|\,\Big|\sum_{j=1}^{3} e^{i\mathbf k\cdot\boldsymbol\delta_j}\Big| .
-$$
-
-At the Gamma point the sum is 3, so a two-atom cell has exactly two levels,
-$\pm 3|t| = \pm 8.1$ eV. That is our first check.
-
-## Step 1 — two atoms
+Graphene has two carbon atoms per cell, each with one $p_z$ orbital, joined to
+three neighbours by a hopping of $-2.7$ eV. That is the whole model, and it
+fits in one file:
 
 <!-- rsatb-input: examples/01_sktb_graphene.json -->
 
-Reading it top to bottom:
+Four sections, read top to bottom:
 
-- **`structure`** is written inline. The second carbon sits at fractional
-  $(-\tfrac13, \tfrac23)$, outside the cell, which is fine: coordinates are
-  used exactly as given and periodic images are built from them. `pbc` is
-  false along $c$, the vacuum direction.
-- **`model`** *is* the parameters: a basis (`"C": ["pz"]`), an onsite energy,
-  and one radial function for the `pp_pi` channel of the `C-C` pair —
-  constant out to 1.6 Å, so first neighbours only. There is no `overlap`, so
-  the model is orthogonal.
-- **`run`** asks for 64 random vectors at Gamma.
-- **`tasks`**: `energy_bounds` reports the spectral window; `dos` computes the
-  density of states at 0.1 eV resolution.
+| Section | Here it says |
+|---|---|
+| `structure` | two carbon atoms in a hexagonal cell, periodic in-plane |
+| `model` | one $p_z$ orbital per carbon, hopping $-2.7$ eV to neighbours within 1.6 Å |
+| `run` | use 64 random vectors at the $\Gamma$ point |
+| `tasks` | report the energy range, then compute the density of states |
+
+Run it:
 
 ```bash
 rsatb run examples/01_sktb_graphene.json
 ```
 
 ```text
-  basis         C · 1 orbitals · cutoff 0.800 Å
   bounds        [-8.600000, 8.600000] eV
 ```
 
-The derived basis reports one orbital per carbon and a cutoff of 0.8 Å per
-atom — half the 1.6 Å pair cutoff, since an edge exists when
-$d \le r_i + r_j$. The window is $\pm 8.1$ eV padded by 0.5 eV: the analytic
-check passes.
+A quick sanity check: a two-atom cell at $\Gamma$ has exactly two energies,
+$\pm 3 \times 2.7 = \pm 8.1$ eV, and RSATB pads the range by 0.5 eV — the check passes.
 
 ## Step 2 — a real system
 
-Two levels are not a density of states. Tiling the cell $128\times128$ at
-Gamma samples exactly the same states as a $128\times128$ k-mesh of the
-primitive cell — 32,768 atoms. One line changes, `supercell`, and we ask for
-two resolutions from the same setup:
+Two energy levels are not yet a density of states. To get the real thing,
+repeat the cell 128 × 128 times — 32,768 atoms — by adding one key to
+`structure`:
 
-<!-- rsatb-input: examples/tutorials/graphene_dos.json -->
+```json
+"supercell": [128, 128, 1]
+```
 
-Two tasks of the same type need a `label` each; their results are written to
-`coarse.npz` and `fine.npz`.
+We also ask for the density of states twice, at a coarse and a fine
+resolution, from the same run:
+
+```json
+"tasks": [
+  {"type": "dos", "label": "coarse", "dE": 0.1},
+  {"type": "dos", "label": "fine",   "dE": 0.02}
+]
+```
+
+??? example "The complete input — `examples/tutorials/graphene_dos.json`"
+    <!-- rsatb-input: examples/tutorials/graphene_dos.json -->
 
 ```bash
 rsatb run examples/tutorials/graphene_dos.json
@@ -78,47 +81,49 @@ rsatb run examples/tutorials/graphene_dos.json
 
 <figure markdown>
 ![Graphene DOS from RSATB against the exact result at two resolutions](../assets/figures/tut_graphene_dos.png)
-<figcaption><strong>Left:</strong> at 0.1 eV the 32,768-atom cell gives the
-familiar graphene DOS — linear around the Dirac point, logarithmic van Hove
-peaks at $\pm|t|$. <strong>Right:</strong> at 0.02 eV the resolution is finer
-than the level spacing of the finite cell, and its discrete levels appear. In
-both panels RSATB (teal, 8 random vectors) lies on the exact DOS of the same
-k-points broadened to the same resolution (amber).</figcaption>
+<figcaption><strong>RSATB (teal) on top of the exact answer (amber).</strong>
+Left, at 0.1 eV: the familiar graphene density of states, with a V-shaped
+Dirac point at zero and sharp van Hove peaks at ±2.7 eV. Right, at 0.02 eV:
+the resolution is now finer than the gaps between the energy levels of this
+finite cell, so individual levels show through.</figcaption>
 </figure>
 
-Two lessons are in this figure:
+## What to take away
 
-1. **The method is exact up to noise.** With eight random vectors on 32,768
-   orbitals the stochastic error is already below the line width. Large
-   systems need *fewer* samples, because the trace self-averages —
-   see [Random-state traces](../theory/stochastic-trace.md).
-2. **Resolution must match system size.** A finite cell has a discrete
-   spectrum. Asking for a resolution finer than its level spacing shows the
-   levels, not the bulk DOS. Converge the supercell *and* the resolution
-   together — see [Converge a calculation](../guides/convergence.md).
+- **A bigger cell is one line.** `supercell` repeats the structure; the model
+  needs no change.
+- **`dE` sets the resolution.** Finer is more expensive, and only meaningful
+  if the system is large enough to have levels that close together.
+- **Large systems need few random vectors.** Eight were enough here — see
+  below for why.
 
-## Reading the result
+??? deep "Under the hood: why so few random vectors?"
+    RSATB never diagonalizes the Hamiltonian. It estimates the density of
+    states from random vectors, and the statistical error falls as
+    $1/\sqrt{n_{\text{samples}} \times N_{\text{orbitals}}}$. With 32,768 orbitals,
+    eight vectors already put the noise below the line width. Small cells need
+    many more. The details are in
+    [Random-state traces](../theory/stochastic-trace.md).
 
-```python
-import json
-import numpy as np
+??? deep "Under the hood: normalizing the result"
+    The `dos` array is scaled so that it integrates to the width of the
+    energy range, $E_{\max} - E_{\min}$. Divide by that width to get states per eV
+    per orbital:
 
-run = "examples/tutorials/results/graphene_dos"
-summary = json.load(open(f"{run}/summary.json"))
-emin, emax = summary["setup"]["energy_bounds"]
+    ```python
+    import json
+    import numpy as np
 
-d = np.load(f"{run}/coarse.npz")
-energy = d["energy"]
-rho = d["dos"][0] / (emax - emin)     # states / eV / orbital; integrates to 1
-```
+    run = "examples/tutorials/results/graphene_dos"
+    summary = json.load(open(f"{run}/summary.json"))
+    emin, emax = summary["setup"]["energy_bounds"]
 
-The raw `dos` array integrates to the width of the window; dividing by it
-gives the DOS per orbital. See [Output files](../reference/outputs.md#dos).
+    d = np.load(f"{run}/coarse.npz")
+    energy, rho = d["energy"], d["dos"][0] / (emax - emin)
+    ```
 
 ## Try next
 
-- Halve `nsamples` to 4 and to 1 and watch the noise appear on the fine run.
-- Add a second-neighbour hopping: another channel entry needs a longer
-  `r_cut`, and the derived graph cutoff grows with it.
-- Give `"bounds": {"mode": "fixed", "energy": [-8.7, 8.7]}` under `run` to skip
-  the eigenvalue estimate.
+- Set `nsamples` to 1 and watch noise appear on the fine curve.
+- Continue to [Tutorial 2](lcao-diamond.md): the same workflow with a
+  Hamiltonian from a DFT code.

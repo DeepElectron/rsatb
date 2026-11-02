@@ -1,34 +1,34 @@
 ---
-description: Tutorial — a biaxial strain sweep of graphene through the RSATB Python API, with a distance-dependent Slater-Koster hopping built from sk_exp_poly.
+description: Tutorial 7 — a strain sweep of graphene through the RSATB Python API, building structures and a distance-dependent hopping in a loop.
 ---
 
-<p class="rs-kicker">Tutorial 7</p>
+<p class="rs-kicker">Tutorial 7 · Going further</p>
 
-# Scripting with Python
+# Python scripting
 
 <div class="rs-lead" markdown>
-An input file describes one calculation. A sweep — a structure generated on
-the fly, a parameter varied in a loop, post-processing between runs — is a
-program. This tutorial stretches graphene by up to 10% and watches its band
-narrow, using the objects the JSON input is built from.
+An input file describes one calculation. When you want many related
+calculations — a parameter sweep, a structure built on the fly — write a short
+Python script instead. This tutorial stretches graphene step by step and
+watches its electronic bands narrow.
 </div>
 
-**You will learn:** `Structure.from_arrays` · `SktbModel` and `SkParameters` ·
-`sk_exp_poly` · `SetupOptions` · `RSATB.compute_dos` · running a script under
-MPI.
+<div class="rs-chips">
+  <span class="rs-chip rs-chip--advanced">Advanced</span>
+  <span class="rs-chip">≈ 2 min</span>
+  <span class="rs-chip">Python API</span>
+</div>
 
-## The physics
+<div class="rs-learn" markdown>
+**You will learn** to build a structure and a model in Python, run a
+calculation in a loop, and run the script in parallel.
+</div>
 
-Hopping integrals decay with bond length. A standard form for graphene is
+## The idea
 
-$$
-t(r) = t_0\,e^{-\beta\,(r/a_0 - 1)}, \qquad t_0 = -2.7\ \text{eV},\ a_0 = 1.42\ \text{Å},\ \beta = 3.37 .
-$$
-
-That is exactly RSATB's `exp_poly` radial form, $P(r)\,e^{-\lambda r}$, with a
-one-term polynomial $P = t_0 e^{\beta}$ and $\lambda = \beta/a_0$. Stretching
-the lattice lengthens the bonds, shrinks $|t|$, and narrows the band from
-$\pm 3|t|$.
+Stretching graphene pulls the atoms apart, which weakens the hopping between
+them, so the band gets narrower. The script repeats one calculation at five
+strains, from 0% to 10%, each on 32,768 atoms.
 
 ## The script
 
@@ -36,28 +36,19 @@ $\pm 3|t|$.
 --8<-- "examples/tutorials/strain_sweep.py:21:84"
 ```
 
-Line by line:
+It has three parts, mirroring the sections of an input file:
 
-- **`from mpi4py import MPI` comes first.** MPI must be initialized before
-  any native object is built.
-- **`Structure.from_arrays`** takes flat Cartesian positions (three values per
-  atom), atomic numbers, and a row-major $3\times3$ cell — and the same
-  `supercell` tiling the JSON input has.
-- **`sk_exp_poly`** builds the radial function; `r_on` and `r_cut` add a cosine
-  taper so the hopping reaches zero smoothly before second neighbours.
-- **`SkParameters`** keys pairs by a tuple, `("C", "C")`, where the JSON input
-  writes `"C-C"`. Omitting `overlap` makes the model orthogonal.
-- **`compute_dos`** returns the k-points concatenated into one flat array;
-  `reshape(-1, len(energy))` splits them. Dividing by the window width gives
-  the DOS per orbital.
-- **Only rank 0 prints and writes.** Every rank runs the same loop; results
-  are already reduced across ranks.
+| Function | Builds | Input-file equivalent |
+|---|---|---|
+| `graphene(strain)` | a stretched `Structure` | `structure` |
+| `model()` | an `SktbModel` with a distance-dependent hopping | `model` |
+| `main()` | `SetupOptions`, then an `RSATB` per strain | `run`, `tasks` |
 
 ## Run it
 
 ```bash
-python examples/tutorials/strain_sweep.py           # one rank
-mpirun -n 4 python examples/tutorials/strain_sweep.py
+python examples/tutorials/strain_sweep.py                # one process
+mpirun -n 4 python examples/tutorials/strain_sweep.py    # four processes
 ```
 
 ```text
@@ -66,33 +57,57 @@ strain  2.5%   |t| = 2.482 eV   window [-7.94, 7.94] eV
 strain  5.0%   |t| = 2.281 eV   window [-7.34, 7.34] eV
 strain  7.5%   |t| = 2.097 eV   window [-6.79, 6.79] eV
 strain 10.0%   |t| = 1.928 eV   window [-6.28, 6.28] eV
-wrote examples/tutorials/strain_sweep.npz
 ```
-
-Each window is $3|t| + 0.5$ eV: the band edges follow the hopping exactly.
 
 <figure markdown>
 ![Graphene DOS at five biaxial strains](../assets/figures/tut_strain_sweep.png)
-<figcaption>Biaxial strain narrows the graphene band. The van Hove peaks
-track $\pm|t(r)|$ inwards; the Dirac point stays pinned at zero because the
-lattice keeps its symmetry. Each curve is a 32,768-atom calculation at 0.1 eV
-resolution.</figcaption>
+<figcaption>Stretching narrows the band: the band edges and the van Hove
+peaks move inwards with the weakening hopping, while the Dirac point stays
+at zero. Each curve is a 32,768-atom calculation.</figcaption>
 </figure>
 
-## From an input file instead
+## What to take away
 
-A script can also start from a JSON input and go beyond it, because
-`build_calculation` returns exactly these objects:
+- **Everything in an input file has a Python object** — `Structure`, a model
+  class, `SetupOptions`, and `RSATB` with its `compute_*` methods.
+- **Import `mpi4py` first**, then the same script runs on one process or many.
+- **Use Python for loops and generated structures**; use input files for
+  single, archivable runs.
 
-```python
-from mpi4py import MPI
-from rsatb.inputs import load_and_resolve, build_calculation
+??? deep "Under the hood: the hopping model"
+    The hopping decays exponentially with bond length,
 
-resolved, issues = load_and_resolve("examples/01_sktb_graphene.json")
-calc, model, options = build_calculation(resolved)
+    $$
+    t(r) = t_0\,e^{-\beta\,(r/a_0 - 1)}, \qquad t_0 = -2.7\ \text{eV},\ a_0 = 1.42\ \text{Å},\ \beta = 3.37 .
+    $$
 
-print(model.capabilities)            # <Capabilities orthogonal, velocity, position>
-dos, energy = calc.compute_dos(dE=0.05)
-```
+    That is RSATB's `exp_poly` radial form $P(r)\,e^{-\lambda r}$, with a
+    one-term polynomial $P = t_0 e^{\beta}$ and $\lambda = \beta/a_0$. The
+    `r_on`/`r_cut` taper brings it smoothly to zero before second neighbours.
+    Each energy window is $3|t| + 0.5$ eV, exactly as the output shows.
+
+??? deep "Under the hood: API details worth knowing"
+    - `Structure.from_arrays` takes **flat** positions (three numbers per atom)
+      and a **row-major** 3 × 3 cell.
+    - `SkParameters` keys a pair by a tuple, `("C", "C")`, where an input file
+      writes `"C-C"`. Omitting `overlap` makes the model orthogonal.
+    - `compute_dos` returns all k-points in one flat array;
+      `dos.reshape(-1, len(energy))` splits them.
+    - Every process runs the same loop and gets the same, already-combined
+      results; only process 0 prints and writes.
+
+??? deep "Under the hood: starting from an input file"
+    A script can also load a JSON input and take it further:
+
+    ```python
+    from mpi4py import MPI
+    from rsatb.inputs import load_and_resolve, build_calculation
+
+    resolved, issues = load_and_resolve("examples/01_sktb_graphene.json")
+    calc, model, options = build_calculation(resolved)
+
+    print(model.capabilities)   # <Capabilities orthogonal, velocity, position>
+    dos, energy = calc.compute_dos(dE=0.05)
+    ```
 
 The full API is in the [Python reference](../reference/python.md).

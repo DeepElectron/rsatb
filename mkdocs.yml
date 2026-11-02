@@ -31,16 +31,15 @@ theme:
       tip: octicons/light-bulb-16
       warning: octicons/alert-16
       example: octicons/beaker-16
+  # Light is the default; dark stays one click away.
   palette:
-    - media: "(prefers-color-scheme: light)"
-      scheme: default
+    - scheme: default
       primary: custom
       accent: custom
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
-    - media: "(prefers-color-scheme: dark)"
-      scheme: slate
+    - scheme: slate
       primary: custom
       accent: custom
       toggle:
@@ -128,10 +127,10 @@ plugins:
         Tutorials:
           - tutorials/graphene-dos.md: sktb model, supercells, dos resolution, labels
           - tutorials/lcao-diamond.md: lcao model, overlap, S^-1/2, spectral window
-          - tutorials/optics.md: ac task, dielectric function, absorption
-          - tutorials/transport.md: dc_spectrum and msd, 2D normalization
-          - tutorials/realspace.md: density and ldos on a grid, per-rank output
           - tutorials/other-models.md: dftb and tb_file models
+          - tutorials/transport.md: dc_spectrum and msd, 2D normalization
+          - tutorials/optics.md: ac task, dielectric function, absorption
+          - tutorials/realspace.md: density and ldos on a grid, per-rank output
           - tutorials/python.md: Python API parameter sweep
         How-to guides:
           - guides/agents.md: the machine-readable surface and a write-check-run loop
@@ -218,29 +217,35 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Getting started:
+  - Get started:
       - getting-started/index.md
       - Installation: getting-started/installation.md
       - Quick start: getting-started/quickstart.md
-      - Anatomy of an input: getting-started/concepts.md
+      - How an input works: getting-started/concepts.md
   - Tutorials:
       - tutorials/index.md
-      - 1 · Graphene DOS: tutorials/graphene-dos.md
-      - 2 · Non-orthogonal LCAO: tutorials/lcao-diamond.md
-      - 3 · Optical response: tutorials/optics.md
-      - 4 · Transport and diffusion: tutorials/transport.md
-      - 5 · Real-space maps: tutorials/realspace.md
-      - 6 · DFTB and file Hamiltonians: tutorials/other-models.md
-      - 7 · Scripting with Python: tutorials/python.md
-  - How-to guides:
+      - The basics:
+          - 1 · Graphene DOS: tutorials/graphene-dos.md
+          - 2 · A DFT Hamiltonian: tutorials/lcao-diamond.md
+          - 3 · Other model types: tutorials/other-models.md
+      - Observables:
+          - 4 · Transport: tutorials/transport.md
+          - 5 · Optical spectra: tutorials/optics.md
+          - 6 · Real-space maps: tutorials/realspace.md
+      - Going further:
+          - 7 · Python scripting: tutorials/python.md
+  - Guides:
       - guides/index.md
-      - Choose a model: guides/choose-model.md
-      - Import DFT Hamiltonians: guides/hamiltonian-files.md
-      - Converge a calculation: guides/convergence.md
-      - Run on a cluster: guides/parallel.md
-      - Estimate cost first: guides/cost.md
-      - Read and plot results: guides/results.md
-      - Drive RSATB from an agent: guides/agents.md
+      - Set up:
+          - Choose a model: guides/choose-model.md
+          - Import DFT Hamiltonians: guides/hamiltonian-files.md
+      - Run:
+          - Converge a calculation: guides/convergence.md
+          - Estimate cost first: guides/cost.md
+          - Run on a cluster: guides/parallel.md
+      - Use the results:
+          - Read and plot results: guides/results.md
+          - Automate with scripts and agents: guides/agents.md
   - Reference:
       - reference/index.md
       - Command line: reference/cli.md

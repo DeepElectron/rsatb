@@ -1,84 +1,93 @@
 ---
-description: Seven worked RSATB calculations, each a runnable input from the repository, from Slater-Koster graphene to non-orthogonal LCAO optics, transport and real-space maps.
+description: A learning path of seven worked RSATB calculations, from a first density of states to real-space maps and Python scripting. Each runs in about two minutes.
 ---
 
 <p class="rs-kicker">Tutorials</p>
 
-# Tutorials
+# Learn RSATB by example
 
 <div class="rs-lead" markdown>
-Each tutorial is one runnable input from the repository's `examples/`
-directory, explained line by line, with the output and figure it actually
-produced. They build on each other, but each stands alone.
+Seven short, worked calculations. Each one is a ready-to-run input from the
+repository, explained step by step, with the result it actually produced.
+They are ordered so that every tutorial adds one new idea.
 </div>
 
-<div class="grid cards" markdown>
+## The basics
 
--   **1 · [Graphene density of states](graphene-dos.md)**
+Start here. These three cover everything you need for a density of states
+with any kind of Hamiltonian.
 
-    ---
+<div class="grid cards rs-grid-3" markdown>
 
-    A Slater-Koster model written inline, tiled to 32,768 atoms, checked
-    against the exact answer. *Concepts: supercells, `dE`, `nsamples`,
-    labels.*
+-   :material-numeric-1:{ .lg } **[Graphene density of states](graphene-dos.md)**
 
--   **2 · [A non-orthogonal LCAO model](lcao-diamond.md)**
+    Write a model by hand, run it, and check it against the exact answer.
 
-    ---
+    <span class="rs-chip rs-chip--beginner">Beginner</span> <span class="rs-chip">≈ 2 min</span>
 
-    Diamond from a DFT Hamiltonian and its numerical orbitals. *Concepts:
-    overlap, $S^{-1/2}$, the spectral window, k-point paths.*
+-   :material-numeric-2:{ .lg } **[A DFT Hamiltonian](lcao-diamond.md)**
 
--   **3 · [Optical response](optics.md)**
+    Load diamond from a DFT calculation and its atomic orbitals.
 
-    ---
+    <span class="rs-chip rs-chip--beginner">Beginner</span> <span class="rs-chip">&lt; 1 min</span>
 
-    DOS and AC conductivity of a 128-atom diamond cell from one setup.
-    *Concepts: Fermi level, dielectric function, absorption.*
+-   :material-numeric-3:{ .lg } **[Other model types](other-models.md)**
 
--   **4 · [Transport and diffusion](transport.md)**
+    DFTB parameter files and ready-made tight-binding files.
 
-    ---
+    <span class="rs-chip rs-chip--beginner">Beginner</span> <span class="rs-chip">&lt; 1 min</span>
 
-    DC conductivity and wave-packet spreading in graphene. *Concepts:
-    velocity operator, 2D normalization, ballistic transport.*
+</div>
 
--   **5 · [Real-space maps](realspace.md)**
+## Observables
 
-    ---
+Beyond the density of states: how electrons move, absorb light, and where
+they sit in space.
 
-    Electron density and LDOS on a grid, written in parallel and reassembled.
-    *Concepts: Gamma-only tasks, distributed output.*
+<div class="grid cards rs-grid-3" markdown>
 
--   **6 · [DFTB and file Hamiltonians](other-models.md)**
+-   :material-numeric-4:{ .lg } **[Transport](transport.md)**
 
-    ---
+    Conductivity and diffusion in graphene, checked against theory.
 
-    The remaining two model families: `.skf` tables and an orthogonal H(R)
-    file.
+    <span class="rs-chip rs-chip--intermediate">Intermediate</span> <span class="rs-chip">≈ 2 min</span>
 
--   **7 · [Scripting with Python](python.md)**
+-   :material-numeric-5:{ .lg } **[Optical spectra](optics.md)**
 
-    ---
+    The optical conductivity and dielectric function of diamond.
 
-    A strain sweep that no single input can express, through the Python API.
+    <span class="rs-chip rs-chip--intermediate">Intermediate</span> <span class="rs-chip">≈ 2 min</span>
+
+-   :material-numeric-6:{ .lg } **[Real-space maps](realspace.md)**
+
+    Electron density and local density of states on a 3D grid.
+
+    <span class="rs-chip rs-chip--intermediate">Intermediate</span> <span class="rs-chip">&lt; 1 min</span>
+
+</div>
+
+## Going further
+
+<div class="grid cards rs-grid-2" markdown>
+
+-   :material-numeric-7:{ .lg } **[Python scripting](python.md)**
+
+    Sweep a parameter in a loop — something a single input file can't do.
+
+    <span class="rs-chip rs-chip--advanced">Advanced</span> <span class="rs-chip">≈ 2 min</span>
 
 </div>
 
 ## Before you start
 
-[Install RSATB](../getting-started/installation.md) and clone the repository —
-the inputs and their data live in it:
+You need RSATB [installed](../getting-started/installation.md) and a copy of
+the repository, which holds the inputs and their data:
 
 ```bash
 git clone --recurse-submodules https://github.com/DeepElectron/rsatb.git
 cd rsatb
 ```
 
-Every input resolves its paths against its own location, so you can run them
-from anywhere. Results are written next to the input, under `results/`.
-
-!!! info "Timings"
-    Wall times quoted in the tutorials were measured on one rank with 8
-    OpenMP threads on a shared, heavily loaded node. Expect yours to be
-    faster.
+!!! tip "Running times"
+    Times are for one process on a shared workstation. Your machine will
+    usually be faster.

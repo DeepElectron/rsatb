@@ -1,49 +1,46 @@
 ---
-description: Write, validate and run a first RSATB calculation — graphene from a template — and load the result in Python.
+description: Write, check and run a first RSATB calculation — graphene from a template — and load the result in Python.
 ---
 
-<p class="rs-kicker">Getting started</p>
+<p class="rs-kicker">Get started</p>
 
 # Quick start
 
 <div class="rs-lead" markdown>
-A calculation is one JSON file and one command. This page writes a graphene
-input from a template, validates it, runs it, and loads the density of states
-it produced. It needs no data files and finishes in seconds.
+Your first calculation in four steps: create an input, check it, run it, and
+plot the result. It needs no data files and finishes in seconds.
 </div>
 
-## 1 · Start from a template
+<div class="rs-chips">
+  <span class="rs-chip rs-chip--beginner">Beginner</span>
+  <span class="rs-chip">≈ 5 min</span>
+</div>
+
+## 1 · Create an input
 
 ```bash
 rsatb template sktb -o graphene.json
 ```
 
-`rsatb template --list` shows the other starting points (`lcao`, `dftb`,
-`tb_file`, `sktb-transport`, `minimal`). The `sktb` template is graphene
-written inline: two carbon atoms, one $p_z$ orbital each, and a single
-nearest-neighbour hopping $t = -2.7$ eV:
+This writes a complete, working input for graphene:
 
-<!-- rsatb-template: sktb as graphene.json -->
+??? example "What's inside `graphene.json`"
+    <!-- rsatb-template: sktb as graphene.json -->
+
+    A structure (two carbon atoms), a model (one orbital per atom, one
+    hopping value), and two tasks: report the energy range, then compute the
+    density of states. [How an input works](concepts.md) explains each part.
 
 ## 2 · Check it
 
 ```console
 $ rsatb check graphene.json
-structure     2 atoms, inline
-model         sktb  C
-capabilities  orthogonal, velocity, position
-k-points      1 (written out)
-bounds        estimated at setup
-parallel      npar=1, nsamples=64
-tasks         energy_bounds, dos
-
+  ...
 graphene.json: valid
 ```
 
-`check` needs neither MPI nor the compiled solver. It catches malformed
-fields, missing files, and sections that disagree — a conductivity task on a
-model with no velocity operator, say — before anything is queued. Try
-misspelling a key to see what an error looks like:
+`check` catches typos, missing files and impossible requests before
+anything runs — try misspelling a key to see the message it gives:
 
 ```text
 error: run.kpoint: unknown key 'kpoint'
@@ -52,73 +49,79 @@ error: run.kpoint: unknown key 'kpoint'
 
 ## 3 · Run it
 
-```console
-$ rsatb run graphene.json
-rsatb 0.1.0
+```bash
+rsatb run graphene.json
+```
 
-  structure     2 atoms, inline
-  model         sktb  C
-  capabilities  orthogonal, velocity, position
-  ...
-── setup ─────────────────────────────────────────────────────
-
-  basis         C · 1 orbitals · cutoff 0.800 Å
-  bounds        [-8.600000, 8.600000] eV
-
-── tasks ─────────────────────────────────────────────────────
-
-  [1/2] energy_bounds
-        ✓ 0.0s
-  [2/2] dos
-        ✓ 0.0s
+```text
+  [1/2] energy_bounds   ✓
+  [2/2] dos             ✓
   wrote results/dos.npz
-
-── results ───────────────────────────────────────────────────
-
-  wrote results/summary.json
-  energy_bounds: emin=-8.6, emax=8.6
-
 done in 5.5s
 ```
 
-The window is an analytic check. Each carbon has three neighbours, so the
-Gamma-point eigenvalues are $\pm 3|t| = \pm 8.1$ eV, and RSATB pads the
-estimated spectrum by 0.5 eV on each side.
+??? example "The full output"
+    ```text
+    rsatb 0.1.0
 
-The same input runs in parallel unchanged:
+      structure     2 atoms, inline
+      model         sktb  C
+      capabilities  orthogonal, velocity, position
+      k-points      1 (written out)
+
+    ── setup ──────────────────────────────────────────
+
+      basis         C · 1 orbitals · cutoff 0.800 Å
+      bounds        [-8.600000, 8.600000] eV
+
+    ── tasks ──────────────────────────────────────────
+
+      [1/2] energy_bounds
+            ✓ 0.0s
+      [2/2] dos
+            ✓ 0.0s
+      wrote results/dos.npz
+
+    ── results ────────────────────────────────────────
+
+      wrote results/summary.json
+      energy_bounds: emin=-8.6, emax=8.6
+
+    done in 5.5s
+    ```
+
+    The run also prints a table of where the time went; it's useful once
+    calculations get large.
+
+To use more processors, launch the same file with MPI — nothing in the input
+changes:
 
 ```bash
 mpirun -n 4 rsatb run graphene.json
 ```
 
-## 4 · Read the result
+## 4 · Look at the result
 
 ```python
-import json
 import numpy as np
+import matplotlib.pyplot as plt
 
-dos = np.load("results/dos.npz")
-energy, rho = dos["energy"], dos["dos"][0]       # [0]: the first (only) k-point
-
-summary = json.load(open("results/summary.json"))
-print(summary["setup"]["energy_bounds"])          # [-8.6, 8.6]
+d = np.load("results/dos.npz")
+plt.plot(d["energy"], d["dos"][0])     # [0]: the first (and only) k-point
+plt.xlabel("Energy (eV)")
+plt.show()
 ```
 
-Every k-resolved array has a leading k-point axis. What each task writes is
-listed in [Output files](../reference/outputs.md).
+Every task writes one `.npz` file named after it, plus `summary.json`, a
+record of the whole run.
 
-## Where next
+## Next steps
 
-A two-atom cell at one k-point has two eigenvalues, so its "DOS" is two
-peaks. The [first tutorial](../tutorials/graphene-dos.md) tiles the same model
-to 32,768 atoms and recovers the full graphene density of states, Dirac point
-and van Hove singularities included.
+This tiny cell has only two energy levels, so its "density of states" is two
+peaks. [Tutorial 1](../tutorials/graphene-dos.md) makes it 32,768 atoms with
+one line and recovers the real graphene spectrum.
 
-!!! tip "Discover the format from the command line"
-    ```bash
-    rsatb doc                 # overview and topic index
-    rsatb doc tasks.dos       # every key of one task, with defaults
-    rsatb show graphene.json  # the input with every default filled in
-    ```
-    The [Input reference](../reference/input/index.md) on this site is
-    generated from the same schema.
+!!! tip "Get help from the command line"
+    `rsatb doc` lists every input option, `rsatb doc tasks.dos` explains one
+    task, and `rsatb show graphene.json` prints your input with all defaults
+    filled in.

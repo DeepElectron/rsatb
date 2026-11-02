@@ -1,11 +1,11 @@
-{#- Landing page: a full-bleed hero above the page's own Markdown. -#}
+{#- Landing page: a light hero above the page's own Markdown. -#}
 {% extends "main.html" %}
 
 {% block styles %}
   {{ super() }}
   <style>
     /* extra_css loads after this block, so outrank its reading-width rule. */
-    .md-main .md-content .md-content__inner { max-width: 61rem; }
+    .md-main .md-content .md-content__inner { max-width: 62rem; }
     .md-main .md-main__inner { margin-top: 0; }
     .md-content__inner > h1, .md-content__button { display: none; }
   </style>
@@ -16,41 +16,41 @@
   <section class="rs-hero" aria-label="Introduction">
     <div class="rs-hero__inner">
       <div>
-        <div class="rs-hero__eyebrow">Random-state ab-initio tight binding</div>
-        <h1>Electronic observables at <em>million-atom</em> scale.</h1>
+        <div class="rs-pill"><b>Open source</b> Random-state ab-initio tight binding</div>
+        <h1>Electronic structure for <span class="rs-gradient">million&#8209;atom</span> systems.</h1>
         <p class="rs-hero__lead">
-          RSATB turns large localized-orbital Hamiltonians&nbsp;&mdash; from DFT,
-          DFTB, Slater-Koster or machine-learned models&nbsp;&mdash; into densities
-          of states, real-space maps, conductivities and diffusion, without a
-          single dense diagonalization. Non-orthogonal bases are native.
+          Give RSATB a Hamiltonian and a short JSON file. Get densities of
+          states, conductivities, optical spectra and real-space maps &mdash;
+          on a laptop or across a cluster.
         </p>
         <div class="rs-hero__actions">
           <a class="rs-btn rs-btn--primary" href="{{ 'getting-started/quickstart/' | url }}">
-            Run your first calculation
+            Get started
             <svg viewBox="0 0 24 24"><path d="M13.2 5.3 19.9 12l-6.7 6.7-1.4-1.4 4.3-4.3H4v-2h12.1l-4.3-4.3z"/></svg>
           </a>
-          <a class="rs-btn rs-btn--ghost" href="{{ 'tutorials/' | url }}">Tutorials</a>
-          <a class="rs-btn rs-btn--ghost" href="{{ 'reference/input/' | url }}">Input reference</a>
+          <a class="rs-btn rs-btn--ghost" href="{{ 'tutorials/' | url }}">Browse tutorials</a>
         </div>
+        <p class="rs-hero__note">Python&nbsp;3.9+ &middot; MPI&nbsp;+&nbsp;OpenMP &middot; Apache&nbsp;2.0</p>
       </div>
-      <div class="rs-term" aria-label="Example terminal session">
-        <div class="rs-term__bar"><i></i><i></i><i></i><span>graphene · 32,768 atoms</span></div>
+      <div class="rs-window" aria-label="Example session">
+        <div class="rs-window__bar"><i></i><i></i><i></i><span>graphene.json</span></div>
 <pre><span class="p">$ </span>rsatb template sktb -o graphene.json
 <span class="p">$ </span>rsatb check graphene.json
 <span class="o">graphene.json: valid</span>
-<span class="p">$ </span>mpirun -n 4 rsatb run graphene.json
-<span class="c">  model         sktb  C</span>
-<span class="c">  capabilities  orthogonal, velocity, position</span>
-<span class="c">  bounds        </span><span class="k">[-8.6, 8.6] eV</span>
-<span class="c">  [2/2] dos</span>     <svg class="rs-tick" viewBox="0 0 16 16" aria-label="done"><path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <span class="o">0.7 s</span>
-{% include "partials/rs-spark.html" %}</pre>
+<span class="p">$ </span>rsatb run graphene.json
+<span class="c">  bounds   </span><span class="k">[-8.6, 8.6] eV</span>
+<span class="c">  dos      </span><svg class="rs-tick" viewBox="0 0 16 16" aria-label="done"><path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <span class="o">done</span></pre>
+        <div class="rs-window__plot">
+          {% include "partials/rs-spark.html" %}
+          <div class="rs-window__label"><span>density of states</span><span>32,768 atoms</span></div>
+        </div>
       </div>
     </div>
     <div class="rs-stats">
       <div class="rs-stat"><b>1,004,760</b><span>atoms in the scaling benchmark</span></div>
-      <div class="rs-stat"><b>5.92 M</b><span>orbitals in a supermoiré application</span></div>
-      <div class="rs-stat"><b>12</b><span>observables from one JSON input</span></div>
-      <div class="rs-stat"><b>MPI&thinsp;+&thinsp;OpenMP</b><span>k-points, atoms, threads</span></div>
+      <div class="rs-stat"><b>5.92 M</b><span>orbitals in a production run</span></div>
+      <div class="rs-stat"><b>12</b><span>observables from one input</span></div>
+      <div class="rs-stat"><b>4</b><span>Hamiltonian families supported</span></div>
     </div>
   </section>
 {% endblock %}

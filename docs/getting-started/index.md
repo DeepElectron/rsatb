@@ -1,43 +1,35 @@
 ---
-description: Install RSATB, run a first calculation, and learn the five sections every input has.
+description: Install RSATB, run a first calculation, and learn how an input file is put together.
 ---
 
-<p class="rs-kicker">Getting started</p>
+<p class="rs-kicker">Get started</p>
 
-# Getting started
+# Get started
 
 <div class="rs-lead" markdown>
-Three short pages take you from nothing to a working calculation and a mental
-model of every input you will write afterwards.
+Three short pages take you from installation to your first result, and to a
+clear picture of every input you will write afterwards.
 </div>
 
-<div class="grid cards" markdown>
+<div class="grid cards rs-grid-3" markdown>
 
--   **1 · [Installation](installation.md)**
+-   :material-numeric-1:{ .lg } **[Install](installation.md)**
 
-    ---
+    Set up RSATB in a conda environment. About ten minutes, mostly compiling.
 
-    A conda environment with MPI, HDF5 and the compiled solver. About ten
-    minutes, most of it compiling.
+-   :material-numeric-2:{ .lg } **[Quick start](quickstart.md)**
 
--   **2 · [Quick start](quickstart.md)**
+    Run graphene from a template and load the result in Python.
 
-    ---
+-   :material-numeric-3:{ .lg } **[How an input works](concepts.md)**
 
-    Write, check and run a graphene calculation from a template, then read the
-    result in Python.
-
--   **3 · [Anatomy of an input](concepts.md)**
-
-    ---
-
-    `structure`, `model`, `run`, `tasks`, `output`: what each section answers,
-    and the rules every input follows.
+    The five sections of an input file, and what each one controls.
 
 </div>
 
-!!! tip "Working without the solver"
-    Writing and validating inputs needs only Python: `rsatb doc`, `rsatb
-    template`, `rsatb check`, `rsatb show` and `rsatb schema` import nothing
-    compiled and need no MPI. You can prepare a calculation on a laptop or a
-    login node and only compile where it will run.
+!!! tip "No compiler on your laptop? You can still write inputs."
+    `rsatb template`, `rsatb check` and `rsatb doc` need only Python. Prepare
+    and validate inputs anywhere, and install the full solver only where the
+    calculation will run.
+
+When you're done, continue with the [tutorials](../tutorials/index.md).
