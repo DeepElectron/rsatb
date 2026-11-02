@@ -9,7 +9,7 @@ description: How to cite RSATB, its license, and who develops it.
 <div class="rs-lead" markdown>
 Until the accompanying paper is published, please cite the software itself.
 The paper citation will be added here and to
-[`CITATION.cff`](https://github.com/floatingCatty/rsatb/blob/main/CITATION.cff)
+[`CITATION.cff`](https://github.com/DeepElectron/rsatb/blob/main/CITATION.cff)
 on publication.
 </div>
 
@@ -18,7 +18,7 @@ on publication.
   author  = {Zhouyin, Zhanghao},
   title   = {{RSATB}: Random State Ab-initio Tight-Binding},
   version = {0.1.0},
-  url     = {https://github.com/floatingCatty/rsatb},
+  url     = {https://github.com/DeepElectron/rsatb},
   license = {Apache-2.0}
 }
 ```
@@ -36,7 +36,7 @@ Department of Physics, McGill University ·
 ## License
 
 RSATB is available under the
-[Apache License 2.0](https://github.com/floatingCatty/rsatb/blob/main/LICENSE).
+[Apache License 2.0](https://github.com/DeepElectron/rsatb/blob/main/LICENSE).
 
 !!! note "Research software"
     RSATB is under active development. For production science, record the

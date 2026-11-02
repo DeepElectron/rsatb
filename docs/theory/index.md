@@ -54,6 +54,6 @@ $$
 !!! note "Design notes"
     The derivations, measurements and rejected alternatives behind each
     algorithm live in the repository's
-    [`doc/`](https://github.com/floatingCatty/rsatb/tree/main/doc) directory
+    [`doc/`](https://github.com/DeepElectron/rsatb/tree/main/doc) directory
     — for example the survey-sampling LDOS estimator, the spectral MSD route
     and the inverse-square-root memory model. These pages are the overview.

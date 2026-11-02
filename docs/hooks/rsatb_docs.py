@@ -122,7 +122,7 @@ def _prose(text: str) -> str:
         escaped = html.escape(paragraph, quote=False)
         escaped = _QUOTED.sub(lambda m: "<code>{}</code>".format(m.group(1)), escaped)
         escaped = _DOC_PATH.sub(
-            lambda m: '(<a href="https://github.com/floatingCatty/rsatb/blob/main/doc/{0}">'
+            lambda m: '(<a href="https://github.com/DeepElectron/rsatb/blob/main/doc/{0}">'
                       'design note</a>)'.format(m.group(1)), escaped)
         out.append("<p>{}</p>".format(escaped))
     return "\n".join(out)
@@ -435,7 +435,7 @@ def render_input_index() -> str:
            '<p class="rs-kicker">Reference</p>\n', "# Input file\n",
            '<div class="rs-lead">\n{}\n</div>\n'.format(_prose(root.doc)),
            '<div class="rs-facts" markdown>\n**Format version** `{}`  \n'
-           '**Generated from** [`{}`](https://github.com/floatingCatty/rsatb/blob/main/{})  \n'
+           '**Generated from** [`{}`](https://github.com/DeepElectron/rsatb/blob/main/{})  \n'
            '**Machine-readable** [`rsatb.schema.json`](../../rsatb.schema.json) '
            '(JSON Schema 2020-12, identical to `rsatb schema`)\n</div>\n'.format(
                _spec.INPUT_VERSION, SPEC_SOURCE, SPEC_SOURCE),
@@ -549,7 +549,7 @@ def _expand_includes(markdown: str, page_src: str) -> str:
         with open(path) as handle:
             document = json.load(handle)
         _validate(document, "{} (including {})".format(page_src, rel), os.path.dirname(path))
-        body = _report.pretty_json(_strip_comments(document))
+        body = _report.pretty_json(_strip_comments(document), width=60)
         indent = match.group("indent")
         block = '```json title="{}"\n{}\n```'.format(rel, body)
         # Marked so the validation pass below does not check it a second time

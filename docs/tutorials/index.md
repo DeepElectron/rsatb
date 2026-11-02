@@ -71,7 +71,7 @@ produced. They build on each other, but each stands alone.
 the inputs and their data live in it:
 
 ```bash
-git clone --recurse-submodules https://github.com/floatingCatty/rsatb.git
+git clone --recurse-submodules https://github.com/DeepElectron/rsatb.git
 cd rsatb
 ```
 

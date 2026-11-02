@@ -3,9 +3,9 @@ site_description: >-
   Electronic observables at million-atom scale. Random-state ab-initio tight
   binding for sparse, non-orthogonal Hamiltonians.
 site_author: Zhanghao Zhouyin
-site_url: https://floatingcatty.github.io/rsatb/
-repo_url: https://github.com/floatingCatty/rsatb
-repo_name: floatingCatty/rsatb
+site_url: https://deepelectron.github.io/rsatb/
+repo_url: https://github.com/DeepElectron/rsatb
+repo_name: DeepElectron/rsatb
 edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2026 Zhanghao Zhouyin &middot; Apache License 2.0
 
@@ -79,7 +79,7 @@ extra:
   generator: false
   social:
     - icon: fontawesome/brands/github
-      link: https://github.com/floatingCatty/rsatb
+      link: https://github.com/DeepElectron/rsatb
     - icon: fontawesome/brands/orcid
       link: https://orcid.org/0000-0002-0954-1650
 
@@ -117,6 +117,7 @@ plugins:
         validate with `rsatb check --json` (exit 0 = valid) before `rsatb run`;
         the JSON Schema is at /rsatb.schema.json.
       full_output: llms-full.txt
+      preprocess: docs/hooks/llms_preprocess.py
       # Explicit, in reading order. Globs would be expanded before the hook
       # adds the generated input-reference pages, and would sort them.
       sections:

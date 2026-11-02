@@ -26,7 +26,9 @@ cell-size requirements · distributed output and how to reassemble it.
 - **`fermi_level`** finds the chemical potential at which the stochastic
   electron count is 256: two valence pairs per carbon, with no spin factor.
 - **`density`** evaluates the electron density at a given `mu` and smearing
-  temperature on a grid of spacing 0.25 Å.
+  temperature on a grid of spacing 0.25 Å. Its Chebyshev degree scales as the
+  spectral span over $k_BT$, so the smearing is a cost knob: 3000 K keeps the
+  run short, and for a 4.5 eV gap it changes nothing physical.
 - **`ldos`** evaluates the local density of states at seven energies from 8 to
   20 eV with 0.5 eV broadening.
 
@@ -36,9 +38,10 @@ cell-size requirements · distributed output and how to reassemble it.
     cell is only 6.19 Å across and fails at run time:
 
     ```text
-    RuntimeError: Real-space contraction needs every periodic cell width to exceed
-    twice the orbital cutoff, but width along a is 6.189493 A against a cutoff of
-    3.704241 A. Use a supercell at least 7.408481 A across.
+    RuntimeError: Real-space contraction needs every periodic
+    cell width to exceed twice the orbital cutoff, but width
+    along a is 6.189493 A against a cutoff of 3.704241 A.
+    Use a supercell at least 7.408481 A across.
     ```
 
     `rsatb check` does not catch this yet, so size the supercell first.
@@ -50,25 +53,33 @@ rsatb run examples/tutorials/diamond_realspace.json
 ```
 
 ```text
-  fermi_level: n_electrons=256, band_energy=1090.96, mu=13.5143, ...
-  density: n_point=68921, filter_degree=6325, n_states=64, electrons_on_grid=511.902
+  [1/3] fermi_level      ✓ 3.0s
+  [2/3] density          ✓ 7.3s
+  [3/3] ldos             ✓ 7.7s
+done in 28.7s
+
+  fermi_level: n_electrons=256, band_energy=1090.99, mu=13.7787, ...
+  density: n_point=68921, filter_degree=2235, n_states=32, electrons_on_grid=510.189
   ldos: n_point=68921, filter_degree=745, n_states=32, capture_min=0.78327,
         sketch_rank_min=18, predicted_rel_error_max=0.0661694
 ```
 
-The run took 19 minutes on one loaded rank. Most of it went to the density's
-Chebyshev filter, whose degree (6,325) scales as the spectral span over
-$k_BT$.
-
 **The density integrates to the electron count.** `electrons_on_grid` is
-511.9 against the exact $2\times256 = 512$: the grid quadrature check passes
-to 0.02%.
+510.2 against the exact $2\times256 = 512$, within 0.4% — the residual is the
+sampling noise of 32 random states plus the grid quadrature. Doubling
+`n_samples` to 64 brought it to 511.9 (0.02%) in a test run, at 1000 K.
 
 **The Fermi level is in the gap.** In an insulator, every $\mu$ between the
 band edges gives the same electron count, so `fermi_level` returns one
-point in the gap — here 13.51 eV, near the valence-band top. The density
-itself was computed at mid-gap, $\mu = 16.23$ eV; for an insulator at 1000 K
-the choice makes no difference.
+point in the gap — here 13.78 eV, just above the valence-band top. On this
+cell the gap runs from about 13.3 to 17.8 eV, and the density was computed
+at $\mu = 16.23$ eV, also inside it; for a gapped system the choice makes no
+difference.
+
+**The smearing sets the cost.** The density filter degree is 2,235 at 3000 K.
+At 1000 K it is 6,325 — about three times the work, for an identical map in
+an insulator. For a metal, the temperature is physics and has to be chosen
+as such.
 
 **The LDOS reports its own error.** `capture` is the fraction of each energy
 window the random sketch captured; it is 1.0 — exact — at six of the seven

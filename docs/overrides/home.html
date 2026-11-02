@@ -4,8 +4,9 @@
 {% block styles %}
   {{ super() }}
   <style>
-    .md-content__inner { max-width: 61rem; }
-    .md-main__inner { margin-top: 0; }
+    /* extra_css loads after this block, so outrank its reading-width rule. */
+    .md-main .md-content .md-content__inner { max-width: 61rem; }
+    .md-main .md-main__inner { margin-top: 0; }
     .md-content__inner > h1, .md-content__button { display: none; }
   </style>
 {% endblock %}

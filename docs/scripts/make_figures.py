@@ -5,7 +5,7 @@ of what a tutorial input actually produced. To refresh them:
 
     rsatb run examples/tutorials/graphene_dos.json
     rsatb run examples/tutorials/graphene_transport.json
-    rsatb run examples/07_lcao_diamond_dos_ac.json
+    rsatb run examples/tutorials/diamond_optics.json
     rsatb run examples/tutorials/diamond_realspace.json
     python examples/tutorials/strain_sweep.py
     python docs/scripts/make_figures.py
@@ -225,7 +225,7 @@ def fig_strain():
 
 
 def fig_diamond_optics():
-    run = EXAMPLES / "results" / "07_lcao_diamond_dos_ac"
+    run = EXAMPLES / "tutorials" / "results" / "diamond_optics"
     summary = _results(run)
     if summary is None:
         return
@@ -238,11 +238,17 @@ def fig_diamond_optics():
     ax = axes[0]
     e = dos["energy"] - mu
     rho = dos["dos"][0] / (emax - emin)
-    keep = (e > -25) & (e < 20)
-    ax.plot(e[keep], rho[keep], color=ACCENT, lw=1.0)
+    keep = (e > -25) & (e < 15)
+    # A Gamma-point 4x4x4 cell has a discrete spectrum; broaden for display
+    # (as examples/plot_dos_ac.py does) and keep the raw comb underneath.
+    smooth = _gaussian(e[keep], e[keep], 0.6, weights=rho[keep]) * float(np.mean(np.diff(e)))
+    ax.plot(e[keep], rho[keep], color=MUTED, lw=0.5, alpha=0.35, label="raw, dE = 0.14 eV")
+    ax.fill_between(e[keep], smooth, color=ACCENT, alpha=0.10, lw=0)
+    ax.plot(e[keep], smooth, color=ACCENT, lw=1.2, label="broadened, 0.6 eV")
     ax.axvline(0, color=WARM, lw=0.8, ls="--")
     ax.set(xlabel=r"$E - \mu$ (eV)", ylabel="DOS (states / eV / orbital)",
-           title="Density of states", ylim=(0, None))
+           title="Density of states", ylim=(0, smooth.max() * 1.3), xlim=(-25, 15))
+    ax.legend(fontsize=7, loc="upper left")
 
     w = ac["omega_cm1"] / 8065.56
     sig = ac["sigma"][0, :, XX]

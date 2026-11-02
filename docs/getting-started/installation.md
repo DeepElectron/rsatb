@@ -15,7 +15,7 @@ libraries. A fresh conda environment provides all of them.
 ## Recommended: a conda environment
 
 ```bash
-git clone --recurse-submodules https://github.com/floatingCatty/rsatb.git
+git clone --recurse-submodules https://github.com/DeepElectron/rsatb.git
 cd rsatb
 
 conda create -n rsatb -c conda-forge \
