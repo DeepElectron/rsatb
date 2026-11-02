@@ -39,8 +39,10 @@
       <p class="rs-k-lede">
         RSATB computes densities of states, conductivities, optical spectra and
         real-space electron densities from tight-binding and DFT Hamiltonians,
-        using stochastic trace estimation and Chebyshev expansions. It runs
-        serially or with MPI and OpenMP across cluster nodes.
+        using stochastic trace estimation and Chebyshev expansions. Systems of
+        up to 1,004,760 atoms have been computed &mdash; the size of atomistic
+        device models. It runs serially or with MPI and OpenMP across cluster
+        nodes.
       </p>
       <div class="rs-k-actions">
         <a class="rs-k-btn" href="{{ 'getting-started/quickstart/' | url }}">Get started {{ arrow() }}</a>
@@ -50,10 +52,21 @@
 <span>$</span> rsatb check run.json
 <span>$</span> mpirun -n 64 rsatb run run.json</pre>
     </div>
+    {#- Two specimens, cross-faded: a 2D moiré and a device cross-section. -#}
     <figure class="rs-k-hero__art">
-      <img src="{{ 'assets/figures/home_moire.webp' | url }}" width="1120" height="1120"
-           alt="Twisted bilayer graphene drawn bond by bond; the moiré pattern of AA and AB stacking regions emerges from the overlay of the two lattices">
-      <figcaption>Twisted bilayer graphene &middot; &theta; = 3.48&deg; &middot; moir&eacute; period 40.5&nbsp;&Aring;</figcaption>
+      <div class="rs-k-spec rs-k-spec--a">
+        <span class="rs-k-spec__tag">FIG. 0a</span>
+        <img src="{{ 'assets/figures/home_moire.webp' | url }}" width="1120" height="1120"
+             alt="Twisted bilayer graphene drawn bond by bond; the moiré pattern of AA and AB stacking regions emerges from the overlay of the two lattices">
+        <figcaption>Twisted bilayer graphene &middot; &theta; = 3.48&deg; &middot; moir&eacute; period 40.5&nbsp;&Aring;</figcaption>
+      </div>
+      <div class="rs-k-spec rs-k-spec--b">
+        <span class="rs-k-spec__tag">FIG. 0b</span>
+        <img src="{{ 'assets/figures/home_device.webp' | url }}" width="1000" height="1000"
+             alt="Atomistic model of a gate-all-around silicon transistor, rendered as a Z-contrast image: crystalline silicon channel, amorphous oxide, tungsten gate, spacers, contacts and arsenic dopants">
+        {% include "partials/rs-device.html" %}
+        <figcaption>Gate-all-around Si transistor &middot; atomistic model, Z-contrast rendering (illustration)</figcaption>
+      </div>
     </figure>
   </section>
 

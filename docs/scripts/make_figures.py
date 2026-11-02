@@ -464,9 +464,146 @@ def fig_moire(theta_deg=3.48, half_width=120.0):
           "theta={:.2f} deg, moire period {:.1f} A".format(theta_deg, period))
 
 
+DEVICE = ROOT / "docs" / "overrides" / "partials" / "rs-device.html"
+
+
+def _jittered(xmin, xmax, ymin, ymax, step, jitter, rng, keep=0.85):
+    """Amorphous sites: a grid with random displacements and random vacancies."""
+    xs, ys = np.meshgrid(np.arange(xmin, xmax, step), np.arange(ymin, ymax, step))
+    pts = np.stack([xs.ravel(), ys.ravel()], axis=1)
+    pts = pts + rng.uniform(-jitter, jitter, pts.shape)
+    return pts[rng.random(len(pts)) < keep]
+
+
+def fig_device(half=60.0, px=0.12, seed=7):
+    """Landing-page hero, second specimen: a gate-all-around Si transistor.
+
+    A geometric model for illustration, not a calculation, rendered the way such
+    structures are imaged: as an atomic-resolution Z-contrast (HAADF-STEM-like)
+    picture, where each projected atomic column is a spot of brightness ~ Z^1.7.
+    The crystalline Si channel is viewed along [110] (dumbbell columns 1.36 A
+    apart); As dopants in source and drain are brighter columns; the SiO2 gate
+    oxide and SiN spacers are amorphous speckle; the W gate and the contacts are
+    dense crystalline lattices. Transparent background, circular field of view,
+    labels as an SVG overlay that uses the site's fonts and colours.
+    """
+    from scipy.ndimage import gaussian_filter
+    from matplotlib.colors import to_rgb
+    from PIL import Image
+
+    rng = np.random.default_rng(seed)
+    a = 5.431
+    ex = np.array([1.0, -1.0, 0.0]) / np.sqrt(2.0)   # along the channel
+    ey = np.array([0.0, 0.0, 1.0])                   # across the channel
+    fcc = np.array([[0, 0, 0], [0, .5, .5], [.5, 0, .5], [.5, .5, 0]])
+    basis = np.vstack([fcc, fcc + 0.25]) * a
+    n = int(half / a * 1.6) + 3
+    cells = np.array([(i, j, k) for i in range(-n, n + 1) for j in range(-n, n + 1)
+                      for k in range(-3, 4)], dtype=float) * a
+    atoms = (cells[:, None, :] + basis[None, :, :]).reshape(-1, 3)
+    cols = np.unique(np.round(np.stack([atoms @ ex, atoms @ ey], axis=1), 2), axis=0)
+
+    t_si, gate_half, spacer = 13.6, 27.0, 9.0
+    ox_top = t_si + 8.4
+    in_box = (np.abs(cols[:, 0]) < half + 2) & (np.abs(cols[:, 1]) <= t_si)
+    si = cols[in_box]
+    w_si = np.ones(len(si))
+    dop = (np.abs(si[:, 0]) > gate_half + 3) & (rng.random(len(si)) < 0.045)
+    w_si[dop] = 3.4                                   # As: (33/14)^1.7 ~ 4.3, softened
+
+    sites, weights = [si], [w_si]
+    for sign in (1, -1):
+        # Gate oxide (amorphous SiO2) under the gate.
+        ox = _jittered(-gate_half, gate_half, t_si + 0.8, ox_top, 1.25, 0.5, rng)
+        ox[:, 1] *= sign
+        sites.append(ox); weights.append(rng.choice([0.55, 0.22], len(ox), p=[0.35, 0.65]))
+        # Nitride spacers beside the gate.
+        for side in (1, -1):
+            sp = _jittered(gate_half + 0.6, gate_half + spacer, t_si + 0.8, half + 2, 1.3, 0.5, rng)
+            sp[:, 0] *= side; sp[:, 1] *= sign
+            sites.append(sp); weights.append(np.full(len(sp), 0.32))
+        # W gate: a dense square lattice of bright columns.
+        gx, gy = np.meshgrid(np.arange(-gate_half + 0.8, gate_half, 1.58),
+                             np.arange(ox_top + 1.0, half + 2, 1.58))
+        g = np.stack([gx.ravel(), sign * gy.ravel()], axis=1)
+        sites.append(g); weights.append(np.full(len(g), 1.9))
+        # Contacts above source and drain: a crystalline metal grain, rotated.
+        for side in (1, -1):
+            ang = np.radians(17 * side * sign)
+            c, s = np.cos(ang), np.sin(ang)
+            u, v = np.meshgrid(np.arange(-40, 40, 2.05), np.arange(-40, 40, 2.05 * np.sqrt(3) / 2))
+            u = u + (np.arange(u.shape[0])[:, None] % 2) * 1.025
+            p = np.stack([u.ravel() * c - v.ravel() * s, u.ravel() * s + v.ravel() * c], axis=1)
+            p = p + np.array([side * (gate_half + spacer + 20), sign * (t_si + 22)])
+            m = (side * p[:, 0] > gate_half + spacer + 0.6) & (sign * p[:, 1] > t_si + 0.8)
+            sites.append(p[m]); weights.append(np.full(m.sum(), 1.35))
+
+    pts = np.vstack(sites)
+    w = np.concatenate(weights)
+    npx = int(round(2 * half / px))
+    img = np.zeros((npx, npx))
+    ix = np.round((pts[:, 0] + half) / px).astype(int)
+    iy = np.round((half - pts[:, 1]) / px).astype(int)
+    ok = (ix >= 0) & (ix < npx) & (iy >= 0) & (iy < npx)
+    np.add.at(img, (iy[ok], ix[ok]), w[ok])
+    img = gaussian_filter(img, 0.36 / px)
+    img /= np.percentile(img[img > 0], 99.7)
+    img = np.clip(img, 0, 1)
+
+    yy, xx = np.mgrid[0:npx, 0:npx]
+    r = np.hypot(xx - npx / 2, yy - npx / 2) / (npx / 2)
+    fade = np.clip((1.0 - r) / 0.38, 0.0, 1.0) ** 1.5
+    lo, hi = np.array(to_rgb(ACCENT)), np.array(to_rgb(INK))
+    rgb = lo[None, None, :] * (1 - img[..., None]) + hi[None, None, :] * img[..., None]
+    alpha = (img ** 0.85) * fade
+    rgba = np.concatenate([rgb, alpha[..., None]], axis=2)
+    OUT.mkdir(parents=True, exist_ok=True)
+    Image.fromarray((rgba * 255).astype(np.uint8), "RGBA").save(
+        OUT / "home_device.webp", "WEBP", quality=78, method=6)
+
+    # Labels: an SVG overlay in the same frame, 10 units per Angstrom.
+    S = 10.0
+
+    def X(v):
+        return (v + half) * S
+
+    def Y(v):
+        return (half - v) * S
+
+    parts = []
+
+    def label(text, ax_, ay_, tx, ty, anchor="start"):
+        parts.append('<polyline class="lead" points="{:.0f},{:.0f} {:.0f},{:.0f}"/>'
+                     '<circle class="pin" cx="{:.0f}" cy="{:.0f}" r="5"/>'
+                     '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="{}">{}</text>'.format(
+                         X(ax_), Y(ay_), X(tx), Y(ty), X(ax_), Y(ay_),
+                         X(tx) + (10 if anchor == "start" else -10), Y(ty) + 8, anchor, text))
+
+    label("W gate", 6, 40, 20, 48)
+    label('SiO<tspan class="sub" dy="6">2</tspan>', -12, t_si + 4, -30, 34, "end")
+    label("SiN spacer", -31, 38, -40, 46, "end")
+    label("Si channel [110]", 4, 3, 18, 8)
+    label("contact", 46, 24, 56, 36, "end")
+    d = si[dop]
+    d0 = d[np.argmin(np.hypot(d[:, 0] - 40, d[:, 1] + 6))]
+    label("As dopant", d0[0], d0[1], 54, -30, "end")
+    label("source", -44, -8, -46, -26, "end")
+    parts.append('<line class="bar" x1="{:.0f}" y1="{:.0f}" x2="{:.0f}" y2="{:.0f}"/>'
+                 '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="middle">1 nm</text>'.format(
+                     X(-22), Y(-43), X(-12), Y(-43), X(-17), Y(-43) - 14))
+    W = 2 * half * S
+    DEVICE.parent.mkdir(parents=True, exist_ok=True)
+    DEVICE.write_text('<svg class="rs-device-labels" viewBox="0 0 {0:.0f} {0:.0f}" aria-hidden="true">{1}</svg>\n'
+                      .format(W, "".join(parts)))
+    kb = (OUT / "home_device.webp").stat().st_size / 1024
+    print("wrote", (OUT / "home_device.webp").relative_to(ROOT), "{:.0f} kB,".format(kb),
+          len(si), "Si columns,", int(dop.sum()), "dopants;", DEVICE.relative_to(ROOT))
+
+
 if __name__ == "__main__":
     wanted = set(sys.argv[1:])
     for name, fn in (("moire", fig_moire),
+                     ("device", fig_device),
                      ("graphene_dos", fig_graphene_dos),
                      ("graphene_transport", fig_graphene_transport),
                      ("strain", fig_strain),

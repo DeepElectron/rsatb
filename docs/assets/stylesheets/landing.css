@@ -68,10 +68,39 @@
   position: absolute; left: .9rem; right: .9rem; bottom: .7rem; margin: 0; max-width: none; text-align: left;
   font-family: var(--md-code-font-family); font-size: .56rem; color: var(--rs-muted);
 }
-.md-typeset .rs-k-hero__art::before {
-  content: "FIG. 0"; position: absolute; top: .75rem; left: .9rem;
+/* Material sizes figures to their content; the layers here are absolute. */
+.md-typeset .rs-k-hero__art { display: block; width: 100%; max-width: none; aspect-ratio: 1 / 1; overflow: hidden; }
+
+/* Two specimens cross-fade: 0a (moire) and 0b (device). Paused on hover. */
+.rs-k-spec { position: absolute; inset: 0; animation: rs-k-spec 18s ease-in-out infinite; }
+.rs-k-spec--b { animation-delay: -9s; }
+.md-typeset .rs-k-spec img, .rs-k-spec .rs-device-labels {
+  position: absolute; inset: 0; width: 100%; height: 100%; display: block;
+}
+.md-typeset .rs-k-hero__art:hover .rs-k-spec { animation-play-state: paused; }
+@keyframes rs-k-spec {
+  0%, 42% { opacity: 1; visibility: visible; }
+  50%, 92% { opacity: 0; visibility: hidden; }
+  100% { opacity: 1; visibility: visible; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .rs-k-spec { animation: none; }
+  .rs-k-spec--a { opacity: 0; visibility: hidden; }
+}
+.rs-k-spec__tag {
+  position: absolute; top: .75rem; left: .9rem; z-index: 1;
   font-family: var(--md-code-font-family); font-size: .56rem; letter-spacing: .08em; color: var(--rs-faint);
 }
+
+/* Device labels (SVG overlay, drawn by make_figures.py fig_device) */
+.rs-device-labels .lead { fill: none; stroke: var(--rs-brand); stroke-width: 2; }
+.rs-device-labels .pin { fill: var(--rs-surface-2); stroke: var(--rs-brand); stroke-width: 2.5; }
+.rs-device-labels .bar { stroke: var(--rs-ink); stroke-width: 4; }
+.rs-device-labels .lbl {
+  font-family: var(--md-code-font-family); font-size: 24px; fill: var(--rs-ink);
+  paint-order: stroke; stroke: var(--rs-surface-2); stroke-width: 7px;
+}
+.rs-device-labels .sub { font-size: 17px; }
 
 /* ----------------------------------------- supported Hamiltonians */
 .rs-k-sources { border-top: 1px solid var(--rs-rule); padding-top: 1.1rem; }
