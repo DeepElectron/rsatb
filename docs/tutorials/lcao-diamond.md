@@ -61,8 +61,9 @@ Read the report line by line:
   resolution is proportional to this range, the input uses `dE = 2.8` eV.
 
 !!! tip "Other DFT codes"
-    The same input works for ABACUS and NextHam output — change
-    `hamiltonian.format`. See [Import DFT Hamiltonians](../guides/hamiltonian-files.md).
+    The same model reads ABACUS and NextHam output — change
+    `hamiltonian.format`. [Tutorial 7](abacus-nextham.md) does this for a
+    metal and a spin-orbit semiconductor.
 
 ## What to take away
 

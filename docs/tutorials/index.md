@@ -1,5 +1,5 @@
 ---
-description: Seven worked RSATB calculations, from a first density of states to real-space maps and Python scripting.
+description: Eight worked RSATB calculations, from a first density of states to real-space maps, ABACUS and NextHam Hamiltonians, and Python scripting.
 ---
 
 <p class="rs-kicker">Tutorials</p>
@@ -7,7 +7,7 @@ description: Seven worked RSATB calculations, from a first density of states to 
 # Learn RSATB by example
 
 <div class="rs-lead" markdown>
-Seven worked examples, each with its input file and the output it
+Eight worked examples, each with its input file and the output it
 produced.
 </div>
 
@@ -67,7 +67,14 @@ Conductivity and diffusion, optical response, and real-space maps.
 
 <div class="grid cards rs-grid-2" markdown>
 
--   :material-numeric-7:{ .lg } **[Python scripting](python.md)**
+-   :material-numeric-7:{ .lg } **[ABACUS and NextHam](abacus-nextham.md)**
+
+    Hamiltonians from ABACUS and NextHam: a band check, a metal, spin-orbit
+    coupling.
+
+    <span class="rs-chip rs-chip--advanced">Advanced</span>
+
+-   :material-numeric-8:{ .lg } **[Python scripting](python.md)**
 
     A parameter sweep with the Python API.
 

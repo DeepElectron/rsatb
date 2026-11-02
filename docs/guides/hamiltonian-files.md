@@ -96,7 +96,7 @@ Hamiltonian:
 2. If they do not, the atom order or the order of the orbital files is the
    most common cause.
 
-`examples/abacus_nextham/` does both for fcc Al and spin-orbit GaAs: its
-`check_bands.py` diagonalizes rsatb's H and S at ABACUS's own k-points and
-compares with ABACUS's `BANDS_1.dat`, and its README explains how a NextHam
-file is produced.
+[Tutorial 7](../tutorials/abacus-nextham.md) does this comparison for fcc
+Al and spin-orbit GaAs with `examples/abacus_nextham/check_bands.py`, which
+compares the bands of the imported $H$ and $S$ with ABACUS's own
+`BANDS_1.dat`.

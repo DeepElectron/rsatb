@@ -1,8 +1,8 @@
 ---
-description: Tutorial 7 — a strain sweep of graphene through the RSATB Python API, building structures and a distance-dependent hopping in a loop.
+description: Tutorial 8 — a strain sweep of graphene through the RSATB Python API, building structures and a distance-dependent hopping in a loop.
 ---
 
-<p class="rs-kicker">Tutorial 7 · Going further</p>
+<p class="rs-kicker">Tutorial 8 · Going further</p>
 
 # Python scripting
 

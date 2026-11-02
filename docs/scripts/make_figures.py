@@ -8,6 +8,7 @@ of what a tutorial input actually produced. To refresh them:
     rsatb run examples/tutorials/diamond_optics.json
     rsatb run examples/tutorials/diamond_realspace.json
     python examples/tutorials/strain_sweep.py
+    cd examples/abacus_nextham && mpirun -n 8 rsatb run al_abacus.json  # and al_nextham, gaas_soc_nextham
     python docs/scripts/make_figures.py
 
 A figure whose run has not been made is skipped with a message. The script
@@ -333,6 +334,97 @@ def fig_diamond_optics():
     _save(fig, "tut_diamond_optics.png")
 
 
+AN = EXAMPLES / "abacus_nextham"
+
+
+def _band_errors(system, fmt, orbitals, spin):
+    """Per-band |e_rsatb - e_ABACUS| at ABACUS's k-points, as check_bands.py computes it."""
+    from mpi4py import MPI  # noqa: F401  -- before rsatb
+    import scipy.linalg as la
+    import scipy.sparse as sp
+    from rsatb import HamiltonianFile, LcaoModel, OrbitalFiles, RSATB, SetupOptions, Structure
+
+    data = AN / "data" / system
+    path = {"abacus": "abacus/data-HR-sparse_SPIN0.csr", "nextham": "nextham/HR_atom_pairs.h5"}[fmt]
+    kpoints = np.loadtxt(data / "abacus" / "kpoints.dat", ndmin=2).tolist()
+    bands = np.loadtxt(data / "abacus" / "BANDS_1.dat", ndmin=2)[:, 2:]
+    fermi = float((data / "abacus" / "E_Fermi_eV").read_text())
+    model = LcaoModel(hamiltonian=HamiltonianFile(str(data / path), format=fmt),
+                      orbitals=OrbitalFiles(orbitals, dir=str(data)), spin=spin)
+    calc = RSATB(Structure.from_file(str(data / "conf.vasp")), model,
+                 SetupOptions(kpoints=kpoints, compute_bounds=False, energy_bounds=[-200.0, 400.0]))
+
+    def dense(which, k):
+        rows, cols, vals = calc._cpp_obj.dump_operator_coo(which, 0, k)
+        size = int(max(rows.max(), cols.max())) + 1
+        return sp.coo_matrix((vals, (rows, cols)), shape=(size, size)).toarray()
+
+    ref, err = [], []
+    for k in range(len(kpoints)):
+        e = la.eigh(dense("H", k), dense("S", k), eigvals_only=True)[:bands.shape[1]]
+        ref.append(bands[k] - fermi)
+        err.append(np.abs(e - bands[k]))
+    return np.concatenate(ref), np.concatenate(err)
+
+
+def fig_abacus_nextham():
+    runs = {name: AN / "results" / name for name in ("al_abacus", "al_nextham", "gaas_soc_nextham")}
+    summaries = {name: _results(path) for name, path in runs.items()}
+    if any(s is None for s in summaries.values()):
+        return
+    try:
+        al = _band_errors("al", "abacus", ["Al_gga_8au_100Ry_4s4p1d.orb"], "none")
+        gaas = _band_errors("gaas_soc", "nextham",
+                            ["Ga_gga_9au_60Ry_2s2p2d.orb", "As_gga_8au_60Ry_2s2p1d.orb"], "spinorbit")
+    except ImportError as exc:
+        print("skip: abacus_nextham band check needs rsatb:", exc)
+        return
+
+    fig, axes = plt.subplots(1, 3, figsize=(10.2, 2.9))
+    ax = axes[0]
+    for (e, err), colour, name in ((al, ACCENT, "Al"), (gaas, WARM, "GaAs, SOC")):
+        keep = (e > -15) & (e < 15)
+        ax.scatter(e[keep], np.maximum(err[keep], 1e-9), s=2, lw=0, color=colour, alpha=0.5, label=name)
+    ax.axvline(0, color=MUTED, lw=0.6, ls="--")
+    ax.set(yscale="log", ylim=(1e-8, 1), xlim=(-15, 15), xlabel=r"$E_{\mathrm{ABACUS}} - E_F$ (eV)",
+           ylabel=r"$|E_{\mathrm{RSATB}} - E_{\mathrm{ABACUS}}|$ (eV)", title="Bands against ABACUS")
+    ax.legend(fontsize=7.5, markerscale=4, loc="upper left")
+
+    ax = axes[1]
+    for name, colour, lw, ls, label in (("al_abacus", ACCENT, 1.6, "-", "ABACUS file"),
+                                        ("al_nextham", WARM, 0.9, "--", "NextHam file")):
+        s = summaries[name]
+        emin, emax = s["setup"]["energy_bounds"]
+        d = np.load(runs[name] / "dos.npz")
+        mu = [r for r in s["results"] if r["type"] == "fermi_level"][0]["scalars"]["mu"]
+        rho = d["dos"].mean(axis=0) / (emax - emin) * 21      # per atom: 21 orbitals (4s4p1d)
+        e = d["energy"] - mu
+        keep = (e > -16) & (e < 10)
+        # 27 atoms on a 2x2x2 mesh: discrete levels. Broaden for display, raw comb underneath.
+        smooth = _gaussian(e[keep], e[keep], 1.0, weights=rho[keep]) * float(np.mean(np.diff(e)))
+        if name == "al_abacus":
+            ax.plot(e[keep], rho[keep], color=MUTED, lw=0.5, alpha=0.35, label="raw, dE = 0.5 eV")
+        ax.plot(e[keep], smooth, color=colour, lw=lw, ls=ls, label=label + ", broadened 1 eV")
+    ax.axvline(0, color=MUTED, lw=0.6, ls="--")
+    ax.set(xlabel=r"$E - \mu$ (eV)", ylabel="DOS (states / eV / atom / spin)", title="Al: density of states",
+           xlim=(-14, 8), ylim=(0, 0.45))
+    ax.legend(fontsize=7, loc="upper left")
+
+    ax = axes[2]
+    ac = np.load(runs["gaas_soc_nextham"] / "ac.npz")
+    w = ac["omega_cm1"] / 8065.56
+    sig = ac["sigma"][..., XX].real
+    sig = sig.mean(axis=0) if sig.ndim == 2 else sig
+    keep = w < 6
+    ax.plot(w[keep], sig[keep] * 1e-6, color=ACCENT, lw=1.2, marker="o", ms=3, label=r"Re $\sigma_{xx}$")
+    ax.axvline(0.789, color=WARM, lw=0.8, ls="--")
+    ax.text(0.85, 0.92, "gap 0.79 eV", color=WARM, fontsize=7.5, transform=ax.get_xaxis_transform())
+    ax.axhline(0, color=MUTED, lw=0.5)
+    ax.set(xlabel=r"$\hbar\omega$ (eV)", ylabel=r"$\sigma$ (MS/m)", title="GaAs with SOC: optics", xlim=(0, 6))
+    fig.tight_layout(w_pad=2.2)
+    _save(fig, "tut_abacus_nextham.png")
+
+
 def _gather(run, label, key):
     parts = [np.load(p) for p in sorted(glob.glob(str(run / "{}.rank*.npz".format(label))))]
     if not parts:
@@ -475,6 +567,70 @@ def _jittered(xmin, xmax, ymin, ymax, step, jitter, rng, keep=0.85):
     return pts[rng.random(len(pts)) < keep]
 
 
+def _zcontrast(pts, w, half, px, name, gamma=1.0, blur=0.36):
+    """Render atomic columns as a Z-contrast picture: transparent WebP, circular field of view.
+
+    pts are column positions in Angstrom (frame [-half, half]^2), w their
+    brightness (~ Z^1.7 times atoms per column). Each column is a Gaussian spot
+    of width blur; brightness maps from ink-blue (faint) to ink (bright).
+    """
+    from scipy.ndimage import gaussian_filter
+    from matplotlib.colors import to_rgb
+    from PIL import Image
+
+    npx = int(round(2 * half / px))
+    img = np.zeros((npx, npx))
+    ix = np.round((pts[:, 0] + half) / px).astype(int)
+    iy = np.round((half - pts[:, 1]) / px).astype(int)
+    ok = (ix >= 0) & (ix < npx) & (iy >= 0) & (iy < npx)
+    np.add.at(img, (iy[ok], ix[ok]), w[ok])
+    img = gaussian_filter(img, blur / px)
+    img /= np.percentile(img[img > 0], 99.7)
+    img = np.clip(img, 0, 1) ** gamma
+
+    yy, xx = np.mgrid[0:npx, 0:npx]
+    r = np.hypot(xx - npx / 2, yy - npx / 2) / (npx / 2)
+    fade = np.clip((1.0 - r) / 0.38, 0.0, 1.0) ** 1.5
+    lo, hi = np.array(to_rgb(ACCENT)), np.array(to_rgb(INK))
+    rgb = lo[None, None, :] * (1 - img[..., None]) + hi[None, None, :] * img[..., None]
+    alpha = (img ** 0.85) * fade
+    rgba = np.concatenate([rgb, alpha[..., None]], axis=2)
+    OUT.mkdir(parents=True, exist_ok=True)
+    Image.fromarray((rgba * 255).astype(np.uint8), "RGBA").save(OUT / name, "WEBP", quality=78, method=6)
+    print("wrote", (OUT / name).relative_to(ROOT), "{:.0f} kB".format((OUT / name).stat().st_size / 1024))
+
+
+def _label_overlay(path, half, labels, bar, extra=""):
+    """SVG labels in the frame of a _zcontrast image, 10 units per Angstrom.
+
+    labels: (text, x, y of the pin, x, y of the text, anchor); bar: 1 nm scale
+    bar as (x0, y); extra: further SVG drawn first (outlines, arrows).
+    """
+    S = 10.0
+
+    def X(v):
+        return (v + half) * S
+
+    def Y(v):
+        return (half - v) * S
+
+    parts = [extra(X, Y) if callable(extra) else extra]
+    for text, ax_, ay_, tx, ty, anchor in labels:
+        parts.append('<polyline class="lead" points="{:.0f},{:.0f} {:.0f},{:.0f}"/>'
+                     '<circle class="pin" cx="{:.0f}" cy="{:.0f}" r="5"/>'
+                     '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="{}">{}</text>'.format(
+                         X(ax_), Y(ay_), X(tx), Y(ty), X(ax_), Y(ay_),
+                         X(tx) + (10 if anchor == "start" else -10), Y(ty) + 8, anchor, text))
+    x0, y0 = bar
+    parts.append('<line class="bar" x1="{:.0f}" y1="{:.0f}" x2="{:.0f}" y2="{:.0f}"/>'
+                 '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="middle">1 nm</text>'.format(
+                     X(x0), Y(y0), X(x0 + 10), Y(y0), X(x0 + 5), Y(y0) - 14))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('<svg class="rs-device-labels" viewBox="0 0 {0:.0f} {0:.0f}" aria-hidden="true">{1}</svg>\n'
+                    .format(2 * half * S, "".join(parts)))
+    print("wrote", path.relative_to(ROOT))
+
+
 def fig_device(half=60.0, px=0.12, seed=7):
     """Landing-page hero, second specimen: a gate-all-around Si transistor.
 
@@ -538,76 +694,111 @@ def fig_device(half=60.0, px=0.12, seed=7):
             m = (side * p[:, 0] > gate_half + spacer + 0.6) & (sign * p[:, 1] > t_si + 0.8)
             sites.append(p[m]); weights.append(np.full(m.sum(), 1.35))
 
-    pts = np.vstack(sites)
-    w = np.concatenate(weights)
-    npx = int(round(2 * half / px))
-    img = np.zeros((npx, npx))
-    ix = np.round((pts[:, 0] + half) / px).astype(int)
-    iy = np.round((half - pts[:, 1]) / px).astype(int)
-    ok = (ix >= 0) & (ix < npx) & (iy >= 0) & (iy < npx)
-    np.add.at(img, (iy[ok], ix[ok]), w[ok])
-    img = gaussian_filter(img, 0.36 / px)
-    img /= np.percentile(img[img > 0], 99.7)
-    img = np.clip(img, 0, 1)
-
-    yy, xx = np.mgrid[0:npx, 0:npx]
-    r = np.hypot(xx - npx / 2, yy - npx / 2) / (npx / 2)
-    fade = np.clip((1.0 - r) / 0.38, 0.0, 1.0) ** 1.5
-    lo, hi = np.array(to_rgb(ACCENT)), np.array(to_rgb(INK))
-    rgb = lo[None, None, :] * (1 - img[..., None]) + hi[None, None, :] * img[..., None]
-    alpha = (img ** 0.85) * fade
-    rgba = np.concatenate([rgb, alpha[..., None]], axis=2)
-    OUT.mkdir(parents=True, exist_ok=True)
-    Image.fromarray((rgba * 255).astype(np.uint8), "RGBA").save(
-        OUT / "home_device.webp", "WEBP", quality=78, method=6)
-
-    # Labels: an SVG overlay in the same frame, 10 units per Angstrom.
-    S = 10.0
-
-    def X(v):
-        return (v + half) * S
-
-    def Y(v):
-        return (half - v) * S
-
-    parts = []
-
-    def label(text, ax_, ay_, tx, ty, anchor="start"):
-        parts.append('<polyline class="lead" points="{:.0f},{:.0f} {:.0f},{:.0f}"/>'
-                     '<circle class="pin" cx="{:.0f}" cy="{:.0f}" r="5"/>'
-                     '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="{}">{}</text>'.format(
-                         X(ax_), Y(ay_), X(tx), Y(ty), X(ax_), Y(ay_),
-                         X(tx) + (10 if anchor == "start" else -10), Y(ty) + 8, anchor, text))
-
-    label("W gate", 6, 40, 20, 48)
-    label('SiO<tspan class="sub" dy="6">2</tspan>', -12, t_si + 4, -30, 34, "end")
-    label("SiN spacer", -31, 38, -40, 46, "end")
-    label("Si channel [110]", 4, 3, 18, 8)
-    label("contact", 46, 24, 56, 36, "end")
+    _zcontrast(np.vstack(sites), np.concatenate(weights), half, px, "home_device.webp")
     d = si[dop]
     d0 = d[np.argmin(np.hypot(d[:, 0] - 40, d[:, 1] + 6))]
-    label("As dopant", d0[0], d0[1], 54, -30, "end")
-    label("source", -44, -8, -46, -26, "end")
-    parts.append('<line class="bar" x1="{:.0f}" y1="{:.0f}" x2="{:.0f}" y2="{:.0f}"/>'
-                 '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="middle">1 nm</text>'.format(
-                     X(-22), Y(-43), X(-12), Y(-43), X(-17), Y(-43) - 14))
-    W = 2 * half * S
-    DEVICE.parent.mkdir(parents=True, exist_ok=True)
-    DEVICE.write_text('<svg class="rs-device-labels" viewBox="0 0 {0:.0f} {0:.0f}" aria-hidden="true">{1}</svg>\n'
-                      .format(W, "".join(parts)))
-    kb = (OUT / "home_device.webp").stat().st_size / 1024
-    print("wrote", (OUT / "home_device.webp").relative_to(ROOT), "{:.0f} kB,".format(kb),
-          len(si), "Si columns,", int(dop.sum()), "dopants;", DEVICE.relative_to(ROOT))
+    _label_overlay(DEVICE, half, [
+        ("W gate", 6, 40, 20, 48, "start"),
+        ('SiO<tspan class="sub" dy="6">2</tspan>', -12, t_si + 4, -30, 34, "end"),
+        ("SiN spacer", -31, 38, -40, 46, "end"),
+        ("Si channel [110]", 4, 3, 18, 8, "start"),
+        ("contact", 46, 24, 56, 36, "end"),
+        ("As dopant", d0[0], d0[1], 54, -30, "end"),
+        ("source", -44, -8, -46, -26, "end"),
+    ], bar=(-22, -43))
+    print(len(si), "Si columns,", int(dop.sum()), "dopants")
+
+
+DEVICE_2D = ROOT / "docs" / "overrides" / "partials" / "rs-device-2d.html"
+
+
+def fig_device_2d(half=60.0, px=0.12, seed=11):
+    """Landing-page hero, second specimen: a monolayer MoS2 transistor, in plan view.
+
+    A geometric model for illustration, not a calculation, rendered like the
+    device cross-section: Z-contrast columns, brightness ~ Z^1.7 per atom. The
+    2H-MoS2 monolayer (a = 3.16 A) is seen from above: Mo columns, and S2
+    columns of two stacked S atoms. Sulfur vacancies leave single-S or empty
+    columns; Re substitutes for a few Mo. Au(111) contacts (a = 2.88 A,
+    projected along [111], rough edges) cover both ends; the top gate is drawn as
+    an outline over the channel, and an arrow marks the transport direction.
+    """
+    rng = np.random.default_rng(seed)
+    a = 3.16
+    a1, a2 = np.array([a, 0.0]), np.array([a / 2, a * np.sqrt(3) / 2])
+    n = int(2 * half / a) + 4
+    i, j = np.meshgrid(np.arange(-n, n + 1), np.arange(-n, n + 1))
+    mo = i.ravel()[:, None] * a1 + j.ravel()[:, None] * a2
+    s2 = mo + (a1 + a2) / 3.0
+    box = lambda q: (np.abs(q[:, 0]) < half + 2) & (np.abs(q[:, 1]) < half + 2)  # noqa: E731
+    mo, s2 = mo[box(mo)], s2[box(s2)]
+
+    # Contacts: |x| beyond a rough edge near 36 A.
+    def edge(y):
+        return 36.0 + 1.6 * np.sin(y / 6.5) + 0.9 * np.sin(y / 2.3 + 1.0)
+
+    w_mo = np.ones(len(mo))
+    w_s2 = np.full(len(s2), 0.38)                      # 2 x 16^1.7 / 42^1.7
+    channel_mo = np.abs(mo[:, 0]) < edge(mo[:, 1])
+    channel_s2 = np.abs(s2[:, 0]) < edge(s2[:, 1])
+    re = channel_mo & (rng.random(len(mo)) < 0.008)
+    w_mo[re] = 2.6                                     # Re: (75/42)^1.7
+    single = channel_s2 & (rng.random(len(s2)) < 0.035)
+    w_s2[single] = 0.19                                # one S left
+    empty = channel_s2 & ~single & (rng.random(len(s2)) < 0.008)
+    labelled = np.argmin(np.hypot(s2[:, 0] + 14, s2[:, 1] + 20))  # one vacancy placed for its label
+    empty[labelled], single[labelled] = True, False
+    w_s2[empty] = 0.0
+
+    au_a = 2.88 / np.sqrt(3)                           # fcc [111] projection: ABC columns
+    b1, b2 = np.array([au_a, 0.0]), np.array([au_a / 2, au_a * np.sqrt(3) / 2])
+    m = int(2 * half / au_a) + 4
+    u, v = np.meshgrid(np.arange(-m, m + 1), np.arange(-m, m + 1))
+    au = u.ravel()[:, None] * b1 + v.ravel()[:, None] * b2
+    ang = np.radians(9.0)
+    au = au @ np.array([[np.cos(ang), np.sin(ang)], [-np.sin(ang), np.cos(ang)]])
+    au = au[box(au) & (np.abs(au[:, 0]) > edge(au[:, 1]) + 0.8)]
+
+    keep_mo, keep_s2 = channel_mo, channel_s2 & (w_s2 > 0)
+    pts = np.vstack([mo[keep_mo], s2[keep_s2], au])
+    w = np.concatenate([w_mo[keep_mo], w_s2[keep_s2], np.full(len(au), 0.9)])
+    _zcontrast(pts, w, half, px, "home_device_2d.webp", gamma=0.8)
+
+    def gate(X, Y):
+        return ('<rect class="outline" x="{:.0f}" y="{:.0f}" width="{:.0f}" height="{:.0f}"/>'
+                '<line class="flow" x1="{:.0f}" y1="{:.0f}" x2="{:.0f}" y2="{:.0f}" marker-end="url(#rs-dev2d-arrow)"/>'
+                '<defs><marker id="rs-dev2d-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" '
+                'markerHeight="7" orient="auto"><path class="flowhead" d="M0,0 L10,5 L0,10 z"/></marker></defs>'
+                '<text class="lbl" x="{:.0f}" y="{:.0f}" text-anchor="middle">electron transport</text>').format(
+                    X(-24), Y(40), X(24) - X(-24), Y(-40) - Y(40),
+                    X(-14), Y(-33), X(14), Y(-33), X(0), Y(-33) + 30)
+
+    r0 = mo[re]
+    r0 = r0[np.argmin(np.hypot(r0[:, 0] - 8, r0[:, 1] + 8))]
+    v0 = s2[labelled]
+    m0 = mo[np.argmin(np.hypot(mo[:, 0] - 6, mo[:, 1] - 16))]
+    _label_overlay(DEVICE_2D, half, [
+        ("Au source", -46, 6, -57, 46, "start"),
+        ("Au drain", 46, -6, 50, 34, "end"),
+        ('MoS<tspan class="sub" dy="6">2</tspan><tspan dy="-6"> monolayer</tspan>', m0[0], m0[1], 18, 26, "start"),
+        ("top gate", 24, 30, 32, 46, "start"),
+        ("S vacancy", v0[0], v0[1], -30, -30, "end"),
+        ("Re dopant", r0[0], r0[1], -30, 14, "end"),
+    ], bar=(-30, -47), extra=gate)
+    print(int(keep_mo.sum()), "Mo,", int(keep_s2.sum()), "S2 columns,", len(au), "Au columns,",
+          int(re.sum()), "Re,", int((single | empty).sum()), "S vacancies")
 
 
 if __name__ == "__main__":
     wanted = set(sys.argv[1:])
     for name, fn in (("moire", fig_moire),
                      ("device", fig_device),
+                     ("device_2d", fig_device_2d),
                      ("graphene_dos", fig_graphene_dos),
                      ("graphene_transport", fig_graphene_transport),
                      ("strain", fig_strain),
                      ("diamond_optics", fig_diamond_optics),
-                     ("diamond_realspace", fig_diamond_realspace)):
+                     ("diamond_realspace", fig_diamond_realspace),
+                     ("abacus_nextham", fig_abacus_nextham)):
         if not wanted or name in wanted:
             fn()

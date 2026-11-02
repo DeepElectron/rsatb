@@ -33,7 +33,7 @@ dos, energy = calc.compute_dos(dE=0.05)
 
 Three objects and one constructor: the structure says where the atoms are,
 the model what the Hamiltonian is, the options how to run. A worked example is
-[Tutorial 7](../tutorials/python.md).
+[Tutorial 8](../tutorials/python.md).
 
 ## From an input file
 

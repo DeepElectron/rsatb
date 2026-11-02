@@ -116,4 +116,4 @@ same way, with an extra energy axis — see
 
 ## Try next
 
-Continue to [Tutorial 7](python.md): scripting RSATB from Python.
+Continue to [Tutorial 7](abacus-nextham.md): Hamiltonians from ABACUS and NextHam.

@@ -132,6 +132,7 @@ plugins:
           - tutorials/transport.md: dc_spectrum and msd, 2D normalization
           - tutorials/optics.md: ac task, dielectric function, absorption
           - tutorials/realspace.md: density and ldos on a grid, per-rank output
+          - tutorials/abacus-nextham.md: ABACUS and NextHam H(R), band check, metal, spin-orbit
           - tutorials/python.md: Python API parameter sweep
         How-to guides:
           - guides/agents.md: the machine-readable surface and a write-check-run loop
@@ -234,7 +235,8 @@ nav:
           - 5 · Optical spectra: tutorials/optics.md
           - 6 · Real-space maps: tutorials/realspace.md
       - Going further:
-          - 7 · Python scripting: tutorials/python.md
+          - 7 · ABACUS and NextHam: tutorials/abacus-nextham.md
+          - 8 · Python scripting: tutorials/python.md
   - Guides:
       - guides/index.md
       - Set up:
