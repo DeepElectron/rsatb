@@ -1,0 +1,43 @@
+{
+  "_comment": "Zincblende GaAs with spin-orbit coupling: an nspin=4 H(R) (ABACUS lspinorb, abacus/gaas_soc/INPUT) read from a NextHam HR_atom_pairs.h5. 'spin': 'spinorbit' makes the basis spinor -- every orbital carries both spin components, interleaved, as ABACUS and NextHam store them -- and H(R) complex; S is built from the .orb files as S (x) I2. The primitive cell is tiled 2x2x2 (16 atoms, 496 spinor orbitals) and sampled on a 2x2x2 mesh, one k-point per rank group. The same run reads ABACUS's own file with format 'abacus' and path 'data/gaas_soc/abacus/data-HR-sparse_SPIN0.csr' once make_data.sh has regenerated it (10 MB, not committed).",
+
+  "structure": {"file": "data/gaas_soc/conf.vasp", "supercell": [2, 2, 2]},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {"path": "data/gaas_soc/nextham/HR_atom_pairs.h5", "format": "nextham"},
+    "orbitals": {
+      "_comment": "one per species in ascending atomic number: Ga (31), then As (33)",
+      "names": ["Ga_gga_9au_60Ry_2s2p2d.orb", "As_gga_8au_60Ry_2s2p1d.orb"],
+      "dir": "data/gaas_soc"
+    },
+    "spin": "spinorbit"
+  },
+
+  "run": {
+    "npar": 8,
+    "nsamples": 8,
+    "kpoints": {"mesh": [2, 2, 2]}
+  },
+
+  "tasks": [
+    {"type": "dos", "dE": 0.3},
+    {
+      "_comment": "The electron count at mid-gap (ABACUS's bands: VBM 7.400 eV, CBM 8.189 eV). Ga and As ONCV-FR carry 13 + 5 valence electrons, and a spinor basis holds both spins, so the occupation trace is the full count with no factor 2: 8 cells x 18 = 144.",
+      "type": "occupation",
+      "mu": 7.795,
+      "temp": 300.0
+    },
+    {
+      "_comment": "Optical conductivity with mu at mid-gap; absorption sets in at the 0.79 eV gap of this PBE basis. g_s = 1: the spinor trace already holds both spins.",
+      "type": "ac",
+      "nt": 100,
+      "n_kpm": 200,
+      "temp": 300.0,
+      "mu": 7.795,
+      "axis": "abc"
+    }
+  ],
+
+  "output": {"dir": "results/gaas_soc_nextham"}
+}

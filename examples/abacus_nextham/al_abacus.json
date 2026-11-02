@@ -1,0 +1,37 @@
+{
+  "_comment": "fcc Al from ABACUS's own H(R): ABACUS writes the sparse H(R) of its converged SCF (out_mat_hs2 1, abacus/al/INPUT), rsatb reads it as format 'abacus' and builds S from the same .orb file ABACUS used. ABACUS's H(R) is in Rydberg and in its own orbital order; both are converted on read. The atoms of conf.vasp must be listed in ABACUS's order. The primitive-cell file is folded onto a 3x3x3 tiling (27 atoms) at load and sampled on a 2x2x2 mesh -- a 6x6x6 sampling of the primitive zone -- one k-point per rank group (npar). Sized to run in minutes on 8 ranks: the 8 au Al orbitals give each atom ~200 neighbours and a 415 eV spectral span, so resolution and cell size are what cost.",
+
+  "structure": {"file": "data/al/conf.vasp", "supercell": [3, 3, 3]},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {"path": "data/al/abacus/data-HR-sparse_SPIN0.csr", "format": "abacus"},
+    "orbitals": {"names": ["Al_gga_8au_100Ry_4s4p1d.orb"], "dir": "data/al"},
+    "spin": "none"
+  },
+
+  "run": {
+    "npar": 8,
+    "nsamples": 16,
+    "kpoints": {"mesh": [2, 2, 2]}
+  },
+
+  "tasks": [
+    {"type": "dos", "dE": 0.5},
+    {
+      "_comment": "ONCV Al carries 11 valence electrons (2s2 2p6 3s2 3p1). The count is the trace of the occupation over the basis of the structure, with no spin factor: a spin-degenerate basis holds one spin, so 27 atoms x 11 / 2. Expect mu near 11.55 eV: exact diagonalization of this 6x6x6 sampling gives 11.547 eV, and the 16-sample stochastic trace lands within ~0.1 eV of it (11.635 eV in the run recorded in README.md). ABACUS's E_Fermi, 11.021 eV (data/al/abacus/E_Fermi_eV), is that of its 12x12x12 mesh (exact: 11.016 eV) -- a metal's Fermi level moves with the sampling, so mu has to come from the sampling it is used with.",
+      "type": "fermi_level",
+      "n_electrons": 148.5,
+      "temp": 300.0
+    },
+    {
+      "_comment": "Kubo-Greenwood conductivity at the Fermi level of this sampling (the fermi_level task above), both spins included.",
+      "type": "dc",
+      "mu": 11.55,
+      "temp": 300.0,
+      "n_moments": 500
+    }
+  ],
+
+  "output": {"dir": "results/al_abacus"}
+}

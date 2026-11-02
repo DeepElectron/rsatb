@@ -25,6 +25,11 @@ anywhere. `rsatb doc` explains every key; the format reference is
 01 through 05 run as written: everything they read is in `data/`. 06 is the one
 that needs something you supply — a relaxed moiré unit cell — and says so.
 
+`abacus_nextham/` reads H(R) from ABACUS (`format: "abacus"`) and from NextHam
+(`format: "nextham"`), spin-degenerate Al and spin-orbit GaAs, with the ABACUS
+inputs that produced the data, a NextHam converter, and a band check against
+ABACUS's own eigenvalues; its README says how to obtain either file.
+
 `publication/` holds the calculations of the paper, as run: the inputs, the
 run scripts, the diagonalization references and the figure scripts for the
 spectrum / real-space gallery (`publication/spectrum_realspace/`) and the
