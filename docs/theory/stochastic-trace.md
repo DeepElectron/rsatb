@@ -26,7 +26,7 @@ Each sample needs only the action $A|\xi\rangle$, which a
 [Chebyshev recurrence](chebyshev.md) delivers with sparse matrix–vector
 products. `run.nsamples` is $R$.
 
-## Why large systems are cheap
+## Dependence on system size
 
 For a matrix whose spectral weight is spread over many states — a density of
 states, an occupation — the variance of one sample grows like $N$ while the

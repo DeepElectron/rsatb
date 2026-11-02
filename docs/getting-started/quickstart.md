@@ -11,18 +11,13 @@ A graphene calculation in four steps: create the input from a template,
 check it, run it, and load the result. No data files are needed.
 </div>
 
-<div class="rs-chips">
-  <span class="rs-chip rs-chip--beginner">Beginner</span>
-  <span class="rs-chip">≈ 5 min</span>
-</div>
-
 ## 1 · Create an input
 
 ```bash
 rsatb template sktb -o graphene.json
 ```
 
-This writes a complete, working input for graphene:
+This writes an example input for graphene:
 
 ??? example "What's inside `graphene.json`"
     <!-- rsatb-template: sktb as graphene.json -->
@@ -54,44 +49,12 @@ rsatb run graphene.json
 ```
 
 ```text
-  [1/2] energy_bounds   ✓
-  [2/2] dos             ✓
+  bounds        [-8.600000, 8.600000] eV
+  [1/2] energy_bounds
+  [2/2] dos
   wrote results/dos.npz
-done in 5.5s
+  wrote results/summary.json
 ```
-
-??? example "The full output"
-    ```text
-    rsatb 0.1.0
-
-      structure     2 atoms, inline
-      model         sktb  C
-      capabilities  orthogonal, velocity, position
-      k-points      1 (written out)
-
-    ── setup ──────────────────────────────────────────
-
-      basis         C · 1 orbitals · cutoff 0.800 Å
-      bounds        [-8.600000, 8.600000] eV
-
-    ── tasks ──────────────────────────────────────────
-
-      [1/2] energy_bounds
-            ✓ 0.0s
-      [2/2] dos
-            ✓ 0.0s
-      wrote results/dos.npz
-
-    ── results ────────────────────────────────────────
-
-      wrote results/summary.json
-      energy_bounds: emin=-8.6, emax=8.6
-
-    done in 5.5s
-    ```
-
-    The run also prints a table of where the time went; it's useful once
-    calculations get large.
 
 For a parallel run, start it with MPI:
 
@@ -111,8 +74,8 @@ plt.xlabel("Energy (eV)")
 plt.show()
 ```
 
-Every task writes one `.npz` file named after it, plus `summary.json`, a
-record of the whole run.
+Each task writes one `.npz` file named after it; `summary.json` records the
+input with all defaults, the setup, and the results.
 
 ## Next steps
 

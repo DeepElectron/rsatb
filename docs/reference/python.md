@@ -137,7 +137,7 @@ PreconditionerOptions(operator_form="solve", tol=1e-7, sptol=1e-5, maxiter=20)
 
 `energy_bounds=(emin, emax)` fixes the spectral window, like
 `run.bounds.mode = "fixed"` in an input. Unknown keyword arguments raise a
-`TypeError`: the option types are defined once in C++ and bound directly.
+`TypeError`.
 
 Verbosity is process-wide, not an argument: call
 `rsatb.set_log_level("silent" | "summary" | "progress" | "debug")` before

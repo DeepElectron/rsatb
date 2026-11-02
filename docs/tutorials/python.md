@@ -13,7 +13,6 @@ under biaxial strain from 0 to 10%.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--advanced">Advanced</span>
-  <span class="rs-chip">≈ 2 min</span>
   <span class="rs-chip">Python API</span>
 </div>
 
@@ -83,7 +82,7 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
     That is RSATB's `exp_poly` radial form $P(r)\,e^{-\lambda r}$, with a
     one-term polynomial $P = t_0 e^{\beta}$ and $\lambda = \beta/a_0$. The
     `r_on`/`r_cut` taper brings it smoothly to zero before second neighbours.
-    Each energy window is $3|t| + 0.5$ eV, exactly as the output shows.
+    Each energy window is $3|t| + 0.5$ eV, as in the output.
 
 ??? deep "Under the hood: API details worth knowing"
     - `Structure.from_arrays` takes **flat** positions (three numbers per atom)

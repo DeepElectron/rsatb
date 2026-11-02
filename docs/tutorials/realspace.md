@@ -13,7 +13,6 @@ diamond supercell on a 3D grid.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--intermediate">Intermediate</span>
-  <span class="rs-chip">&lt; 1 min</span>
   <span class="rs-chip">Model: lcao</span>
 </div>
 
@@ -49,7 +48,6 @@ rsatb run examples/tutorials/diamond_realspace.json
   fermi_level: n_electrons=256, mu=13.7787, ...
   density: n_point=68921, electrons_on_grid=510.189, ...
   ldos: n_point=68921, predicted_rel_error_max=0.0661694, ...
-done in 28.7s
 ```
 
 <figure markdown>
@@ -57,8 +55,8 @@ done in 28.7s
 <figcaption>One plane through the crystal. <strong>Left:</strong> the
 electron density, concentrated on the carbon atoms. <strong>Right:</strong>
 the states at three energies — in the valence band, in the band gap (an
-order of magnitude weaker), and in the conduction band, which has a clearly
-different shape.</figcaption>
+order of magnitude weaker), and in the conduction band, which has a
+different spatial distribution.</figcaption>
 </figure>
 
 ## Checks
@@ -103,12 +101,11 @@ same way, with an extra energy axis — see
 - **Check `electrons_on_grid`** — it should match the electron count.
 
 ??? deep "Under the hood: temperature as a cost knob"
-    The density is computed with a smooth Fermi function at temperature
-    `temp`. Its cost grows as the temperature falls: 3000 K needs a
-    polynomial of degree 2,235 here, 1000 K needs 6,325 — three times the
-    work for an identical map, because diamond's 4.5 eV gap is far larger than
-    either temperature. In a metal the temperature is physics and must be
-    chosen as such.
+    The density is computed with a Fermi function at temperature `temp`; the
+    polynomial degree, and so the cost, grows as $1/T$. For an insulator with
+    a 4.5 eV gap, 3000 K and 1000 K give the same map, so the higher value is
+    used here. In a metal the temperature changes the result and has to be
+    chosen accordingly.
 
 ??? deep "Under the hood: noise reduction"
     Add `"fragment_buffer": 3.0` to the `density` task and a deterministic

@@ -1,82 +1,75 @@
 ---
-description: Lay out MPI ranks, k-point groups (npar) and OpenMP threads for RSATB on a cluster, with a SLURM script and the two common traps.
+description: Lay out k-point groups (npar), MPI processes and OpenMP threads for RSATB on a cluster, with a SLURM example.
 ---
 
-<p class="rs-kicker">How-to guide</p>
+<p class="rs-kicker">Guide</p>
 
 # Run on a cluster
 
 <div class="rs-lead" markdown>
-RSATB has three levels of parallelism. Fill them from the outside in, because
-communication cost grows inward.
+RSATB parallelizes over k-points, over atoms (MPI processes) and within each
+process (OpenMP threads). Assign resources in that order.
 </div>
 
-| Level | Set by | Splits | Communication |
-|---|---|---|---|
-| 1 · k-point groups | `run.npar` | the k-points | none between groups |
-| 2 · MPI ranks in a group | `mpirun -n` / `npar` | the atoms | halo exchange every product |
-| 3 · OpenMP threads | `OMP_NUM_THREADS` | block rows of a rank | shared memory |
+| Level | Set by | Divides |
+|---|---|---|
+| k-point groups | `run.npar` | the k-points |
+| MPI processes in a group | `mpirun -n` together with `npar` | the atoms |
+| OpenMP threads | `OMP_NUM_THREADS` | the work of one process |
 
-1. **k-points first.** Groups never talk to each other, so this axis scales
-   perfectly. Set `npar` to the number of k-points or a divisor of it.
-2. **Then ranks.** Within a group, ranks divide the atoms. Every rank must own
-   at least one atom; setup refuses a layout where one would own none.
-3. **Then threads.** Threads split the block rows of a rank. Use physical
-   cores only — the Chebyshev loop is memory-bandwidth bound, and SMT
-   siblings only contend.
+1. **k-points.** Groups work on different k-points and do not communicate.
+   Set `npar` to the number of k-points or a divisor of it.
+2. **Processes.** Within a group, processes divide the atoms; each process
+   must own at least one atom.
+3. **Threads.** Use one thread per physical core.
 
-## A SLURM job
+## SLURM example
 
 ```bash title="job.sh"
 #!/bin/bash
 #SBATCH --nodes=4
-#SBATCH --ntasks-per-node=4          # one rank per NUMA domain
-#SBATCH --cpus-per-task=12           # physical cores per rank
+#SBATCH --ntasks-per-node=4          # one MPI process per NUMA domain
+#SBATCH --cpus-per-task=12           # physical cores per process
 #SBATCH --time=04:00:00
 
 export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
 export OMP_PLACES=cores OMP_PROC_BIND=close
 
-srun --cpu-bind=cores rsatb run input.json --log-level progress
+srun --cpu-bind=cores rsatb run input.json
 ```
 
-With Open MPI's `mpirun` instead of `srun`, state the mapping explicitly:
+With Open MPI's `mpirun`, give the process placement explicitly:
 
 ```bash
 OMP_NUM_THREADS=12 mpirun -n 16 --map-by numa:PE=12 --bind-to core \
     rsatb run input.json
 ```
 
-stdout goes to `slurm-<jobid>.out`; only rank 0 reports.
+Output is written by process 0 only.
 
-## Two traps
+## Common problems
 
-!!! warning "Open MPI binds each rank to one core"
-    Open MPI 5 binds every rank to a single core by default, so
-    `mpirun -n 4` without `--map-by …:PE=N` runs four serial ranks no matter
-    what `OMP_NUM_THREADS` says. Always state the layout.
+!!! warning "No speed-up with threads under Open MPI"
+    By default Open MPI binds each process to a single core, so additional
+    threads cannot run. Use `--map-by …:PE=N` as above.
 
-!!! warning "Idle threads spin"
-    OpenMP threads without work spin at the barriers instead of sleeping. A
-    2-atom cell has 2 block rows, so 96 threads burn ~100% CPU each while 2 do
-    the work. If the profile table shows far more CPU than wall time for a
-    task, the system is too small for the thread count — reduce it.
+!!! warning "Too many threads for a small system"
+    A cell with few atoms has little work to divide. If a small test runs
+    slower with more threads, reduce `OMP_NUM_THREADS`.
 
-## Memory
+!!! warning "Out of memory during setup"
+    For non-orthogonal models, building $S^{-1/2}$ during setup uses memory
+    that grows with the number of threads per process. Use fewer threads per
+    process and more processes.
 
-The largest transient on non-orthogonal models is the $S^{-1/2}$ seed during
-setup, which scales with *threads* × (neighbours × orbitals per atom)². When a
-setup runs out of memory, lower `OMP_NUM_THREADS` and raise the rank count
-over more nodes; see [Non-orthogonal bases](../theory/overlap.md#the-graph-local-s-12).
-
-## Before you queue
+## Before submitting
 
 ```bash
-rsatb check input.json                          # on the login node: no MPI needed
-python examples/estimate_matvecs.py input.json  # how much work the tasks are
+rsatb check input.json                          # no MPI or solver needed
+python examples/estimate_matvecs.py input.json  # amount of work per task
 ```
 
-`rsatb check` also warns when `npar` leaves groups idle:
+`rsatb check` also warns when `npar` leaves k-point groups without work:
 
 ```text
 warning: run.npar: npar is 8 but there are only 4 k-points, so 4 sub-communicators have nothing to do

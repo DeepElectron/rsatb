@@ -13,7 +13,6 @@ supercell, together with its density of states, from one input.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--intermediate">Intermediate</span>
-  <span class="rs-chip">≈ 2 min</span>
   <span class="rs-chip">Model: lcao</span>
 </div>
 
@@ -40,12 +39,6 @@ What's new:
 
 ```bash
 rsatb run examples/tutorials/diamond_optics.json
-```
-
-```text
-  [1/2] dos   ✓ 25.1s
-  [2/2] ac    ✓ 1m 15s
-done in 1m 50s
 ```
 
 <figure markdown>
@@ -82,7 +75,7 @@ the dielectric function derived from it.</figcaption>
 
 ??? deep "Under the hood: the band picture in the DOS"
     A 128-atom cell at one k-point has a discrete set of energy levels, so the
-    raw density of states (grey) is a comb of sharp lines. The teal curve is
+    raw density of states (grey) is a comb of sharp lines. The blue curve is
     the same data with 0.6 eV of Gaussian smoothing, for display only. On
     this cell the gap runs from about 13.3 to 17.8 eV.
 

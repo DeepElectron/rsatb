@@ -14,14 +14,13 @@ input.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--intermediate">Intermediate</span>
-  <span class="rs-chip">≈ 2 min</span>
   <span class="rs-chip">Model: sktb</span>
 </div>
 
 <div class="rs-learn" markdown>
-**You will learn** to run several observables in one go, to compute a
-conductivity spectrum and a diffusion coefficient, and how to treat a 2D
-material correctly.
+**You will learn** to run several tasks in one input, to compute a
+conductivity spectrum and a diffusion coefficient, and how results are
+normalized for a 2D material.
 </div>
 
 ## The input

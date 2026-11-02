@@ -1,15 +1,15 @@
 ---
-description: Estimate the matrix-vector product count of an RSATB input before queueing it, with examples/estimate_matvecs.py.
+description: Estimate the number of matrix-vector products an RSATB input requires before submitting it, with examples/estimate_matvecs.py.
 ---
 
-<p class="rs-kicker">How-to guide</p>
+<p class="rs-kicker">Guide</p>
 
 # Estimate cost first
 
 <div class="rs-lead" markdown>
-A run spends its time on sparse matrix–vector products, and their number
-follows from the Chebyshev expansions its tasks use. It can be worked out from
-the input alone, before anything is queued.
+Most of the run time is spent in sparse matrix–vector products. Their number
+follows from the Chebyshev expansions of the requested tasks and can be
+computed from the input before the run.
 </div>
 
 ```console
@@ -20,35 +20,34 @@ $ python examples/estimate_matvecs.py examples/06_matblg_transport.json
   total                   953,740
 ```
 
-The estimator needs the spectral window, because several expansions are
-truncated against it:
+The estimate needs the spectral window:
 
-- an input with `run.bounds.mode = "fixed"` states it;
-- otherwise pass `--bounds EMIN EMAX`,
-- or `--summary path/to/summary.json` from an earlier run of the same system.
+- from the input, if `run.bounds.mode` is `"fixed"`;
+- otherwise from `--bounds EMIN EMAX`,
+- or from `--summary path/to/summary.json` of an earlier run of the same system.
 
-Like `rsatb check`, it imports nothing compiled, so it runs on a login node.
+The script requires only Python.
 
-## From matvecs to wall time
+## From matrix-vector products to run time
 
-Time a short run of the same system — one task, a few moments — and read the
-profile table. The time per matvec is then roughly constant:
+Measure the time per product in a short run of the same system (one task,
+few moments), then:
 
 $$
 t_{\text{run}} \approx n_{\text{matvec}} \times n_{\text{samples}} \times n_k
 \times t_{\text{matvec}} / n_{\text{groups}}.
 $$
 
-For a non-orthogonal model, one "matvec" of the expansion operator is several
-sparse products — two $Z$ products and one $H$ product in the sandwich form,
-or an $H$ product plus a conjugate-gradient solve in the solve form — so
-$t_{\text{matvec}}$ must be measured on the same `operator_form`.
+For non-orthogonal models one product of the expansion operator contains
+several sparse products, so measure $t_{\text{matvec}}$ with the same
+`operator_form` as the production run.
 
-## Levers, cheapest first
+## Reducing the cost
 
-1. **Coarser resolution** where the physics allows: cost is linear in moments.
-2. **A narrower window**: with `bounds.mode = "fixed"` and a known spectrum
-   you skip the PRIMME estimate, though the window must still contain every
-   eigenvalue.
-3. **Fewer samples on bigger cells**: self-averaging pays for size.
-4. **One setup, many tasks**: tasks in the same input share the setup.
+1. **Coarser resolution,** where the analysis allows: the cost is linear in
+   the number of moments.
+2. **A fixed spectral window** (`bounds.mode = "fixed"`) skips the
+   eigenvalue estimate; the window must still contain the whole spectrum.
+3. **Fewer random vectors for larger cells:** the relative statistical error
+   decreases with system size.
+4. **Several tasks in one input:** they share one setup.

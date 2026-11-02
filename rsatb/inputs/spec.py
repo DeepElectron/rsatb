@@ -351,9 +351,9 @@ MODEL = Union(
                     }), required=True),
                 "pseudopotentials": F(Obj(
                     "Pseudopotential files, in the same order as the orbital "
-                    "files. Optional and not needed for production: they only "
-                    "enable the explicit-integral velocity used to cross-check "
-                    "the commutator velocity.",
+                    "files. Optional and not needed for normal use; they "
+                    "enable an alternative velocity operator used for "
+                    "testing.",
                     {
                         "names": F(Array(_str("File name."), "One .upf file per species."),
                                    default=[]),
@@ -361,7 +361,7 @@ MODEL = Union(
                                  default=""),
                     }), default={}),
                 "spin": F(SPIN, default="none"),
-                "log_file": F(_path("Where the op2c integral engine writes its log."),
+                "log_file": F(_path("Log file of the orbital-integral calculation."),
                               default="op2c.log"),
             }),
         "dftb": Obj(
@@ -377,9 +377,9 @@ MODEL = Union(
                 "basis": F(BASIS, required=True),
                 "heteronuclear": F(_str(
                     "What to do with a mixed-shell channel whose reading the "
-                    "declared bases do not force. 'reject_ambiguous' refuses; it "
-                    "only bites when both species carry both shells of the "
-                    "channel.",
+                    "declared bases do not determine. 'reject_ambiguous' stops "
+                    "with an error; this only occurs when both species have both "
+                    "shells of the channel.",
                     choices=("reject_ambiguous", "assume_lower_shell_on_row_species")),
                     default="reject_ambiguous"),
                 "spin": F(SPIN, default="none"),
@@ -439,15 +439,15 @@ BOUNDS = Obj(
     "Every observable is defined on the open interval: energies at or beyond "
     "the endpoints reconstruct to zero.",
     {
-        "mode": F(_str("'auto' estimates the window with a PRIMME solve at setup. "
-                       "'fixed' uses the window you give, which is usually faster "
-                       "and more robust on large cells.",
+        "mode": F(_str("'auto' estimates the window from the extreme eigenvalues "
+                       "during setup. 'fixed' uses the given window and skips the "
+                       "estimate; it must contain the whole spectrum.",
                        choices=("auto", "fixed")), default="auto"),
         "energy": F(Array(_num("Energy.", unit="eV"), "[emin, emax], with mode 'fixed'.",
                           length=2)),
-        "zero_tol": F(_num("Below this the Hamiltonian is treated as zero, so a "
-                           "trivially empty operator does not send the estimate "
-                           "into an endless solve.", minimum=0.0), default=1e-12),
+        "zero_tol": F(_num("Hamiltonian norm below which the window estimate "
+                           "treats the operator as zero.", minimum=0.0),
+                      default=1e-12),
         "max_matvecs": F(_int("Cap on matrix-vector products in the estimate.", minimum=0),
                          default=10000),
     },
@@ -458,22 +458,21 @@ PRECONDITIONER = Obj(
     {
         "operator_form": F(_str(
             "Which operator the Chebyshev expansions apply. 'sandwich' is "
-            "Z H Z with Z = S^-1/2: exactly Hermitian, two SpMVs per matvec, "
-            "and S is released after the build (saves its memory; observables "
-            "that need S become illegal). 'solve' keeps S and applies S^-1 H "
-            "by preconditioned CG each matvec -- the fallback when Z would "
-            "densify beyond memory. Formerly the bool "
-            "release_overlap_after_build (true = sandwich).",
+            "Z H Z with Z = S^-1/2: Hermitian, and S is released after setup "
+            "to save memory, so observables that need S are unavailable. "
+            "'solve' keeps S and applies S^-1 H with a preconditioned "
+            "conjugate-gradient solve at each step; use it when Z would be "
+            "too dense to store.",
             choices=("sandwich", "solve")), default="solve"),
         "tol": F(_num("Convergence tolerance of the inverse-square-root iteration.",
                       exclusive_minimum=0.0), default=1e-7),
         "sptol": F(_num("Sparsity threshold: entries below it are dropped from the "
                         "preconditioner.", minimum=0.0), default=1e-5),
         "maxiter": F(_int(
-            "Newton-Schulz iteration cap. 0 keeps the graph seed itself as "
-            "S^-1/2 -- sparse but only subgraph-accurate, which is the "
-            "seed-only PCG route when the overlap is kept "
-            "(operator_form 'solve').", minimum=0), default=20),
+            "Maximum number of Newton-Schulz iterations refining S^-1/2. 0 "
+            "uses the sparse graph-local approximation without refinement; "
+            "with operator_form 'solve' it then serves as the preconditioner.",
+            minimum=0), default=20),
     })
 
 KPOINTS = Choice(
@@ -562,19 +561,17 @@ TASK = Union(
             "Density of states by stochastic Chebyshev expansion.",
             {
                 "label": LABEL,
-                "dE": F(_num("Target energy resolution. The Chebyshev step "
-                             "and moment counts are derived from the "
-                             "spectral span at run time; cost is linear in "
-                             "span/dE. Replaces the former nt (= span/dE) "
-                             "and n_moments.", unit="eV",
+                "dE": F(_num("Target energy resolution. The number of "
+                             "Chebyshev moments is derived from the "
+                             "spectral span at run time; the cost is "
+                             "proportional to span/dE.", unit="eV",
                              exclusive_minimum=0.0), default=0.1),
-                "method": F(_str("Broadening kernel; both run on the same "
-                                 "moment recurrence (~2*span/dE matvecs). "
-                                 "'kpm' is Jackson, strictly positive; "
-                                 "'corr' reconstructs the correlation series "
-                                 "from the moments and applies the "
-                                 "historical Hann window + FFT, matching "
-                                 "legacy outputs.",
+                "method": F(_str("Broadening kernel; both use the same "
+                                 "Chebyshev moments. 'kpm' applies the "
+                                 "Jackson kernel and is strictly positive; "
+                                 "'corr' reconstructs the time correlation "
+                                 "function from the moments and applies a "
+                                 "Hann window.",
                                  choices=("kpm", "corr")), default="kpm"),
             }),
         "pdos": Obj(
@@ -606,18 +603,17 @@ TASK = Union(
                                 default="atom"),
             }),
         "ldos": Obj(
-            "Local density of states on a real-space grid, by the "
-            "survey-sampling estimator (doc/design_survey_sampling_ldos.md): a "
-            "flat-top Chebyshev sketch of the energy window and its exact "
-            "filtered images from one recursion per probe; the map is the "
-            "captured part of the window's sketch divided by its capture "
-            "fraction. Unbiased, non-negative, error sqrt(2 (1 - capture) / "
-            "rank) with rank = sketch_families x n_samples -- bounded by "
-            "sqrt(2 / rank) at every system size, exact once the rank reaches "
-            "the states in the window. Needs the radial orbital files, so an "
-            "LCAO model, at a single Gamma point.\n\n"
-            "One recursion serves every energy: the marginal cost of an energy "
-            "point is a few AXPYs per Chebyshev step.\n\n"
+            "Local density of states on a real-space grid, by a "
+            "survey-sampling estimator: each random probe yields a Chebyshev "
+            "sketch of the energy window, and the map is the captured part of "
+            "the window divided by the measured capture fraction. The "
+            "estimate is unbiased and non-negative, with relative error "
+            "sqrt(2 (1 - capture) / rank), rank = sketch_families x "
+            "n_samples; it is exact once the rank reaches the number of "
+            "states in the window. Requires an LCAO model (radial orbital "
+            "files) and a single Gamma point.\n\n"
+            "All energies are computed from the same recursion, so additional "
+            "energies add little cost.\n\n"
             "Written one file per rank -- <label>.rank00000.npz and so on -- "
             "because no rank holds the whole grid. Each file carries the grid "
             "shape, the energies, and its own points, so it is self-describing; "
@@ -648,8 +644,8 @@ TASK = Union(
                                     "accuracy with. At least 2: the capture "
                                     "fraction is cross-fitted between probe "
                                     "folds.", minimum=2), default=64),
-                "block": F(_int("Probes per Chebyshev sweep, i.e. the SpMM width. "
-                                "Memory holds a few blocks of that many vectors.",
+                "block": F(_int("Random vectors processed together in one "
+                                "Chebyshev sweep; larger values use more memory.",
                                 minimum=1), default=16),
                 "seed": F(_int("Random seed. A run repeats exactly at the same "
                                "seed AND the same rank count: each rank draws "
@@ -660,15 +656,11 @@ TASK = Union(
                                "1/sqrt(n_samples).", minimum=0), default=12345),
                 "sketch_families": F(_int("Chebyshev modulation families per "
                                           "probe, J. The sketch rank is "
-                                          "J x n_samples and the error scale "
-                                          "sqrt(2 (1 - capture) / rank); each "
-                                          "family lengthens the sweep by about "
-                                          "a tenth of the filter degree, and "
-                                          "families of one probe are correlated "
-                                          "draws (design effect 1.0 at J = 6, "
-                                          "2.5 at J = 12), so J ~ 6 with probes "
-                                          "supplying the rest of the rank is "
-                                          "the efficient setting.", minimum=1),
+                                          "J x n_samples. Families of the same "
+                                          "probe are correlated, so a value "
+                                          "around 6, with accuracy increased "
+                                          "through n_samples, is recommended.",
+                                          minimum=1),
                                      default=6),
             }),
         "density": Obj(
@@ -721,35 +713,26 @@ TASK = Union(
                                           "rank count.",
                                           unit="Angstrom", minimum=0.0),
                                      default=0.0),
-                "fragment_workspace_mb": F(_int("Workspace cap for the fragment build, "
-                                                "MB: bounds the fragments in flight by "
-                                                "the largest working set (Z panel |Z rows| "
-                                                "x |F|, N x |F| for a dense Z, plus the "
-                                                "nf x nf matrices). 0 = one per thread.",
+                "fragment_workspace_mb": F(_int("Memory limit for the fragment "
+                                                "calculation, in MB. 0: no limit "
+                                                "(one fragment per thread).",
                                                 minimum=0), default=0),
                 "fragment_coefficient": F(
                     _str("Coefficient multiplying the paired fragment "
                          "correction. 'fixed' uses coefficient one and is "
                          "exactly unbiased for every fixed fragment. "
-                         "'fitted' estimates a box-local coefficient from "
-                         "the same samples as a legacy robustness heuristic.",
+                         "'fitted' estimates a local coefficient from the "
+                         "same samples.",
                          choices=("fixed", "fitted")),
                     default="fitted"),
                 "energy_windows": F(_int("Split the occupation into this many "
-                                         "energy windows sampled separately "
-                                         "from the same sweep and seeds "
-                                         "(ew-sDFT). Removes cross-window "
-                                         "sampling noise at no extra Chebyshev "
-                                         "degree and can never increase the "
-                                         "variance of the PLAIN estimator; "
-                                         "measured 2.4x alone at diamond sc888. "
-                                         "With fragments, window edges cut "
-                                         "through bands and collapse per-window "
-                                         "locality, so in gapped systems run "
-                                         "fragments alone; windows are the "
-                                         "delocalized (metallic) regime's "
-                                         "lever, where fragments cannot help. "
-                                         "1 disables.",
+                                         "energy windows, sampled separately "
+                                         "from the same Chebyshev sweep. This "
+                                         "removes cross-window sampling noise "
+                                         "at no extra cost. Use it for metals; "
+                                         "for gapped systems use "
+                                         "fragment_buffer instead, since the "
+                                         "two do not combine well. 1 disables.",
                                          minimum=1), default=1),
             }),
         "ac": Obj(
@@ -764,17 +747,18 @@ TASK = Union(
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), default=300.0),
                 "mu": F(_num("Chemical potential.", unit="eV"), default=0.0),
                 "axis": F(AXIS, default="abc"),
-                "method": F(_str("Correlator evolution. 'concurrent' shares "
-                                 "Chebyshev states across time steps (~9x "
-                                 "fewer propagation matvecs); 'sequential' "
-                                 "propagates stepwise and is kept as the "
-                                 "independent cross-check. Both sample "
-                                 "alias-free.",
+                "method": F(_str("Time evolution of the correlator. "
+                                 "'concurrent' shares Chebyshev states "
+                                 "across time steps and needs fewer "
+                                 "matrix-vector products; 'sequential' "
+                                 "propagates step by step and serves as an "
+                                 "independent check.",
                                  choices=("concurrent", "sequential")),
                             default="concurrent"),
-                "block": F(_int("Concurrent only: time steps per block. Memory "
-                                "holds ~4*(pi*block+50) states; the matvec "
-                                "saving saturates around 128.", minimum=1)),
+                "block": F(_int("Concurrent only: time steps per block. Larger "
+                                "blocks need fewer matrix-vector products and "
+                                "more memory; unset uses min(nt, 128).",
+                                minimum=1)),
             }),
         "dc": Obj(
             "DC conductivity tensor at one chemical potential and temperature "
@@ -788,12 +772,10 @@ TASK = Union(
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
                 "method": F(_str("Spectrum evaluation. 'qe' computes only the "
-                                 "thermal window of energy nodes around mu "
-                                 "via quasi-eigenstate accumulation: MBs of "
-                                 "workspace instead of the full-grid row "
-                                 "store, one pass, greenwood only. 'fftcheb' "
-                                 "is the full-grid row-FFT route and the "
-                                 "only one for 'bastin'.",
+                                 "energies near mu that the temperature "
+                                 "selects, with little memory (greenwood "
+                                 "only). 'fftcheb' evaluates the full energy "
+                                 "grid and is required for 'bastin'.",
                                  choices=("fftcheb", "qe")), default="fftcheb"),
                 "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
                                              minimum=0), default=0),
@@ -809,13 +791,12 @@ TASK = Union(
                 "formulation": F(FORMULATION, default="greenwood"),
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
-                "method": F(_str("Spectrum evaluation. 'fftcheb' (row FFTs, "
-                                 "the default) is the right algorithm for "
-                                 "the full grid; 'qe' (quasi-eigenstate "
-                                 "accumulation, greenwood only) exists for "
-                                 "cross-checks here and shines in the dc "
-                                 "task, where only a thermal window of "
-                                 "nodes is needed.",
+                "method": F(_str("Spectrum evaluation. 'fftcheb' (the "
+                                 "default) evaluates the full energy grid; "
+                                 "'qe' (quasi-eigenstate accumulation, "
+                                 "greenwood only) is mainly useful in the dc "
+                                 "task, where only energies near mu are "
+                                 "needed.",
                                  choices=("fftcheb", "qe")), default="fftcheb"),
                 "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
                                              minimum=0), default=0),
@@ -831,13 +812,10 @@ TASK = Union(
                 "temp": F(_num("Temperature; 0 selects the T=0 step.", unit="K",
                                minimum=0.0), required=True),
                 "indicator_threshold": F(
-                    _num("Level the a-posteriori error indicator must fall below, "
-                         "relative to the sample-vector norm. Not an error "
-                         "tolerance: no inequality between the indicator and the "
-                         "true error is proven, and outside the method's regime "
-                         "(many levels within the resolution window) it can fire "
-                         "at a degree whose true error is far larger. Validate "
-                         "against a fixed-degree run where that is in doubt.",
+                    _num("Threshold for the a-posteriori error indicator that "
+                         "selects the expansion degree. It is an indicator, not "
+                         "an error bound: for systems with few levels near mu, "
+                         "compare with a fixed-degree run.",
                          exclusive_minimum=0.0),
                     default=1e-4),
                 "n_max": F(_int("Hard cap on the expansion degree.", minimum=1),
@@ -874,25 +852,21 @@ TASK = Union(
                            default=1000),
                 "axis": F(_str("Direction the displacement is measured along.",
                                choices=("x", "y", "z")), default="x"),
-                "method": F(_str("Evaluation kernel; both run the commutator "
-                                 "velocity correlator. 'stepwise' re-expands "
-                                 "the energy resolution at every output time "
-                                 "(n_steps * n_kpm applies -- right for cheap "
-                                 "orthogonal matvecs, and exactly "
-                                 "positivity-preserving at full moments). "
-                                 "'spectral' runs the segmented single-chain "
-                                 "route: cost linear in the evolution window "
-                                 "and independent of the output grid. 'auto' "
-                                 "picks spectral whenever applies are "
-                                 "expensive (non-orthogonal forms) and the "
-                                 "apply-count estimate favours it; pin the "
-                                 "method for sweeps that must not switch "
-                                 "estimators.",
+                "method": F(_str("Algorithm; both compute the same quantity. "
+                                 "'stepwise' expands the energy resolution "
+                                 "at every output time and suits orthogonal "
+                                 "models. 'spectral' has a cost independent "
+                                 "of the number of output times and suits "
+                                 "non-orthogonal models. 'auto' chooses "
+                                 "between them; set the method explicitly "
+                                 "when comparing runs.",
                                  choices=("auto", "stepwise", "spectral")),
                             default="auto"),
                 "n_kpm_compute": F(_int("Compute only this many moments and "
                                         "extend to n_kpm by linear "
-                                        "prediction; 0 disables.", minimum=0),
+                                        "prediction; 0 disables. Not reliable "
+                                        "for small cells with discrete "
+                                        "spectra.", minimum=0),
                                    default=0),
             }),
         "quantum_metric": Obj(

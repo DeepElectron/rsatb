@@ -87,17 +87,16 @@ More detail: [Choose a model](../guides/choose-model.md).
     orbital ranges and distributes it across processes; assembles $H$ (and,
     for overlapping orbitals, $S$) at each k-point; builds $S^{-1/2}$ when
     needed; and estimates the energy range that every calculation is scaled
-    to. A profile table at the end of each run shows how long each phase
-    took. Background: [Theory](../theory/index.md).
+    to. Background: [Theory](../theory/index.md).
 
 ## Commands at a glance
 
 | Command | What it does |
 |---|---|
-| `rsatb template NAME -o FILE` | write a working input to start from |
+| `rsatb template NAME -o FILE` | write an example input |
 | `rsatb check FILE` | validate an input (no solver or MPI needed) |
 | `rsatb show FILE` | print the input with every default filled in |
 | `rsatb run FILE` | run the calculation |
-| `rsatb doc [TOPIC]` | explain any part of the input format |
+| `rsatb doc [TOPIC]` | describe the input options |
 
 All flags: [Command line](../reference/cli.md).

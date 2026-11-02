@@ -35,7 +35,7 @@ both forms through `run.preconditioner.operator_form`:
 | Hermitian | no — moments cost one product each | yes — two moments per product |
 | Memory | keeps $S$ | releases $S$ after setup, keeps $Z$ |
 | PDOS convention | Mulliken | Löwdin |
-| Use when | $Z$ would be too dense to store | $Z$ fits in memory — usually the faster route |
+| Use when | $Z$ would be too dense to store | $Z$ fits in memory |
 
 ## The graph-local $S^{-1/2}$
 
@@ -51,16 +51,15 @@ square root is not. RSATB builds $Z$ in two stages:
    `preconditioner.tol`, dropping entries below `sptol`, for at most
    `maxiter` steps.
 
-`maxiter = 0` stops at the seed. Under the `solve` form that is the
-*seed-only* route: the sparse seed serves as a CG preconditioner for $S^{-1}$
-at every product, cheap to store and scalable.
+`maxiter = 0` stops at the seed. With the `solve` form, the sparse seed is
+then used as the preconditioner of a conjugate-gradient solve with $S$ at
+every product.
 
-!!! warning "Cost and memory"
-    The seed's dense neighbourhood blocks are the setup's memory peak, and they
-    grow as (neighbours × orbitals per atom)² per thread. Rich bases — triple-ζ
-    with polarization — on many threads can need tens of GB in this phase alone.
-    Check the `setup/isqrt_*` rows of the profile table, and reduce
-    `OMP_NUM_THREADS` before reducing accuracy.
+!!! warning "Memory"
+    The dense neighbourhood blocks of the seed determine the memory peak of
+    the setup. It grows with the number of orbitals per atom and with the
+    number of threads per process; for large basis sets, use fewer threads
+    per process.
 
 ## Conditioning
 

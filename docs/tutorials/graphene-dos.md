@@ -13,7 +13,6 @@ then in a 128 × 128 supercell, compared with the exact density of states.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--beginner">Beginner</span>
-  <span class="rs-chip">≈ 2 min</span>
   <span class="rs-chip">Model: sktb</span>
 </div>
 
@@ -52,7 +51,7 @@ The two eigenvalues of the two-atom cell at $\Gamma$ are
 $\pm 3 \times 2.7 = \pm 8.1$ eV; the reported range adds 0.5 eV of padding on
 each side.
 
-## Step 2 — a real system
+## Step 2 — a supercell
 
 A two-atom cell at one k-point has only two levels. To sample the
 Brillouin zone, the cell is repeated 128 × 128 times (32,768 atoms) with
@@ -82,7 +81,7 @@ rsatb run examples/tutorials/graphene_dos.json
 ![Graphene DOS from RSATB against the exact result at two resolutions](../assets/figures/tut_graphene_dos.png)
 <figcaption><strong>RSATB (blue) and the exact result for the same k-points
 (vermilion).</strong>
-Left, at 0.1 eV: the familiar graphene density of states, with a V-shaped
+Left, at 0.1 eV: the graphene density of states, with a V-shaped
 Dirac point at zero and sharp van Hove peaks at ±2.7 eV. Right, at 0.02 eV:
 the resolution is now finer than the gaps between the energy levels of this
 finite cell, so individual levels show through.</figcaption>
@@ -97,7 +96,7 @@ finite cell, so individual levels show through.</figcaption>
   random vectors were sufficient here (details below).
 
 ??? deep "Under the hood: the number of random vectors"
-    RSATB never diagonalizes the Hamiltonian. It estimates the density of
+    RSATB does not diagonalize the Hamiltonian. It estimates the density of
     states from random vectors, and the statistical error falls as
     $1/\sqrt{n_{\text{samples}} \times N_{\text{orbitals}}}$. With 32,768 orbitals,
     eight vectors give noise below the line width in the figure; small cells

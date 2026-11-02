@@ -110,7 +110,7 @@ rsatb run [--dry-run] [-o OUTPUT_DIR] [--log-level {silent,summary,progress,debu
 Run under MPI with `mpirun -n N rsatb run input.json` or `srun rsatb run
 input.json`. A run refuses to start if `check` finds an error, rather than
 failing partway through setup. An empty `tasks` list sets the calculation up
-and reports the derived basis and window — the cheapest end-to-end test.
+and reports the derived basis and spectral window, as a quick end-to-end test.
 
 ### Log levels
 

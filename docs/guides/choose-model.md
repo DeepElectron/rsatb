@@ -2,14 +2,14 @@
 description: Which model.type to use for Slater-Koster parameters, DFTB .skf sets, DFT Hamiltonians with numerical orbitals, or orthogonal H(R) files — and what each can compute.
 ---
 
-<p class="rs-kicker">How-to guide</p>
+<p class="rs-kicker">Guide</p>
 
 # Choose a model
 
 <div class="rs-lead" markdown>
-The model family follows from what you have. It then decides which
-observables are available, because some need operators — velocity, position,
-real-space orbitals — that only some families can build.
+The model type follows from the data you have. It also determines which
+observables are available, because some require operators — velocity,
+position, real-space orbitals — that not every model type provides.
 </div>
 
 ## Start from your data
@@ -40,18 +40,18 @@ flowchart TD
 | `lcao` | ✓ | ✓ | ✓ | ✓ |
 | `tb_file` | ✓ | ✓ | ✓ | — |
 
-Why the gaps:
+Reasons:
 
 - **Velocity** is the commutator $i[H, r]$. Orthogonal models get the position
   operator from the atomic coordinates; `lcao` computes the dipole integrals
   from its orbitals. A non-orthogonal `sktb` or `dftb` model has neither, so
-  no transport.
+  transport tasks are not available.
 - **Real-space maps** evaluate orbitals on a grid, so they need radial
   functions — only `.orb` files provide them.
-- **MSD and the real-space maps** are Gamma-point observables: put the
-  periodicity into a supercell rather than a k-mesh.
+- **MSD and the real-space maps** are computed at the $\Gamma$ point only;
+  use a supercell instead of a k-mesh.
 
-`rsatb check` reports every one of these before a run starts:
+`rsatb check` reports these cases before a run starts:
 
 ```text
 error: tasks[0]: 'ac' needs the velocity operator, which the 'sktb' model with these inputs does not supply
@@ -59,12 +59,11 @@ error: tasks[1]: 'ldos' needs the radial orbital files, which only an LCAO model
 error: tasks[1]: 'ldos' currently requires a single Gamma point, but run.kpoints has 4
 ```
 
-## Orthogonal or not?
+## Orthogonal and non-orthogonal models
 
-An orthogonal model is the fast path: each Chebyshev step is one sparse
-product with $H$. A non-orthogonal model also needs $S^{-1/2}$ (or a solve
-with $S$) at each step and a wider spectral window, typically costing several
-times more per step — the price of a basis that came straight from DFT. See
+For an orthogonal model each Chebyshev step is one sparse product with $H$.
+A non-orthogonal model also applies $S^{-1/2}$ (or a solve with $S$) at each
+step, and its spectral window is usually wider, so each step costs more. See
 [Non-orthogonal bases](../theory/overlap.md).
 
 ## Spin

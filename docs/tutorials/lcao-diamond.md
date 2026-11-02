@@ -13,7 +13,6 @@ density of states along a path through the Brillouin zone.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--beginner">Beginner</span>
-  <span class="rs-chip">&lt; 1 min</span>
   <span class="rs-chip">Model: lcao</span>
 </div>
 
@@ -90,21 +89,6 @@ Read the report line by line:
 
     The small eigenvalues of $S$ are also what stretch the energy range to
     270 eV. Background: [Non-orthogonal bases](../theory/overlap.md).
-
-??? deep "Under the hood: where the time goes"
-    Every run ends with a profile table. For this input:
-
-    ```text
-      phase                                 wall(s)  peak(GB)       %    calls
-      setup/spectral_bounds                    0.74      0.14   45.8%        1
-      setup/isqrt_ns_ZH_S_Z                    0.24      0.14   14.9%       11
-      setup/overlap_sample_k                   0.16      0.14    9.9%       11
-      setup/hamiltonian_sample_k               0.13      0.14    8.0%       11
-      setup/hamiltonian_read                   0.11      0.14    6.7%        1
-    ```
-
-    The `isqrt_*` rows build $S^{-1/2}$, once per k-point. On large cells this
-    is where memory peaks — the first place to look if a run is slow.
 
 ## Try next
 

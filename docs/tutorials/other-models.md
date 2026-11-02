@@ -13,7 +13,6 @@ Hamiltonian files, with one example each.
 
 <div class="rs-chips">
   <span class="rs-chip rs-chip--beginner">Beginner</span>
-  <span class="rs-chip">&lt; 1 min</span>
   <span class="rs-chip">Models: dftb, tb_file</span>
 </div>
 

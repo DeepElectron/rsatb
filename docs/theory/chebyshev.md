@@ -68,7 +68,7 @@ $N = \sqrt{8\ln 2}\,\pi a/\mathrm{dE}$ moments are derived from the window at
 run time.
 
 `costaper`, offered for conductivity spectra, trades pointwise positivity for a
-faster-decaying bias, which wins when the spectrum is only consumed inside an
+faster-decaying bias, which is preferable when the spectrum is only used inside an
 energy integral (as in `dc`).
 
 !!! warning "A wide window is expensive"

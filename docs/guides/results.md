@@ -2,7 +2,7 @@
 description: Load RSATB output in Python — npz archives, summary.json, normalizing the DOS, conductivity components, and reassembling distributed real-space grids.
 ---
 
-<p class="rs-kicker">How-to guide</p>
+<p class="rs-kicker">Guide</p>
 
 # Read and plot results
 

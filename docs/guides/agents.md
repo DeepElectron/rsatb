@@ -2,7 +2,7 @@
 description: The machine-readable surface of RSATB — llms.txt, JSON Schema, rsatb check --json, summary.json — and a write-check-run loop for AI agents and scripts.
 ---
 
-<p class="rs-kicker">How-to guide</p>
+<p class="rs-kicker">Guide</p>
 
 # Drive RSATB from an agent
 
