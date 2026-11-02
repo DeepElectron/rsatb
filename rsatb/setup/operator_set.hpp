@@ -418,7 +418,11 @@ private:
                     "it is a genuine approximate inverse square root.");
             }
 
-            if (rsatb::util::Log::enabled(rsatb::util::LogLevel::kSummary)) {
+            // maxiter = 0 with the solve form is the default seed-only route:
+            // no refinement was asked for, and the factor only preconditions
+            // an exact CG solve, so an unrefined seed is the plan, not news.
+            const bool seed_only_solve = config.maxiter == 0 && !sandwich;
+            if (!seed_only_solve && rsatb::util::Log::enabled(rsatb::util::LogLevel::kSummary)) {
                 std::cerr << "rsatb: warning: the S^{-1/2} factor stopped above tolerance: "
                           << detail.str()
                           << (report.hit_maxiter ? " (stopped on the iteration cap)"

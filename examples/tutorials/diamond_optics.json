@@ -12,7 +12,7 @@
   "run": {
     "nsamples": 16,
     "kpoints": [[0.0, 0.0, 0.0]],
-    "preconditioner": {"operator_form": "sandwich"}
+    "preconditioner": {"operator_form": "sandwich", "maxiter": 20}
   },
 
   "tasks": [

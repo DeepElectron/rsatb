@@ -460,19 +460,23 @@ PRECONDITIONER = Obj(
             "Which operator the Chebyshev expansions apply. 'sandwich' is "
             "Z H Z with Z = S^-1/2: Hermitian, and S is released after setup "
             "to save memory, so observables that need S are unavailable. "
-            "'solve' keeps S and applies S^-1 H with a preconditioned "
-            "conjugate-gradient solve at each step; use it when Z would be "
-            "too dense to store.",
+            "'solve', the default, keeps S and applies S^-1 H with a "
+            "preconditioned conjugate-gradient solve at each step; it works "
+            "when Z would be too dense to store.",
             choices=("sandwich", "solve")), default="solve"),
         "tol": F(_num("Convergence tolerance of the inverse-square-root iteration.",
                       exclusive_minimum=0.0), default=1e-7),
         "sptol": F(_num("Sparsity threshold: entries below it are dropped from the "
                         "preconditioner.", minimum=0.0), default=1e-5),
         "maxiter": F(_int(
-            "Maximum number of Newton-Schulz iterations refining S^-1/2. 0 "
-            "uses the sparse graph-local approximation without refinement; "
-            "with operator_form 'solve' it then serves as the preconditioner.",
-            minimum=0), default=20),
+            "Maximum number of Newton-Schulz iterations refining S^-1/2. 0, "
+            "the default, uses the sparse graph-local approximation without "
+            "refinement as the preconditioner of operator_form 'solve'; it "
+            "stays sparse, so it is the setting that scales to large systems. "
+            "Where a refined, denser S^-1/2 still fits in memory, 'sandwich' "
+            "with about 20 iterations is faster, and 'sandwich' needs them: it "
+            "uses S^-1/2 directly.",
+            minimum=0), default=0),
     })
 
 KPOINTS = Choice(

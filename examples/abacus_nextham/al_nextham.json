@@ -1,0 +1,26 @@
+{
+  "_comment": "The same fcc Al calculation as al_abacus.json, with H(R) read from a NextHam HR_atom_pairs.h5 instead (format 'nextham'). A NextHam prediction, post-processed (pre_post_process/post_process.py --convert-only), is exactly this file; this one was written from ABACUS's own H(R) by NextHam's writer (to_nextham.py), so its values are known and both inputs give the same results. To use a real prediction, point 'path' at your HR_atom_pairs.h5 and keep the rest -- the structure in ABACUS's atom order and the .orb files NextHam's ABACUS data was computed with.",
+
+  "structure": {"file": "data/al/conf.vasp", "supercell": [3, 3, 3]},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {"path": "data/al/nextham/HR_atom_pairs.h5", "format": "nextham"},
+    "orbitals": {"names": ["Al_gga_8au_100Ry_4s4p1d.orb"], "dir": "data/al"},
+    "spin": "none"
+  },
+
+  "run": {
+    "npar": 8,
+    "nsamples": 16,
+    "kpoints": {"mesh": [2, 2, 2]}
+  },
+
+  "tasks": [
+    {"type": "dos", "dE": 0.5},
+    {"type": "fermi_level", "n_electrons": 148.5, "temp": 300.0},
+    {"type": "dc", "mu": 11.55, "temp": 300.0, "n_moments": 500}
+  ],
+
+  "output": {"dir": "results/al_nextham"}
+}

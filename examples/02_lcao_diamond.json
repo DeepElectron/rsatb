@@ -21,7 +21,7 @@
     "npar": 1,
     "nsamples": 200,
     "kpoints": {"line": [[0.5, 0.5, 0.5], [0.0, 0.0, 0.0]], "points_per_segment": 11},
-    "preconditioner": {"operator_form": "sandwich"}
+    "preconditioner": {"operator_form": "sandwich", "maxiter": 20}
   },
 
   "tasks": [

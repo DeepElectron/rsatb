@@ -86,6 +86,7 @@ Read the report line by line:
     | operator | $Z H Z$ with $Z = S^{-1/2}$ | $S^{-1} H$, by an iterative solve |
     | keeps $S$ in memory | no | yes |
     | best when | $Z$ fits in memory | $Z$ is too large to store |
+    | `maxiter` | 20: $Z$ is applied directly, so it is refined | 0 (default): the sparse seed only preconditions the solve |
 
     The small eigenvalues of $S$ are also what stretch the energy range to
     270 eV. Background: [Non-orthogonal bases](../theory/overlap.md).

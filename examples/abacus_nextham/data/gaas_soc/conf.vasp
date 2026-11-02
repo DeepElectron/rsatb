@@ -1,0 +1,10 @@
+zincblende GaAs, a = 5.653 A -- abacus/gaas_soc/STRU, atoms in ABACUS's order (As, Ga)
+1.0
+  0.0000 2.8265 2.8265
+  2.8265 0.0000 2.8265
+  2.8265 2.8265 0.0000
+As Ga
+1 1
+Direct
+  0.25 0.25 0.25
+  0.00 0.00 0.00

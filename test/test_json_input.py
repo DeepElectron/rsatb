@@ -105,7 +105,7 @@ def test_defaults_are_filled_in():
     assert resolved["run"]["npar"] == 1
     assert resolved["run"]["kpoints"] == [[0.0, 0.0, 0.0]]
     assert resolved["run"]["bounds"]["mode"] == "auto"
-    assert resolved["run"]["preconditioner"]["maxiter"] == 20
+    assert resolved["run"]["preconditioner"]["maxiter"] == 0
     assert resolved["output"]["format"] == "npz"
     assert resolved["tasks"] == []
 
@@ -325,6 +325,17 @@ def test_real_space_maps_refuse_a_spinor_basis(kind):
                  "density": {"mu": 0.0, "temp": 300.0}}[kind])
     _, issues = check.resolve(_spinor_lcao("abacus", [task]), check_paths=False)
     assert "tasks[0]" in paths(errors(issues))
+
+
+def test_the_sandwich_form_warns_without_refinement():
+    sandwich = {"run": {"preconditioner": {"operator_form": "sandwich"}}}
+    _, issues = resolve(sandwich)
+    assert "run.preconditioner.maxiter" in paths(warnings(issues))
+    refined = {"run": {"preconditioner": {"operator_form": "sandwich", "maxiter": 20}}}
+    _, issues = resolve(refined)
+    assert "run.preconditioner.maxiter" not in paths(warnings(issues))
+    _, issues = resolve()  # the default: solve, seed only
+    assert "run.preconditioner.maxiter" not in paths(warnings(issues))
 
 
 def test_bounds_mode_fixed_needs_an_energy_window():

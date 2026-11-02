@@ -129,7 +129,7 @@ SetupOptions(kpoints=[[0, 0, 0]], nsamples=1, sample_seed=20240917,
              bounds_zero_tol=1e-12, bounds_max_matvecs=10000,
              preconditioner=PreconditionerOptions())
 
-PreconditionerOptions(operator_form="solve", tol=1e-7, sptol=1e-5, maxiter=20)
+PreconditionerOptions(operator_form="solve", tol=1e-7, sptol=1e-5, maxiter=0)
 ```
 
 `energy_bounds=(emin, emax)` fixes the spectral window, like

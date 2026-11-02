@@ -738,6 +738,34 @@ TEST(FFTChebTransportTest, DistributedGreenwoodMultisampleMatchesAverageTwoRanks
     expect_close(averaged, batched, 1e-8);
 }
 
+// The -df/dE integral of sigma(E) must not care where mu falls between the
+// spectrum's energy nodes. A node spacing of 1.13 eV against kT = 0.026 eV is
+// what a 500-moment Al spectrum has near E_F; the trapezoid over the nodes
+// this replaces returned 0.05 S/m to 1.1e7 S/m across such a segment. For a
+// sigma linear in E the exact integral is sigma(mu) itself, and for a constant
+// sigma it is that constant.
+TEST(FFTChebTransportTest, DcTemperatureIntegralIsExactBetweenNodes) {
+    const double spacing = 1.13;
+    std::vector<double> energy;
+    for (int i = 0; i < 21; ++i) energy.push_back(-11.3 + spacing * i);  // E_F ~ 0 mid-grid
+    const double a = 1.7e6, b = 2.0e5;  // sigma = a + b E, same in every component
+    std::vector<double> linear(energy.size() * 6), constant(energy.size() * 6, a);
+    for (size_t i = 0; i < energy.size(); ++i)
+        for (int c = 0; c < 6; ++c) linear[i * 6 + c] = a + b * energy[i];
+
+    for (double offset : {0.0, 0.1, 0.37, 0.5, 0.81, 1.0}) {
+        const double mu = energy[10] + offset * spacing;
+        std::vector<double> out;
+        integrate_dc_spectrum(linear, energy, mu, 300.0, out);
+        for (int c = 0; c < 6; ++c) EXPECT_NEAR(out[c], a + b * mu, 1e-9 * a) << "offset " << offset;
+        integrate_dc_spectrum(constant, energy, mu, 300.0, out);
+        for (int c = 0; c < 6; ++c) EXPECT_NEAR(out[c], a, 1e-9 * a) << "offset " << offset;
+    }
+
+    std::vector<double> descending(energy.rbegin(), energy.rend()), out;
+    EXPECT_THROW(integrate_dc_spectrum(linear, descending, 0.0, 300.0, out), std::runtime_error);
+}
+
 int main(int argc, char** argv) {
     MPI_Init(&argc, &argv);
     ::testing::InitGoogleTest(&argc, argv);

@@ -9,7 +9,7 @@
   "run": {
     "nsamples": 16,
     "kpoints": [[0.0, 0.0, 0.0]],
-    "preconditioner": {"operator_form": "sandwich"}
+    "preconditioner": {"operator_form": "sandwich", "maxiter": 20}
   },
   "tasks": [
     {"type": "fermi_level", "n_electrons": 256, "temp": 3000.0},

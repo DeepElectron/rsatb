@@ -55,6 +55,15 @@ square root is not. RSATB builds $Z$ in two stages:
 then used as the preconditioner of a conjugate-gradient solve with $S$ at
 every product.
 
+That pair -- `solve` with `maxiter = 0` -- is the default, because it is the
+one that scales: the seed stays sparse, its cost and memory linear in the
+number of atoms, while refinement fills $Z$ in (it is dense for diamond at a
+few thousand atoms). Where a refined $Z$ still fits in memory, `"sandwich"`
+with `maxiter = 20` is faster per product (5.9 times for 4096-atom diamond,
+`examples/08_lcao_diamond888_dos_ac.json`). The sandwich form needs that
+refinement: it applies $Z$ itself, so an unrefined seed would put its error
+into the spectrum, and the input check warns about that combination.
+
 !!! warning "Memory"
     The dense neighbourhood blocks of the seed determine the memory peak of
     the setup. It grows with the number of orbitals per atom and with the

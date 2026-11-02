@@ -34,7 +34,8 @@
       ]
     ],
     "preconditioner": {
-      "operator_form": "sandwich"
+      "operator_form": "sandwich",
+      "maxiter": 20
     }
   },
   "tasks": [
