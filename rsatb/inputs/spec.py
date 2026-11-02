@@ -472,7 +472,12 @@ PRECONDITIONER = Obj(
             "Newton-Schulz iteration cap. 0 keeps the graph seed itself as "
             "S^-1/2 -- sparse but only subgraph-accurate, which is the "
             "seed-only PCG route when the overlap is kept "
-            "(operator_form 'solve').", minimum=0), default=20),
+            "(operator_form 'solve'). That is the default because it is the "
+            "one that scales: the seed stays sparse, linear in the atom count, "
+            "while refinement fills Z in (dense at a few thousand atoms). A "
+            "system whose dense Z fits runs faster refined (e.g. 20) with "
+            "operator_form 'sandwich', which needs it: the sandwich propagates "
+            "Z itself.", minimum=0), default=0),
     })
 
 KPOINTS = Choice(

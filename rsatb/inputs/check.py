@@ -276,6 +276,18 @@ def check_consistency(document: dict) -> List[Issue]:
             "nothing to do".format(npar, n_kpoint, npar - n_kpoint),
             severity=WARNING))
 
+    # The sandwich form propagates Z H Z, so Z is the operator, not a
+    # preconditioner; the default maxiter 0 leaves it the unrefined seed.
+    precondition = run.get("preconditioner", {})
+    if precondition.get("operator_form", "solve") == "sandwich" and precondition.get("maxiter", 0) == 0:
+        issues.append(Issue(
+            "run.preconditioner.maxiter",
+            "operator_form 'sandwich' propagates Z H Z, and with maxiter 0 Z is the "
+            "unrefined graph seed, so its error lands in the spectrum",
+            severity=WARNING,
+            hint="set maxiter (e.g. 20) to refine Z, or use operator_form 'solve', where "
+                 "the seed only preconditions an exact CG solve"))
+
     issues.extend(_check_radial_tails(model))
     return issues
 

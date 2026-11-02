@@ -240,7 +240,7 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("operator_form") = "solve",
              py::arg("tol") = 1e-7,
              py::arg("sptol") = 1e-5,
-             py::arg("maxiter") = 20)
+             py::arg("maxiter") = 0)
         .def_property(
             "operator_form",
             [](const rsatb::model::PreconditionerOptions& self) {

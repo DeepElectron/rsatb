@@ -29,9 +29,10 @@
         0.0
       ]
     ],
-    "_comment_sparsity": "Preconditioner left at defaults deliberately, and this was measured rather than assumed (2026-08: three routes on this system, dos nt=100): (1) raising sptol to 1e-4 does NOT keep S^-1/2 sparse -- density still hits 1.0 after one Newton-Schulz step, so the looser tolerances only bought a cheaper setup (-150s) at the price of Z accuracy 9.5e-4 vs 2.5e-9, and Z is the orthogonalization itself, so that error lands in the spectrum (~0.1-0.3 eV at this 280 eV span). (2) Keeping S and using the sparse seed as a PCG preconditioner per matvec (maxiter 0, operator_form solve) is 5.9x slower per matvec (13 CG iterations each). (3) Peak memory (~81 GB) comes from the seed's concurrent dense subgraph batch, identically in every route -- not from the dense S^-1/2 (2.8 GB). So: full-accuracy Z, S released, is both the fastest and the most accurate route on this system.",
+    "_comment_sparsity": "Refined Z with the sandwich form (maxiter 20), not the default seed-only solve route, and this was measured rather than assumed (2026-08: three routes on this system, dos nt=100): (1) raising sptol to 1e-4 does NOT keep S^-1/2 sparse -- density still hits 1.0 after one Newton-Schulz step, so the looser tolerances only bought a cheaper setup (-150s) at the price of Z accuracy 9.5e-4 vs 2.5e-9, and Z is the orthogonalization itself, so that error lands in the spectrum (~0.1-0.3 eV at this 280 eV span). (2) Keeping S and using the sparse seed as a PCG preconditioner per matvec (maxiter 0, operator_form solve) is 5.9x slower per matvec (13 CG iterations each). (3) Peak memory (~81 GB) comes from the seed's concurrent dense subgraph batch, identically in every route -- not from the dense S^-1/2 (2.8 GB). So: full-accuracy Z, S released, is both the fastest and the most accurate route on this system.",
     "preconditioner": {
-      "operator_form": "sandwich"
+      "operator_form": "sandwich",
+      "maxiter": 20
     }
   },
   "tasks": [

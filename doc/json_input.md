@@ -73,6 +73,12 @@ not — there is no shape to guess at.
 an orthogonal model has nothing to precondition and a non-orthogonal one always
 wants it, so it follows from the model. `preconditioner.maxiter` is what costs
 money — `0` keeps the sparse graph seed and skips the Newton-Schulz refinement.
+The default is that seed with `operator_form: "solve"`, because it is the
+route that scales: the seed stays sparse and linear in the atom count and only
+preconditions an exact CG solve, while a refined Z fills in (dense at a few
+thousand atoms). Where a dense Z fits, `"sandwich"` with `maxiter: 20` is
+faster per matvec (5.9x on diamond sc888, `examples/08`) — and the sandwich
+needs the refinement, since it propagates Z itself.
 
 **An input can explain itself.** Any key starting with an underscore —
 `_comment` and the like — is carried through uninterpreted, at any level.

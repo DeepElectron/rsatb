@@ -38,7 +38,15 @@ struct PreconditionerOptions {
 
     double tol = 1e-7;
     double sptol = 1e-5;
-    int maxiter = 20;
+    /// Newton-Schulz refinement steps after the sparse graph seed. The
+    /// default, 0 with kSolve, is the large-system route: the seed stays
+    /// sparse and linear in the atom count and only preconditions an exact CG
+    /// solve, whereas a refined Z fills in (100% dense at diamond sc888) and
+    /// costs O(N^2) memory. Mid-size systems where a dense Z still fits run
+    /// faster refined and with kSandwich (diamond sc888: 5.9x per matvec,
+    /// examples/08), which then needs maxiter > 0 -- the sandwich propagates
+    /// Z itself.
+    int maxiter = 0;
 
 };
 
