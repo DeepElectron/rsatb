@@ -145,7 +145,7 @@ OMP_NUM_THREADS=4 mpirun -n 8 rsatb run al_nextham.json
 ```
 
 The NextHam file holds the same Hamiltonian, and the results agree: the
-density of states to within $4 \times 10^{-9}$, the Fermi level and the
+density of states to within $2 \times 10^{-9}$, the Fermi level and the
 conductivity to eight digits.
 
 ## 3 · Spin-orbit coupling: GaAs
@@ -180,8 +180,10 @@ below the 0.79 eV band gap of this Hamiltonian and rises above it.
 <figcaption><strong>Left:</strong> the difference between the bands of the
 imported Hamiltonian and ABACUS's own, at ABACUS's k-points: below
 $10^{-4}$ eV for the occupied bands. <strong>Centre:</strong> the density of
-states of Al from the ABACUS file (blue) and the NextHam file (dashed), which
-coincide; the grey line is the raw result of the 27-atom cell.
+states of Al at a resolution of 1 eV from the ABACUS file (blue) and the
+NextHam file (dashed); the two curves coincide. The peaks are the discrete
+levels of the 27-atom cell on a 2 × 2 × 2 mesh; a larger cell or k-mesh
+smooths them.
 <strong>Right:</strong> the optical conductivity of GaAs with spin-orbit
 coupling, on this input's frequency grid (0.93 eV steps).</figcaption>
 </figure>

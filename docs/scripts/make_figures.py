@@ -400,14 +400,12 @@ def fig_abacus_nextham():
         rho = d["dos"].mean(axis=0) / (emax - emin) * 21      # per atom: 21 orbitals (4s4p1d)
         e = d["energy"] - mu
         keep = (e > -16) & (e < 10)
-        # 27 atoms on a 2x2x2 mesh: discrete levels. Broaden for display, raw comb underneath.
-        smooth = _gaussian(e[keep], e[keep], 1.0, weights=rho[keep]) * float(np.mean(np.diff(e)))
-        if name == "al_abacus":
-            ax.plot(e[keep], rho[keep], color=MUTED, lw=0.5, alpha=0.35, label="raw, dE = 0.5 eV")
-        ax.plot(e[keep], smooth, color=colour, lw=lw, ls=ls, label=label + ", broadened 1 eV")
+        # Both inputs compute the DOS at dE = 1 eV; plotted as RSATB writes it.
+        ax.plot(e[keep], rho[keep], color=colour, lw=lw, ls=ls, label=label)
     ax.axvline(0, color=MUTED, lw=0.6, ls="--")
-    ax.set(xlabel=r"$E - \mu$ (eV)", ylabel="DOS (states / eV / atom / spin)", title="Al: density of states",
-           xlim=(-14, 8), ylim=(0, 0.45))
+    ax.set(xlabel=r"$E - \mu$ (eV)", ylabel="DOS (states / eV / atom / spin)",
+           title="Al: density of states, dE = 1 eV", xlim=(-14, 8))
+    ax.set_ylim(bottom=0)
     ax.legend(fontsize=7, loc="upper left")
 
     ax = axes[2]
