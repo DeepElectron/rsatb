@@ -37,5 +37,5 @@
     {"type": "msd", "n_steps": 40, "dt_fs": 10.0, "n_kpm": 256, "axis": "x"}
   ],
 
-  "output": {"dir": "results/03_graphene_transport", "prefix": "graphene_"}
+  "output": {"dir": "results/05_graphene_transport", "prefix": "graphene_"}
 }

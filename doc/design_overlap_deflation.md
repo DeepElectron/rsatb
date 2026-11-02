@@ -357,7 +357,7 @@ factor), `poc_null_wannier.py`, `poc_null_wannier_scaling.py`,
 
 1. **Options.** `deflation = {enabled, mu (auto|value), passes, degree
    (auto|value), sptol, e_park (auto|value)}` in `SetupOptions`; JSON
-   schema and `doc/json_input.md` follow.
+   schema and the input reference in `docs/` follow.
 2. **Where.** `OperatorSet::build_preconditioner`
    (`rsatb/setup/operator_set.hpp`), which holds `state.overlap` and
    `state.hamiltonian` per k-point: run §3.1, build $V$ by §3.2, build the

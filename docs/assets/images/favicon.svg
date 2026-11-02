@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RSATB">
+  <!-- An ink seal: the density of states of graphene, its Dirac point marked in vermilion. -->
+  <circle cx="32" cy="32" r="30" fill="#1c1b19"/>
+  <circle cx="32" cy="32" r="26.5" fill="none" stroke="#faf8f3" stroke-opacity=".28" stroke-width="1"/>
+  <path d="M12 42 C16 41.4 18 39.5 20 34 C21 30.5 21.7 23 22.7 23 C23.7 23 24.4 30.5 25.6 34 C27.6 39.6 29.6 41.6 32 42 C34.4 41.6 36.4 39.6 38.4 34 C39.6 30.5 40.3 23 41.3 23 C42.3 23 43 30.5 44 34 C46 39.5 48 41.4 52 42"
+        fill="none" stroke="#faf8f3" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="12" y1="46" x2="52" y2="46" stroke="#faf8f3" stroke-opacity=".35" stroke-width="1"/>
+  <circle cx="32" cy="42" r="2.4" fill="#d9583a"/>
+</svg>

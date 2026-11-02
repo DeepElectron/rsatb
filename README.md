@@ -5,6 +5,7 @@
 </p>
 
 <p align="center">
+  <a href="https://deepelectron.github.io/rsatb/"><img alt="Documentation" src="https://img.shields.io/badge/docs-deepelectron.github.io%2Frsatb-0b7f91"></a>
   <a href="#installation"><img alt="Python 3.9+" src="https://img.shields.io/badge/Python-%E2%89%A53.9-3776AB?logo=python&logoColor=white"></a>
   <img alt="C++17" src="https://img.shields.io/badge/C%2B%2B-17-00599C?logo=cplusplus&logoColor=white">
   <img alt="MPI + OpenMP" src="https://img.shields.io/badge/parallel-MPI%20%2B%20OpenMP-6A5ACD">
@@ -62,7 +63,7 @@ The application above resolves spectra and spatial electronic structure in a **4
 Clone the repository with its pinned source dependencies, create an isolated environment, and build the Python package plus native solver:
 
 ```bash
-git clone --recurse-submodules https://github.com/floatingCatty/rsatb.git
+git clone --recurse-submodules https://github.com/DeepElectron/rsatb.git
 cd rsatb
 
 conda create -n rsatb -c conda-forge \
@@ -202,11 +203,12 @@ rsatb schema > rsatb.schema.json
 
 The schema is the single source of truth for `rsatb check`, `rsatb show`, `rsatb doc`, and the runtime. Validation does not require MPI or the compiled solver, so inputs can be checked before they reach a compute queue.
 
-## Examples and API
+## Documentation, examples and API
 
-- [`examples/`](examples/) contains runnable inputs for graphene SKTB, LCAO diamond, DFTB parameters, precomputed tight-binding files, and transport.
-- [`doc/json_input.md`](doc/json_input.md) is the complete JSON reference.
-- [`doc/python_api.md`](doc/python_api.md) documents the Python layer for generated structures, parameter sweeps, and custom post-processing.
+**[deepelectron.github.io/rsatb](https://deepelectron.github.io/rsatb/)** is the full documentation: installation, a quick start, seven tutorials with real outputs, how-to guides, theory, and a complete input reference generated from the same schema `rsatb check` validates against. Agents and scripts can read [`llms.txt`](https://deepelectron.github.io/rsatb/llms.txt) and the [JSON Schema](https://deepelectron.github.io/rsatb/rsatb.schema.json).
+
+- [`examples/`](examples/) contains runnable inputs for graphene SKTB, LCAO diamond, DFTB parameters, precomputed tight-binding files, and transport; [`examples/tutorials/`](examples/tutorials/) holds the inputs of the documentation's tutorials.
+- [`docs/`](docs/) is the source of the documentation site (MkDocs Material); `mkdocs serve` previews it locally.
 - [`doc/`](doc/) contains algorithm and implementation notes for the solver.
 
 The command-line input and Python API meet at the same objects:

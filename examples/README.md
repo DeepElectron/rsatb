@@ -11,7 +11,7 @@ mpirun -n 4 rsatb run examples/02_lcao_diamond.json
 
 Paths inside each file are relative to the file itself, so they run from
 anywhere. `rsatb doc` explains every key; the format reference is
-[`doc/json_input.md`](../doc/json_input.md).
+[input reference](https://deepelectron.github.io/rsatb/reference/input/).
 
 | file | model | what it shows |
 |---|---|---|
@@ -146,7 +146,7 @@ the analytic 3|t| = 8.1 eV.
 An input file covers a structure, a model, run options and a list of
 observables. When a calculation needs more than that — a structure generated on
 the fly, a parameter sweep, post-processing between observables — the Python
-API underneath is described in [`doc/python_api.md`](../doc/python_api.md), and
+API underneath is described in the [Python API reference](https://deepelectron.github.io/rsatb/reference/python/), and
 `rsatb.inputs.build_calculation` turns a validated input into exactly the
 objects it documents:
 

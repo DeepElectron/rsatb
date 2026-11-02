@@ -1,0 +1,60 @@
+name: docs
+
+# Build the documentation on every pull request (strict: broken links, invalid
+# example inputs and schema drift fail the build) and publish it to GitHub
+# Pages from main. Pages must be set to "GitHub Actions" as its source:
+# Settings -> Pages -> Build and deployment -> Source.
+#
+# Keep the actions on their current majors: the Node 20 generation
+# (deploy-pages@v4, upload-pages-artifact@v3) fails on today's runners with
+# "Failed to get ID Token ... socket hang up".
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Superseded PR builds may be cancelled; a Pages deployment never is, since
+# cancelling one midway can leave the site unpublished.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: docs/requirements.txt
+      - name: Install the documentation toolchain
+        run: python -m pip install -r docs/requirements.txt
+      - name: Build
+        env:
+          NO_MKDOCS_2_WARNING: "1"
+        run: mkdocs build --strict
+      - uses: actions/upload-pages-artifact@v5
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          path: site
+
+  deploy:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

@@ -1,0 +1,30 @@
+{
+  "_comment": "Graphene, nearest-neighbour pz model, tiled 128 x 128 (32,768 atoms). Two DOS tasks share one setup: a coarse one that shows the band picture and a fine one that resolves the discrete levels of the finite cell.",
+  "structure": {
+    "positions": [[0.0, 0.0, 10.0], [0.0, 1.42, 10.0]],
+    "symbols": ["C", "C"],
+    "cell": [[2.4595, 0.0, 0.0], [1.22975, 2.13, 0.0], [0.0, 0.0, 20.0]],
+    "pbc": [true, true, false],
+    "supercell": [128, 128, 1]
+  },
+  "model": {
+    "type": "sktb",
+    "basis": {"C": ["pz"]},
+    "hamiltonian": {
+      "onsite": {"C": {"pz": 0.0}},
+      "pairs": {
+        "C-C": {"pp_pi": {"kind": "constant", "value": -2.7, "r_cut": 1.6}}
+      }
+    }
+  },
+  "run": {
+    "nsamples": 8,
+    "kpoints": [[0.0, 0.0, 0.0]]
+  },
+  "tasks": [
+    {"type": "energy_bounds"},
+    {"type": "dos", "label": "coarse", "dE": 0.1},
+    {"type": "dos", "label": "fine", "dE": 0.02}
+  ],
+  "output": {"dir": "results/graphene_dos"}
+}

@@ -1,0 +1,24 @@
+{
+  "_comment": "Tutorial-sized optics: diamond 4x4x4 (128 atoms), LCAO, DOS and AC conductivity from one setup. A reduced version of examples/07_lcao_diamond_dos_ac.json (16 samples instead of 128, 200 time steps instead of 400, 500 Fermi moments instead of 1000) so it finishes in minutes; expect a noisier spectrum, and use example 07 or 08 for converged numbers.",
+
+  "structure": {"file": "../../test/data/diamond/conf.vasp", "supercell": [4, 4, 4]},
+
+  "model": {
+    "type": "lcao",
+    "hamiltonian": {"path": "../../test/data/diamond/hamiltonians.h5", "format": "deeptb"},
+    "orbitals": {"names": ["C_gga_7au_100Ry_2s2p1d.orb"], "dir": "../../test/data/diamond"}
+  },
+
+  "run": {
+    "nsamples": 16,
+    "kpoints": [[0.0, 0.0, 0.0]],
+    "preconditioner": {"operator_form": "sandwich", "maxiter": 20}
+  },
+
+  "tasks": [
+    {"type": "dos", "dE": 0.14},
+    {"type": "ac", "nt": 200, "n_kpm": 500, "temp": 300.0, "mu": 16.2253, "axis": "abc"}
+  ],
+
+  "output": {"dir": "results/diamond_optics"}
+}
