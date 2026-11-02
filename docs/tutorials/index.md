@@ -7,27 +7,26 @@ description: A learning path of seven worked RSATB calculations, from a first de
 # Learn RSATB by example
 
 <div class="rs-lead" markdown>
-Seven short, worked calculations. Each one is a ready-to-run input from the
-repository, explained step by step, with the result it actually produced.
-They are ordered so that every tutorial adds one new idea.
+Seven worked examples. Each uses an input file from the repository and
+shows the output it produced. Later tutorials build on concepts introduced in
+earlier ones.
 </div>
 
 ## The basics
 
-Start here. These three cover everything you need for a density of states
-with any kind of Hamiltonian.
+The density of states with each type of model.
 
 <div class="grid cards rs-grid-3" markdown>
 
 -   :material-numeric-1:{ .lg } **[Graphene density of states](graphene-dos.md)**
 
-    Write a model by hand, run it, and check it against the exact answer.
+    A Slater-Koster model, compared with the exact result.
 
     <span class="rs-chip rs-chip--beginner">Beginner</span> <span class="rs-chip">≈ 2 min</span>
 
 -   :material-numeric-2:{ .lg } **[A DFT Hamiltonian](lcao-diamond.md)**
 
-    Load diamond from a DFT calculation and its atomic orbitals.
+    Diamond from a DFT Hamiltonian and its atomic orbitals.
 
     <span class="rs-chip rs-chip--beginner">Beginner</span> <span class="rs-chip">&lt; 1 min</span>
 
@@ -41,14 +40,13 @@ with any kind of Hamiltonian.
 
 ## Observables
 
-Beyond the density of states: how electrons move, absorb light, and where
-they sit in space.
+Conductivity and diffusion, optical response, and real-space maps.
 
 <div class="grid cards rs-grid-3" markdown>
 
 -   :material-numeric-4:{ .lg } **[Transport](transport.md)**
 
-    Conductivity and diffusion in graphene, checked against theory.
+    Conductivity and diffusion in graphene.
 
     <span class="rs-chip rs-chip--intermediate">Intermediate</span> <span class="rs-chip">≈ 2 min</span>
 
@@ -72,7 +70,7 @@ they sit in space.
 
 -   :material-numeric-7:{ .lg } **[Python scripting](python.md)**
 
-    Sweep a parameter in a loop — something a single input file can't do.
+    A parameter sweep with the Python API.
 
     <span class="rs-chip rs-chip--advanced">Advanced</span> <span class="rs-chip">≈ 2 min</span>
 
@@ -89,5 +87,4 @@ cd rsatb
 ```
 
 !!! tip "Running times"
-    Times are for one process on a shared workstation. Your machine will
-    usually be faster.
+    Times are wall times for one process on a shared workstation.

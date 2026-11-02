@@ -7,8 +7,8 @@ description: Write, check and run a first RSATB calculation — graphene from a 
 # Quick start
 
 <div class="rs-lead" markdown>
-Your first calculation in four steps: create an input, check it, run it, and
-plot the result. It needs no data files and finishes in seconds.
+A graphene calculation in four steps: create the input from a template,
+check it, run it, and load the result. No data files are needed.
 </div>
 
 <div class="rs-chips">
@@ -39,8 +39,8 @@ $ rsatb check graphene.json
 graphene.json: valid
 ```
 
-`check` catches typos, missing files and impossible requests before
-anything runs — try misspelling a key to see the message it gives:
+`check` reports unknown keys, missing files, and tasks the model cannot
+provide. A misspelled key, for example, gives:
 
 ```text
 error: run.kpoint: unknown key 'kpoint'
@@ -93,8 +93,7 @@ done in 5.5s
     The run also prints a table of where the time went; it's useful once
     calculations get large.
 
-To use more processors, launch the same file with MPI — nothing in the input
-changes:
+For a parallel run, start it with MPI:
 
 ```bash
 mpirun -n 4 rsatb run graphene.json
@@ -117,11 +116,12 @@ record of the whole run.
 
 ## Next steps
 
-This tiny cell has only two energy levels, so its "density of states" is two
-peaks. [Tutorial 1](../tutorials/graphene-dos.md) makes it 32,768 atoms with
-one line and recovers the real graphene spectrum.
+A two-atom cell at one k-point has two energy levels, so this density of
+states consists of two peaks. [Tutorial 1](../tutorials/graphene-dos.md)
+uses a 128 × 128 supercell (32,768 atoms) and compares the result with the
+exact density of states.
 
-!!! tip "Get help from the command line"
-    `rsatb doc` lists every input option, `rsatb doc tasks.dos` explains one
-    task, and `rsatb show graphene.json` prints your input with all defaults
+!!! tip "Help on the command line"
+    `rsatb doc` lists the input options, `rsatb doc tasks.dos` describes one
+    task, and `rsatb show graphene.json` prints the input with all defaults
     filled in.

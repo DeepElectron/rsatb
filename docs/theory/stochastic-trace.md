@@ -36,10 +36,11 @@ $$
 \frac{\delta\,\operatorname{Tr}A}{\operatorname{Tr}A} \sim \frac{1}{\sqrt{R\,N}} .
 $$
 
-Self-averaging is what makes the method linear-scaling: doubling the system
-doubles the cost of one sample, but halves the number of samples needed for
-the same accuracy. A million-atom DOS is converged with a handful of random
-vectors; a two-atom cell needs hundreds.
+Doubling the system doubles the cost of one sample but halves the number
+of samples needed for the same relative accuracy, so the total cost at fixed
+accuracy grows linearly with size. In practice a cell with millions of
+orbitals needs a few random vectors for a smooth DOS, while a two-atom cell
+needs hundreds.
 
 !!! tip "In practice"
     Fix the physics first — supercell, k-points, resolution — then raise

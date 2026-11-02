@@ -7,10 +7,8 @@ description: Tutorial 7 — a strain sweep of graphene through the RSATB Python 
 # Python scripting
 
 <div class="rs-lead" markdown>
-An input file describes one calculation. When you want many related
-calculations — a parameter sweep, a structure built on the fly — write a short
-Python script instead. This tutorial stretches graphene step by step and
-watches its electronic bands narrow.
+A parameter sweep with the Python API: the density of states of graphene
+under biaxial strain from 0 to 10%.
 </div>
 
 <div class="rs-chips">
@@ -68,11 +66,12 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
 
 ## What to take away
 
-- **Everything in an input file has a Python object** — `Structure`, a model
-  class, `SetupOptions`, and `RSATB` with its `compute_*` methods.
-- **Import `mpi4py` first**, then the same script runs on one process or many.
-- **Use Python for loops and generated structures**; use input files for
-  single, archivable runs.
+- Each section of an input file corresponds to a Python object:
+  `Structure`, a model class, `SetupOptions`, and `RSATB` with its
+  `compute_*` methods.
+- `mpi4py` must be imported before any RSATB object is created.
+- Python is suited to loops and generated structures; input files to single
+  runs that are archived with their results.
 
 ??? deep "Under the hood: the hopping model"
     The hopping decays exponentially with bond length,

@@ -7,8 +7,8 @@ description: Tutorial 1 — the density of states of graphene from a hand-writte
 # Graphene density of states
 
 <div class="rs-lead" markdown>
-Your first real calculation: write a small graphene model by hand, run it,
-then make it 16,000 times bigger with a one-line change.
+A nearest-neighbour $p_z$ model of graphene, first in the two-atom cell and
+then in a 128 × 128 supercell, compared with the exact density of states.
 </div>
 
 <div class="rs-chips">
@@ -25,8 +25,7 @@ small cell, and how to set the energy resolution of a density of states.
 ## Step 1 — a two-atom cell
 
 Graphene has two carbon atoms per cell, each with one $p_z$ orbital, joined to
-three neighbours by a hopping of $-2.7$ eV. That is the whole model, and it
-fits in one file:
+three neighbours by a hopping of $-2.7$ eV. The input:
 
 <!-- rsatb-input: examples/01_sktb_graphene.json -->
 
@@ -49,21 +48,21 @@ rsatb run examples/01_sktb_graphene.json
   bounds        [-8.600000, 8.600000] eV
 ```
 
-A quick sanity check: a two-atom cell at $\Gamma$ has exactly two energies,
-$\pm 3 \times 2.7 = \pm 8.1$ eV, and RSATB pads the range by 0.5 eV — the check passes.
+The two eigenvalues of the two-atom cell at $\Gamma$ are
+$\pm 3 \times 2.7 = \pm 8.1$ eV; the reported range adds 0.5 eV of padding on
+each side.
 
 ## Step 2 — a real system
 
-Two energy levels are not yet a density of states. To get the real thing,
-repeat the cell 128 × 128 times — 32,768 atoms — by adding one key to
-`structure`:
+A two-atom cell at one k-point has only two levels. To sample the
+Brillouin zone, the cell is repeated 128 × 128 times (32,768 atoms) with
+`supercell`:
 
 ```json
 "supercell": [128, 128, 1]
 ```
 
-We also ask for the density of states twice, at a coarse and a fine
-resolution, from the same run:
+The density of states is computed at two resolutions in the same run:
 
 ```json
 "tasks": [
@@ -81,7 +80,8 @@ rsatb run examples/tutorials/graphene_dos.json
 
 <figure markdown>
 ![Graphene DOS from RSATB against the exact result at two resolutions](../assets/figures/tut_graphene_dos.png)
-<figcaption><strong>RSATB (teal) on top of the exact answer (amber).</strong>
+<figcaption><strong>RSATB (blue) and the exact result for the same k-points
+(vermilion).</strong>
 Left, at 0.1 eV: the familiar graphene density of states, with a V-shaped
 Dirac point at zero and sharp van Hove peaks at ±2.7 eV. Right, at 0.02 eV:
 the resolution is now finer than the gaps between the energy levels of this
@@ -90,19 +90,18 @@ finite cell, so individual levels show through.</figcaption>
 
 ## What to take away
 
-- **A bigger cell is one line.** `supercell` repeats the structure; the model
-  needs no change.
-- **`dE` sets the resolution.** Finer is more expensive, and only meaningful
-  if the system is large enough to have levels that close together.
-- **Large systems need few random vectors.** Eight were enough here — see
-  below for why.
+- `supercell` repeats the structure; the model is unchanged.
+- `dE` sets the energy resolution. A finer resolution costs more and is only
+  meaningful if the level spacing of the cell is smaller.
+- The statistical error decreases with the number of orbitals, so eight
+  random vectors were sufficient here (details below).
 
-??? deep "Under the hood: why so few random vectors?"
+??? deep "Under the hood: the number of random vectors"
     RSATB never diagonalizes the Hamiltonian. It estimates the density of
     states from random vectors, and the statistical error falls as
     $1/\sqrt{n_{\text{samples}} \times N_{\text{orbitals}}}$. With 32,768 orbitals,
-    eight vectors already put the noise below the line width. Small cells need
-    many more. The details are in
+    eight vectors give noise below the line width in the figure; small cells
+    need many more. The details are in
     [Random-state traces](../theory/stochastic-trace.md).
 
 ??? deep "Under the hood: normalizing the result"
@@ -124,6 +123,6 @@ finite cell, so individual levels show through.</figcaption>
 
 ## Try next
 
-- Set `nsamples` to 1 and watch noise appear on the fine curve.
+- Set `nsamples` to 1 and compare the noise on the fine curve.
 - Continue to [Tutorial 2](lcao-diamond.md): the same workflow with a
   Hamiltonian from a DFT code.

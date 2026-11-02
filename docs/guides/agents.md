@@ -7,9 +7,9 @@ description: The machine-readable surface of RSATB — llms.txt, JSON Schema, rs
 # Drive RSATB from an agent
 
 <div class="rs-lead" markdown>
-RSATB was designed so that a program — a workflow engine, a script, or an AI
-coding agent — can write an input, find out exactly what is wrong with it, and
-read the results, without scraping prose. This page lists that surface.
+Interfaces for programs — workflow tools, scripts, AI agents — that write
+inputs, validate them and read results: machine-readable documentation, the
+JSON Schema, a JSON validation report, and the run summary.
 </div>
 
 ## What to read
@@ -22,9 +22,9 @@ read the results, without scraping prose. This page lists that surface.
 | `rsatb doc <topic>` | The reference for one section, task or model, as plain text, offline |
 | `rsatb template <name>` | A known-good input to start from |
 
-Every input key on this site is generated from the same declaration the
-validator uses, so the documentation, `rsatb doc`, the JSON Schema and
-`rsatb check` cannot disagree.
+The input reference on this site, `rsatb doc`, the JSON Schema and
+`rsatb check` are all generated from the same declaration
+(`rsatb/inputs/spec.py`).
 
 ## The loop
 

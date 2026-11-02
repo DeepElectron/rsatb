@@ -7,9 +7,8 @@ description: Tutorial 6 — electron density and local density of states of diam
 # Real-space maps
 
 <div class="rs-lead" markdown>
-The density of states tells you *which energies* electrons occupy. Real-space
-maps show *where* they are. This tutorial maps the electron density of
-diamond, and the states at three chosen energies, on a 3D grid.
+The electron density and the local density of states of a 128-atom
+diamond supercell on a 3D grid.
 </div>
 
 <div class="rs-chips">
@@ -62,9 +61,9 @@ order of magnitude weaker), and in the conduction band, which has a clearly
 different shape.</figcaption>
 </figure>
 
-## Is it right?
+## Checks
 
-- **The density adds up.** Summed over the grid it holds 510.2 electrons,
+- **Electron count.** The density integrated over the grid gives 510.2 electrons,
   against the exact $2 \times 256 = 512$ — within 0.4%, the noise of 32 random
   vectors.
 - **The Fermi level is in the gap.** In an insulator, any chemical potential
@@ -74,8 +73,8 @@ different shape.</figcaption>
 
 ## Loading the maps
 
-Large grids are written in pieces, one file per process, so that no single
-process has to hold the whole grid. Each piece knows where its points belong:
+The grid is written in pieces, one file per MPI process, each holding the
+points that process owns and their indices:
 
 ```python
 import glob

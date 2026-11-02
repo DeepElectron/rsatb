@@ -7,8 +7,8 @@ description: The five sections of an RSATB input file, what each controls, and t
 # How an input works
 
 <div class="rs-lead" markdown>
-Every RSATB calculation is one JSON file with up to five sections. Learn
-them once and every example, template and tutorial reads the same way.
+An RSATB calculation is described by one JSON file with up to five
+sections. All examples, templates and tutorials follow this layout.
 </div>
 
 ## The five sections
@@ -50,20 +50,18 @@ Only `structure` and `model` are required; the others have sensible defaults.
 
 ## What happens when you run
 
-1. **Check.** The input is validated first; a run never starts on a broken
-   input.
-2. **Set up once.** RSATB builds the Hamiltonian for your structure and
-   finds its energy range.
-3. **Compute each task** in order, writing its result file as soon as it
-   finishes.
+1. **Check.** The input is validated; a run with errors does not start.
+2. **Setup.** RSATB builds the Hamiltonian (and overlap) for the structure
+   and estimates its energy range.
+3. **Tasks.** Each task is computed in order, and its result file is written
+   when it finishes.
 
-Because the setup is shared, asking for several tasks in one input costs much
-less than running them separately.
+The setup is done once and shared by all tasks in the input.
 
-## Four rules worth knowing
+## Rules
 
-- **Typos are errors.** An unknown key stops the check with a suggestion, so
-  a misspelling never silently changes your calculation.
+- **Unknown keys are errors.** `rsatb check` reports them with a suggested
+  correction.
 - **Comments are allowed.** Any key starting with `_`, such as `"_comment"`,
   is ignored.
 - **Paths are relative to the input file,** so an input and its data can be

@@ -7,8 +7,7 @@ description: Tutorial 2 — diamond from a precomputed DFT Hamiltonian and its n
 # A DFT Hamiltonian
 
 <div class="rs-lead" markdown>
-Most production Hamiltonians come from DFT codes, written in a basis of atomic
-orbitals. This tutorial loads diamond from such a calculation and computes its
+A DFT Hamiltonian of diamond in a numerical atomic-orbital basis, and its
 density of states along a path through the Brillouin zone.
 </div>
 
@@ -32,8 +31,8 @@ Compared with Tutorial 1, two things are new:
 
 - **`model` points at files** instead of listing parameters: the Hamiltonian
   `hamiltonians.h5` and one orbital file, `C_gga_7au_100Ry_2s2p1d.orb`.
-  Everything about the basis — how many orbitals per atom, how far they
-  reach — is read from the orbital file. You don't declare it.
+  The number of orbitals per atom and their cutoff radius are read from the
+  orbital file.
 - **`kpoints` is a path** from the L point to $\Gamma$ with 11 points. The
   result has one density-of-states row per k-point.
 
@@ -57,9 +56,10 @@ Read the report line by line:
 - **`velocity` is available**, so this model can also compute conductivity
   and optical spectra ([Tutorial 4](transport.md) and
   [Tutorial 5](optics.md)).
-- **The energy range is about 270 eV wide**, although diamond's bands span
-  only about 30 eV. This is typical of DFT bases, and it is why this input
-  uses a coarse resolution (`dE = 2.8` eV) to stay fast.
+- **The energy range is about 270 eV wide**, although the valence and
+  low-lying conduction bands span about 30 eV. The upper part comes from the
+  small eigenvalues of the overlap matrix. Because the cost of a given
+  resolution is proportional to this range, the input uses `dE = 2.8` eV.
 
 !!! tip "Other DFT codes"
     The same input works for ABACUS and NextHam output — change
@@ -69,9 +69,10 @@ Read the report line by line:
 
 - A DFT model is **a Hamiltonian file plus the orbital files** it was written
   in.
-- RSATB **derives the basis** from those files; there is nothing to declare.
-- DFT bases make **every step more expensive** than a hand-written model, so
-  choose the coarsest resolution that answers your question.
+- The basis is read from those files.
+- A DFT basis has more orbitals per atom and a wider energy range than a
+  $p_z$ model, so each step costs more; use the coarsest resolution the
+  analysis allows.
 
 ??? deep "Under the hood: overlapping orbitals"
     Atomic orbitals on neighbouring atoms overlap, so the basis is

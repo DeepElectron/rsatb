@@ -7,8 +7,8 @@ description: Short, task-focused guides — choosing a model, importing DFT Hami
 # Guides
 
 <div class="rs-lead" markdown>
-Short answers for when you know what you want to do. New to RSATB? Start with
-the [tutorials](../tutorials/index.md) instead.
+Task-oriented instructions. For an introduction, see the
+[tutorials](../tutorials/index.md).
 </div>
 
 ## Set up

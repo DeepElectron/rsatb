@@ -7,20 +7,19 @@ description: The numerical methods behind RSATB — stochastic traces, Chebyshev
 # How RSATB works
 
 <div class="rs-lead" markdown>
-Background for the curious. You don't need any of this to use RSATB — the
-tutorials and guides stand on their own — but it explains what the settings
-mean and why the method scales.
+Background on the numerical methods. The tutorials and guides do not
+depend on these pages; they explain what the main settings control.
 </div>
 
-!!! tip "The short version"
-    RSATB never diagonalizes the Hamiltonian. It applies the Hamiltonian to a
-    few random vectors many times over, using Chebyshev polynomials, and
-    averages. That costs time in proportion to the number of atoms, which is
-    why million-atom systems are within reach.
+!!! tip "Summary"
+    RSATB does not diagonalize the Hamiltonian. It applies it repeatedly to a
+    small number of random vectors through Chebyshev recurrences and averages
+    the results. For a sparse Hamiltonian the cost is linear in the number of
+    atoms.
 
-Every observable RSATB computes is a trace of a matrix function of the
-Hamiltonian, or a diagonal of one. Three ideas make those traces affordable at
-millions of orbitals; a fourth carries them to response functions.
+The observables RSATB computes are traces, or diagonals, of matrix functions
+of the Hamiltonian. The pages below cover how these are estimated, and how
+the same approach extends to response functions.
 
 $$
 \rho(E) = \operatorname{Tr}\,\delta(E-\hat H), \qquad
@@ -34,16 +33,15 @@ $$
 
     ---
 
-    A trace is the average of $\langle\xi|A|\xi\rangle$ over random vectors.
-    Its relative error falls with system size, so large systems need *fewer*
-    samples.
+    A trace is estimated as the average of $\langle\xi|A|\xi\rangle$ over
+    random vectors; the relative error decreases with system size.
 
 -   **[Chebyshev expansions](chebyshev.md)**
 
     ---
 
-    Matrix functions become polynomials applied by a three-term recurrence:
-    only sparse matrix–vector products, never a factorization.
+    Matrix functions are expanded in polynomials and applied by a three-term
+    recurrence of sparse matrix–vector products.
 
 -   **[Non-orthogonal bases](overlap.md)**
 

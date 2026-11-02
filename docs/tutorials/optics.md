@@ -7,9 +7,8 @@ description: Tutorial 5 — density of states, optical conductivity and dielectr
 # Optical spectra
 
 <div class="rs-lead" markdown>
-How does a material absorb light? This tutorial computes the optical
-conductivity and dielectric function of diamond, together with its density of
-states, from one input.
+The optical conductivity and dielectric function of a 128-atom diamond
+supercell, together with its density of states, from one input.
 </div>
 
 <div class="rs-chips">
@@ -31,8 +30,8 @@ converged.
 What's new:
 
 - **A supercell instead of k-points.** The two-atom cell is repeated
-  4 × 4 × 4 (128 atoms) and computed at a single k-point. For large systems
-  this is the usual way to sample a crystal.
+  4 × 4 × 4 (128 atoms) and computed at a single k-point; the supercell
+  samples the Brillouin zone.
 - **The `ac` task** computes the optical conductivity. `mu` is the chemical
   potential — here a value inside diamond's band gap — and `temp` the
   temperature.
@@ -52,18 +51,18 @@ done in 1m 50s
 <figure markdown>
 ![DOS, optical conductivity and dielectric function of diamond](../assets/figures/tut_diamond_optics.png)
 <figcaption><strong>Left:</strong> the density of states around the chemical
-potential (dashed), with diamond's band gap clearly visible.
+potential (dashed); the band gap is visible.
 <strong>Centre:</strong> the optical conductivity. <strong>Right:</strong>
 the dielectric function derived from it.</figcaption>
 </figure>
 
-## Is it right?
+## Checks
 
-- **Absorption starts near 5.4 eV** — at the band gap, as it must — and peaks
-  at **11.5 eV**, close to diamond's measured main absorption peak near 12 eV.
-- **Symmetry holds.** Diamond is cubic, so the $xx$, $yy$ and $zz$ responses
-  should be equal. They agree within 6%, and the $xy$ response is under 1% of
-  them.
+- **Absorption onset near 5.4 eV, maximum at 11.5 eV.** The onset is at the
+  direct gap of this Hamiltonian; the maximum is close to the main absorption
+  peak of diamond, near 12 eV.
+- **Cubic symmetry.** The $xx$, $yy$ and $zz$ components agree within 6% at
+  the peak, and the $xy$ component is below 1% of them.
 
 !!! warning "This is a quick, tutorial-sized run"
     It uses 16 random vectors and a coarse frequency grid (0.68 eV steps), so
@@ -75,12 +74,11 @@ the dielectric function derived from it.</figcaption>
 
 ## What to take away
 
-- **One input, several observables:** the DOS and the optical spectrum share
-  the same setup.
-- **A supercell at one k-point** samples a crystal; bigger cells give
+- The DOS and the optical spectrum share one setup.
+- A supercell at one k-point samples the Brillouin zone; larger cells give
   smoother spectra.
-- **Check convergence** by comparing with a larger run — noise and grid
-  spacing are visible in the result.
+- Convergence is checked by comparing with a run with more samples, finer
+  resolution or a larger cell.
 
 ??? deep "Under the hood: the band picture in the DOS"
     A 128-atom cell at one k-point has a discrete set of energy levels, so the

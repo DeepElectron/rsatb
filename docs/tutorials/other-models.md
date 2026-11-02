@@ -7,9 +7,8 @@ description: Tutorial 3 — the dftb model from a directory of .skf files, and t
 # Other model types
 
 <div class="rs-lead" markdown>
-RSATB reads four kinds of Hamiltonian. You have met hand-written models and
-DFT models; this page covers the other two — DFTB parameter files and
-ready-made tight-binding files — in one short example each.
+The two remaining model types: DFTB parameter files and tight-binding
+Hamiltonian files, with one example each.
 </div>
 
 <div class="rs-chips">
@@ -46,8 +45,8 @@ rsatb run examples/03_dftb_skf.json
 
 ## A ready-made tight-binding file
 
-If another program already produced an orthogonal Hamiltonian $H(\mathbf R)$ —
-for example a DeePTB Slater-Koster export — read it directly:
+An orthogonal Hamiltonian $H(\mathbf R)$ produced by another program, for
+example a DeePTB Slater-Koster export, is read with `tb_file`:
 
 <!-- rsatb-input: examples/04_tb_file_chain.json -->
 
@@ -61,11 +60,11 @@ rsatb run examples/04_tb_file_chain.json
   bounds        [-2.000000, 3.000000] eV
 ```
 
-The file holds a 1D chain whose band runs from −1.5 to 2.5 eV; with RSATB's
-0.5 eV padding that is exactly the reported range.
+The file describes a 1D chain whose band runs from −1.5 to 2.5 eV; with the
+0.5 eV padding on each side this gives the reported range.
 
-This is the one model type where you **declare the basis yourself**
-(`type_norb`, `cutoff_radius`), because these files don't record it.
+For this model type the basis is declared in the input (`type_norb`,
+`cutoff_radius`), because the files do not record it.
 
 ## Which one do I need?
 
@@ -79,10 +78,10 @@ This is the one model type where you **declare the basis yourself**
 ??? deep "Under the hood: what each model can compute"
     DFTB data always includes an overlap but no position information, so a
     `dftb` model computes densities of states and populations, but not
-    conductivities or optical spectra. A `tb_file` model is orthogonal, so it
-    gets the velocity operator for free and can run every transport task.
+    conductivities or optical spectra. A `tb_file` model is orthogonal, so the velocity operator is available without additional data
+    and all transport tasks can be run.
     The full table is in [Choose a model](../guides/choose-model.md).
 
 ## Try next
 
-Continue to [Tutorial 4](transport.md): how electrons move.
+Continue to [Tutorial 4](transport.md): conductivity and diffusion.

@@ -24,15 +24,20 @@
       <span>Random-state ab-initio tight binding</span>
       <span>Version 0.1 &middot; Apache 2.0</span>
     </div>
-    <h1 class="rs-ed-title">Electrons, counted<br>one <em>random state</em><br>at a time.</h1>
+    <h1 class="rs-ed-title">Electronic structure<br>of large systems,<br>from <em>random states</em>.</h1>
     <div class="rs-ed-intro">
+      <div>
       <p class="rs-ed-lede">
-        RSATB computes the electronic properties of very large systems &mdash;
-        densities of states, conductivities, optical spectra, maps of where the
-        electrons sit &mdash; from a tight-binding or DFT Hamiltonian and a short
-        JSON file. It never diagonalizes. It follows a handful of random states
-        instead, so its cost grows only in proportion to the number of atoms.
+        RSATB computes densities of states, conductivities, optical spectra and
+        real-space electron densities from tight-binding and DFT Hamiltonians.
+        Instead of diagonalizing the Hamiltonian, it combines stochastic trace
+        estimation with Chebyshev expansions, so the cost scales linearly with
+        the number of atoms. A calculation is described by one JSON input file.
       </p>
+<pre class="rs-ed-cmds"><span>rsatb template sktb -o run.json</span>   <i># write an example input</i>
+<span>rsatb check run.json</span>              <i># validate it</i>
+<span>mpirun -n 64 rsatb run run.json</span>   <i># run: serial, or MPI + OpenMP</i></pre>
+      </div>
       <nav class="rs-ed-links" aria-label="Start here">
         <a href="{{ 'getting-started/quickstart/' | url }}">Begin with the quick start</a>
         <a href="{{ 'tutorials/' | url }}">Read the tutorials</a>
@@ -44,7 +49,7 @@
   {#- Supported Hamiltonian sources, as element tiles: the symbol, the code,
       what it is, and (top left) the model.type that reads it. -#}
   <section class="rs-ed-sources" aria-label="Supported Hamiltonians">
-    <p class="rs-ed-sources__label">Reads the Hamiltonians you already have</p>
+    <p class="rs-ed-sources__label">Supported Hamiltonian sources</p>
     <div class="rs-ed-tiles">
       <a class="rs-tile" href="{{ 'guides/hamiltonian-files/' | url }}">
         <span class="rs-tile__key">lcao</span><span class="rs-tile__kind">DFT</span>
@@ -89,44 +94,15 @@
     {% include "partials/rs-plate.html" %}
     <figcaption>
       <span class="rs-ed-platenum">Plate I.</span>
-      The density of states of graphene, computed by RSATB for 32,768 atoms
-      from eight random vectors on a single process. The faint lines behind it
-      are Chebyshev polynomials &mdash; the functions the curve is assembled
-      from.
+      Density of states of graphene (nearest-neighbour p<sub>z</sub> model,
+      32,768 atoms, eight random vectors, one process), from
+      Tutorial&nbsp;1. In the background: the Chebyshev polynomials
+      T<sub>1</sub>&ndash;T<sub>9</sub> on the same scaled energy axis.
     </figcaption>
   </figure>
 
   <section class="rs-ed-sec">
     <div class="rs-ed-num">I</div>
-    <div class="rs-ed-body">
-      <h2>In three commands</h2>
-      <ol class="rs-ed-steps">
-        <li>
-          <code>rsatb template sktb -o run.json</code>
-          <p>Begin from a working input: where the atoms are, what the
-          Hamiltonian is, and what to compute.</p>
-        </li>
-        <li>
-          <code>rsatb check run.json</code>
-          <p>Every key, file and request is verified before anything runs.
-          A typo is an error with a suggestion, never a silent default.</p>
-        </li>
-        <li>
-          <code>mpirun -n 64 rsatb run run.json</code>
-          <p>The same file runs on a laptop or across a cluster. Results are
-          written as NumPy archives, with a summary of exactly what was
-          computed.</p>
-        </li>
-      </ol>
-    </div>
-    <aside class="rs-ed-margin">
-      Inputs can be written and checked anywhere Python runs; only the final
-      command needs the compiled solver.
-    </aside>
-  </section>
-
-  <section class="rs-ed-sec">
-    <div class="rs-ed-num">II</div>
     <div class="rs-ed-body">
       <h2>Contents</h2>
       <div class="rs-ed-toc">
@@ -156,46 +132,46 @@
   </section>
 
   <section class="rs-ed-sec">
-    <div class="rs-ed-num">III</div>
+    <div class="rs-ed-num">II</div>
     <div class="rs-ed-body">
-      <h2>Evidence</h2>
+      <h2>Validation and scaling</h2>
       <figure class="rs-ed-fig">
         <img src="{{ 'assets/figures/fig_validation.png' | url }}" alt="RSATB against exact diagonalization for diamond, silicon and aluminium across six observables" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate II.</span> Against exact
-        diagonalization: diamond, silicon and aluminium, across the density of
+        <figcaption><span class="rs-ed-platenum">Plate II.</span> Comparison with
+        exact diagonalization for diamond, silicon and aluminium: density of
         states, charge density, local DOS, electrical and optical conductivity,
-        and diffusion.</figcaption>
+        and diffusion coefficient, with relative errors.</figcaption>
       </figure>
       <figure class="rs-ed-fig">
         <img src="{{ 'assets/figures/fig_scaling.png' | url }}" alt="CPU, memory and wall-time scaling to one million atoms" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate III.</span> Cost and memory
-        grow in proportion to the system, up to 1,004,760 atoms; adding nodes
-        with the system keeps the wall time nearly constant.</figcaption>
+        <figcaption><span class="rs-ed-platenum">Plate III.</span> CPU time and
+        memory versus system size up to 1,004,760 atoms, and wall time under
+        weak scaling across nodes.</figcaption>
       </figure>
       <figure class="rs-ed-fig">
         <img src="{{ 'assets/figures/fig_application.png' | url }}" alt="Twisted trilayer graphene supermoire application" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate IV.</span> A 455,140-atom
-        twisted trilayer graphene supermoir&eacute; &mdash; 5.92 million orbitals
-        &mdash; resolved in energy and in space.</figcaption>
+        <figcaption><span class="rs-ed-platenum">Plate IV.</span> Spectra and
+        real-space electronic structure of a twisted trilayer graphene
+        supermoir&eacute; with 455,140 atoms (5.92 million orbitals).</figcaption>
       </figure>
     </div>
     <aside class="rs-ed-margin">
-      <span class="rs-ed-fact"><b>1,004,760</b> atoms in the largest scaling run.</span>
-      <span class="rs-ed-fact"><b>5.92&nbsp;M</b> orbitals in the largest application.</span>
-      <span class="rs-ed-fact"><b>12</b> observables from one input.</span>
+      <span class="rs-ed-fact"><b>1,004,760</b> atoms, largest scaling benchmark.</span>
+      <span class="rs-ed-fact"><b>5.92&nbsp;M</b> orbitals, largest application.</span>
+      <span class="rs-ed-fact"><b>12</b> task types.</span>
     </aside>
   </section>
 
   <section class="rs-ed-sec">
-    <div class="rs-ed-num">IV</div>
+    <div class="rs-ed-num">III</div>
     <div class="rs-ed-body">
       <h2>Further reading</h2>
       <dl class="rs-ed-read">
-        <div><dt><a href="{{ 'getting-started/' | url }}">Get started</a></dt><dd>Install, run a first input, and learn its five sections.</dd></div>
-        <div><dt><a href="{{ 'tutorials/' | url }}">Tutorials</a></dt><dd>Seven worked calculations, each about two minutes.</dd></div>
-        <div><dt><a href="{{ 'guides/' | url }}">Guides</a></dt><dd>Importing data, convergence, cost and clusters.</dd></div>
-        <div><dt><a href="{{ 'reference/' | url }}">Reference</a></dt><dd>Every option, output and command, generated from the source.</dd></div>
-        <div><dt><a href="{{ 'theory/' | url }}">Theory</a></dt><dd>Why it works, for the curious.</dd></div>
+        <div><dt><a href="{{ 'getting-started/' | url }}">Get started</a></dt><dd>Installation, a first calculation, and the structure of an input file.</dd></div>
+        <div><dt><a href="{{ 'tutorials/' | url }}">Tutorials</a></dt><dd>Seven worked examples using inputs from the repository.</dd></div>
+        <div><dt><a href="{{ 'guides/' | url }}">Guides</a></dt><dd>Importing Hamiltonians, convergence, cost estimates, cluster runs.</dd></div>
+        <div><dt><a href="{{ 'reference/' | url }}">Reference</a></dt><dd>Input options, output files, command line and Python API.</dd></div>
+        <div><dt><a href="{{ 'theory/' | url }}">Theory</a></dt><dd>The numerical methods.</dd></div>
       </dl>
     </div>
   </section>

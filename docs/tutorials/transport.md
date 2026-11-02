@@ -7,9 +7,9 @@ description: Tutorial 4 — DC conductivity and wave-packet diffusion of graphen
 # Transport
 
 <div class="rs-lead" markdown>
-How easily do electrons move, and how fast do they spread out? This tutorial
-computes the conductivity and the diffusion of electrons in a 32,768-atom
-graphene sheet, all from one input.
+The DC conductivity spectrum and the energy-resolved diffusion coefficient
+of a graphene sheet (128 × 128 supercell, 32,768 atoms), computed from one
+input.
 </div>
 
 <div class="rs-chips">
@@ -30,15 +30,14 @@ material correctly.
 
 What's new compared with Tutorial 1:
 
-- **Three tasks in one input.** They share a single setup, so asking for all
-  three costs barely more than asking for one.
+- **Three tasks in one input.** They share one setup.
 - **`dc_spectrum`** gives the conductivity at every energy.
   `"axis": "ab"` tells RSATB that this is a sheet: it divides by the area of
   the sheet, not by a volume padded with vacuum.
-- **`msd`** follows electron wave packets for 100 fs and measures how far they
-  spread along $x$.
-- **`bounds` is fixed** at ±9 eV. When you know the energy range, giving it
-  skips a setup step.
+- **`msd`** propagates wave packets for 100 fs and records their
+  mean-square displacement along $x$.
+- **`bounds` is fixed** at ±9 eV, which contains the spectrum; this skips the
+  eigenvalue estimate during setup.
 
 ## Run it
 
@@ -51,33 +50,32 @@ rsatb run examples/tutorials/graphene_transport.json
 <figcaption><strong>Left:</strong> the density of states.
 <strong>Centre:</strong> the conductivity of the sheet at each energy — zero
 at the Dirac point and at the band edges. <strong>Right:</strong> the
-diffusion coefficient grows steadily with time at every energy: electrons fly
-freely through a perfect crystal.</figcaption>
+diffusion coefficient grows linearly in time at all energies, as expected
+for ballistic transport in a crystal without disorder.</figcaption>
 </figure>
 
-## Is it right? A check against theory
+## Comparison with the ballistic limit
 
-In a perfect crystal nothing scatters the electrons, so their spread grows
-like $D(t) = \tfrac12 v_F^2\,t$, where $v_F$ is graphene's Fermi velocity:
+Without scattering, the diffusion coefficient near the Dirac point is
+$D(t) = \tfrac12 v_F^2\,t$, with the Fermi velocity
 
 $$
 v_F = \frac{3 \times 2.7\ \text{eV} \times 1.42\ \text{Å}}{2\hbar} = 8.74\ \text{Å/fs}
 \quad\Rightarrow\quad D(100\ \text{fs}) = 382\ \text{cm}^2/\text{s}.
 $$
 
-The curves for 0.5 and 1 eV reach exactly that.
+The computed curves at 0.5 and 1 eV agree with this value.
 
 ## What to take away
 
-- **List several tasks in one input** — they share the expensive setup.
-- **Use `"axis": "ab"`** for 2D materials, so results are per sheet.
-- **The diffusion curve tells you the transport regime** — straight line:
-  ballistic; flat: diffusive; falling: localized.
+- Several tasks in one input share the setup.
+- For 2D materials, `"axis": "ab"` normalizes by the sheet area.
+- The time dependence of $D(E,t)$ indicates the transport regime: linear
+  (ballistic), constant (diffusive) or decreasing (localized).
 
-??? deep "Under the hood: why the conductivity is so large"
-    A perfect crystal has no resistance, so its DC conductivity is formally
-    infinite. What the plot shows is limited only by the energy resolution
-    (256 moments here). Physically meaningful DC values need scattering:
+??? deep "Under the hood: the magnitude of the DC conductivity"
+    Without disorder the DC conductivity of a crystal diverges; the values in
+    the plot are set by the energy resolution (256 moments). Physically meaningful DC values need scattering:
     disorder in the Hamiltonian, a cell large enough to hold it, and a
     resolution finer than the scattering rate. The diffusion curve reveals
     which regime you are in.

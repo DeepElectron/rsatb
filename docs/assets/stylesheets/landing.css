@@ -102,21 +102,16 @@
   color: var(--rs-ink); letter-spacing: -.01em; line-height: 1.2;
 }
 
-/* I. three commands, numbered in lower-case roman */
-.md-typeset ol.rs-ed-steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
-.md-typeset ol.rs-ed-steps li {
-  counter-increment: step; margin: 0; padding: 1rem 0 1rem 2.4rem; position: relative;
-  border-bottom: 1px solid var(--rs-rule);
+/* The three commands, as a small block under the lede */
+.md-typeset pre.rs-ed-cmds {
+  margin: 1.3rem 0 0; padding: .75rem 1rem; white-space: pre; overflow-x: auto;
+  font-family: var(--md-code-font-family); font-size: .66rem; line-height: 1.85;
+  color: var(--rs-ink); background: var(--rs-surface-2);
+  border: 0; border-left: 2px solid var(--rs-ink); border-radius: 0;
 }
-.md-typeset ol.rs-ed-steps li:first-child { padding-top: 0; }
-.md-typeset ol.rs-ed-steps li::before {
-  content: counter(step, lower-roman) "."; position: absolute; left: 0;
-  font-style: italic; color: var(--rs-muted); font-size: .98rem;
-}
-.md-typeset ol.rs-ed-steps code { background: transparent; padding: 0; font-size: .74rem; color: var(--rs-ink); }
-.md-typeset ol.rs-ed-steps p { margin: .3rem 0 0; font-size: .98rem; line-height: 1.55; color: var(--rs-ink-2); }
+.rs-ed-cmds i { font-style: normal; color: var(--rs-faint); }
 
-/* II. contents with dotted leaders */
+/* Contents with dotted leaders */
 .rs-ed-toc { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
 .md-typeset .rs-ed-toc ul { list-style: none; margin: 0; padding: 0; }
 .md-typeset .rs-ed-toc li { margin: 0; }
