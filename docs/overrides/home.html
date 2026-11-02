@@ -52,20 +52,27 @@
 <span>$</span> rsatb check run.json
 <span>$</span> OMP_NUM_THREADS=8 mpirun -n 64 rsatb run run.json</pre>
     </div>
-    {#- Two specimens, cross-faded: a 2D moiré and a device cross-section. -#}
+    {#- Three specimens, cross-faded: two atomistic devices, then a 2D moiré. -#}
     <figure class="rs-k-hero__art">
-      <div class="rs-k-spec rs-k-spec--a">
+      <div class="rs-k-spec rs-k-spec--1">
         <span class="rs-k-spec__tag">FIG. 0a</span>
-        <img src="{{ 'assets/figures/home_moire.webp' | url }}" width="1120" height="1120"
-             alt="Twisted bilayer graphene drawn bond by bond; the moiré pattern of AA and AB stacking regions emerges from the overlay of the two lattices">
-        <figcaption>Twisted bilayer graphene &middot; &theta; = 3.48&deg; &middot; moir&eacute; period 40.5&nbsp;&Aring;</figcaption>
-      </div>
-      <div class="rs-k-spec rs-k-spec--b">
-        <span class="rs-k-spec__tag">FIG. 0b</span>
         <img src="{{ 'assets/figures/home_device.webp' | url }}" width="1000" height="1000"
              alt="Atomistic model of a gate-all-around silicon transistor, rendered as a Z-contrast image: crystalline silicon channel, amorphous oxide, tungsten gate, spacers, contacts and arsenic dopants">
         {% include "partials/rs-device.html" %}
-        <figcaption>Gate-all-around Si transistor &middot; atomistic model, Z-contrast rendering (illustration)</figcaption>
+        <figcaption>Gate-all-around Si transistor &middot; cross-section &middot; atomistic model (illustration)</figcaption>
+      </div>
+      <div class="rs-k-spec rs-k-spec--2">
+        <span class="rs-k-spec__tag">FIG. 0b</span>
+        <img src="{{ 'assets/figures/home_device_2d.webp' | url }}" width="1000" height="1000"
+             alt="Atomistic model of a monolayer MoS2 transistor seen from above, rendered as a Z-contrast image: MoS2 channel with sulfur vacancies and rhenium dopants between gold contacts, top gate outlined">
+        {% include "partials/rs-device-2d.html" %}
+        <figcaption>Monolayer MoS<sub>2</sub> transistor &middot; plan view &middot; atomistic model (illustration)</figcaption>
+      </div>
+      <div class="rs-k-spec rs-k-spec--3">
+        <span class="rs-k-spec__tag">FIG. 0c</span>
+        <img src="{{ 'assets/figures/home_moire.webp' | url }}" width="1120" height="1120"
+             alt="Twisted bilayer graphene drawn bond by bond; the moiré pattern of AA and AB stacking regions emerges from the overlay of the two lattices">
+        <figcaption>Twisted bilayer graphene &middot; &theta; = 3.48&deg; &middot; moir&eacute; period 40.5&nbsp;&Aring;</figcaption>
       </div>
     </figure>
   </section>
@@ -76,11 +83,11 @@
       <p class="rs-k-label">Supported Hamiltonians</p>
     </div>
     <div class="rs-k-sources__grid">
-      <a href="{{ 'guides/hamiltonian-files/' | url }}">
+      <a href="{{ 'tutorials/abacus-nextham/' | url }}">
         <span class="k">lcao</span><span class="t">DFT</span>
         <b>Ab</b><strong>ABACUS</strong><em>H(R) from out_mat_hs2, including spin&ndash;orbit</em>
       </a>
-      <a href="{{ 'guides/hamiltonian-files/' | url }}">
+      <a href="{{ 'tutorials/abacus-nextham/' | url }}">
         <span class="k">lcao</span><span class="t">ML</span>
         <b>Nh</b><strong>NextHam</strong><em>Predicted H(R), atom-pair HDF5</em>
       </a>

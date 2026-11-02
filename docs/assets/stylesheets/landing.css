@@ -71,21 +71,22 @@
 /* Material sizes figures to their content; the layers here are absolute. */
 .md-typeset .rs-k-hero__art { display: block; width: 100%; max-width: none; aspect-ratio: 1 / 1; overflow: hidden; }
 
-/* Two specimens cross-fade, 5 s each with a 1 s fade: 0a (moire) and 0b (device). Paused on hover. */
-.rs-k-spec { position: absolute; inset: 0; animation: rs-k-spec 12s ease-in-out infinite; }
-.rs-k-spec--b { animation-delay: -6s; }
+/* Three specimens cross-fade: 3.5 s each, 0.7 s fades, 12.6 s cycle. Paused on hover. */
+.rs-k-spec { position: absolute; inset: 0; animation: rs-k-spec 12.6s ease-in-out infinite; }
+.rs-k-spec--2 { animation-delay: -8.4s; }
+.rs-k-spec--3 { animation-delay: -4.2s; }
 .md-typeset .rs-k-spec img, .rs-k-spec .rs-device-labels {
   position: absolute; inset: 0; width: 100%; height: 100%; display: block;
 }
 .md-typeset .rs-k-hero__art:hover .rs-k-spec { animation-play-state: paused; }
 @keyframes rs-k-spec {
-  0%, 42% { opacity: 1; visibility: visible; }
-  50%, 92% { opacity: 0; visibility: hidden; }
+  0%, 27.8% { opacity: 1; visibility: visible; }
+  33.3%, 94.4% { opacity: 0; visibility: hidden; }
   100% { opacity: 1; visibility: visible; }
 }
 @media (prefers-reduced-motion: reduce) {
   .rs-k-spec { animation: none; }
-  .rs-k-spec--a { opacity: 0; visibility: hidden; }
+  .rs-k-spec--2, .rs-k-spec--3 { opacity: 0; visibility: hidden; }
 }
 .rs-k-spec__tag {
   position: absolute; top: .75rem; left: .9rem; z-index: 1;
@@ -101,6 +102,9 @@
   paint-order: stroke; stroke: var(--rs-surface-2); stroke-width: 7px;
 }
 .rs-device-labels .sub { font-size: 17px; }
+.rs-device-labels .outline { fill: none; stroke: var(--rs-brand); stroke-width: 2.5; stroke-dasharray: 12 9; }
+.rs-device-labels .flow { stroke: var(--rs-brand); stroke-width: 3; }
+.rs-device-labels .flowhead { fill: var(--rs-brand); }
 
 /* ----------------------------------------- supported Hamiltonians */
 .rs-k-sources { border-top: 1px solid var(--rs-rule); padding-top: 1.1rem; }
