@@ -1,7 +1,9 @@
 {#-
-  Landing page, set like a printed scientific monograph: a masthead, one
-  engraved plate drawn from a real run, numbered sections with marginal
-  numerals, contents with dotted leaders, plates of evidence, a colophon.
+  Landing page. Composition after scientific-product sites: a hero with a
+  real scientific image, an index of supported Hamiltonians, a full-bleed
+  dark band carrying a real result, an architecture diagram, an index of
+  observables, validation figures in tabs, and a pale closing band. One
+  accent colour; square geometry; hairline rules; short factual copy.
 -#}
 {% extends "main.html" %}
 
@@ -9,179 +11,241 @@
   {{ super() }}
   <style>
     /* extra_css loads after this block, so outrank its reading-width rule. */
-    .md-main .md-content .md-content__inner { max-width: 60rem; margin-top: 0; padding-top: 0; }
+    .md-main .md-content .md-content__inner { max-width: 64rem; margin: 0 auto; padding-top: 0; }
     .md-main .md-main__inner { margin-top: 0; }
     .md-content__button { display: none; }
+    .md-main .md-content .md-content__inner { padding-bottom: 0; }
+    .md-main .md-content .md-content__inner::before { display: none; }
+    body { overflow-x: hidden; }
   </style>
 {% endblock %}
 
+{%- macro arrow(dir="ne") -%}
+  {%- if dir == "se" -%}
+  <svg class="rs-k-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 5v7H5"/></svg>
+  {%- else -%}
+  <svg class="rs-k-arrow" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 12l8-8M5 4h7v7"/></svg>
+  {%- endif -%}
+{%- endmacro -%}
+
 {% block content %}
-<div class="rs-ed">
+<div class="rs-k">
 
-  <header class="rs-ed-mast">
-    <div class="rs-ed-runner">
-      <span>RSATB</span>
-      <span>Random-state ab-initio tight binding</span>
-      <span>Version 0.1 &middot; Apache 2.0</span>
-    </div>
-    <h1 class="rs-ed-title">Electronic structure<br>of large systems,<br>from <em>random states</em>.</h1>
-    <div class="rs-ed-intro">
-      <div>
-      <p class="rs-ed-lede">
+  {# ------------------------------------------------------------ hero #}
+  <section class="rs-k-hero">
+    <div class="rs-k-hero__text">
+      <p class="rs-k-label">Stochastic electronic-structure solver</p>
+      <h1 class="rs-k-title">Electronic structure<br>of large systems,<br><span>from random states.</span></h1>
+      <p class="rs-k-lede">
         RSATB computes densities of states, conductivities, optical spectra and
-        real-space electron densities from tight-binding and DFT Hamiltonians.
-        Instead of diagonalizing the Hamiltonian, it combines stochastic trace
-        estimation with Chebyshev expansions, so the cost scales linearly with
-        the number of atoms. A calculation is described by one JSON input file.
+        real-space electron densities from tight-binding and DFT Hamiltonians,
+        using stochastic trace estimation and Chebyshev expansions. It runs
+        serially or with MPI and OpenMP across cluster nodes.
       </p>
-<pre class="rs-ed-cmds"><span>rsatb template sktb -o run.json</span>   <i># write an example input</i>
-<span>rsatb check run.json</span>              <i># validate it</i>
-<span>mpirun -n 64 rsatb run run.json</span>   <i># run: serial, or MPI + OpenMP</i></pre>
+      <div class="rs-k-actions">
+        <a class="rs-k-btn" href="{{ 'getting-started/quickstart/' | url }}">Get started {{ arrow() }}</a>
+        <a class="rs-k-link" href="{{ 'tutorials/' | url }}">Tutorials {{ arrow("se") }}</a>
       </div>
-      <nav class="rs-ed-links" aria-label="Start here">
-        <a href="{{ 'getting-started/quickstart/' | url }}">Begin with the quick start</a>
-        <a href="{{ 'tutorials/' | url }}">Read the tutorials</a>
-        <a href="{{ 'getting-started/installation/' | url }}">Install</a>
-      </nav>
+<pre class="rs-k-cmds"><span>$</span> rsatb template sktb -o run.json
+<span>$</span> rsatb check run.json
+<span>$</span> mpirun -n 64 rsatb run run.json</pre>
     </div>
-  </header>
+    <figure class="rs-k-hero__art">
+      <img src="{{ 'assets/figures/home_moire.webp' | url }}" width="1120" height="1120"
+           alt="Twisted bilayer graphene drawn bond by bond; the moiré pattern of AA and AB stacking regions emerges from the overlay of the two lattices">
+      <figcaption>Twisted bilayer graphene &middot; &theta; = 3.48&deg; &middot; moir&eacute; period 40.5&nbsp;&Aring;</figcaption>
+    </figure>
+  </section>
 
-  {#- Supported Hamiltonian sources, as element tiles: the symbol, the code,
-      what it is, and (top left) the model.type that reads it. -#}
-  <section class="rs-ed-sources" aria-label="Supported Hamiltonians">
-    <p class="rs-ed-sources__label">Supported Hamiltonian sources</p>
-    <div class="rs-ed-tiles">
-      <a class="rs-tile" href="{{ 'guides/hamiltonian-files/' | url }}">
-        <span class="rs-tile__key">lcao</span><span class="rs-tile__kind">DFT</span>
-        <span class="rs-tile__sym">Ab</span>
-        <span class="rs-tile__name">ABACUS</span>
-        <span class="rs-tile__note">H(R) from out_mat_hs2, incl. spin&ndash;orbit</span>
+  {# -------------------------------------------- supported Hamiltonians #}
+  <section class="rs-k-sources" aria-label="Supported Hamiltonians">
+    <div class="rs-k-sources__head">
+      <p class="rs-k-label">Supported Hamiltonians</p>
+      <p>Selected with <code>model.type</code> in the input file.</p>
+    </div>
+    <div class="rs-k-sources__grid">
+      <a href="{{ 'guides/hamiltonian-files/' | url }}">
+        <span class="k">lcao</span><span class="t">DFT</span>
+        <b>Ab</b><strong>ABACUS</strong><em>H(R) from out_mat_hs2, including spin&ndash;orbit</em>
       </a>
-      <a class="rs-tile" href="{{ 'guides/hamiltonian-files/' | url }}">
-        <span class="rs-tile__key">lcao</span><span class="rs-tile__kind">ML</span>
-        <span class="rs-tile__sym">Nh</span>
-        <span class="rs-tile__name">NextHam</span>
-        <span class="rs-tile__note">Predicted H(R), atom-pair HDF5</span>
+      <a href="{{ 'guides/hamiltonian-files/' | url }}">
+        <span class="k">lcao</span><span class="t">ML</span>
+        <b>Nh</b><strong>NextHam</strong><em>Predicted H(R), atom-pair HDF5</em>
       </a>
-      <a class="rs-tile" href="{{ 'tutorials/lcao-diamond/' | url }}">
-        <span class="rs-tile__key">lcao &middot; tb_file</span><span class="rs-tile__kind">ML</span>
-        <span class="rs-tile__sym">Dp</span>
-        <span class="rs-tile__name">DeePTB</span>
-        <span class="rs-tile__note">LCAO or Slater-Koster exports</span>
+      <a href="{{ 'tutorials/lcao-diamond/' | url }}">
+        <span class="k">lcao &middot; tb_file</span><span class="t">ML</span>
+        <b>Dp</b><strong>DeePTB</strong><em>LCAO or Slater&ndash;Koster exports</em>
       </a>
-      <a class="rs-tile" href="{{ 'tutorials/graphene-dos/' | url }}">
-        <span class="rs-tile__key">sktb</span><span class="rs-tile__kind">Model</span>
-        <span class="rs-tile__sym">Sk</span>
-        <span class="rs-tile__name">Slater&ndash;Koster</span>
-        <span class="rs-tile__note">Hoppings written in the input</span>
+      <a href="{{ 'tutorials/graphene-dos/' | url }}">
+        <span class="k">sktb</span><span class="t">Model</span>
+        <b>Sk</b><strong>Slater&ndash;Koster</strong><em>Parameters written in the input</em>
       </a>
-      <a class="rs-tile" href="{{ 'tutorials/other-models/' | url }}">
-        <span class="rs-tile__key">dftb</span><span class="rs-tile__kind">DFTB</span>
-        <span class="rs-tile__sym">Df</span>
-        <span class="rs-tile__name">DFTB</span>
-        <span class="rs-tile__note">.skf sets such as mio and 3ob</span>
+      <a href="{{ 'tutorials/other-models/' | url }}">
+        <span class="k">dftb</span><span class="t">DFTB</span>
+        <b>Df</b><strong>DFTB</strong><em>.skf parameter sets, e.g. mio, 3ob</em>
       </a>
-      <a class="rs-tile" href="{{ 'tutorials/other-models/' | url }}">
-        <span class="rs-tile__key">tb_file</span><span class="rs-tile__kind">Any</span>
-        <span class="rs-tile__sym">Tb</span>
-        <span class="rs-tile__name">Tight-binding H(R)</span>
-        <span class="rs-tile__note">Any orthogonal Hamiltonian file</span>
+      <a href="{{ 'tutorials/other-models/' | url }}">
+        <span class="k">tb_file</span><span class="t">File</span>
+        <b>Tb</b><strong>Tight-binding H(R)</strong><em>Orthogonal Hamiltonian files</em>
       </a>
     </div>
   </section>
 
-  <figure class="rs-ed-plate">
-    {% include "partials/rs-plate.html" %}
-    <figcaption>
-      <span class="rs-ed-platenum">Plate I.</span>
-      Density of states of graphene (nearest-neighbour p<sub>z</sub> model,
-      32,768 atoms, eight random vectors, one process), from
-      Tutorial&nbsp;1. In the background: the Chebyshev polynomials
-      T<sub>1</sub>&ndash;T<sub>9</sub> on the same scaled energy axis.
-    </figcaption>
-  </figure>
-
-  <section class="rs-ed-sec">
-    <div class="rs-ed-num">I</div>
-    <div class="rs-ed-body">
-      <h2>Contents</h2>
-      <div class="rs-ed-toc">
+  {# ------------------------------------------------ dark band, result #}
+  <section class="rs-k-band rs-bleed">
+    <div class="rs-k-band__inner">
+      {% include "partials/rs-plate.html" %}
+      <div class="rs-k-band__text">
         <div>
-          <h3>What it computes</h3>
-          <ul>
-            <li><a href="{{ 'tutorials/graphene-dos/' | url }}"><span>Density of states</span><i></i><b>Tutorial 1</b></a></li>
-            <li><a href="{{ 'tutorials/transport/' | url }}"><span>Conductivity and diffusion</span><i></i><b>Tutorial 4</b></a></li>
-            <li><a href="{{ 'tutorials/optics/' | url }}"><span>Optical spectra</span><i></i><b>Tutorial 5</b></a></li>
-            <li><a href="{{ 'tutorials/realspace/' | url }}"><span>Electron density and local DOS</span><i></i><b>Tutorial 6</b></a></li>
-            <li><a href="{{ 'reference/input/tasks/pdos/' | url }}"><span>Projected density of states</span><i></i><b>Reference</b></a></li>
-            <li><a href="{{ 'reference/input/tasks/fermi_level/' | url }}"><span>Fermi level and occupation</span><i></i><b>Reference</b></a></li>
-          </ul>
+          <p class="rs-k-label">Method</p>
+          <h2>Spectra without diagonalization</h2>
         </div>
         <div>
-          <h3>How to run it well</h3>
-          <ul>
-            <li><a href="{{ 'guides/choose-model/' | url }}"><span>Choosing a model</span><i></i><b>Guide</b></a></li>
-            <li><a href="{{ 'guides/hamiltonian-files/' | url }}"><span>Importing DFT Hamiltonians</span><i></i><b>Guide</b></a></li>
-            <li><a href="{{ 'guides/convergence/' | url }}"><span>Converging a result</span><i></i><b>Guide</b></a></li>
-            <li><a href="{{ 'guides/parallel/' | url }}"><span>Running on a cluster</span><i></i><b>Guide</b></a></li>
-            <li><a href="{{ 'tutorials/python/' | url }}"><span>Scripting from Python</span><i></i><b>Tutorial 7</b></a></li>
-          </ul>
+          <p>The density of states, conductivities and optical spectra are
+          obtained from Chebyshev moments of a few random vectors. The cost
+          grows linearly with the number of atoms.</p>
+          <p class="rs-k-mono">Graphene, nearest-neighbour p<sub>z</sub> model &middot; 32,768 atoms &middot; 8 random vectors &middot; Tutorial&nbsp;1</p>
+          <a class="rs-k-link" href="{{ 'theory/' | url }}">How it works {{ arrow() }}</a>
         </div>
       </div>
     </div>
   </section>
 
-  <section class="rs-ed-sec">
-    <div class="rs-ed-num">II</div>
-    <div class="rs-ed-body">
-      <h2>Validation and scaling</h2>
-      <figure class="rs-ed-fig">
+  {# ---------------------------------------------------- architecture #}
+  <section class="rs-k-sec">
+    <header class="rs-k-sec__head">
+      <div>
+        <p class="rs-k-label">Architecture</p>
+        <h2>Three numerical components,<br>one setup per input.</h2>
+      </div>
+      <p>All tasks in an input share the atomic graph, the Hamiltonian, the
+      overlap factor and the spectral window, which are built once.</p>
+    </header>
+    <div class="rs-k-sys">
+      <div class="rs-k-tree" aria-hidden="true">
+        <div class="rs-k-node rs-k-node--in"><span class="rs-k-mono">input</span>H(R), S(R) &middot; structure</div>
+        <div class="rs-k-vline"></div>
+        <div class="rs-k-branch">
+          <div class="rs-k-node">
+            <svg viewBox="0 0 32 32"><circle cx="8" cy="10" r="1.6"/><circle cx="20" cy="7" r="1.6"/><circle cx="14" cy="18" r="1.6"/><circle cx="25" cy="21" r="1.6"/><circle cx="9" cy="25" r="1.6"/></svg>
+            <strong>Random states</strong><span>stochastic traces</span>
+          </div>
+          <div class="rs-k-node">
+            <svg viewBox="0 0 32 32"><path d="M3 24C7 4 11 4 16 16s9 12 13-8" fill="none"/><path d="M3 16C8 26 12 26 16 16S24 6 29 16" fill="none" opacity=".45"/></svg>
+            <strong>Chebyshev</strong><span>polynomial expansions</span>
+          </div>
+          <div class="rs-k-node">
+            <svg viewBox="0 0 32 32"><path d="M6 8h20M6 16h20M6 24h20M8 6v20M16 6v20M24 6v20" fill="none" opacity=".45"/><path d="M8 8l8 8 8 8" fill="none"/></svg>
+            <strong>S<sup>&minus;1/2</sup></strong><span>graph-local factor</span>
+          </div>
+        </div>
+        <div class="rs-k-node rs-k-node--out">
+          <span class="rs-k-mono">output</span>
+          <ul><li>DOS</li><li>PDOS</li><li>LDOS</li><li>n(r)</li><li>&sigma;<sub>DC</sub></li><li>&sigma;(&omega;)</li><li>MSD</li><li>G<sub>xx</sub></li></ul>
+        </div>
+      </div>
+      <ul class="rs-k-list">
+        <li>
+          <div><strong>Random-state traces</strong>
+          <p>Traces are estimated from random vectors; the relative error falls as
+          1/&radic;(samples &times; orbitals).</p></div>
+          <a href="{{ 'theory/stochastic-trace/' | url }}">Theory {{ arrow() }}</a>
+        </li>
+        <li>
+          <div><strong>Chebyshev expansions</strong>
+          <p>Matrix functions are applied by three-term recurrences of sparse
+          matrix&ndash;vector products.</p></div>
+          <a href="{{ 'theory/chebyshev/' | url }}">Theory {{ arrow() }}</a>
+        </li>
+        <li>
+          <div><strong>Graph-local S<sup>&minus;1/2</sup></strong>
+          <p>Non-orthogonal overlaps are handled by a sparse inverse square root
+          built on the atomic graph.</p></div>
+          <a href="{{ 'theory/overlap/' | url }}">Theory {{ arrow() }}</a>
+        </li>
+      </ul>
+    </div>
+  </section>
+
+  {# ----------------------------------------------------- observables #}
+  <section class="rs-k-sec">
+    <header class="rs-k-sec__head">
+      <div>
+        <p class="rs-k-label">Observables</p>
+        <h2>Twelve task types.</h2>
+      </div>
+      <p>Tasks are listed in the input and computed in order. Each writes a
+      NumPy archive; <code>summary.json</code> records the run.</p>
+    </header>
+    <div class="rs-k-index">
+      <div>
+        <p class="rs-k-colhead">Spectrum</p>
+        <a href="{{ 'tutorials/graphene-dos/' | url }}"><strong>Density of states</strong><code>dos &middot; pdos</code><span>Tutorial 1 {{ arrow() }}</span></a>
+        <a href="{{ 'reference/input/tasks/fermi_level/' | url }}"><strong>Occupation and Fermi level</strong><code>occupation &middot; fermi_level</code><span>Reference {{ arrow() }}</span></a>
+      </div>
+      <div>
+        <p class="rs-k-colhead">Response</p>
+        <a href="{{ 'tutorials/transport/' | url }}"><strong>DC conductivity</strong><code>dc &middot; dc_spectrum</code><span>Tutorial 4 {{ arrow() }}</span></a>
+        <a href="{{ 'tutorials/optics/' | url }}"><strong>Optical conductivity</strong><code>ac &middot; quantum_metric</code><span>Tutorial 5 {{ arrow() }}</span></a>
+      </div>
+      <div>
+        <p class="rs-k-colhead">Real space and dynamics</p>
+        <a href="{{ 'tutorials/realspace/' | url }}"><strong>Electron density and LDOS</strong><code>density &middot; ldos</code><span>Tutorial 6 {{ arrow() }}</span></a>
+        <a href="{{ 'tutorials/transport/' | url }}"><strong>Diffusion</strong><code>msd</code><span>Tutorial 4 {{ arrow() }}</span></a>
+      </div>
+    </div>
+  </section>
+
+  {# ------------------------------------------------------ validation #}
+  <section class="rs-k-sec">
+    <header class="rs-k-sec__head">
+      <div>
+        <p class="rs-k-label">Validation</p>
+        <h2>Compared with exact<br>diagonalization.</h2>
+      </div>
+      <p>Diamond, silicon and aluminium: relative errors below 1&nbsp;% for the
+      density of states and below 10&nbsp;% for all six observables. Scaling
+      measured up to 1,004,760 atoms.</p>
+    </header>
+    <div class="rs-k-tabs">
+      <input type="radio" name="rs-k-tab" id="rs-k-t1" checked>
+      <input type="radio" name="rs-k-tab" id="rs-k-t2">
+      <input type="radio" name="rs-k-tab" id="rs-k-t3">
+      <div class="rs-k-tabs__bar">
+        <label for="rs-k-t1">Accuracy</label>
+        <label for="rs-k-t2">Scaling</label>
+        <label for="rs-k-t3">Application</label>
+      </div>
+      <figure class="rs-k-tabs__panel">
         <img src="{{ 'assets/figures/fig_validation.png' | url }}" alt="RSATB against exact diagonalization for diamond, silicon and aluminium across six observables" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate II.</span> Comparison with
-        exact diagonalization for diamond, silicon and aluminium: density of
-        states, charge density, local DOS, electrical and optical conductivity,
-        and diffusion coefficient, with relative errors.</figcaption>
+        <figcaption>Density of states, charge density, local DOS, electrical and optical
+        conductivity and diffusion coefficient, with relative errors (panel d).</figcaption>
       </figure>
-      <figure class="rs-ed-fig">
+      <figure class="rs-k-tabs__panel">
         <img src="{{ 'assets/figures/fig_scaling.png' | url }}" alt="CPU, memory and wall-time scaling to one million atoms" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate III.</span> CPU time and
-        memory versus system size up to 1,004,760 atoms, and wall time under
-        weak scaling across nodes.</figcaption>
+        <figcaption>CPU time and memory versus system size up to 1,004,760 atoms, and
+        wall time under weak scaling across nodes.</figcaption>
       </figure>
-      <figure class="rs-ed-fig">
+      <figure class="rs-k-tabs__panel">
         <img src="{{ 'assets/figures/fig_application.png' | url }}" alt="Twisted trilayer graphene supermoire application" loading="lazy">
-        <figcaption><span class="rs-ed-platenum">Plate IV.</span> Spectra and
-        real-space electronic structure of a twisted trilayer graphene
-        supermoir&eacute; with 455,140 atoms (5.92 million orbitals).</figcaption>
+        <figcaption>Twisted trilayer graphene supermoir&eacute;, 455,140 atoms
+        (5.92 million orbitals): spectra and real-space electronic structure.</figcaption>
       </figure>
     </div>
-    <aside class="rs-ed-margin">
-      <span class="rs-ed-fact"><b>1,004,760</b> atoms, largest scaling benchmark.</span>
-      <span class="rs-ed-fact"><b>5.92&nbsp;M</b> orbitals, largest application.</span>
-      <span class="rs-ed-fact"><b>12</b> task types.</span>
-    </aside>
   </section>
 
-  <section class="rs-ed-sec">
-    <div class="rs-ed-num">III</div>
-    <div class="rs-ed-body">
-      <h2>Further reading</h2>
-      <dl class="rs-ed-read">
-        <div><dt><a href="{{ 'getting-started/' | url }}">Get started</a></dt><dd>Installation, a first calculation, and the structure of an input file.</dd></div>
-        <div><dt><a href="{{ 'tutorials/' | url }}">Tutorials</a></dt><dd>Seven worked examples using inputs from the repository.</dd></div>
-        <div><dt><a href="{{ 'guides/' | url }}">Guides</a></dt><dd>Importing Hamiltonians, convergence, cost estimates, cluster runs.</dd></div>
-        <div><dt><a href="{{ 'reference/' | url }}">Reference</a></dt><dd>Input options, output files, command line and Python API.</dd></div>
-        <div><dt><a href="{{ 'theory/' | url }}">Theory</a></dt><dd>The numerical methods.</dd></div>
-      </dl>
+  {# ---------------------------------------------------- closing band #}
+  <section class="rs-k-close rs-bleed">
+    <div class="rs-k-close__inner">
+      <div>
+        <h2>Install RSATB and run<br>the first tutorial.</h2>
+        <p class="rs-k-mono">Python 3.9+ &middot; C++17 &middot; MPI + OpenMP &middot; Apache-2.0
+          &middot; developed by <a href="https://floatingcatty.github.io/">Zhanghao Zhouyin</a>, McGill University
+          &middot; <a href="{{ 'about/citation/' | url }}">cite</a></p>
+      </div>
+      <a class="rs-k-circle" href="{{ 'getting-started/installation/' | url }}" aria-label="Installation">{{ arrow() }}</a>
     </div>
   </section>
-
-  <footer class="rs-ed-colophon">
-    <p>RSATB is developed by <a href="https://floatingcatty.github.io/">Zhanghao Zhouyin</a>,
-    Department of Physics, McGill University, and released under the Apache License 2.0.
-    If you use it, please <a href="{{ 'about/citation/' | url }}">cite the software</a>.</p>
-    <p class="rs-ed-set">Set in Newsreader, Inter and JetBrains Mono.</p>
-  </footer>
 
 </div>
 {% endblock %}

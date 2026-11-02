@@ -1,13 +1,13 @@
 /* RSATB documentation theme — paper and ink.
  *
  * An editorial layer over Material for MkDocs, after printed scientific
- * plates: warm paper, ink-black type, one ink-blue for links, vermilion only
- * for annotation. Newsreader for display and the landing page, Inter for
- * running text, JetBrains Mono for code. Every colour is a token at the top,
+ * plates: warm paper, ink-black type, one ink-blue accent, vermilion only
+ * for warnings. Inter Tight for display, Inter for running text, JetBrains
+ * Mono for code and scientific labels. Every colour is a token at the top,
  * so the dark scheme is a token swap.
  */
 
-@import url("https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300..600;1,6..72,300..500&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Inter+Tight:wght@400;500;600;700&display=swap");
 
 /* ---------------------------------------------------------------- tokens
  *
@@ -25,9 +25,8 @@
  */
 
 :root {
-  --rs-serif: "Newsreader", "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  --rs-display: "Inter Tight", "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
   --rs-sans: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
-  --rs-display: var(--rs-serif);
   --rs-radius: 12px;
   --rs-radius-sm: 8px;
   --rs-ease: cubic-bezier(.2, .7, .2, 1);
@@ -152,7 +151,7 @@
   box-shadow: none;
 }
 .md-header--shadow { box-shadow: 0 1px 0 var(--rs-rule); }
-.md-header__title { font-family: var(--rs-serif); font-weight: 500; font-size: 1.02rem; letter-spacing: .01em; }
+.md-header__title { font-family: var(--rs-display); font-weight: 700; font-size: .92rem; letter-spacing: .02em; }
 .md-header__button.md-logo img, .md-header__button.md-logo svg { height: 1.5rem; }
 
 .md-tabs {
@@ -182,10 +181,10 @@
   color: var(--rs-ink-2);
   font-feature-settings: "cv11", "ss01";
 }
-.md-typeset h1, .md-typeset h2 { font-family: var(--rs-serif); color: var(--rs-ink); letter-spacing: -.012em; }
+.md-typeset h1, .md-typeset h2 { font-family: var(--rs-display); color: var(--rs-ink); letter-spacing: -.025em; }
 .md-typeset h3, .md-typeset h4 { font-family: var(--rs-sans); color: var(--rs-ink); letter-spacing: -.01em; }
-.md-typeset h1 { font-weight: 500; font-size: 2.3rem; line-height: 1.12; margin: 0 0 .9rem; }
-.md-typeset h2 { font-weight: 500; font-size: 1.5rem; line-height: 1.25; margin: 2.6rem 0 .8rem; }
+.md-typeset h1 { font-weight: 650; font-size: 2.15rem; line-height: 1.12; margin: 0 0 .9rem; }
+.md-typeset h2 { font-weight: 600; font-size: 1.38rem; line-height: 1.25; margin: 2.6rem 0 .8rem; }
 .md-typeset h3 { font-weight: 600; font-size: .98rem; margin: 1.9rem 0 .5rem; }
 .md-typeset h4 { font-weight: 600; font-size: .86rem; }
 .md-typeset strong { color: var(--rs-ink); font-weight: 600; }
@@ -203,7 +202,7 @@
   color: var(--rs-brand);
   margin: 0 0 .35rem;
 }
-.md-typeset .rs-lead, .md-typeset .rs-lead p { font-family: var(--rs-serif); font-size: 1.08rem; line-height: 1.6; color: var(--rs-ink-2); }
+.md-typeset .rs-lead, .md-typeset .rs-lead p { font-size: .94rem; line-height: 1.7; color: var(--rs-muted); }
 .md-typeset .rs-lead p:first-child { margin-top: 0; }
 
 .md-content__inner { max-width: 45rem; }

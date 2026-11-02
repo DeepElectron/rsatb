@@ -401,9 +401,73 @@ def fig_diamond_realspace():
     _save(fig, "tut_diamond_realspace.png")
 
 
+def fig_moire(theta_deg=3.48, half_width=120.0):
+    """Landing-page hero: twisted bilayer graphene, drawn bond by bond.
+
+    Pure geometry, no calculation: two graphene sheets (C-C 1.42 A) rotated
+    by +-theta/2. The moire pattern -- AA and AB stacking regions with period
+    a / (2 sin(theta/2)) -- emerges from the overlay of the two bond networks.
+    Rendered on a transparent background inside a circular field of view.
+    """
+    from matplotlib.collections import LineCollection
+
+    a_cc = 1.42
+    a1 = np.array([np.sqrt(3.0) * a_cc, 0.0])
+    a2 = np.array([np.sqrt(3.0) * a_cc / 2.0, 1.5 * a_cc])
+    basis = [np.zeros(2), np.array([0.0, a_cc])]
+    deltas = [np.array([0.0, a_cc]),
+              np.array([np.sqrt(3.0) * a_cc / 2.0, -a_cc / 2.0]),
+              np.array([-np.sqrt(3.0) * a_cc / 2.0, -a_cc / 2.0])]
+    n = int(half_width / a_cc) + 4
+    ij = np.array([(i, j) for i in range(-n, n + 1) for j in range(-n, n + 1)], dtype=float)
+    sites_a = ij[:, :1] * a1 + ij[:, 1:] * a2 + basis[0]
+
+    def layer(angle):
+        c, s = np.cos(angle), np.sin(angle)
+        rot = np.array([[c, -s], [s, c]])
+        segs = []
+        for d in deltas:          # every bond once: from each A site to its 3 B neighbours
+            start = sites_a @ rot.T
+            end = (sites_a + d) @ rot.T
+            segs.append(np.stack([start, end], axis=1))
+        segs = np.concatenate(segs)
+        mid = segs.mean(axis=1)
+        return segs[np.hypot(mid[:, 0], mid[:, 1]) < half_width]
+
+    from matplotlib.colors import to_rgb
+    from PIL import Image
+
+    theta = np.radians(theta_deg)
+    fig = plt.figure(figsize=(7.0, 7.0))
+    ax = fig.add_axes([0, 0, 1, 1])
+    ax.set_aspect("equal")
+    ax.axis("off")
+    for segs, colour in ((layer(-theta / 2), INK), (layer(theta / 2), ACCENT)):
+        # A soft circular field of view: full strength at the centre, fading out.
+        r = np.hypot(*segs.mean(axis=1).T) / half_width
+        fade = np.clip((1.0 - r) / 0.35, 0.0, 1.0) ** 1.5
+        rgba = np.zeros((len(segs), 4))
+        rgba[:, :3] = to_rgb(colour)
+        rgba[:, 3] = 0.9 * fade
+        ax.add_collection(LineCollection(segs, colors=rgba, linewidths=0.42))
+    ax.set_xlim(-half_width, half_width)
+    ax.set_ylim(-half_width, half_width)
+    OUT.mkdir(parents=True, exist_ok=True)
+    png = OUT / "home_moire.png"
+    fig.savefig(png, dpi=160, transparent=True, facecolor="none", bbox_inches=None)
+    plt.close(fig)
+    # Ship a compact WebP; the PNG is only an intermediate.
+    Image.open(png).save(OUT / "home_moire.webp", "WEBP", quality=74, method=6)
+    png.unlink()
+    period = 2.46 / (2 * np.sin(theta / 2))
+    print("wrote", (OUT / "home_moire.webp").relative_to(ROOT),
+          "theta={:.2f} deg, moire period {:.1f} A".format(theta_deg, period))
+
+
 if __name__ == "__main__":
     wanted = set(sys.argv[1:])
-    for name, fn in (("graphene_dos", fig_graphene_dos),
+    for name, fn in (("moire", fig_moire),
+                     ("graphene_dos", fig_graphene_dos),
                      ("graphene_transport", fig_graphene_transport),
                      ("strain", fig_strain),
                      ("diamond_optics", fig_diamond_optics),
