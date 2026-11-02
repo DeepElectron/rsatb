@@ -71,9 +71,9 @@
 /* Material sizes figures to their content; the layers here are absolute. */
 .md-typeset .rs-k-hero__art { display: block; width: 100%; max-width: none; aspect-ratio: 1 / 1; overflow: hidden; }
 
-/* Two specimens cross-fade: 0a (moire) and 0b (device). Paused on hover. */
-.rs-k-spec { position: absolute; inset: 0; animation: rs-k-spec 18s ease-in-out infinite; }
-.rs-k-spec--b { animation-delay: -9s; }
+/* Two specimens cross-fade, 5 s each with a 1 s fade: 0a (moire) and 0b (device). Paused on hover. */
+.rs-k-spec { position: absolute; inset: 0; animation: rs-k-spec 12s ease-in-out infinite; }
+.rs-k-spec--b { animation-delay: -6s; }
 .md-typeset .rs-k-spec img, .rs-k-spec .rs-device-labels {
   position: absolute; inset: 0; width: 100%; height: 100%; display: block;
 }
