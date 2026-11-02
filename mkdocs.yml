@@ -1,0 +1,282 @@
+site_name: RSATB
+site_description: >-
+  Electronic observables at million-atom scale. Random-state ab-initio tight
+  binding for sparse, non-orthogonal Hamiltonians.
+site_author: Zhanghao Zhouyin
+site_url: https://floatingcatty.github.io/rsatb/
+repo_url: https://github.com/floatingCatty/rsatb
+repo_name: floatingCatty/rsatb
+edit_uri: edit/main/docs/
+copyright: Copyright &copy; 2026 Zhanghao Zhouyin &middot; Apache License 2.0
+
+docs_dir: docs
+exclude_docs: |
+  /overrides/
+  /hooks/
+  /scripts/
+  /requirements.txt
+
+theme:
+  name: material
+  custom_dir: docs/overrides
+  logo: assets/images/logo.svg
+  favicon: assets/images/favicon.svg
+  font:
+    text: Inter
+    code: JetBrains Mono
+  icon:
+    repo: fontawesome/brands/github
+    admonition:
+      note: octicons/info-16
+      tip: octicons/light-bulb-16
+      warning: octicons/alert-16
+      example: octicons/beaker-16
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.tabs.sticky
+    - navigation.sections
+    - navigation.indexes
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - toc.follow
+    - search.suggest
+    - search.highlight
+    - search.share
+    - content.code.copy
+    - content.code.annotate
+    - content.tabs.link
+    - content.action.edit
+    - content.tooltips
+
+extra_css:
+  - assets/stylesheets/rsatb.css
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
+
+extra_javascript:
+  - assets/javascripts/katex.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js
+  - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js
+
+extra:
+  generator: false
+  social:
+    - icon: fontawesome/brands/github
+      link: https://github.com/floatingCatty/rsatb
+    - icon: fontawesome/brands/orcid
+      link: https://orcid.org/0000-0002-0954-1650
+
+hooks:
+  - docs/hooks/rsatb_docs.py
+
+plugins:
+  - search
+  - autorefs
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: ["."]
+          options:
+            docstring_style: google
+            docstring_options:
+              returns_named_value: false
+              warn_unknown_params: false
+              warn_missing_types: false
+            show_root_heading: true
+            show_source: false
+            show_signature_annotations: true
+            separate_signature: true
+            members_order: source
+            heading_level: 3
+            filters: ["!^_", "!^test_"]
+  - llmstxt:
+      markdown_description: >-
+        RSATB computes electronic observables (DOS, PDOS, LDOS, electron
+        density, DC/AC conductivity, mean-square displacement, quantum metric)
+        of large tight-binding and LCAO systems with random-state Chebyshev
+        methods. A calculation is one JSON input run with `rsatb run`; every
+        input key is documented in the Input reference, which is generated
+        from the same schema `rsatb check` validates against. Agents should
+        validate with `rsatb check --json` (exit 0 = valid) before `rsatb run`;
+        the JSON Schema is at /rsatb.schema.json.
+      full_output: llms-full.txt
+      # Explicit, in reading order. Globs would be expanded before the hook
+      # adds the generated input-reference pages, and would sort them.
+      sections:
+        Getting started:
+          - getting-started/quickstart.md: write, check and run a first input
+          - getting-started/concepts.md: the five sections of an input and the rules they keep
+          - getting-started/installation.md
+        Tutorials:
+          - tutorials/graphene-dos.md: sktb model, supercells, dos resolution, labels
+          - tutorials/lcao-diamond.md: lcao model, overlap, S^-1/2, spectral window
+          - tutorials/optics.md: ac task, dielectric function, absorption
+          - tutorials/transport.md: dc_spectrum and msd, 2D normalization
+          - tutorials/realspace.md: density and ldos on a grid, per-rank output
+          - tutorials/other-models.md: dftb and tb_file models
+          - tutorials/python.md: Python API parameter sweep
+        How-to guides:
+          - guides/agents.md: the machine-readable surface and a write-check-run loop
+          - guides/choose-model.md
+          - guides/hamiltonian-files.md: DeePTB, ABACUS, NextHam, spin-orbit
+          - guides/convergence.md
+          - guides/parallel.md
+          - guides/cost.md
+          - guides/results.md
+        Input reference:
+          - reference/input/index.md: top-level keys and format rules
+          - reference/input/structure.md
+          - reference/input/model/index.md
+          - reference/input/model/sktb.md
+          - reference/input/model/sk-parameters.md
+          - reference/input/model/radial.md
+          - reference/input/model/lcao.md
+          - reference/input/model/dftb.md
+          - reference/input/model/tb_file.md
+          - reference/input/run.md
+          - reference/input/tasks/index.md: which task needs which operator
+          - reference/input/tasks/energy_bounds.md
+          - reference/input/tasks/dos.md
+          - reference/input/tasks/pdos.md
+          - reference/input/tasks/occupation.md
+          - reference/input/tasks/fermi_level.md
+          - reference/input/tasks/ldos.md
+          - reference/input/tasks/density.md
+          - reference/input/tasks/dc.md
+          - reference/input/tasks/dc_spectrum.md
+          - reference/input/tasks/ac.md
+          - reference/input/tasks/msd.md
+          - reference/input/tasks/quantum_metric.md
+          - reference/input/output.md
+        Other reference:
+          - reference/outputs.md: array names, shapes and units of every result
+          - reference/cli.md
+          - reference/python.md
+        Theory:
+          - theory/stochastic-trace.md
+          - theory/chebyshev.md
+          - theory/overlap.md
+          - theory/linear-response.md
+
+markdown_extensions:
+  - abbr
+  - admonition
+  - attr_list
+  - def_list
+  - footnotes
+  - md_in_html
+  - tables
+  - toc:
+      permalink: "#"
+      toc_depth: 3
+  - pymdownx.arithmatex:
+      generic: true
+  - pymdownx.betterem
+  - pymdownx.caret
+  - pymdownx.details
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.keys
+  - pymdownx.mark
+  - pymdownx.snippets:
+      base_path: [".", "docs"]
+      check_paths: true
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.tasklist:
+      custom_checkbox: true
+  - pymdownx.tilde
+
+nav:
+  - Home: index.md
+  - Getting started:
+      - getting-started/index.md
+      - Installation: getting-started/installation.md
+      - Quick start: getting-started/quickstart.md
+      - Anatomy of an input: getting-started/concepts.md
+  - Tutorials:
+      - tutorials/index.md
+      - 1 · Graphene DOS: tutorials/graphene-dos.md
+      - 2 · Non-orthogonal LCAO: tutorials/lcao-diamond.md
+      - 3 · Optical response: tutorials/optics.md
+      - 4 · Transport and diffusion: tutorials/transport.md
+      - 5 · Real-space maps: tutorials/realspace.md
+      - 6 · DFTB and file Hamiltonians: tutorials/other-models.md
+      - 7 · Scripting with Python: tutorials/python.md
+  - How-to guides:
+      - guides/index.md
+      - Choose a model: guides/choose-model.md
+      - Import DFT Hamiltonians: guides/hamiltonian-files.md
+      - Converge a calculation: guides/convergence.md
+      - Run on a cluster: guides/parallel.md
+      - Estimate cost first: guides/cost.md
+      - Read and plot results: guides/results.md
+      - Drive RSATB from an agent: guides/agents.md
+  - Reference:
+      - reference/index.md
+      - Command line: reference/cli.md
+      - Input file:
+          - reference/input/index.md
+          - structure: reference/input/structure.md
+          - model:
+              - reference/input/model/index.md
+              - sktb: reference/input/model/sktb.md
+              - lcao: reference/input/model/lcao.md
+              - dftb: reference/input/model/dftb.md
+              - tb_file: reference/input/model/tb_file.md
+              - SK parameters: reference/input/model/sk-parameters.md
+              - radial functions: reference/input/model/radial.md
+          - run: reference/input/run.md
+          - tasks:
+              - reference/input/tasks/index.md
+              - energy_bounds: reference/input/tasks/energy_bounds.md
+              - dos: reference/input/tasks/dos.md
+              - pdos: reference/input/tasks/pdos.md
+              - ldos: reference/input/tasks/ldos.md
+              - density: reference/input/tasks/density.md
+              - occupation: reference/input/tasks/occupation.md
+              - fermi_level: reference/input/tasks/fermi_level.md
+              - dc: reference/input/tasks/dc.md
+              - dc_spectrum: reference/input/tasks/dc_spectrum.md
+              - ac: reference/input/tasks/ac.md
+              - msd: reference/input/tasks/msd.md
+              - quantum_metric: reference/input/tasks/quantum_metric.md
+          - output: reference/input/output.md
+      - Output files: reference/outputs.md
+      - Python API: reference/python.md
+  - Theory:
+      - theory/index.md
+      - Random-state traces: theory/stochastic-trace.md
+      - Chebyshev expansions: theory/chebyshev.md
+      - Non-orthogonal bases: theory/overlap.md
+      - Linear response: theory/linear-response.md
+  - About:
+      - Citing RSATB: about/citation.md

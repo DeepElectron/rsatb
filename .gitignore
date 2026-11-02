@@ -204,3 +204,8 @@ examples/publication/**/*.pdf
 # Curated publication figures used by the repository landing page.
 !doc/fig/
 !doc/fig/*.png
+
+# Documentation site sources: its figures and stylesheet are hand-maintained
+# sources, not build output (the built site goes to /site).
+!docs/**/*.png
+!docs/**/*.css

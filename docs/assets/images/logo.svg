@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-label="RSATB">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#4fd1e0"/>
+      <stop offset="1" stop-color="#0b7f91"/>
+    </linearGradient>
+  </defs>
+  <rect x="2" y="2" width="60" height="60" rx="14" fill="#0b1324"/>
+  <!-- a density of states: linear Dirac dip, two van Hove peaks -->
+  <path d="M9 48 C14 47 16 44 18.5 36 C19.6 31 20.4 22 21.6 22 C22.8 22 23.6 31 25 36 C27.5 43 29.5 47 32 48 C34.5 47 36.5 43 39 36 C40.4 31 41.2 22 42.4 22 C43.6 22 44.4 31 45.5 36 C48 44 50 47 55 48"
+        fill="none" stroke="url(#g)" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+  <line x1="9" y1="52" x2="55" y2="52" stroke="#39465c" stroke-width="1.6" stroke-linecap="round"/>
+  <circle cx="32" cy="48" r="2.4" fill="#f0b44c"/>
+</svg>
