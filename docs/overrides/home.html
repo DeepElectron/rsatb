@@ -39,10 +39,9 @@
       <p class="rs-k-lede">
         RSATB computes densities of states, conductivities, optical spectra and
         real-space electron densities from tight-binding and DFT Hamiltonians,
-        using stochastic trace estimation and Chebyshev expansions. Systems of
-        up to 1,004,760 atoms have been computed &mdash; the size of atomistic
-        device models. It runs serially or with MPI and OpenMP across cluster
-        nodes.
+        using stochastic trace estimation and Chebyshev expansions. The
+        largest system computed so far has 1,004,760 atoms. RSATB runs
+        serially or with MPI and OpenMP across cluster nodes.
       </p>
       <div class="rs-k-actions">
         <a class="rs-k-btn" href="{{ 'getting-started/quickstart/' | url }}">Get started {{ arrow() }}</a>
@@ -117,7 +116,7 @@
       <div class="rs-k-band__text">
         <div>
           <p class="rs-k-label">Method</p>
-          <h2>Spectra without diagonalization</h2>
+          <h2>Spectra from Chebyshev moments</h2>
         </div>
         <div>
           <p>The density of states, conductivities and optical spectra are
@@ -135,10 +134,9 @@
     <header class="rs-k-sec__head">
       <div>
         <p class="rs-k-label">Architecture</p>
-        <h2>Three numerical components,<br>one setup per input.</h2>
+        <h2>Three numerical components</h2>
       </div>
-      <p>Every supported Hamiltonian and every observable goes through the
-      same three components.</p>
+      <p>All model types and all tasks use the same three components.</p>
     </header>
     <div class="rs-k-sys">
       <div class="rs-k-tree" aria-hidden="true">
@@ -191,9 +189,9 @@
     <header class="rs-k-sec__head">
       <div>
         <p class="rs-k-label">Observables</p>
-        <h2>Twelve task types.</h2>
+        <h2>Twelve task types</h2>
       </div>
-      <p>Several observables can be requested in one run.</p>
+      <p>One input can contain several tasks.</p>
     </header>
     <div class="rs-k-index">
       <div>
@@ -219,11 +217,11 @@
     <header class="rs-k-sec__head">
       <div>
         <p class="rs-k-label">Validation</p>
-        <h2>Compared with exact<br>diagonalization.</h2>
+        <h2>Comparison with exact<br>diagonalization</h2>
       </div>
-      <p>Diamond, silicon and aluminium: relative errors below 1&nbsp;% for the
-      density of states and below 10&nbsp;% for all six observables. Scaling
-      measured up to 1,004,760 atoms.</p>
+      <p>For diamond, silicon and aluminium, the relative error is below
+      1&nbsp;% for the density of states and below 10&nbsp;% for the other
+      observables. Scaling was measured up to 1,004,760 atoms.</p>
     </header>
     <div class="rs-k-tabs">
       <input type="radio" name="rs-k-tab" id="rs-k-t1" checked>
@@ -256,7 +254,7 @@
   <section class="rs-k-close rs-bleed">
     <div class="rs-k-close__inner">
       <div>
-        <h2>Install RSATB and run<br>the first tutorial.</h2>
+        <h2>Install RSATB and run<br>the first tutorial</h2>
         <p class="rs-k-mono">Python 3.9+ &middot; C++17 &middot; MPI + OpenMP &middot; Apache-2.0
           &middot; developed by <a href="https://floatingcatty.github.io/">Zhanghao Zhouyin</a>, McGill University
           &middot; <a href="{{ 'about/citation/' | url }}">cite</a></p>

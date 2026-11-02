@@ -46,34 +46,32 @@ def _bool(doc, **kwargs):
 VEC3 = Array(_num("Cartesian or fractional component."), "Three components.", length=3)
 
 SPIN = _str(
-    "How spin enters the basis. 'none' is one channel per orbital; 'collinear' "
-    "keeps one channel but two independent spin blocks; 'noncollinear' and "
-    "'spinorbit' double the basis size.",
+    "How spin is represented in the basis. 'none': one state per orbital. "
+    "'collinear': two independent spin blocks. 'noncollinear' and 'spinorbit': "
+    "every orbital carries both spin components, which doubles the basis.",
     choices=("none", "collinear", "noncollinear", "spinorbit"))
 
 AXIS = _str(
-    "Cell axes spanning the normalization volume in the transport prefactor. "
-    "'abc' is the full cell volume; a cyclic pair ('ab', 'bc', 'ca') the area "
-    "of that lattice plane, for 2D systems padded with vacuum; a single "
-    "letter that lattice vector's length, for 1D. The conductivity tensor "
-    "itself always keeps all six Cartesian components.",
+    "The cell axes that define the volume the conductivity is divided by. "
+    "'abc': the cell volume. A pair ('ab', 'bc', 'ca'): the area of that "
+    "lattice plane, for 2D systems with vacuum in the cell. A single axis: "
+    "the length of that lattice vector, for 1D systems. All six Cartesian "
+    "components of the tensor are computed in each case.",
     choices=("abc", "ab", "bc", "ca", "a", "b", "c"))
 
 HAMILTONIAN_FILE = Obj(
-    "A precomputed real-space Hamiltonian H(R) and the file layout it uses.",
+    "A file holding a real-space Hamiltonian H(R), and its format.",
     {
         "path": F(_path("Path to the Hamiltonian file, relative to the input file's "
                         "directory unless absolute."), required=True),
-        "format": F(_str("On-disk layout. 'deeptb' is HDF5 with a single group '0' "
-                         "holding datasets named 'i_j_Rx_Ry_Rz'. 'abacus' is ABACUS's "
-                         "sparse H(R) from out_mat_hs2 (hrs1_nao.csr; data-HR-sparse_SPIN0.csr "
-                         "in older versions), text or binary, "
-                         "in Rydberg. 'nextham' is NextHam's post-processed "
-                         "HR_atom_pairs.h5. Both of the latter are in ABACUS's orbital "
-                         "order, which is converted using the orbital files, so they "
-                         "need the 'lcao' model, a structure listing the atoms in "
-                         "ABACUS's order, and spin 'spinorbit' for an nspin=4 "
-                         "(spin-orbit) run, which gives a complex H(R).",
+        "format": F(_str("File format. 'deeptb': DeePTB HDF5, with one group '0' "
+                         "holding datasets named 'i_j_Rx_Ry_Rz'. 'abacus': the sparse "
+                         "H(R) that ABACUS writes with out_mat_hs2 (hrs1_nao.csr, or "
+                         "data-HR-sparse_SPIN0.csr in older versions), as text or "
+                         "binary. 'nextham': NextHam's HR_atom_pairs.h5. The 'abacus' "
+                         "and 'nextham' formats need an 'lcao' model, a structure that "
+                         "lists the atoms in the order of the ABACUS calculation, and "
+                         "spin 'spinorbit' for a spin-orbit (nspin = 4) calculation.",
                          choices=("deeptb", "abacus", "nextham")), default="deeptb"),
     })
 
@@ -96,8 +94,7 @@ def _structure_checks(value: dict, path: str) -> List[Issue]:
                     "has {} entries but there are {} positions".format(
                         len(value[key]), n_atom)))
         if "symbols" in value and "numbers" in value:
-            issues.append(Issue(path, "'symbols' and 'numbers' are two spellings of the "
-                                      "same thing; give one"))
+            issues.append(Issue(path, "give either 'symbols' or 'numbers', not both"))
     else:
         for key in ("cell", "symbols", "numbers"):
             if key in value:
@@ -110,28 +107,28 @@ def _structure_checks(value: dict, path: str) -> List[Issue]:
 
 
 STRUCTURE = Obj(
-    "Where the atoms are. Read from a file, or written inline.\n\n"
-    "Coordinates are used exactly as given: nothing is wrapped, sorted or "
-    "renumbered on the way in, because atom order and coordinates are what a "
-    "Hamiltonian file's own indexing and R-vector convention refer to. Atoms "
-    "may sit outside the cell.",
+    "The atomic structure, read from a file or written in the input.\n\n"
+    "Atoms are used in the given order and at the given positions; they are "
+    "not sorted, renumbered or wrapped into the cell, because Hamiltonian "
+    "files refer to atoms by their order and position. Atoms may lie outside "
+    "the cell.",
     {
-        "file": F(_path("Structure file. POSCAR/.vasp, .xyz and .cif are read by "
-                        "extension unless 'format' says otherwise.")),
-        "format": F(_str("Explicit reader for 'file'; empty means infer from the "
-                         "extension."), default=""),
+        "file": F(_path("Structure file: POSCAR (.vasp), .xyz or .cif. The format "
+                        "is taken from the extension unless 'format' is given.")),
+        "format": F(_str("Format of 'file'. Empty: taken from the extension."),
+                    default=""),
         "positions": F(Array(VEC3, "Cartesian positions in Angstrom, one triple per atom.")),
         "symbols": F(Array(_str("Chemical symbol."), "Chemical symbol per atom, e.g. "
                                                      "[\"C\", \"C\"].")),
         "numbers": F(Array(_int("Atomic number."), "Atomic number per atom; an "
-                                                   "alternative spelling of 'symbols'.")),
+                                                   "alternative to 'symbols'.")),
         "cell": F(Array(VEC3, "Lattice vectors in Angstrom, as three rows.", length=3)),
         "pbc": F(Array(_bool("Periodic along this lattice vector."),
-                       "Periodicity per lattice vector.", length=3),
+                       "Periodicity along each lattice vector.", length=3),
                  default=[True, True, True]),
         "supercell": F(Array(_int("Tiling factor.", minimum=1),
-                             "Integer tiling applied before setup. [1, 1, 1] leaves the "
-                             "cell alone.", length=3),
+                             "Number of repetitions of the cell along each lattice "
+                             "vector. [1, 1, 1] uses the cell as given.", length=3),
                        default=[1, 1, 1]),
     },
     require_exactly_one=[["file", "positions"]],
@@ -186,8 +183,7 @@ def _radial_spline_checks(value: dict, path: str) -> List[Issue]:
         if any(b <= a for a, b in zip(value["r"], value["r"][1:])):
             issues.append(Issue(join_path(path, "r"), "distances must be strictly increasing"))
         if "file" in value:
-            issues.append(Issue(path, "'file' and inline 'r'/'values' are two ways to say "
-                                      "the same thing; give one"))
+            issues.append(Issue(path, "give either 'file' or 'r' and 'values', not both"))
     return issues
 
 
@@ -198,8 +194,8 @@ def _radial_exp_poly_checks(value: dict, path: str) -> List[Issue]:
     return []
 
 
-R_CUT = _num("Hard cutoff. The channel is zero beyond it, and the atomic graph "
-             "is sized from the largest cutoff of each species pair.",
+R_CUT = _num("Cutoff distance. The channel is zero beyond it. Neighbours are "
+             "found up to the largest cutoff of each species pair.",
              unit="Angstrom", exclusive_minimum=0.0)
 
 RADIAL = Union(
@@ -207,7 +203,7 @@ RADIAL = Union(
     "kind",
     {
         "constant": Obj(
-            "A constant value out to the cutoff. Convenient for a single "
+            "A constant value up to the cutoff, for example a single "
             "nearest-neighbour hopping.",
             {
                 "value": F(_num("Channel value.", unit="eV for H, dimensionless for S"),
@@ -239,8 +235,9 @@ RADIAL = Union(
                 "r_cut": F(R_CUT, required=True),
                 "lambda": F(_num("Exponential decay rate.", unit="1/Angstrom", minimum=0.0),
                             default=0.0),
-                "r_on": F(_num("Distance the cosine taper starts at. 0 means the value "
-                               "is cut abruptly at r_cut.", unit="Angstrom", minimum=0.0),
+                "r_on": F(_num("Distance at which the cosine taper starts. 0: no taper; "
+                               "the value drops to zero at r_cut.", unit="Angstrom",
+                               minimum=0.0),
                           default=0.0),
             },
             checks=[_radial_exp_poly_checks],
@@ -250,10 +247,9 @@ RADIAL = Union(
     tag_doc="Which radial form the remaining keys describe.")
 
 SK_PARAMETERS = Obj(
-    "Onsite energies and pair channels for ONE matrix -- H or S.\n\n"
-    "H and S are separate objects, so there is nothing to disambiguate: an "
-    "SKTB model with no 'overlap' is orthogonal, and one with an 'overlap' is "
-    "not.",
+    "Onsite energies and two-centre channels of one matrix, H or S.\n\n"
+    "The Hamiltonian and the overlap are given as separate objects. An sktb "
+    "model without 'overlap' is orthogonal.",
     {
         "onsite": F(Mapping(
             Mapping(_num("Onsite value.", unit="eV for H, dimensionless for S"),
@@ -273,9 +269,11 @@ SK_PARAMETERS = Obj(
 
 BASIS = Mapping(
     Array(_str("Orbital or shell label."),
-          "Orbitals of this species. A shell alias expands: \"p\" is py, pz, px.",
+          "Orbitals of this species. A shell label stands for its orbitals: "
+          "\"p\" is py, pz, px.",
           min_length=1),
-    "The basis, per species. \"C\": [\"pz\"] is one orbital per carbon.",
+    "The orbitals of each species. \"C\": [\"pz\"] gives one orbital per carbon "
+    "atom.",
     key_doc="species")
 
 
@@ -310,18 +308,17 @@ def _sktb_basis_crosscheck(value: dict, path: str) -> List[Issue]:
 
 
 MODEL = Union(
-    "What the Hamiltonian is. Four families, each with one story.\n\n"
-    "The model reports the basis it works in, so orbital counts and graph "
-    "cutoffs are never input: they are read from the parameters or the basis "
-    "files. 'tb_file' is the one exception, because the supported file formats "
-    "carry no basis header.",
+    "The Hamiltonian. 'type' selects one of four model types.\n\n"
+    "Orbital counts and cutoff radii are read from the parameters or from the "
+    "orbital files. Only 'tb_file' needs them in the input, because its file "
+    "formats do not record them.",
     "type",
     {
         "sktb": Obj(
-            "Slater-Koster model built from radial parameters you write.\n\n"
-            "Orthogonal unless 'overlap' is given. An orthogonal SKTB model "
-            "supplies the velocity and position operators for free, so it can "
-            "run every observable.",
+            "A Slater-Koster model with parameters written in the input.\n\n"
+            "The model is orthogonal unless 'overlap' is given. An orthogonal "
+            "sktb model provides the velocity and position operators, so all "
+            "tasks except the real-space maps (ldos, density) are available.",
             {
                 "basis": F(BASIS, required=True),
                 "hamiltonian": F(SK_PARAMETERS, required=True),
@@ -331,74 +328,75 @@ MODEL = Union(
             },
             checks=[_sktb_basis_crosscheck]),
         "lcao": Obj(
-            "A precomputed Hamiltonian plus the numerical atomic orbitals it "
-            "was written in.\n\n"
-            "An LCAO basis is non-orthogonal, so the orbital files are "
-            "required, not optional: they are what the overlap is computed "
-            "from. The velocity is the commutator i[H, r], built from the "
-            "orbitals' own dipole integrals, so it is always available. "
-            "Orbital counts and cutoff radii are read from the .orb files.",
+            "A Hamiltonian computed by another program (DeePTB, ABACUS or "
+            "NextHam), together with the numerical atomic orbitals it was "
+            "computed in.\n\n"
+            "The overlap matrix and the velocity operator are computed from the "
+            "orbital files. Orbital counts and cutoff radii are read from the "
+            ".orb files.",
             {
                 "hamiltonian": F(HAMILTONIAN_FILE, required=True),
                 "orbitals": F(Obj(
-                    "Numerical atomic orbital files, one per species in "
-                    "ascending-Z order.",
+                    "Numerical atomic orbital files, one per species, in "
+                    "order of increasing atomic number.",
                     {
                         "names": F(Array(_str("File name."), "One .orb file per species.",
                                          min_length=1), required=True),
-                        "dir": F(_path("Directory the names are resolved against."),
+                        "dir": F(_path("Directory containing the files."),
                                  default=""),
                     }), required=True),
                 "pseudopotentials": F(Obj(
                     "Pseudopotential files, in the same order as the orbital "
-                    "files. Optional and not needed for normal use; they "
-                    "enable an alternative velocity operator used for "
-                    "testing.",
+                    "files. Not needed for normal use; they enable an "
+                    "alternative velocity operator used for testing.",
                     {
                         "names": F(Array(_str("File name."), "One .upf file per species."),
                                    default=[]),
-                        "dir": F(_path("Directory the names are resolved against."),
+                        "dir": F(_path("Directory containing the files."),
                                  default=""),
                     }), default={}),
                 "spin": F(SPIN, default="none"),
-                "log_file": F(_path("Log file of the orbital-integral calculation."),
+                "log_file": F(_path("Log file written while the orbital integrals are "
+                                    "computed."),
                               default="op2c.log"),
             }),
         "dftb": Obj(
-            "DFTB Slater-Koster tables read from a directory of .skf files.\n\n"
-            "DFTB data always carries both H and S, so the model is "
-            "non-orthogonal. The basis is declared rather than inferred: a "
-            ".skf tabulates all ten channels up to d whether or not the "
-            "parameterization uses them.",
+            "DFTB parameters read from a directory of .skf files.\n\n"
+            "DFTB parameters include an overlap, so the model is "
+            "non-orthogonal. The basis must be given, because a .skf file "
+            "tabulates all channels up to d whether or not they are used.",
             {
                 "skf_dir": F(_path("Directory holding the .skf files, one per ordered "
                                    "species pair (C-C.skf, C-H.skf, H-C.skf, ...)."),
                              required=True),
                 "basis": F(BASIS, required=True),
                 "heteronuclear": F(_str(
-                    "What to do with a mixed-shell channel whose reading the "
-                    "declared bases do not determine. 'reject_ambiguous' stops "
-                    "with an error; this only occurs when both species have both "
-                    "shells of the channel.",
+                    "How to read a channel between two different shells when "
+                    "the bases do not determine which shell belongs to which "
+                    "species. This happens only when both species have both "
+                    "shells. 'reject_ambiguous' stops with an error.",
                     choices=("reject_ambiguous", "assume_lower_shell_on_row_species")),
                     default="reject_ambiguous"),
                 "spin": F(SPIN, default="none"),
             }),
         "tb_file": Obj(
-            "An orthogonal H(R) read straight from a file -- what a DeePTB "
-            "Slater-Koster export produces.\n\n"
-            "The one model that must be told its basis: the supported formats "
-            "carry no basis header, so orbital counts cannot be derived.",
+            "An orthogonal H(R) read from a file, such as a DeePTB "
+            "Slater-Koster export.\n\n"
+            "The basis must be given, because these files do not record "
+            "orbital counts.",
             {
                 "hamiltonian": F(HAMILTONIAN_FILE, required=True),
                 "type_symbols": F(Array(_str("Chemical symbol."),
-                                        "Species, in the type order the file indexes atoms by.",
+                                        "Species, in the order the file uses for atom types.",
                                         min_length=1), required=True),
                 "type_norb": F(Array(_int("Orbital count.", minimum=1),
-                                     "Orbitals per species, spin-expanded.", min_length=1),
+                                     "Number of orbitals of each species, including spin.",
+                                     min_length=1),
                                required=True),
                 "cutoff_radius": F(Array(_num("Cutoff.", unit="Angstrom", exclusive_minimum=0.0),
-                                         "Per species: an edge exists iff d <= r_i + r_j.",
+                                         "Cutoff radius of each species. Two atoms are "
+                                         "neighbours if their distance is at most "
+                                         "r_i + r_j.",
                                          min_length=1), required=True),
                 "spin": F(SPIN, default="none"),
             },
@@ -435,54 +433,53 @@ def _bounds_checks(value: dict, path: str) -> List[Issue]:
 
 
 BOUNDS = Obj(
-    "The spectral window the Chebyshev expansions are scaled to.\n\n"
-    "Every observable is defined on the open interval: energies at or beyond "
-    "the endpoints reconstruct to zero.",
+    "The energy window that the Chebyshev expansions are scaled to.\n\n"
+    "The window must contain the whole spectrum. Results at or beyond its "
+    "endpoints are zero.",
     {
-        "mode": F(_str("'auto' estimates the window from the extreme eigenvalues "
-                       "during setup. 'fixed' uses the given window and skips the "
-                       "estimate; it must contain the whole spectrum.",
+        "mode": F(_str("'auto': estimate the window from the extreme eigenvalues "
+                       "during setup. 'fixed': use 'energy' and skip the estimate; "
+                       "the window must then contain the whole spectrum.",
                        choices=("auto", "fixed")), default="auto"),
-        "energy": F(Array(_num("Energy.", unit="eV"), "[emin, emax], with mode 'fixed'.",
+        "energy": F(Array(_num("Energy.", unit="eV"), "[emin, emax], used with mode 'fixed'.",
                           length=2)),
-        "zero_tol": F(_num("Hamiltonian norm below which the window estimate "
-                           "treats the operator as zero.", minimum=0.0),
+        "zero_tol": F(_num("If the norm of the Hamiltonian is below this value, the "
+                           "estimate treats it as zero.", minimum=0.0),
                       default=1e-12),
-        "max_matvecs": F(_int("Cap on matrix-vector products in the estimate.", minimum=0),
+        "max_matvecs": F(_int("Maximum number of matrix-vector products in the estimate.",
+                              minimum=0),
                          default=10000),
     },
     checks=[_bounds_checks])
 
 PRECONDITIONER = Obj(
-    "How S is preconditioned for the iterative solves.",
+    "How the overlap matrix S of a non-orthogonal model is handled.",
     {
         "operator_form": F(_str(
-            "Which operator the Chebyshev expansions apply. 'sandwich' is "
-            "Z H Z with Z = S^-1/2: Hermitian, and S is released after setup "
-            "to save memory, so observables that need S are unavailable. "
-            "'solve', the default, keeps S and applies S^-1 H with a "
-            "preconditioned conjugate-gradient solve at each step; it works "
-            "when Z would be too dense to store.",
+            "The operator that the Chebyshev expansions apply. 'solve' "
+            "(default): S^-1 H, with S^-1 applied by a preconditioned "
+            "conjugate-gradient solve at each step. 'sandwich': Z H Z with "
+            "Z = S^-1/2, which must be stored; S is released after setup, so "
+            "tasks that need S are not available.",
             choices=("sandwich", "solve")), default="solve"),
-        "tol": F(_num("Convergence tolerance of the inverse-square-root iteration.",
+        "tol": F(_num("Convergence tolerance of the S^-1/2 iteration.",
                       exclusive_minimum=0.0), default=1e-7),
-        "sptol": F(_num("Sparsity threshold: entries below it are dropped from the "
-                        "preconditioner.", minimum=0.0), default=1e-5),
+        "sptol": F(_num("Entries of S^-1/2 smaller than this are dropped.",
+                        minimum=0.0), default=1e-5),
         "maxiter": F(_int(
-            "Maximum number of Newton-Schulz iterations refining S^-1/2. 0, "
-            "the default, uses the sparse graph-local approximation without "
-            "refinement as the preconditioner of operator_form 'solve'; it "
-            "stays sparse, so it is the setting that scales to large systems. "
-            "Where a refined, denser S^-1/2 still fits in memory, 'sandwich' "
-            "with about 20 iterations is faster, and 'sandwich' needs them: it "
-            "uses S^-1/2 directly.",
+            "Number of Newton-Schulz iterations that refine S^-1/2. 0 "
+            "(default): the sparse approximation of S^-1/2 is used without "
+            "refinement, as the preconditioner of the 'solve' form; its memory "
+            "grows linearly with the number of atoms. The 'sandwich' form "
+            "applies S^-1/2 directly and needs refinement, typically 20 "
+            "iterations; where the refined S^-1/2 fits in memory, it is faster "
+            "than 'solve'.",
             minimum=0), default=0),
     })
 
 KPOINTS = Choice(
-    "Which k-points to sample, in fractional coordinates.\n\n"
-    "Write them out, or describe a mesh or a line. Observables return one row "
-    "per k-point, in the order given here.",
+    "The k-points, in fractional coordinates: a list, a mesh or a path.\n\n"
+    "Results have one row per k-point, in this order.",
     {
         "array": Array(VEC3, "Explicit fractional k-points."),
         "object": Obj(
@@ -491,11 +488,13 @@ KPOINTS = Choice(
                 "mesh": F(Array(_int("Divisions along this reciprocal vector.", minimum=1),
                                 "Gamma-centred mesh divisions.", length=3)),
                 "shift": F(Array(_num("Fractional offset."),
-                                 "Offset added to every mesh point.", length=3),
+                                 "Offset added to each mesh point.", length=3),
                            default=[0.0, 0.0, 0.0]),
-                "line": F(Array(VEC3, "Vertices of a path through the zone.", min_length=2)),
-                "points_per_segment": F(_int("Points on each segment of 'line', endpoints "
-                                             "included; shared vertices are not repeated.",
+                "line": F(Array(VEC3, "Vertices of a path through the Brillouin zone.",
+                                min_length=2)),
+                "points_per_segment": F(_int("Points on each segment of 'line', including "
+                                             "its ends; a vertex shared by two segments "
+                                             "appears once.",
                                              minimum=2), default=11),
             },
             require_exactly_one=[["mesh", "line"]],
@@ -503,17 +502,17 @@ KPOINTS = Choice(
     })
 
 RUN = Obj(
-    "What the calculation does, independent of which model supplies the "
-    "operators.",
+    "Settings shared by all tasks: k-points, k-point parallelization, random "
+    "vectors, the energy window and the handling of the overlap.",
     {
         "npar": F(_int(
-            "How many k-point groups the MPI processes are split into. "
-            "Groups work on different k-points; the processes within a group "
-            "divide the atoms. Every process must own at least one atom, so "
-            "extra processes are best put into more groups.",
+            "Number of k-point groups the MPI processes are divided into. "
+            "Groups work on different k-points; the processes in a group "
+            "divide the atoms. Each process must own at least one atom, so for "
+            "a small cell with many processes, use more groups.",
             minimum=1), default=1),
-        "nsamples": F(_int("Random vectors in the stochastic trace. The statistical "
-                           "error falls as 1/sqrt(nsamples * N_orbital).", minimum=1),
+        "nsamples": F(_int("Number of random vectors. The statistical error falls as "
+                           "1/sqrt(nsamples * N_orbital).", minimum=1),
                       default=1),
         "kpoints": F(KPOINTS, default=[[0.0, 0.0, 0.0]]),
         "bounds": F(BOUNDS, default={}),
@@ -523,19 +522,19 @@ RUN = Obj(
 
 # --- tasks -----------------------------------------------------------------
 
-LABEL = F(_str("Name this result is stored under. Defaults to the task type, with "
-               "an index appended when a type appears more than once."))
+LABEL = F(_str("Name of this result in the output. Default: the task type, with an "
+               "index added if the type appears more than once."))
 
-N_MOMENTS = _int("Chebyshev moments. The energy resolution is roughly "
+N_MOMENTS = _int("Number of Chebyshev moments. The energy resolution is about "
                  "pi * (emax - emin) / (2 * n_moments).", minimum=1)
 
-KERNEL = _str("Chebyshev summation rule. 'jackson' is positive and pointwise "
-              "clean; 'costaper' has a higher-order bias decay and is the "
-              "better choice when the spectrum is only used inside an energy "
-              "integral.", choices=("jackson", "costaper"))
+KERNEL = _str("Kernel applied to the Chebyshev moments. 'jackson': the result is "
+              "positive. 'costaper': a smaller bias, better when the result is "
+              "only used inside an integral over energy.",
+              choices=("jackson", "costaper"))
 
-FORMULATION = _str("Kubo formulation. 'greenwood' is the Fermi-surface term; "
-                   "'bastin' adds the Fermi-sea contribution.",
+FORMULATION = _str("Kubo formulation. 'greenwood': the Fermi-surface term. "
+                   "'bastin': also the Fermi-sea term.",
                    choices=("greenwood", "bastin"))
 
 ENERGY_GRID = Choice(
@@ -553,220 +552,194 @@ ENERGY_GRID = Choice(
     })
 
 TASK = Union(
-    "One observable to compute. Tasks run in order against the same setup, so "
-    "asking for several costs one setup, not several.",
+    "One calculation. Tasks are computed in order and share one setup.",
     "type",
     {
         "energy_bounds": Obj(
-            "Report the spectral window and stop. Cheap way to check that a "
-            "model and structure set up at all.",
+            "Report the energy window. Used to check that the model and "
+            "structure set up correctly.",
             {"label": LABEL}),
         "dos": Obj(
-            "Density of states by stochastic Chebyshev expansion.",
+            "Density of states.",
             {
                 "label": LABEL,
-                "dE": F(_num("Target energy resolution. The number of "
-                             "Chebyshev moments is derived from the "
-                             "spectral span at run time; the cost is "
-                             "proportional to span/dE.", unit="eV",
+                "dE": F(_num("Energy resolution. The number of Chebyshev "
+                             "moments follows from the energy window; the "
+                             "cost is proportional to (emax - emin) / dE.",
+                             unit="eV",
                              exclusive_minimum=0.0), default=0.1),
-                "method": F(_str("Broadening kernel; both use the same "
-                                 "Chebyshev moments. 'kpm' applies the "
-                                 "Jackson kernel and is strictly positive; "
-                                 "'corr' reconstructs the time correlation "
-                                 "function from the moments and applies a "
-                                 "Hann window.",
+                "method": F(_str("How the result is formed from the Chebyshev "
+                                 "moments. 'kpm': the Jackson kernel; the "
+                                 "result is positive. 'corr': a Hann window "
+                                 "on the time correlation function "
+                                 "reconstructed from the moments.",
                                  choices=("kpm", "corr")), default="kpm"),
             }),
         "pdos": Obj(
-            "Projected density of states, resolved onto orbital groups by a "
-            "per-group reduction of the same stochastic Chebyshev run the dos "
-            "task performs -- every group costs one DOS run, and the group "
-            "rows sum to the returned total bin by bin.\n\n"
-            "The population convention follows the operator form and is "
-            "reported in the result rather than chosen: the sandwich form "
-            "projects onto Lowdin orbitals (non-negative); the solve form "
-            "onto Mulliken populations, which may legitimately be negative.",
+            "Density of states projected onto groups of orbitals. Each group "
+            "costs about as much as one dos task, and the groups sum to the "
+            "total.\n\n"
+            "The projection follows the operator form: 'sandwich' projects "
+            "onto Lowdin orbitals (non-negative); 'solve' gives Mulliken "
+            "populations, which can be negative. The result records which "
+            "was used.",
             {
                 "label": LABEL,
-                "dE": F(_num("Target energy resolution, as the dos task.",
+                "dE": F(_num("Energy resolution, as in the dos task.",
                              unit="eV", exclusive_minimum=0.0), default=0.1),
-                "projection": F(_str("'atom' groups by atom (original input "
-                                     "order); 'orbital_slot' groups by (atom "
-                                     "type, orbital position within the atom "
-                                     "block), so two elements never share a "
-                                     "group even where their basis sizes "
-                                     "coincide. It writes 'group_type' and "
-                                     "'group_slot' naming each group, types "
-                                     "being the distinct atomic numbers in "
-                                     "ascending order; with one element the "
-                                     "groups are simply the slots, in order. "
-                                     "Slot maps to a shell once the caller "
-                                     "applies the basis ordering.",
+                "projection": F(_str("'atom': one group per atom, in input "
+                                     "order. 'orbital_slot': one group per "
+                                     "element and orbital index within the "
+                                     "atom; the output names each group by "
+                                     "'group_type' (atomic number, in "
+                                     "increasing order) and 'group_slot' (the "
+                                     "orbital index, in the order of the "
+                                     "basis).",
                                      choices=("atom", "orbital_slot")),
                                 default="atom"),
             }),
         "ldos": Obj(
-            "Local density of states on a real-space grid, by a "
-            "survey-sampling estimator: each random probe yields a Chebyshev "
-            "sketch of the energy window, and the map is the captured part of "
-            "the window divided by the measured capture fraction. The "
-            "estimate is unbiased and non-negative, with relative error "
-            "sqrt(2 (1 - capture) / rank), rank = sketch_families x "
-            "n_samples; it is exact once the rank reaches the number of "
-            "states in the window. Requires an LCAO model (radial orbital "
-            "files) and a single Gamma point.\n\n"
-            "All energies are computed from the same recursion, so additional "
-            "energies add little cost.\n\n"
-            "Written one file per rank -- <label>.rank00000.npz and so on -- "
-            "because no rank holds the whole grid. Each file carries the grid "
-            "shape, the energies, and its own points, so it is self-describing; "
-            "reassemble by scattering 'ldos' into a flat (n_energy, n_point) "
-            "array at 'point_index' and reshaping to 'shape'.",
+            "Local density of states on a real-space grid, at a list of "
+            "energies.\n\n"
+            "Requires an lcao model and a single k-point at Gamma. All energies "
+            "are computed together, so additional energies add little cost. "
+            "The result includes its estimated relative error, "
+            "'predicted_rel_error', which falls as 1/sqrt(n_samples).\n\n"
+            "Each MPI process writes its own file, <label>.rank00000.npz and "
+            "so on, with its share of the grid points and their indices "
+            "('point_index') in the full grid of shape 'shape'.",
             {
                 "label": LABEL,
                 "energies": F(ENERGY_GRID, required=True),
-                "eta": F(_num("Gaussian broadening. The filter degree scales as "
-                              "(spectral span)/eta, so this sets the cost -- and "
-                              "the span of S^-1 H is set by the overlap's small "
-                              "eigenvalues, not by the band width.",
+                "eta": F(_num("Gaussian broadening. The cost is proportional to "
+                              "(emax - emin) / eta. For a non-orthogonal model the "
+                              "energy window is set by the small eigenvalues of "
+                              "the overlap and is wider than the band width.",
                               unit="eV", exclusive_minimum=0.0), default=0.1),
-                "spacing": F(_num("Grid point separation; the realised spacing is "
-                                  "never coarser than this. Output volume grows as "
+                "spacing": F(_num("Grid spacing. The actual spacing is at most this "
+                                  "value. The number of grid points grows as "
                                   "spacing^-3.", unit="Angstrom",
                                   exclusive_minimum=0.0), default=0.4),
-                "box_edge": F(_int("Grid box side in points. 0 picks a physical "
-                                   "(~2.4 Angstrom) box whatever the spacing, "
-                                   "which is what keeps the per-box orbital count "
-                                   "bounded on a coarse grid.", minimum=0),
+                "box_edge": F(_int("Side of the grid boxes the calculation works "
+                                   "on, in grid points. 0: boxes about 2.4 "
+                                   "Angstrom wide at any spacing.", minimum=0),
                               default=0),
-                "n_samples": F(_int("Random probes. The sketch rank is "
-                                    "sketch_families x n_samples and the error "
-                                    "scale sqrt(2 (1 - capture) / rank), so at "
-                                    "a fixed family count the noise falls as "
-                                    "1/sqrt(n_samples); this is the knob to buy "
-                                    "accuracy with. At least 2: the capture "
-                                    "fraction is cross-fitted between probe "
-                                    "folds.", minimum=2), default=64),
+                "n_samples": F(_int("Number of random vectors. The relative error "
+                                    "falls as 1/sqrt(n_samples). At least 2.",
+                                    minimum=2), default=64),
                 "block": F(_int("Random vectors processed together in one "
                                 "Chebyshev sweep; larger values use more memory.",
                                 minimum=1), default=16),
-                "seed": F(_int("Random seed. A run repeats exactly at the same "
-                               "seed AND the same rank count: each rank draws "
-                               "its own stream, so changing the rank count "
-                               "redraws the states and gives a statistically "
-                               "equivalent map, not an identical one -- the two "
-                               "differ by the sampling error, which falls as "
-                               "1/sqrt(n_samples).", minimum=0), default=12345),
-                "sketch_families": F(_int("Chebyshev modulation families per "
-                                          "probe, J. The sketch rank is "
-                                          "J x n_samples. Families of the same "
-                                          "probe are correlated, so a value "
-                                          "around 6, with accuracy increased "
-                                          "through n_samples, is recommended.",
+                "seed": F(_int("Random seed. The random vectors are tied to the "
+                               "atoms, not to the MPI processes, so the result "
+                               "does not depend on the number of processes apart "
+                               "from rounding.", minimum=0), default=12345),
+                "sketch_families": F(_int("Number of Chebyshev filter families per "
+                                          "random vector. Families of the same "
+                                          "vector are correlated, so keep the "
+                                          "default and increase n_samples for "
+                                          "accuracy.",
                                           minimum=1),
                                      default=6),
             }),
         "density": Obj(
-            "Electron density on a real-space grid: the ldos estimator with "
-            "the energy filter replaced by the square root of the Fermi-Dirac "
-            "occupation at (mu, temp). One Chebyshev sweep, one accumulator, "
-            "non-negative pointwise; Gamma-only and needs the radial orbital "
-            "files, like ldos. A post-processing observable of the fixed "
-            "Hamiltonian -- not an SCF density.\n\n"
-            "Written one file per rank like ldos, with 'density' in place of "
-            "'ldos' and no energy axis. 'electrons_on_grid' integrates the "
-            "map; it approaches the occupation sum as the grid refines and "
-            "its residual is a free quadrature diagnostic.\n\n"
-            "The Chebyshev degree scales as (spectral span)/(pi*kB*temp), so "
-            "low temperatures are expensive: the smearing is a numerical knob "
-            "as much as a physical one.",
+            "Electron density on a real-space grid, for the given Hamiltonian "
+            "at chemical potential mu and temperature temp. It is not a "
+            "self-consistent density.\n\n"
+            "Requires an lcao model and a single k-point at Gamma. Each MPI "
+            "process writes its own file, as for ldos. 'electrons_on_grid' is "
+            "the density integrated over the grid; compare it with the "
+            "electron count to check the grid.\n\n"
+            "The cost is proportional to (emax - emin) / temp, so low "
+            "temperatures are expensive. For an insulator the density does "
+            "not depend on the temperature while it is small compared with "
+            "the band gap.",
             {
                 "label": LABEL,
                 "mu": F(_num("Chemical potential; the fermi_level task finds "
                              "it from an electron count.", unit="eV"),
                         required=True),
-                "temp": F(_num("Smearing temperature.", unit="K",
+                "temp": F(_num("Temperature of the Fermi-Dirac occupation.", unit="K",
                                exclusive_minimum=0.0), default=300.0),
-                "spin_degeneracy": F(_num("States per orbital; 2 for a "
-                                          "spin-paired calculation.",
+                "spin_degeneracy": F(_num("Electrons per state: 2 for a "
+                                          "spin-degenerate basis.",
                                           exclusive_minimum=0.0), default=2.0),
-                "spacing": F(_num("Grid point separation, as ldos.",
+                "spacing": F(_num("Grid spacing, as in ldos.",
                                   unit="Angstrom", exclusive_minimum=0.0),
                              default=0.4),
-                "box_edge": F(_int("Grid box side in points, as ldos.",
+                "box_edge": F(_int("Grid box side in points, as in ldos.",
                                    minimum=0), default=0),
-                "n_samples": F(_int("Random states in the estimator.",
+                "n_samples": F(_int("Number of random vectors.",
                                     minimum=1), default=64),
-                "block": F(_int("States per Chebyshev sweep.", minimum=1),
+                "block": F(_int("Random vectors processed together in one "
+                                "Chebyshev sweep.", minimum=1),
                            default=16),
-                "seed": F(_int("Random seed; see ldos for the rank-count "
-                               "caveat.", minimum=0), default=12345),
-                "fragment_core": F(_num("Fragment control variate: core bin "
-                                        "edge. Only sizes the dense fragment "
-                                        "solves.", unit="Angstrom",
+                "seed": F(_int("Random seed; see ldos.", minimum=0), default=12345),
+                "fragment_core": F(_num("Size of the core region of each fragment "
+                                        "(see fragment_buffer). It affects only "
+                                        "the cost of the fragment calculations.",
+                                        unit="Angstrom",
                                         exclusive_minimum=0.0), default=4.5),
-                "fragment_buffer": F(_num("Fragment control variate: dressing "
-                                          "radius; 0 disables. A deterministic "
-                                          "fragment baseline replaces most of "
-                                          "the map and the samples correct only "
-                                          "the residual, cutting the pointwise "
-                                          "noise at unchanged sweep cost. The "
-                                          "buffer is the systematic accuracy "
-                                          "knob. Either operator form; any "
-                                          "rank count.",
+                "fragment_buffer": F(_num("Buffer radius of the fragment "
+                                          "correction; 0 disables it. A "
+                                          "deterministic calculation on local "
+                                          "fragments gives most of the density, "
+                                          "and the random vectors correct the "
+                                          "remainder. This reduces the noise at "
+                                          "the same number of matrix-vector "
+                                          "products. A larger buffer makes the "
+                                          "fragment part more accurate.",
                                           unit="Angstrom", minimum=0.0),
                                      default=0.0),
                 "fragment_workspace_mb": F(_int("Memory limit for the fragment "
-                                                "calculation, in MB. 0: no limit "
+                                                "calculations, in MB. 0: no limit "
                                                 "(one fragment per thread).",
                                                 minimum=0), default=0),
                 "fragment_coefficient": F(
-                    _str("Coefficient multiplying the paired fragment "
-                         "correction. 'fixed' uses coefficient one and is "
-                         "exactly unbiased for every fixed fragment. "
-                         "'fitted' estimates a local coefficient from the "
-                         "same samples.",
+                    _str("Coefficient of the fragment correction. 'fixed': "
+                         "1, which keeps the estimate unbiased. 'fitted': "
+                         "estimated locally from the same random vectors.",
                          choices=("fixed", "fitted")),
                     default="fitted"),
-                "energy_windows": F(_int("Split the occupation into this many "
-                                         "energy windows, sampled separately "
-                                         "from the same Chebyshev sweep. This "
-                                         "removes cross-window sampling noise "
-                                         "at no extra cost. Use it for metals; "
-                                         "for gapped systems use "
-                                         "fragment_buffer instead, since the "
-                                         "two do not combine well. 1 disables.",
+                "energy_windows": F(_int("Number of energy windows the occupation "
+                                         "is divided into. Each window is "
+                                         "sampled separately in the same "
+                                         "Chebyshev sweep, which reduces the "
+                                         "noise without extra matrix-vector "
+                                         "products. Use it for metals; for "
+                                         "gapped systems use fragment_buffer "
+                                         "instead, as the two do not combine "
+                                         "well. 1 disables it.",
                                          minimum=1), default=1),
             }),
         "ac": Obj(
-            "AC conductivity (S/m, both spins), plus the dielectric "
-            "function, refractive index and absorption coefficient derived from "
-            "it. Needs velocity.",
+            "Optical (AC) conductivity in S/m, including both spins, and the "
+            "dielectric function, refractive index and absorption coefficient "
+            "computed from it. Requires the velocity operator.",
             {
                 "label": LABEL,
-                "nt": F(_int("Time steps.", minimum=1), default=200),
-                "n_kpm": F(_int("KPM moments for the Fermi operator.", minimum=1),
+                "nt": F(_int("Number of time steps.", minimum=1), default=200),
+                "n_kpm": F(_int("Number of Chebyshev moments for the Fermi-Dirac "
+                                "occupation.", minimum=1),
                            default=1000),
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), default=300.0),
                 "mu": F(_num("Chemical potential.", unit="eV"), default=0.0),
                 "axis": F(AXIS, default="abc"),
-                "method": F(_str("Time evolution of the correlator. "
-                                 "'concurrent' shares Chebyshev states "
-                                 "across time steps and needs fewer "
-                                 "matrix-vector products; 'sequential' "
-                                 "propagates step by step and serves as an "
-                                 "independent check.",
+                "method": F(_str("Time evolution. 'concurrent': time steps "
+                                 "share Chebyshev states, which needs fewer "
+                                 "matrix-vector products. 'sequential': one "
+                                 "step at a time; used as an independent "
+                                 "check.",
                                  choices=("concurrent", "sequential")),
                             default="concurrent"),
-                "block": F(_int("Concurrent only: time steps per block. Larger "
+                "block": F(_int("For 'concurrent': time steps per block. Larger "
                                 "blocks need fewer matrix-vector products and "
-                                "more memory; unset uses min(nt, 128).",
+                                "more memory. Default: min(nt, 128).",
                                 minimum=1)),
             }),
         "dc": Obj(
-            "DC conductivity tensor at one chemical potential and temperature "
-            "(Kubo-Greenwood over both spins, S/m). Needs velocity.",
+            "DC conductivity tensor at one chemical potential and temperature, "
+            "in S/m, including both spins. Requires the velocity operator.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),
@@ -775,111 +748,120 @@ TASK = Union(
                 "formulation": F(FORMULATION, default="greenwood"),
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
-                "method": F(_str("Spectrum evaluation. 'qe' computes only the "
-                                 "energies near mu that the temperature "
-                                 "selects, with little memory (greenwood "
-                                 "only). 'fftcheb' evaluates the full energy "
-                                 "grid and is required for 'bastin'.",
+                "method": F(_str("'fftcheb': evaluates the whole energy grid; "
+                                 "required for 'bastin'. 'qe': evaluates only "
+                                 "the energies near mu that contribute at this "
+                                 "temperature, with less memory; 'greenwood' "
+                                 "only.",
                                  choices=("fftcheb", "qe")), default="fftcheb"),
-                "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
+                "partition_sections": F(_int("Number of row blocks the calculation is "
+                                             "split into to limit memory. 0: chosen "
+                                             "from max_workspace_mb.",
                                              minimum=0), default=0),
-                "max_workspace_mb": F(_int("Workspace cap used to infer row partitioning; "
-                                           "0 means unlimited.", minimum=0), default=0),
+                "max_workspace_mb": F(_int("Memory limit, in MB, used to choose "
+                                           "partition_sections. 0: no limit.",
+                                           minimum=0), default=0),
             }),
         "dc_spectrum": Obj(
-            "Zero-temperature DC conductivity across the Chebyshev energy grid "
-            "(Kubo-Greenwood over both spins, S/m). Needs velocity.",
+            "DC conductivity at zero temperature as a function of energy, in "
+            "S/m, including both spins. Requires the velocity operator.",
             {
                 "label": LABEL,
                 "n_moments": F(N_MOMENTS, default=1000),
                 "formulation": F(FORMULATION, default="greenwood"),
                 "axis": F(AXIS, default="abc"),
                 "kernel": F(KERNEL, default="jackson"),
-                "method": F(_str("Spectrum evaluation. 'fftcheb' (the "
-                                 "default) evaluates the full energy grid; "
-                                 "'qe' (quasi-eigenstate accumulation, "
-                                 "greenwood only) is mainly useful in the dc "
-                                 "task, where only energies near mu are "
-                                 "needed.",
+                "method": F(_str("'fftcheb' (default): evaluates the whole "
+                                 "energy grid. 'qe': quasi-eigenstate "
+                                 "accumulation, 'greenwood' only; mainly "
+                                 "useful in the dc task, which needs only "
+                                 "energies near mu.",
                                  choices=("fftcheb", "qe")), default="fftcheb"),
-                "partition_sections": F(_int("Explicit row-partition count; 0 infers it.",
+                "partition_sections": F(_int("Number of row blocks, as in dc.",
                                              minimum=0), default=0),
-                "max_workspace_mb": F(_int("Workspace cap used to infer row partitioning; "
-                                           "0 means unlimited.", minimum=0), default=0),
+                "max_workspace_mb": F(_int("Memory limit in MB, as in dc.",
+                                           minimum=0), default=0),
             }),
         "occupation": Obj(
-            "Electron count and band energy at one (mu, T), by adaptive tapered "
-            "stochastic trace. No spin-degeneracy factor is applied.",
+            "Electron count and band energy at one chemical potential and "
+            "temperature. No spin factor is applied: a spin-degenerate basis "
+            "counts one spin.",
             {
                 "label": LABEL,
                 "mu": F(_num("Chemical potential.", unit="eV"), required=True),
-                "temp": F(_num("Temperature; 0 selects the T=0 step.", unit="K",
+                "temp": F(_num("Temperature; 0 gives a step function.", unit="K",
                                minimum=0.0), required=True),
                 "indicator_threshold": F(
-                    _num("Threshold for the a-posteriori error indicator that "
-                         "selects the expansion degree. It is an indicator, not "
-                         "an error bound: for systems with few levels near mu, "
-                         "compare with a fixed-degree run.",
+                    _num("Threshold of the error indicator that chooses the "
+                         "expansion degree. The indicator is not an error "
+                         "bound: for systems with few states near mu, check "
+                         "the result with a larger n_max.",
                          exclusive_minimum=0.0),
                     default=1e-4),
-                "n_max": F(_int("Hard cap on the expansion degree.", minimum=1),
+                "n_max": F(_int("Maximum expansion degree.", minimum=1),
                            default=65536),
             }),
         "fermi_level": Obj(
-            "The mu whose stochastic-trace electron count matches a target.\n\n"
-            "The search runs in coefficient space at no extra matrix-vector "
-            "products, so it costs about one occupation evaluation.",
+            "The chemical potential at which the electron count equals "
+            "n_electrons.\n\n"
+            "The search reuses one set of Chebyshev moments, so it costs about "
+            "as much as one occupation task.",
             {
                 "label": LABEL,
-                "n_electrons": F(_num("Target electron count, with no spin factor.",
+                "n_electrons": F(_num("Target electron count. No spin factor is "
+                                      "applied: for a spin-degenerate basis, give "
+                                      "half the number of electrons.",
                                       exclusive_minimum=0.0), required=True),
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), required=True),
                 "indicator_threshold": F(
-                    _num("Level the a-posteriori error indicator must fall below. "
-                         "Not an error tolerance -- see the occupation task.",
+                    _num("Threshold of the error indicator; see the occupation "
+                         "task.",
                          exclusive_minimum=0.0),
                     default=1e-4),
-                "n_max": F(_int("Hard cap on the expansion degree.", minimum=1),
+                "n_max": F(_int("Maximum expansion degree.", minimum=1),
                            default=65536),
-                "mu_guess": F(_num("Anchor for the adaptive degree selection; omitted "
-                                   "means the band centre.", unit="eV")),
+                "mu_guess": F(_num("Energy at which the expansion degree is chosen. "
+                                   "Default: the centre of the energy window.",
+                                   unit="eV")),
             }),
         "msd": Obj(
-            "Mean-square displacement DeltaX^2(E, t) and the diffusion "
-            "coefficient D = 0.5 d/dt DeltaX^2. Gamma-point only.",
+            "Mean-square displacement DeltaX^2(E, t) of wave packets, and the "
+            "diffusion coefficient D = 0.5 d/dt DeltaX^2. Requires the Gamma "
+            "point among the k-points.",
             {
                 "label": LABEL,
-                "n_steps": F(_int("Time steps.", minimum=1), default=200),
+                "n_steps": F(_int("Number of time steps.", minimum=1), default=200),
                 "dt_fs": F(_num("Time step.", unit="fs", exclusive_minimum=0.0),
                            default=10.0),
-                "n_kpm": F(_int("KPM moments resolving the energy axis.", minimum=1),
+                "n_kpm": F(_int("Number of Chebyshev moments; sets the energy "
+                                "resolution.", minimum=1),
                            default=1000),
                 "axis": F(_str("Direction the displacement is measured along.",
                                choices=("x", "y", "z")), default="x"),
-                "method": F(_str("Algorithm; both compute the same quantity. "
-                                 "'stepwise' expands the energy resolution "
-                                 "at every output time and suits orthogonal "
-                                 "models. 'spectral' has a cost independent "
-                                 "of the number of output times and suits "
-                                 "non-orthogonal models. 'auto' chooses "
-                                 "between them; set the method explicitly "
-                                 "when comparing runs.",
+                "method": F(_str("Algorithm; both give the same result. "
+                                 "'stepwise': suited to orthogonal models. "
+                                 "'spectral': the cost does not depend on the "
+                                 "number of time steps; suited to "
+                                 "non-orthogonal models. 'auto': chooses one; "
+                                 "set the method explicitly when comparing "
+                                 "runs.",
                                  choices=("auto", "stepwise", "spectral")),
                             default="auto"),
-                "n_kpm_compute": F(_int("Compute only this many moments and "
-                                        "extend to n_kpm by linear "
-                                        "prediction; 0 disables. Not reliable "
-                                        "for small cells with discrete "
-                                        "spectra.", minimum=0),
+                "n_kpm_compute": F(_int("Compute this many moments and extend them "
+                                        "to n_kpm by linear prediction; 0 "
+                                        "disables it. Not reliable for small "
+                                        "cells with discrete spectra.",
+                                        minimum=0),
                                    default=0),
             }),
         "quantum_metric": Obj(
-            "Longitudinal quantum metric Gxx, from the AC conductivity. Needs "
-            "velocity.",
+            "Longitudinal quantum metric Gxx, computed from the optical "
+            "conductivity. Requires the velocity operator.",
             {
                 "label": LABEL,
-                "nt": F(_int("Time steps.", minimum=1), default=200),
-                "n_kpm": F(_int("KPM moments for the Fermi operator.", minimum=1),
+                "nt": F(_int("Number of time steps.", minimum=1), default=200),
+                "n_kpm": F(_int("Number of Chebyshev moments for the Fermi-Dirac "
+                                "occupation.", minimum=1),
                            default=1000),
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), default=0.0),
                 "mu": F(_num("Chemical potential.", unit="eV"), default=0.0),
@@ -888,26 +870,25 @@ TASK = Union(
                                        unit="eV", minimum=0.0), default=0.0),
             }),
     },
-    tag_doc="Which observable the remaining keys configure.")
+    tag_doc="Which calculation the remaining keys configure.")
 
 
 # --- output ----------------------------------------------------------------
 
 OUTPUT = Obj(
-    "Where results go. Rank 0 writes, and the other ranks write nothing -- "
-    "except for a result each rank holds a different piece of ('ldos'), which "
-    "every rank writes into its own <label>.rankNNNNN file rather than "
-    "gathering to one.",
+    "Where and how results are written. MPI process 0 writes all files, "
+    "except the real-space maps (ldos, density), which each process writes "
+    "to its own <label>.rankNNNNN.npz.",
     {
-        "dir": F(_path("Output directory, created if missing. Relative paths are "
-                       "resolved against the input file."), default="."),
-        "prefix": F(_str("Prepended to every written file name."), default=""),
-        "format": F(_str("'npz' writes one compressed archive per task, 'json' "
-                         "writes arrays inline as nested lists, 'none' writes only "
-                         "the summary.", choices=("npz", "json", "none")), default="npz"),
-        "summary": F(_bool("Write <prefix>summary.json: the resolved input, the "
-                           "derived basis, the spectral window, every scalar "
-                           "result, and the shape and file of every array."),
+        "dir": F(_path("Output directory, created if it does not exist. A "
+                       "relative path is relative to the input file."), default="."),
+        "prefix": F(_str("Text added to the start of each file name."), default=""),
+        "format": F(_str("'npz': one compressed archive per task. 'json': arrays "
+                         "written as nested lists. 'none': only the summary.",
+                         choices=("npz", "json", "none")), default="npz"),
+        "summary": F(_bool("Write <prefix>summary.json, which records the resolved "
+                           "input, the basis, the energy window, the scalar "
+                           "results, and the shape and file of each array."),
                      default=True),
     })
 
@@ -915,22 +896,20 @@ OUTPUT = Obj(
 # --- the whole document ----------------------------------------------------
 
 ROOT = Obj(
-    "An RSATB calculation: where the atoms are, what the Hamiltonian is, what "
-    "the run should do, and which observables to compute.\n\n"
-    "Unknown keys are errors, so a typo cannot quietly become a default. The "
-    "one exception is a key starting with an underscore -- \"_comment\" and "
-    "the like -- which is carried through uninterpreted, at any level, so an "
-    "input can explain itself.",
+    "An RSATB input: the structure, the model, the run settings, the tasks "
+    "and the output.\n\n"
+    "Unknown keys are errors. Keys that start with an underscore, such as "
+    "\"_comment\", are ignored at any level and can be used for comments.",
     {
         "version": F(_int("Input-format version.", choices=(INPUT_VERSION,)),
                      default=INPUT_VERSION),
         "structure": F(STRUCTURE, required=True),
         "model": F(MODEL, required=True),
         "run": F(RUN, default={}),
-        "tasks": F(Array(TASK, "Observables to compute, in order. An empty list "
-                               "sets the calculation up and reports the basis and "
-                               "spectral window without computing anything, which "
-                               "is the cheapest way to check an input end to end."),
+        "tasks": F(Array(TASK, "Tasks to compute, in order. With an empty list, "
+                               "RSATB sets up the calculation and reports the "
+                               "basis and energy window without computing "
+                               "anything."),
                    default=[]),
         "output": F(OUTPUT, default={}),
     })

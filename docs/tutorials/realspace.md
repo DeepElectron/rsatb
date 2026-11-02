@@ -7,8 +7,8 @@ description: Tutorial 6 — electron density and local density of states of diam
 # Real-space maps
 
 <div class="rs-lead" markdown>
-The electron density and the local density of states of a 128-atom
-diamond supercell on a 3D grid.
+This tutorial computes the electron density and the local density of
+states of a 128-atom diamond supercell on a 3D grid.
 </div>
 
 <div class="rs-chips">
@@ -28,15 +28,15 @@ and local density of states on a grid, and to load the result.
 Three tasks, in order:
 
 1. **`fermi_level`** finds the chemical potential that holds 256 electron
-   pairs — two per carbon atom.
+   pairs, two per carbon atom.
 2. **`density`** maps the electron density on a grid with 0.25 Å spacing.
 3. **`ldos`** maps the local density of states at seven energies.
 
 !!! warning "The cell must be large enough"
     Real-space maps need every side of the cell to be longer than twice the
-    reach of the orbitals — here $2 \times 3.70 = 7.41$ Å. That is why the
-    cell is 4 × 4 × 4: a 3 × 3 × 3 diamond cell is only 6.19 Å across and
-    stops with an error telling you the size it needs.
+    cutoff radius of the orbitals, here $2 \times 3.70 = 7.41$ Å. That is why the
+    cell is 4 × 4 × 4. A 3 × 3 × 3 diamond cell is 6.19 Å across, and the
+    run stops with an error that states the required size.
 
 ## Run it
 
@@ -54,7 +54,7 @@ rsatb run examples/tutorials/diamond_realspace.json
 ![Electron density and LDOS of diamond on a lattice plane](../assets/figures/tut_diamond_realspace.png)
 <figcaption>One plane through the crystal. <strong>Left:</strong> the
 electron density, concentrated on the carbon atoms. <strong>Right:</strong>
-the states at three energies — in the valence band, in the band gap (an
+the local density of states at three energies: in the valence band, in the band gap (an
 order of magnitude weaker), and in the conduction band, which has a
 different spatial distribution.</figcaption>
 </figure>
@@ -62,17 +62,18 @@ different spatial distribution.</figcaption>
 ## Checks
 
 - **Electron count.** The density integrated over the grid gives 510.2 electrons,
-  against the exact $2 \times 256 = 512$ — within 0.4%, the noise of 32 random
+  against the exact $2 \times 256 = 512$, a difference of 0.4% that is the noise of 32 random
   vectors.
 - **The Fermi level is in the gap.** In an insulator, any chemical potential
   inside the gap holds the same number of electrons; `fermi_level` returns
   one such value, 13.78 eV, just above the top of the valence band.
-- **The LDOS reports its own error:** at most 6.6% at these settings.
+- **The LDOS includes its estimated error,** at most 6.6% at these
+  settings.
 
 ## Loading the maps
 
-The grid is written in pieces, one file per MPI process, each holding the
-points that process owns and their indices:
+Each MPI process writes its own file, with its share of the grid points
+and their indices:
 
 ```python
 import glob
@@ -89,31 +90,31 @@ rho = rho.reshape(shape)                         # electrons per Å³
 ```
 
 `rho[:, :, 0]` is the plane shown in the figure. The LDOS is assembled the
-same way, with an extra energy axis — see
+same way, with an extra energy axis; see
 [Read and plot results](../guides/results.md#real-space-grids).
 
-## What to take away
+## Summary
 
 - **Real-space tasks run at a single k-point** and need a cell larger than
-  twice the orbital reach.
+  twice the orbital cutoff radius.
 - **Each process writes its own piece** of the grid; reassemble with the
   snippet above.
-- **Check `electrons_on_grid`** — it should match the electron count.
+- **Check `electrons_on_grid`.** It should be close to the electron count.
 
-??? deep "Under the hood: temperature as a cost knob"
+??? deep "Temperature and cost"
     The density is computed with a Fermi function at temperature `temp`; the
     polynomial degree, and so the cost, grows as $1/T$. For an insulator with
     a 4.5 eV gap, 3000 K and 1000 K give the same map, so the higher value is
     used here. In a metal the temperature changes the result and has to be
     chosen accordingly.
 
-??? deep "Under the hood: noise reduction"
-    Add `"fragment_buffer": 3.0` to the `density` task and a deterministic
-    local calculation carries most of the map, leaving the random vectors to
-    correct only the remainder. The run then reports `correction_rms`. Raising
+??? deep "Noise reduction"
+    With `"fragment_buffer": 3.0` in the `density` task, a deterministic
+    calculation on local fragments gives most of the map, and the random
+    vectors correct the remainder. The run then reports `correction_rms`. Raising
     `n_samples` on `ldos` lowers `predicted_rel_error` as $1/\sqrt{n}$.
     Background: [Random-state traces](../theory/stochastic-trace.md#local-quantities).
 
-## Try next
+## Next steps
 
-Continue to [Tutorial 7](abacus-nextham.md): Hamiltonians from ABACUS and NextHam.
+[Tutorial 7](abacus-nextham.md) uses Hamiltonians from ABACUS and NextHam.

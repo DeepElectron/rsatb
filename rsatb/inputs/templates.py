@@ -102,7 +102,7 @@ TEMPLATES: Dict[str, dict] = {
             "npar": 1,
             "nsamples": 200,
             "kpoints": {"mesh": [2, 2, 2]},
-            "preconditioner": {"operator_form": "sandwich"},
+            "preconditioner": {"operator_form": "sandwich", "maxiter": 20},
         },
         "tasks": [{"type": "dos", "dE": 0.2}],
         "output": {"dir": "results"},
@@ -149,16 +149,16 @@ TEMPLATES: Dict[str, dict] = {
 }
 
 DESCRIPTIONS = {
-    "minimal": "The shortest input that validates: a structure file, one SK "
-               "hopping, a DOS.",
-    "sktb": "Graphene written inline with a single pz hopping. Needs no data "
-            "files at all, so it runs as written.",
+    "minimal": "A minimal input: a structure file, one Slater-Koster hopping "
+               "and a density of states.",
+    "sktb": "Graphene written in the input, with a single pz hopping. No data "
+            "files are needed.",
     "sktb-transport": "An 8x8 graphene supercell with the DC conductivity "
                       "spectrum and the mean-square displacement.",
-    "lcao": "A precomputed Hamiltonian plus .orb and .upf files, on a 2x2x2 "
-            "mesh. Paths match the diamond test data.",
-    "dftb": "A .skf parameter set from a released DFTB directory.",
-    "tb_file": "An orthogonal H(R) straight from a file, along a k-point line.",
+    "lcao": "A DFT Hamiltonian file and its .orb file, on a 2x2x2 k-point mesh. "
+            "The paths match the diamond test data.",
+    "dftb": "A DFTB parameter set (.skf files) for diamond.",
+    "tb_file": "An orthogonal H(R) file for a 1D chain, along a k-point line.",
 }
 
 

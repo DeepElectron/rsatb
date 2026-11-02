@@ -7,9 +7,10 @@ description: The machine-readable surface of RSATB — llms.txt, JSON Schema, rs
 # Drive RSATB from an agent
 
 <div class="rs-lead" markdown>
-Interfaces for programs — workflow tools, scripts, AI agents — that write
-inputs, validate them and read results: machine-readable documentation, the
-JSON Schema, a JSON validation report, and the run summary.
+This page describes the interfaces for programs, such as workflow tools,
+scripts and AI agents, that write inputs, validate them and read results:
+machine-readable documentation, the JSON Schema, a JSON validation report
+and the run summary.
 </div>
 
 ## What to read
@@ -18,12 +19,12 @@ JSON Schema, a JSON validation report, and the run summary.
 |---|---|
 | <a href="../../llms.txt"><code>/llms.txt</code></a> | An index of this site in the [llms.txt](https://llmstxt.org) format |
 | <a href="../../llms-full.txt"><code>/llms-full.txt</code></a> | The whole documentation as one Markdown file |
-| [`/rsatb.schema.json`](../rsatb.schema.json) | The input schema as JSON Schema 2020-12 — identical to `rsatb schema` |
+| [`/rsatb.schema.json`](../rsatb.schema.json) | The input schema as JSON Schema 2020-12, the same as the output of `rsatb schema` |
 | `rsatb doc <topic>` | The reference for one section, task or model, as plain text, offline |
 | `rsatb template <name>` | A known-good input to start from |
 
 The input reference on this site, `rsatb doc`, the JSON Schema and
-`rsatb check` describe the same input format and always agree.
+`rsatb check` describe the same input format.
 
 ## The loop
 
@@ -72,8 +73,8 @@ cover three layers: the schema (types, ranges, unknown keys), the file system
 between sections:
 
 ```text
-error: tasks[0]: 'ac' needs the velocity operator, which the 'sktb' model with these inputs does not supply
-error: tasks[1]: 'ldos' currently requires a single Gamma point, but run.kpoints has 4
+error: tasks[0]: 'ac' requires the velocity operator, which this sktb model does not provide
+error: tasks[1]: 'ldos' requires a single k-point at Gamma, but run.kpoints has 4
 ```
 
 `--no-files` skips the file checks, for inputs written on one machine and run
@@ -96,7 +97,7 @@ rsatb run input.json --log-level silent
 input, the derived basis, the spectral window, every scalar result, and the
 shape, dtype and file of every array. See [Output files](../reference/outputs.md).
 
-## Rules worth encoding
+## Rules for generated inputs
 
 - Unknown keys are errors. Do not add keys speculatively; consult the schema.
 - Keys beginning with `_` are comments and are always accepted.

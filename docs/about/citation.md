@@ -24,7 +24,7 @@ on publication.
 ```
 
 When reporting results, record the RSATB version and archive the run's
-`summary.json`, which holds the fully resolved input.
+`summary.json`, which records the resolved input.
 
 ## Author
 

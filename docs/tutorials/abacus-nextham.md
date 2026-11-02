@@ -7,9 +7,9 @@ description: Tutorial 7 — Hamiltonians from ABACUS and NextHam in an lcao mode
 # ABACUS and NextHam
 
 <div class="rs-lead" markdown>
-Hamiltonians written by ABACUS, or predicted by NextHam, used directly in
-RSATB: first a check that the file was read correctly, then a metal (fcc Al)
-and a semiconductor with spin-orbit coupling (GaAs).
+This tutorial uses Hamiltonians written by ABACUS or predicted by
+NextHam. It first checks that a file was read correctly, then computes a
+metal (fcc Al) and a semiconductor with spin-orbit coupling (GaAs).
 </div>
 
 <div class="rs-chips">
@@ -103,7 +103,7 @@ spin setting gives errors of electronvolts.
 
 <!-- rsatb-input: examples/abacus_nextham/al_abacus.json -->
 
-What's new:
+New in this input:
 
 - **A supercell and a k-mesh together.** The primitive cell is tiled
   3 × 3 × 3 (27 atoms) and sampled on a 2 × 2 × 2 mesh, which together sample
@@ -152,7 +152,7 @@ conductivity to eight digits.
 
 <!-- rsatb-input: examples/abacus_nextham/gaas_soc_nextham.json -->
 
-What's new:
+New in this input:
 
 - **`"spin": "spinorbit"`** reads a Hamiltonian from a spin-orbit
   calculation (ABACUS `nspin 4`). Every orbital carries both spin
@@ -186,7 +186,7 @@ coincide; the grey line is the raw result of the 27-atom cell.
 coupling, on this input's frequency grid (0.93 eV steps).</figcaption>
 </figure>
 
-## What to take away
+## Summary
 
 - ABACUS and NextHam Hamiltonians are read by an `lcao` model, with the
   `.orb` files of the ABACUS calculation; only `hamiltonian.format` differs.
@@ -196,14 +196,14 @@ coupling, on this input's frequency grid (0.93 eV steps).</figcaption>
 - With spin-orbit coupling, densities of states, conductivities and optical
   spectra are available; the real-space maps (`ldos`, `density`) are not.
 
-??? deep "Under the hood: tutorial-sized settings"
+??? deep "Tutorial-sized settings"
     These inputs use small cells, few random vectors and coarse resolution so
     that they run in minutes. For production results increase `supercell`,
     the k-mesh, `nsamples` and the resolution (`dE`, `n_moments`, `nt`), and
     check convergence as described in
     [Converge a calculation](../guides/convergence.md).
 
-??? deep "Under the hood: producing a NextHam file"
+??? deep "Producing a NextHam file"
     NextHam predicts $H(\mathbf R)$ from an ABACUS input Hamiltonian with its
     `pre_post_process` scripts: `pre_process.py` reads the ABACUS run,
     `infer.py` runs the trained model, and `post_process.py --convert-only`
@@ -214,14 +214,14 @@ coupling, on this input's frequency grid (0.93 eV steps).</figcaption>
     Without a trained model, `examples/abacus_nextham/to_nextham.py` writes
     an ABACUS Hamiltonian in NextHam's format, as was done for this example.
 
-??? deep "Under the hood: large systems"
+??? deep "Large systems"
     NextHam files and ABACUS's binary output are read in parallel: each
     process reads only the rows of its own atoms. ABACUS's text output is
     read by a single process. Above about $10^4$ atoms, convert a text file
     once with `to_nextham.py`.
 
-## Try next
+## Next steps
 
 - Point `hamiltonian.path` at your own ABACUS output or NextHam prediction;
   keep the structure in the ABACUS atom order.
-- Continue to [Tutorial 8](python.md): scripting RSATB from Python.
+- [Tutorial 8](python.md) runs RSATB from a Python script.

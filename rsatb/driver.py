@@ -74,33 +74,29 @@ class RSATB:
     def from_graph(cls, atom_index, atom_type, edge_index, edge_shift_vec, cell, pos,
                    model, options=None, N_atom=0, atom_offset=0, N_edge=0,
                    npar=1):
-        """
-        Build an RSATB from a pre-partitioned atomic graph and a model.
+        """Build an RSATB object from a partitioned atomic graph and a model.
 
-        Use this when the neighbour list already exists -- a hand-built model
-        cell, or a graph produced by another tool. `type_norb` is not an
-        argument: it comes from the model's basis, so the block structure has
-        one source of truth.
+        Use this when the neighbour list already exists, for example for a model
+        cell built by hand or a graph produced by another program. The orbital
+        counts are taken from the model's basis.
 
-        This is a *distributed* description: each rank passes only its own
-        atoms and edges, and `N_atom` / `N_edge` are the global totals. Handing
-        every rank the full graph is only correct when each sub-communicator
-        holds a single rank; otherwise the system is duplicated once per rank.
-        The local counts are summed and checked against the declared totals, so
-        that mistake raises instead of producing a doubled spectrum.
+        Each MPI process passes only its own atoms and edges; `N_atom` and
+        `N_edge` are the totals over all processes. The local counts are summed
+        and checked against these totals, so passing the full graph to every
+        process raises an error instead of duplicating the system.
 
         Args:
             atom_index (array): Global index of each local atom.
             atom_type (array): Atom type index of each local atom.
             edge_index (array): Flattened (src, dst) pairs.
             edge_shift_vec (array): Flattened lattice shift per edge.
-            cell (array): Unit cell, 9 values row-major.
+            cell (array): Unit cell, 9 values, row-major.
             pos (array): Cartesian positions, 3 per atom.
-            model: A model instance such as SktbModel.
-            options (SetupOptions, optional): Shared setup options.
-            N_atom, N_edge (int): Global counts; default to the local counts.
-            atom_offset (int): Global offset of this rank's atoms.
-            npar (int): Number of k-point-parallel sub-communicators.
+            model: A model object such as SktbModel.
+            options (SetupOptions, optional): Setup options.
+            N_atom, N_edge (int): Total counts; default to the local counts.
+            atom_offset (int): Global offset of this process's atoms.
+            npar (int): Number of k-point groups.
         """
         if options is None:
             options = SetupOptions()
@@ -122,62 +118,50 @@ class RSATB:
         self._cpp_obj.test_solve()
 
     def compute_dos(self, dE, method="kpm"):
-        """
-        Compute the Density of States (DOS).
+        """Compute the density of states.
 
         Args:
-            dE (float): Target energy resolution in eV. The Chebyshev step
-                and moment counts are derived from the spectral span at run
-                time (cost is linear in span/dE), so this is the only knob.
-            method (str): The broadening kernel; both run on the same moment
-                recurrence. "kpm" (Jackson, strictly positive; the default)
-                or "corr" (the historical Hann-window + FFT output,
-                reconstructed from the moments at the same cost).
+            dE (float): Energy resolution in eV. The number of Chebyshev moments
+                follows from the energy window; the cost is proportional to
+                (emax - emin) / dE.
+            method (str): "kpm" (default): Jackson kernel; the result is
+                positive. "corr": a Hann window on the time correlation function
+                reconstructed from the same moments.
 
         Returns:
-            tuple: (dos_out, omega_out) as numpy arrays.
+            tuple: (dos, energy) as NumPy arrays. `dos` holds all k-points in one
+            flat array; `dos.reshape(-1, len(energy))` separates them.
         """
         dos_out, omega_out = self._cpp_obj.compute_dos(dE, method)
         return np.array(dos_out), np.array(omega_out)
 
     def compute_pdos(self, dE, projection="atom"):
-        """
-        Compute the projected DOS, resolved onto orbital groups.
+        """Compute the density of states projected onto groups of orbitals.
 
-        The same stochastic Chebyshev run as compute_dos, with a per-group
-        reduction of the recursion vectors -- so all groups cost one DOS run,
-        and summing the groups reproduces the total bin by bin (a built-in
-        check, returned as 'total').
+        Each group costs about as much as one compute_dos call, and the groups
+        sum to the total DOS, which is returned as 'total'.
 
-        Which population comes out follows the operator form and is REPORTED,
-        not chosen: the sandwich form projects onto Lowdin orbitals
-        (non-negative), the solve form onto Mulliken populations (which may
-        legitimately be negative). The two are different, standard,
-        conventions; crossing them would cost extra matvecs per moment and is
-        not offered.
+        The projection follows the operator form: the sandwich form projects
+        onto Lowdin orbitals (non-negative), the solve form gives Mulliken
+        populations, which can be negative. 'population' records which was used.
 
         Args:
-            dE (float): Target energy resolution in eV, as compute_dos.
-            projection (str): 'atom' -- one group per atom, ordered by the
-                original atom index; 'orbital_slot' -- one group per
-                (atom type, orbital position within the atom block), so two
-                elements never share a group even where their basis sizes
-                coincide. Groups run type by type, types being the distinct
-                atomic numbers in ascending order; with one element they are
-                simply the slots in order. Slot maps to a shell once the
-                caller applies the basis ordering.
+            dE (float): Energy resolution in eV, as in compute_dos.
+            projection (str): 'atom': one group per atom, in input order.
+                'orbital_slot': one group per element and orbital index within
+                the atom; 'group_type' (atomic number, increasing) and
+                'group_slot' (orbital index in the basis order) name the groups.
 
         Returns:
             dict with keys:
                 energy: (2*nt,) energy grid in eV.
-                pdos: (n_kpoint, n_group, 2*nt) projected DOS, states/eV.
-                total: (n_kpoint, 2*nt) the all-orbitals DOS from the same
-                    run; sum(pdos, axis=1) equals it to rounding.
-                n_group: group count.
+                pdos: (n_kpoint, n_group, 2*nt) projected DOS.
+                total: (n_kpoint, 2*nt) total DOS; equals pdos.sum(axis=1) up to
+                    rounding.
+                n_group: number of groups.
                 population: 'lowdin' or 'mulliken'.
-                group_type, group_slot: (n_group,) the atom type and
-                    orbital slot each group stands for; empty for projection
-                    'atom', whose group id is already the atom's input index.
+                group_type, group_slot: (n_group,) for projection 'orbital_slot';
+                    empty for 'atom'.
         """
         return self._cpp_obj.compute_pdos(dE, projection)
 
@@ -186,51 +170,44 @@ class RSATB:
                            fragment_core=4.5, fragment_buffer=0.0,
                            energy_windows=1, fragment_coefficient="fitted",
                            fragment_workspace_mb=0):
-        """
-        Compute the electron density on a real-space grid.
+        """Compute the electron density on a real-space grid.
 
-        The LDOS estimator with the energy filter replaced by sqrt of the
-        Fermi-Dirac occupation at (mu, temp): one Chebyshev sweep, one
-        accumulator, non-negative pointwise. Gamma-only; needs a model with
-        real-space orbitals. A post-processing observable of the fixed H --
-        not an SCF density (stochastic noise would feed back nonlinearly).
+        The density is computed for the given Hamiltonian at chemical potential
+        mu and temperature temp; it is not a self-consistent density. Requires a
+        single k-point at Gamma and a model with orbital files (lcao).
 
-        The Chebyshev degree scales as (spectral span)/(pi * kT), so low
-        temperatures are expensive; the smearing is a numerical knob as much
-        as a physical one.
+        The cost is proportional to (emax - emin) / temp, so low temperatures
+        are expensive. For an insulator the density does not depend on the
+        temperature while it is small compared with the band gap.
 
         Args:
-            mu (float): Chemical potential in eV (see the fermi_level task).
-            temp (float): Smearing temperature in K.
-            spin_degeneracy (float): States per orbital; 2 for spin-paired.
-            spacing, box_edge, n_samples, block, seed: as compute_rs_ldos.
-            fragment_core, fragment_buffer (float): Fragment control variate,
-                Angstrom. fragment_buffer > 0 enables it: a deterministic
-                fragment baseline plus a stochastically corrected remainder.
-                The buffer is the systematic accuracy knob (pointwise noise
-                falls as the fragments capture more of the filtered operator);
-                fragment_core only sizes the dense per-fragment solves.
-                Either operator form (the solve form compresses the full
-                chain including the sampler coloring); any rank count.
-            energy_windows (int): Split the occupation into this many energy
-                windows sampled separately from the same sweep and seeds
-                (ew-sDFT). Removes cross-window sampling noise at no extra
-                Chebyshev degree; can never increase the variance. The one
-                reduction that keeps working for delocalized (metallic)
-                occupations, where fragments cannot. 1 disables.
-            fragment_coefficient (str): ``"fixed"`` uses the defining
-                coefficient-one control variate and is exactly unbiased for
-                any fixed fragment. ``"fitted"`` retains the legacy
-                same-sample robustness heuristic.
+            mu (float): Chemical potential in eV (see find_fermi_level).
+            temp (float): Temperature of the Fermi-Dirac occupation in K.
+            spin_degeneracy (float): Electrons per state; 2 for a spin-degenerate
+                basis.
+            spacing, box_edge, n_samples, block, seed: as in compute_rs_ldos.
+            fragment_core, fragment_buffer (float): Fragment correction, in
+                Angstrom; fragment_buffer > 0 enables it. A deterministic
+                calculation on local fragments gives most of the density, and the
+                random vectors correct the remainder. A larger buffer makes the
+                fragment part more accurate; fragment_core affects only the cost
+                of the fragment calculations.
+            energy_windows (int): Number of energy windows the occupation is
+                divided into; each is sampled separately in the same Chebyshev
+                sweep. This reduces the noise for metals, where the fragment
+                correction does not help. 1 disables it.
+            fragment_coefficient (str): "fixed": coefficient 1, which keeps the
+                estimate unbiased. "fitted": estimated from the same random
+                vectors.
 
         Returns:
             dict with keys:
-                shape, n_point, point_index: as compute_rs_ldos.
-                density: (n_owned,) electrons/A^3, THIS RANK's grid share.
-                grid (serial runs only): density on the full (n0, n1, n2) grid.
-                electrons_on_grid: integral of the density over the grid --
-                    approaches the occupation sum as the grid refines
-                    (quadrature-limited; 100 Ry orbitals want <~0.4 A).
+                shape, n_point, point_index: as in compute_rs_ldos.
+                density: (n_owned,) electrons per cubic Angstrom at the grid points
+                    of this process.
+                grid (serial runs only): the density on the full (n0, n1, n2) grid.
+                electrons_on_grid: the density integrated over the grid; it
+                    approaches the electron count as the grid is refined.
                 filter_degree, n_states, sampler_residual: diagnostics.
         """
         kT = 8.617333262e-5 * temp  # eV/K
@@ -248,50 +225,43 @@ class RSATB:
 
     def compute_rs_ldos(self, energies, eta, spacing=0.4, box_edge=0,
                         n_samples=64, block=16, seed=12345, sketch_families=6):
-        """
-        Compute the full-cell LDOS map on a real-space grid.
+        """Compute the local density of states on a real-space grid.
 
-        Survey-sampling estimator (doc/design_survey_sampling_ldos.md;
-        Gamma-only; needs a model with real-space orbitals, i.e. LCAO or
-        DFTB with .orb files). Every probe's Chebyshev sweep yields the
-        sqrt-Gaussian filtered state, a flat-top sketch of the energy window
-        with ``sketch_families`` Chebyshev modulations, and the sketch's
-        exact filtered images; the map is the captured part of the window's
-        sketch divided by its global capture fraction. It is unbiased, its
-        relative error is sqrt(2 (1 - c) / k) with k = sketch_families x
-        n_samples the sketch rank and c the capture -- bounded by
-        sqrt(2 / k) at every system size -- and it is exact once k reaches
-        the number of states in the window. One sweep serves every energy.
+        Requires a single k-point at Gamma and a model with orbital files
+        (lcao). All energies are computed in one Chebyshev sweep. The estimate
+        is unbiased; its relative error is sqrt(2 (1 - c) / k), where k =
+        sketch_families * n_samples and c is the captured fraction of the energy
+        window, and it is exact once k reaches the number of states in the
+        window. The method is described in the documentation under Theory,
+        Random-state traces.
 
         Args:
             energies (list of float): Energies in eV (absolute).
-            eta (float): Gaussian broadening (standard deviation of the
-                window), eV.
+            eta (float): Gaussian broadening (standard deviation), eV.
             spacing (float): Grid spacing, Angstrom.
-            box_edge (int): Grid box side in points; 0 picks the physical
-                default.
-            n_samples (int): Probes. The error scale is
-                sqrt(2 (1 - c) / (sketch_families * n_samples)).
-            block (int): Probes per Chebyshev sweep (SpMM width).
-            seed (int): Random seed; a run repeats exactly at any rank count.
-            sketch_families (int): Chebyshev modulation families per probe,
-                J. Each lengthens the sweep by ~degree/10 and adds
-                n_samples columns to the sketch; families of one probe are
-                correlated draws (design effect 1.0 at J = 6, 2.5 at
-                J = 12), so J ~ 6 with probes supplying the rest of the rank
-                is the efficient setting.
+            box_edge (int): Grid box side in points; 0 selects boxes about
+                2.4 Angstrom wide.
+            n_samples (int): Number of random vectors.
+            block (int): Random vectors per Chebyshev sweep.
+            seed (int): Random seed. The random vectors are tied to the atoms,
+                not to the MPI processes, so the result does not depend on the
+                number of processes apart from rounding.
+            sketch_families (int): Chebyshev filter families per random vector.
+                Families of one vector are correlated, so keep the default (6)
+                and increase n_samples for accuracy.
 
         Returns:
             dict with keys:
                 shape: (n0, n1, n2) grid points along the lattice vectors.
-                n_point: total grid points.
-                point_index: (n_owned,) int64 global index of each owned point.
-                ldos: (n_energy, n_owned) values in states/eV/A^3 -- THIS
-                    RANK's share of the grid; ranks partition the points.
-                grid (serial runs only): ldos scattered to the full
-                    (n_energy, n0, n1, n2) array.
+                n_point: total number of grid points.
+                point_index: (n_owned,) global index of each grid point of this
+                    process.
+                ldos: (n_energy, n_owned) values in states/eV/Angstrom^3 at the
+                    grid points of this process.
+                grid (serial runs only): the LDOS on the full (n_energy, n0, n1, n2)
+                    grid.
                 capture, sketch_rank, predicted_rel_error: per energy, the
-                    capture fraction c (1 = exact), the sketch rank k, and
+                    captured fraction c (1 = exact), the rank k, and
                     sqrt(2 (1 - c) / k).
                 filter_degree, n_states, sampler_residual: diagnostics.
         """
@@ -306,11 +276,9 @@ class RSATB:
         return out
 
     def energy_bounds(self):
-        """
-        Return the spectral window (emin, emax) the expansions are scaled to.
+        """Return the energy window (emin, emax) that the expansions are scaled to.
 
-        Chebyshev observables are defined on the open interval; energies at or
-        beyond the endpoints reconstruct to zero.
+        Results at or beyond the ends of the window are zero.
 
         Returns:
             tuple: (emin, emax) in eV.
@@ -318,29 +286,27 @@ class RSATB:
         return self._cpp_obj.energy_bounds()
 
     def compute_ac(self, nt, n_kpm, temp, mu, axis="abc", method="concurrent", block=0):
-        """
-        Compute the AC conductivity.
+        """Compute the optical (AC) conductivity.
 
         Args:
             nt (int): Number of time steps.
-            n_kpm (int): Number of KPM moments.
-            temp (float): Temperature.
-            mu (float): Chemical potential.
-            axis (str, optional): Cell axes spanning the normalization
-                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
-                area), "a"/"b"/"c" (lattice-vector length). Defaults to "abc".
-            method (str): "concurrent" (shared-Chebyshev-state evolution,
-                ~9x fewer propagation matvecs; the default) or "sequential"
-                (stepwise propagation, the independent cross-check). Both
-                sample the correlator at its Nyquist step, alias-free.
-            block (int): Concurrent only: time steps per block, bounding the
-                stored-state memory. 0 uses the built-in min(nt, 128).
+            n_kpm (int): Number of Chebyshev moments for the Fermi-Dirac
+                occupation.
+            temp (float): Temperature in K.
+            mu (float): Chemical potential in eV.
+            axis (str, optional): Cell axes that define the normalization volume:
+                "abc" (cell volume), "ab"/"bc"/"ca" (area of a lattice plane),
+                "a"/"b"/"c" (length of a lattice vector). Default "abc".
+            method (str): "concurrent" (default): time steps share Chebyshev
+                states, which needs fewer matrix-vector products. "sequential":
+                one step at a time; used as an independent check.
+            block (int): For "concurrent": time steps per block, which limits
+                memory. 0 uses min(nt, 128).
 
         Returns:
-            tuple: (ac_out, omega_out) as numpy arrays.
-            unit in S/m for ac_out and cm-1 for omega_out. Both spins: a
-            spin-degenerate basis counts its one spin twice, a spinor (spin-orbit)
-            basis holds both, like every transport quantity.
+            tuple: (sigma, omega). sigma in S/m, omega in cm^-1. Both spins are
+            included: a spin-degenerate basis is counted twice, a spinor basis
+            already holds both.
         """
         ac_out, omega_out = self._cpp_obj.compute_ac(nt, n_kpm, temp, mu, axis, method, block)
         ac_out = np.array(ac_out).reshape(-1, nt+1, 6)
@@ -398,33 +364,28 @@ class RSATB:
         return ac_out, omega_out, properties
 
     def compute_dc_spectrum(self, n_moments, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson", method="fftcheb"):
-        """
-        Compute the zero-temperature DC conductivity spectrum on the Chebyshev energy grid.
+        """Compute the DC conductivity at zero temperature as a function of energy.
 
-        This is the direct Python entry point to the FFTCheb transport module.
-        The returned spectrum is resolved on the native Chebyshev nodes used by
-        the recurrence, so it is a good debugging/analysis surface when working
-        on new transport features.
+        The spectrum is given on the Chebyshev energy nodes.
 
         Args:
-            n_moments (int): Number of Chebyshev moments / energy grid points.
+            n_moments (int): Number of Chebyshev moments, which is also the
+                number of energy points.
             formulation (str, optional): "greenwood" or "bastin".
-            axis (str, optional): Cell axes spanning the normalization
-                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
-                area), "a"/"b"/"c" (lattice-vector length).
-            partition_sections (int, optional): Explicit row-partition count.
-            max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
-            kernel (str, optional): Chebyshev summation rule: "jackson"
-                (default; positive, pointwise-clean spectrum) or "costaper"
-                (higher-order taper; recommended when the spectrum is only
-                consumed through energy integrals such as compute_dc).
+            axis (str, optional): Cell axes that define the normalization volume,
+                as in compute_ac.
+            partition_sections (int, optional): Number of row blocks, to limit
+                memory; 0 chooses it from max_workspace_mb.
+            max_workspace_mb (int, optional): Memory limit in MB used to choose
+                partition_sections; 0 means no limit.
+            kernel (str, optional): "jackson" (default; the result is positive)
+                or "costaper" (smaller bias; better when the spectrum is only
+                used inside an energy integral, as in compute_dc).
 
         Returns:
-            tuple: (sigma_out, energy_out) with sigma_out shaped (n_k, n_moments, 6)
-                   in S/m (Kubo-Greenwood over both spins: g_s = 2 for a
-                   spin-degenerate basis, 1 for a spinor one, already
-                   included) and energy_out in eV.
-                   Tensor-component order is (xx, xy, xz, yy, yz, zz).
+            tuple: (sigma, energy). sigma has shape (n_k, n_moments, 6), in S/m,
+            with both spins included and components in the order
+            (xx, xy, xz, yy, yz, zz); energy is in eV.
         """
         sigma_out, energy_out = self._cpp_obj.compute_dc_spectrum(
             n_moments, formulation, axis, partition_sections, max_workspace_mb, kernel
@@ -435,32 +396,28 @@ class RSATB:
         return sigma_out, energy_out
 
     def compute_dc(self, n_moments, mu, temp, formulation="greenwood", axis="abc", partition_sections=0, max_workspace_mb=0, kernel="jackson", method="fftcheb"):
-        """
-        Evaluate the DC conductivity tensor at a target chemical potential and temperature.
+        """Compute the DC conductivity tensor at one chemical potential and temperature.
 
-        Internally this reuses `compute_dc_spectrum(...)` and performs the
-        thermal convolution on the same Chebyshev energy grid, so it is mainly
-        a convenience wrapper rather than a separate transport algorithm.
+        This computes the spectrum of compute_dc_spectrum and integrates it with
+        the derivative of the Fermi-Dirac function.
 
         Args:
-            n_moments (int): Number of Chebyshev moments / energy grid points.
+            n_moments (int): Number of Chebyshev moments.
             mu (float): Chemical potential in eV.
             temp (float): Temperature in K.
             formulation (str, optional): "greenwood" or "bastin".
-            axis (str, optional): Cell axes spanning the normalization
-                volume: "abc" (cell volume), "ab"/"bc"/"ca" (lattice-plane
-                area), "a"/"b"/"c" (lattice-vector length).
-            partition_sections (int, optional): Explicit row-partition count.
-            max_workspace_mb (int, optional): Workspace cap used to infer row partitioning.
-            kernel (str, optional): Chebyshev summation rule ("jackson" or
-                "costaper"). For this integrated quantity "costaper" gives a
-                higher-order bias decay in n_moments; "jackson" remains the
-                conservative default.
+            axis (str, optional): Cell axes that define the normalization volume,
+                as in compute_ac.
+            partition_sections (int, optional): Number of row blocks, as in
+                compute_dc_spectrum.
+            max_workspace_mb (int, optional): Memory limit in MB, as in
+                compute_dc_spectrum.
+            kernel (str, optional): "jackson" (default) or "costaper", whose bias
+                decreases faster with n_moments.
 
         Returns:
-            ndarray: Conductivity tensor shaped (n_k, 6) in S/m (both spins; g_s
-                     = 2 for a spin-degenerate basis, 1 for spinor) with component order
-                     (xx, xy, xz, yy, yz, zz).
+            ndarray: Conductivity tensor of shape (n_k, 6) in S/m, with both spins
+            included and components in the order (xx, xy, xz, yy, yz, zz).
         """
         sigma_out = self._cpp_obj.compute_dc(
             n_moments, mu, temp, formulation, axis, partition_sections, max_workspace_mb, kernel
@@ -470,98 +427,76 @@ class RSATB:
         return sigma_out
 
     def compute_occupation(self, mu, temp, indicator_threshold=1e-4, n_max=65536):
-        """
-        Stochastic-trace electron count and band energy at one (mu, T).
+        """Compute the electron count and band energy at one chemical potential and temperature.
 
-        Uses the adaptive tapered (ACE-FD) trace expansion: the Chebyshev
-        degree is chosen a posteriori from the sampled spectral measure and,
-        on extended systems, is set by the spectral regularity near mu rather
-        than by W/kT — i.e. it does not grow as the temperature is lowered.
-        No spin-degeneracy factor is applied to the returned counts.
+        The expansion degree is chosen after the moments are computed, from the
+        sampled spectrum. For extended systems it is set by the smoothness of the
+        DOS near mu, not by the temperature, so it does not grow as the
+        temperature is lowered. No spin factor is applied.
 
         Args:
             mu (float): Chemical potential in eV.
-            temp (float): Temperature in K (0 selects the T=0 step).
-            indicator_threshold (float, optional): Level the a-posteriori
-                error *indicator* must fall below, relative to the
-                sample-vector norm. This is not an error tolerance: no
-                inequality between the indicator and the true error is
-                proven, and outside the method's stated regime (many levels
-                within the resolution window) it can report a fired indicator
-                at a degree whose true error is orders of magnitude larger.
-                Validate against a fixed-degree run if that regime is in doubt.
-            n_max (int, optional): Hard cap on the expansion degree.
+            temp (float): Temperature in K; 0 gives a step function.
+            indicator_threshold (float, optional): Threshold of the error
+                indicator that chooses the degree. The indicator is not an error
+                bound. For systems with few states near mu, check the result with
+                a larger n_max.
+            n_max (int, optional): Maximum expansion degree.
 
         Returns:
             dict: n_electrons, band_energy (eV), mu, n_moments, indicator,
-                  indicator_fired. `indicator_fired=False` means the degree
-                  cap was reached instead; the result is then Jackson-grade at
-                  that degree.
+            indicator_fired. indicator_fired is False when n_max was reached
+            before the indicator fell below its threshold.
         """
         return self._cpp_obj.compute_occupation(mu, temp, indicator_threshold, n_max)
 
     def find_fermi_level(self, n_electrons, temp, indicator_threshold=1e-4, n_max=65536,
                          mu_guess=float("nan")):
-        """
-        Find mu such that the stochastic-trace electron count matches a target.
+        """Find the chemical potential at which the electron count equals a target.
 
-        One Chebyshev moment set is computed per k-point (matvecs); the whole
-        chemical-potential search then runs in coefficient space at zero
-        additional matvecs, bracketing with the monotone Jackson summation
-        and refining with the tapered one. Temperature scans at fixed
-        structure can call this repeatedly at little cost.
+        One set of Chebyshev moments is computed per k-point; the search then
+        reuses them without further matrix-vector products, so repeated calls,
+        for example at several temperatures, cost little.
 
         Args:
-            n_electrons (float): Target electron count (no spin factor).
+            n_electrons (float): Target electron count. No spin factor is
+                applied: for a spin-degenerate basis, give half the number of
+                electrons.
             temp (float): Temperature in K.
-            indicator_threshold (float, optional): Level the a-posteriori
-                error indicator must fall below. See compute_occupation for
-                why this is not an error tolerance.
-            n_max (int, optional): Hard cap on the expansion degree.
-            mu_guess (float, optional): Anchor for the adaptive degree
-                selection; defaults to the band center. The indicator is
-                re-checked at the returned mu either way.
+            indicator_threshold (float, optional): Threshold of the error
+                indicator; see compute_occupation.
+            n_max (int, optional): Maximum expansion degree.
+            mu_guess (float, optional): Energy at which the expansion degree is
+                chosen; default the centre of the energy window. The indicator is
+                checked again at the returned mu.
 
         Returns:
-            dict: n_electrons, band_energy (eV), mu (eV), n_moments,
-                  indicator, indicator_fired.
+            dict: n_electrons, band_energy (eV), mu (eV), n_moments, indicator,
+            indicator_fired.
         """
         return self._cpp_obj.find_fermi_level(n_electrons, temp, indicator_threshold, n_max,
                                               mu_guess)
 
     def compute_msd_spectrum(self, n_steps, dt_fs, n_kpm, axis="x", method="auto",
                              n_kpm_compute=0):
-        """
-        Compute the mean-square displacement spectrum DeltaX^2(E, t).
+        """Compute the mean-square displacement DeltaX^2(E, t).
 
-        MSD is evaluated from the configured Gamma-point state. The returned
-        array therefore always has a singleton leading k-axis.
+        The MSD is computed at the Gamma point, so the returned array has a
+        leading k axis of length one. The model must provide the velocity
+        operator.
 
         Args:
-            method (str): Both kernels run the ONE formalism -- the
-                commutator velocity correlator, valid for any basis, form,
-                and boundary condition (the model must supply the velocity;
-                orthogonal models always do). "stepwise" re-expands the
-                energy resolution at every output time (n_steps * n_kpm
-                operator applies -- the right choice for cheap orthogonal
-                tight-binding matvecs, and exactly positivity-preserving at
-                full moments). "spectral" runs the segmented single-chain
-                route at resolution-plus-evolution cost, linear in the
-                evolution window and independent of the output grid density.
-                "auto" (default) picks spectral whenever operator applies
-                are expensive (non-orthogonal S^-1 H or Z^H H Z forms) and a
-                machine-independent apply-count estimate favours it -- which
-                is everywhere except very sparse output sampling of very
-                long windows; stepwise otherwise. The two kernels are
-                different unbiased estimators of one trace, so pin the
-                method for sweeps that must not switch estimators. See
-                doc/design_msd_spectral.md.
-            n_kpm_compute (int): 0 = off. Compute only this many Chebyshev
-                moments and extend to n_kpm by linear prediction, cutting
-                the resolution cost by n_kpm / n_kpm_compute on either
-                method. UNSAFE on discrete/sparse spectra (measured 29-56%
-                negative grid points and ~24% D bias on small cells); a
-                warning is printed when set.
+            method (str): Both methods compute the same quantity. "stepwise"
+                expands the energy resolution again at each output time; it
+                suits orthogonal models, whose matrix-vector products are cheap.
+                "spectral" uses one Chebyshev chain whose cost does not depend
+                on the number of output times; it suits non-orthogonal models.
+                "auto" (default) chooses between them; set the method explicitly
+                when results of several runs are compared.
+            n_kpm_compute (int): 0 disables it. Compute this many Chebyshev
+                moments and extend them to n_kpm by linear prediction. Not
+                reliable for small cells with discrete spectra, where it can give
+                negative values; a warning is printed when it is set.
 
         Returns:
             tuple: (msd, energy, time)
@@ -578,10 +513,9 @@ class RSATB:
 
     def compute_diffusion_spectrum(self, n_steps, dt_fs, n_kpm, axis="x", method="auto",
                                    n_kpm_compute=0):
-        """
-        Compute DeltaX^2(E, t) and D(E, t) = 0.5 d_t DeltaX^2(E, t).
+        """Compute DeltaX^2(E, t) and D(E, t) = 0.5 d/dt DeltaX^2(E, t).
 
-        Same knobs as compute_msd_spectrum.
+        The arguments are those of compute_msd_spectrum.
         """
         msd, energy, time = self.compute_msd_spectrum(
             n_steps, dt_fs, n_kpm, axis=axis, method=method, n_kpm_compute=n_kpm_compute)
@@ -650,8 +584,7 @@ class RSATB:
         return gxx, sigma_xx, omega_ev
 
     def get_kernel_info(self):
-        """
-        Get information about the computational kernel.
+        """Return a description of the compiled kernel.
 
         Returns:
             str: Kernel information.
@@ -659,7 +592,5 @@ class RSATB:
         return self._cpp_obj.get_kernel_info()
 
     def atomic_data(self):
-        """
-        Get the atomic data object.
-        """
+        """Return the atomic data object."""
         return self._cpp_obj.atomic_data()

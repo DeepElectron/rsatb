@@ -8,8 +8,8 @@ description: Kubo–Greenwood DC conductivity, optical conductivity and dielectr
 
 <div class="rs-lead" markdown>
 Transport observables are correlation functions of the velocity operator.
-RSATB evaluates them with the same random-state and Chebyshev machinery as the
-DOS, so they scale the same way.
+RSATB evaluates them with the same random vectors and Chebyshev expansions as
+the DOS, so their cost also grows linearly with system size.
 </div>
 
 ## DC conductivity
@@ -30,10 +30,10 @@ nodes; `dc` folds it with $-\partial f_F/\partial E$ at one $(\mu, T)$.
 `formulation = "bastin"` adds the Fermi-sea term to the Fermi-surface
 (Greenwood) term.
 
-**Normalization.** For a 2D sheet padded with vacuum, a conductivity per
-volume is meaningless; `axis` chooses what $\Omega$ is — the cell volume
-(`"abc"`), the area of a lattice plane (`"ab"`, …) for a sheet, or a lattice
-vector's length for a wire.
+**Normalization.** For a 2D sheet with vacuum in the cell, a conductivity
+per cell volume has no physical meaning. `axis` sets $\Omega$: the cell
+volume (`"abc"`), the area of a lattice plane (`"ab"`, …) for a sheet, or the
+length of a lattice vector for a wire.
 
 ## Optical conductivity
 
@@ -50,9 +50,9 @@ $$
 with $\hat v_\alpha(t) = e^{i\hat Ht}\hat v_\alpha e^{-i\hat Ht}$; the factor
 $1-e^{-\beta\hbar\omega}$ is the KMS condition. In a non-orthogonal basis
 every operator is taken in the dual basis, so $F = f_F(S^{-1}H)$. The `ac`
-task propagates $f_F$-weighted random states with Chebyshev time evolution —
-`nt` steps sampled at the Nyquist step of the spectral window, alias-free —
-and Fourier transforms the correlator. The imaginary part follows by a
+task propagates random states weighted by $f_F$ with Chebyshev time
+evolution, over `nt` steps at the Nyquist step of the spectral window, and
+Fourier transforms the correlation function. The imaginary part follows by a
 Kramers–Kronig (Hilbert) transform, and from the complex $\sigma(\omega)$:
 
 $$
@@ -72,14 +72,15 @@ $$
 D(E,t) = \frac12\,\frac{\partial\,\Delta X^2}{\partial t},
 $$
 
-distinguishes transport regimes at a glance: ballistic motion gives
+distinguishes transport regimes. Ballistic motion gives
 $\Delta X^2 \propto t^2$ and $D \propto t$, diffusive motion a plateau in $D$
 that defines the semiclassical conductivity $\sigma = e^2\rho(E)D$, and
 localization a $D$ that falls back to zero. RSATB evaluates it through the
 commutator velocity correlator, which is valid in any basis and under periodic
-boundaries (`msd`, Gamma point only). Two kernels compute the same trace:
-`stepwise` re-expands the energy resolution at each output time, `spectral`
-runs one segmented Chebyshev chain at a cost independent of the output grid.
+boundaries (`msd`, Gamma point only). Two algorithms compute the same trace:
+`stepwise` expands the energy resolution again at each output time, and
+`spectral` uses one segmented Chebyshev chain, whose cost does not depend on
+the number of output times.
 
 ## Quantum metric
 

@@ -8,8 +8,8 @@ description: Which model.type to use for Slater-Koster parameters, DFTB .skf set
 
 <div class="rs-lead" markdown>
 The model type follows from the data you have. It also determines which
-observables are available, because some require operators — velocity,
-position, real-space orbitals — that not every model type provides.
+tasks are available, because some tasks need operators (velocity, position,
+real-space orbitals) that not every model type provides.
 </div>
 
 ## Start from your data
@@ -40,23 +40,23 @@ flowchart TD
 | `lcao` | ✓ | ✓ | ✓ | ✓ |
 | `tb_file` | ✓ | ✓ | ✓ | — |
 
-Reasons:
+The reasons are:
 
 - **Velocity** is the commutator $i[H, r]$. Orthogonal models get the position
   operator from the atomic coordinates; `lcao` computes the dipole integrals
   from its orbitals. A non-orthogonal `sktb` or `dftb` model has neither, so
   transport tasks are not available.
 - **Real-space maps** evaluate orbitals on a grid, so they need radial
-  functions — only `.orb` files provide them.
+  functions, which only `.orb` files provide.
 - **MSD and the real-space maps** are computed at the $\Gamma$ point only;
   use a supercell instead of a k-mesh.
 
 `rsatb check` reports these cases before a run starts:
 
 ```text
-error: tasks[0]: 'ac' needs the velocity operator, which the 'sktb' model with these inputs does not supply
-error: tasks[1]: 'ldos' needs the radial orbital files, which only an LCAO model carries
-error: tasks[1]: 'ldos' currently requires a single Gamma point, but run.kpoints has 4
+error: tasks[0]: 'ac' requires the velocity operator, which this sktb model does not provide
+error: tasks[1]: 'ldos' requires an lcao model, whose orbital files give the orbitals in real space
+error: tasks[1]: 'ldos' requires a single k-point at Gamma, but run.kpoints has 4
 ```
 
 ## Orthogonal and non-orthogonal models

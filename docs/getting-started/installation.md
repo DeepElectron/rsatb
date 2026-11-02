@@ -83,10 +83,10 @@ To plot results as in these pages, also install matplotlib
 
 ??? question "`rsatb info` says the solver is not available"
     The compiled part did not load. `python -c "import rsatb.driver"` shows
-    the error; usually a shared library (HDF5, MPI or PRIMME) that is not on
-    `LD_LIBRARY_PATH` at run time.
+    the error. The cause is usually a shared library (HDF5, MPI or PRIMME)
+    that is not on `LD_LIBRARY_PATH` at run time.
 
-??? question "`mpirun -n 4` is no faster than one process"
-    Open MPI binds each process to one core by default, which leaves no room
-    for threads. Give the mapping explicitly — see
+??? question "OpenMP threads do not speed up a run started with `mpirun`"
+    Open MPI binds each process to one core by default, so its threads share
+    that core. Give the process placement explicitly, as described in
     [Run on a cluster](../guides/parallel.md).

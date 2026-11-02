@@ -21,8 +21,8 @@ order, changing one setting at a time.
 ## 1 · Size
 
 A finite cell at one k-point has a discrete spectrum. Enlarge the cell
-until its level spacing — roughly the bandwidth divided by the number of
-orbitals — is below the resolution. An $8\times8\times8$ supercell at
+until its level spacing, roughly the bandwidth divided by the number of
+orbitals, is below the resolution. An $8\times8\times8$ supercell at
 $\Gamma$ samples the same states as an $8\times8\times8$ k-mesh of the
 primitive cell. The $\Gamma$-only tasks (`msd`, `ldos`, `density`) require
 the supercell form; other tasks can use either.
@@ -32,7 +32,7 @@ the supercell form; other tasks can use either.
 The `dos` task takes the resolution directly as `dE`; the others take a
 number of moments $N$, with $\delta E \approx \pi(E_{\max}-E_{\min})/(2N)$.
 Refine until the reported quantity no longer changes. The cost is
-proportional to the number of moments — see
+proportional to the number of moments; see
 [Chebyshev expansions](../theory/chebyshev.md#kernels-and-resolution).
 
 ## 3 · Samples
@@ -59,7 +59,7 @@ results are wrong.
 - [x] Result unchanged (within its error bar) when the supercell grows by one step
 - [x] Result unchanged when the resolution doubles
 - [x] Two seeds agree within the stated noise
-- [x] `summary.json` archived with the result — it holds the resolved input,
+- [x] `summary.json` archived with the result; it records the resolved input,
       the window and the version
 - [x] For a non-orthogonal model, `preconditioner.tol` at its default or
       tighter

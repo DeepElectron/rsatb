@@ -326,7 +326,7 @@ def render_page(page: Page, targets: Dict[int, str]) -> str:
                          _rel(page.uri, "reference/outputs.md"), page.title))
 
     if r.glance:
-        lines.append("## At a glance\n")
+        lines.append("## Key summary\n")
         lines.append("| Key | Type | Default |\n|---|---|---|")
         lines.extend(r.glance)
         lines.append("")
@@ -398,8 +398,8 @@ def render_tasks_index() -> str:
            '<div class="rs-lead">\n{}\n</div>\n'.format(_prose(union.doc)),
            '<div class="rs-facts" markdown>\n**Location** `tasks`, a list  \n'
            '**Selected by** `"type"`  \n**Same content offline** `rsatb doc tasks`\n</div>\n',
-           "Every task accepts an optional `label`, the name its result is stored "
-           "under. Two tasks of the same type need different labels to be told apart:\n",
+           "Every task accepts an optional `label`, the name of its result in the "
+           "output. Two tasks of the same type need different labels:\n",
            '```json\n"tasks": [\n  {"type": "dos", "label": "coarse", "dE": 0.3},\n'
            '  {"type": "dos", "label": "fine",   "dE": 0.01}\n]\n```\n']
     seen = set()
@@ -417,15 +417,16 @@ def render_tasks_index() -> str:
         raise PluginError("tasks not placed in a group on the tasks index: " + ", ".join(missing))
     out.append("## What each task needs\n")
     out.append(
-        "Which tasks a model can run follows from the operators it supplies; "
-        "`rsatb check` reports a mismatch before anything is queued.\n\n"
+        "Which tasks a model can run depends on the operators it provides. "
+        "`rsatb check` reports a task that the model cannot run before the run "
+        "starts.\n\n"
         "| Task | Needs |\n|---|---|\n"
         "| `ac`, `dc`, `dc_spectrum`, `quantum_metric` | the velocity operator |\n"
         "| `msd` | the velocity operator, and the Gamma point in `run.kpoints` |\n"
-        "| `ldos`, `density` | radial orbital files (an `lcao` model) and a single Gamma point |\n"
+        "| `ldos`, `density` | an `lcao` model, and a single k-point at Gamma |\n"
         "| everything else | any model |\n\n"
-        "See [Choose a model](../../../guides/choose-model.md) for which models "
-        "supply velocity.\n")
+        "[Choose a model](../../../guides/choose-model.md) lists which models "
+        "provide the velocity operator.\n")
     return "\n".join(out)
 
 
@@ -435,10 +436,9 @@ def render_input_index() -> str:
            '<p class="rs-kicker">Reference</p>\n', "# Input file\n",
            '<div class="rs-lead">\n{}\n</div>\n'.format(_prose(root.doc)),
            '<div class="rs-facts" markdown>\n**Format version** `{}`  \n'
-           '**Generated from** [`{}`](https://github.com/DeepElectron/rsatb/blob/main/{})  \n'
            '**Machine-readable** [`rsatb.schema.json`](../../rsatb.schema.json) '
-           '(JSON Schema 2020-12, identical to `rsatb schema`)\n</div>\n'.format(
-               _spec.INPUT_VERSION, SPEC_SOURCE, SPEC_SOURCE),
+           '(JSON Schema 2020-12, the same as the output of `rsatb schema`)\n</div>\n'.format(
+               _spec.INPUT_VERSION),
            "## Top-level keys\n",
            "| Key | Type | Default | Documented in |\n|---|---|---|---|"]
     pages = {"structure": "structure.md", "model": "model/index.md", "run": "run.md",
@@ -501,8 +501,8 @@ def generated_pages() -> Dict[str, str]:
     out[REF + "/tasks/index.md"] = render_tasks_index()
     out[REF + "/model/index.md"] = _union_index(
         REF + "/model/index.md", "model", "Input section", _spec.MODEL, ".",
-        '<div class="rs-lead"><p>Not sure which family fits your data? See '
-        '<a href="../../../guides/choose-model/">Choose a model</a>.</p></div>\n',
+        '<div class="rs-lead"><p>The guide <a href="../../../guides/choose-model/">'
+        'Choose a model</a> explains which model type fits which data.</p></div>\n',
         "model")
     # Name each page after its heading in the front matter too: section
     # indexes would otherwise be titled "Index" in llms.txt.

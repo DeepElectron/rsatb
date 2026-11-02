@@ -1,5 +1,5 @@
 ---
-description: A first RSATB calculation — graphene from a template — in four steps.
+description: A first RSATB calculation, the density of states of graphene from a template, in four steps.
 ---
 
 <p class="rs-kicker">Get started</p>
@@ -7,7 +7,8 @@ description: A first RSATB calculation — graphene from a template — in four 
 # Quick start
 
 <div class="rs-lead" markdown>
-A first calculation: graphene, from a template. No data files are needed.
+This page runs a first calculation, the density of states of graphene,
+from a template. No data files are needed.
 </div>
 
 ## 1 · Create an input

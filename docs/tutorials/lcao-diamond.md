@@ -7,8 +7,9 @@ description: Tutorial 2 — diamond from a precomputed DFT Hamiltonian and its n
 # A DFT Hamiltonian
 
 <div class="rs-lead" markdown>
-A DFT Hamiltonian of diamond in a numerical atomic-orbital basis, and its
-density of states along a path through the Brillouin zone.
+This tutorial computes the density of states of diamond from a DFT
+Hamiltonian in a numerical atomic-orbital basis, at k-points along a path
+through the Brillouin zone.
 </div>
 
 <div class="rs-chips">
@@ -49,9 +50,10 @@ rsatb run examples/02_lcao_diamond.json
   bounds        [-8.621902, 263.989131] eV
 ```
 
-Read the report line by line:
+The report shows:
 
-- **13 orbitals per carbon, reaching 3.7 Å** — read from the orbital file.
+- **13 orbitals per carbon atom, with a cutoff radius of 3.7 Å,** read from
+  the orbital file.
 - **`velocity` is available**, so this model can also compute conductivity
   and optical spectra ([Tutorial 4](transport.md) and
   [Tutorial 5](optics.md)).
@@ -61,38 +63,36 @@ Read the report line by line:
   resolution is proportional to this range, the input uses `dE = 2.8` eV.
 
 !!! tip "Other DFT codes"
-    The same model reads ABACUS and NextHam output — change
-    `hamiltonian.format`. [Tutorial 7](abacus-nextham.md) does this for a
+    The same model reads ABACUS and NextHam output; set
+    `hamiltonian.format` accordingly. [Tutorial 7](abacus-nextham.md) does this for a
     metal and a spin-orbit semiconductor.
 
-## What to take away
+## Summary
 
-- A DFT model is **a Hamiltonian file plus the orbital files** it was written
-  in.
+- A DFT model consists of **a Hamiltonian file and the orbital files** it
+  was computed in.
 - The basis is read from those files.
 - A DFT basis has more orbitals per atom and a wider energy range than a
   $p_z$ model, so each step costs more; use the coarsest resolution the
   analysis allows.
 
-??? deep "Under the hood: overlapping orbitals"
+??? deep "Overlapping orbitals"
     Atomic orbitals on neighbouring atoms overlap, so the basis is
     *non-orthogonal*: the overlap matrix $S$ is not the identity. RSATB
-    computes $S$ from the orbital files and works with the operator
-    $S^{-1/2} H S^{-1/2}$, built once per k-point during setup.
-
-    `run.preconditioner.operator_form` chooses how:
+    computes $S$ from the orbital files and applies either $S^{-1} H$ or
+    $S^{-1/2} H S^{-1/2}$. `run.preconditioner.operator_form` chooses which:
 
     | | `"sandwich"` (this input) | `"solve"` (default) |
     |---|---|---|
     | operator | $Z H Z$ with $Z = S^{-1/2}$ | $S^{-1} H$, by an iterative solve |
     | keeps $S$ in memory | no | yes |
-    | best when | $Z$ fits in memory | $Z$ is too large to store |
-    | `maxiter` | 20: $Z$ is applied directly, so it is refined | 0 (default): the sparse seed only preconditions the solve |
+    | use when | $Z$ fits in memory | $Z$ is too large to store |
+    | `maxiter` | 20, so that $Z$ is refined | 0 (default): an approximate $Z$ preconditions the solve |
 
-    The small eigenvalues of $S$ are also what stretch the energy range to
-    270 eV. Background: [Non-orthogonal bases](../theory/overlap.md).
+    The small eigenvalues of $S$ widen the energy range to 270 eV. The
+    method is described in [Non-orthogonal bases](../theory/overlap.md).
 
-## Try next
+## Next steps
 
 - Replace the path with `{"mesh": [4, 4, 4]}` for a zone-averaged DOS.
-- Continue to [Tutorial 3](other-models.md) for the two remaining model types.
+- [Tutorial 3](other-models.md) covers the two remaining model types.

@@ -1,5 +1,5 @@
 ---
-description: Tutorial 3 — the dftb model from a directory of .skf files, and the tb_file model for a ready-made orthogonal tight-binding Hamiltonian.
+description: Tutorial 3 — the dftb model from a directory of .skf files, and the tb_file model for an orthogonal tight-binding Hamiltonian.
 ---
 
 <p class="rs-kicker">Tutorial 3 · The basics</p>
@@ -7,8 +7,8 @@ description: Tutorial 3 — the dftb model from a directory of .skf files, and t
 # Other model types
 
 <div class="rs-lead" markdown>
-The two remaining model types: DFTB parameter files and tight-binding
-Hamiltonian files, with one example each.
+This tutorial runs one example of each of the two remaining model types:
+DFTB parameter files and tight-binding Hamiltonian files.
 </div>
 
 <div class="rs-chips">
@@ -18,9 +18,9 @@ Hamiltonian files, with one example each.
 
 ## DFTB parameter files
 
-DFTB parameter sets ship as a directory of `.skf` files, one per pair of
-elements. Point `skf_dir` at the directory and name the orbitals each element
-uses:
+A DFTB parameter set is a directory of `.skf` files, one per pair of
+elements. `skf_dir` gives the directory, and `basis` the orbitals of each
+element:
 
 <!-- rsatb-input: examples/03_dftb_skf.json -->
 
@@ -37,12 +37,12 @@ rsatb run examples/03_dftb_skf.json
 
 `kpoints` here is a $2 \times 2 \times 2$ mesh, so the result has eight rows.
 
-!!! note "Use a real parameter set for real work"
-    The example ships a small synthetic `C-C.skf` so it runs without
-    downloads. For research, point `skf_dir` at a released set such as mio
-    or 3ob.
+!!! note "The example parameter file is synthetic"
+    The example includes a small synthetic `C-C.skf` file, so that it runs
+    without downloads. For research, set `skf_dir` to a published parameter
+    set such as mio or 3ob.
 
-## A ready-made tight-binding file
+## A tight-binding Hamiltonian file
 
 An orthogonal Hamiltonian $H(\mathbf R)$ produced by another program, for
 example a DeePTB Slater-Koster export, is read with `tb_file`:
@@ -64,22 +64,23 @@ The file describes a 1D chain whose band runs from −1.5 to 2.5 eV.
 For this model type the basis is declared in the input (`type_norb`,
 `cutoff_radius`), because the files do not record it.
 
-## Which one do I need?
+## Choosing a model type
 
 | You have | Use |
 |---|---|
 | hopping parameters you can write down | `sktb` ([Tutorial 1](graphene-dos.md)) |
 | output of a DFT code, plus orbital files | `lcao` ([Tutorial 2](lcao-diamond.md)) |
 | a DFTB parameter set | `dftb` |
-| a ready-made orthogonal $H(\mathbf R)$ file | `tb_file` |
+| an orthogonal $H(\mathbf R)$ file | `tb_file` |
 
-??? deep "Under the hood: what each model can compute"
-    DFTB data always includes an overlap but no position information, so a
+??? deep "What each model can compute"
+    DFTB parameters include an overlap but no position information, so a
     `dftb` model computes densities of states and populations, but not
-    conductivities or optical spectra. A `tb_file` model is orthogonal, so the velocity operator is available without additional data
-    and all transport tasks can be run.
+    conductivities or optical spectra. A `tb_file` model is orthogonal, so
+    the velocity operator is available and all transport tasks can be run.
     The full table is in [Choose a model](../guides/choose-model.md).
 
-## Try next
+## Next steps
 
-Continue to [Tutorial 4](transport.md): conductivity and diffusion.
+[Tutorial 4](transport.md) computes the conductivity and diffusion of
+graphene.

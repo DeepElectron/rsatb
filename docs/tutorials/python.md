@@ -7,8 +7,8 @@ description: Tutorial 8 — a strain sweep of graphene through the RSATB Python 
 # Python scripting
 
 <div class="rs-lead" markdown>
-A parameter sweep with the Python API: the density of states of graphene
-under biaxial strain from 0 to 10%.
+This tutorial uses the Python API to compute the density of states of
+graphene under biaxial strain from 0 to 10%.
 </div>
 
 <div class="rs-chips">
@@ -21,10 +21,10 @@ under biaxial strain from 0 to 10%.
 calculation in a loop, and run the script in parallel.
 </div>
 
-## The idea
+## The calculation
 
 Stretching graphene pulls the atoms apart, which weakens the hopping between
-them, so the band gets narrower. The script repeats one calculation at five
+them, so the band becomes narrower. The script repeats one calculation at five
 strains, from 0% to 10%, each on 32,768 atoms.
 
 ## The script
@@ -63,7 +63,7 @@ peaks move inwards with the weakening hopping, while the Dirac point stays
 at zero. Each curve is a 32,768-atom calculation.</figcaption>
 </figure>
 
-## What to take away
+## Summary
 
 - Each section of an input file corresponds to a Python object:
   `Structure`, a model class, `SetupOptions`, and `RSATB` with its
@@ -72,7 +72,7 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
 - Python is suited to loops and generated structures; input files to single
   runs that are archived with their results.
 
-??? deep "Under the hood: the hopping model"
+??? deep "The hopping model"
     The hopping decays exponentially with bond length,
 
     $$
@@ -83,7 +83,7 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
     one-term polynomial $P = t_0 e^{\beta}$ and $\lambda = \beta/a_0$. The
     `r_on`/`r_cut` taper brings it smoothly to zero before second neighbours.
 
-??? deep "Under the hood: API details worth knowing"
+??? deep "API details"
     - `Structure.from_arrays` takes **flat** positions (three numbers per atom)
       and a **row-major** 3 × 3 cell.
     - `SkParameters` keys a pair by a tuple, `("C", "C")`, where an input file
@@ -93,8 +93,8 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
     - Every process runs the same loop and gets the same, already-combined
       results; only process 0 prints and writes.
 
-??? deep "Under the hood: starting from an input file"
-    A script can also load a JSON input and take it further:
+??? deep "Starting from an input file"
+    A script can also start from a JSON input file:
 
     ```python
     from mpi4py import MPI

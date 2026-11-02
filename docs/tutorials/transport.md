@@ -7,9 +7,9 @@ description: Tutorial 4 — DC conductivity and wave-packet diffusion of graphen
 # Transport
 
 <div class="rs-lead" markdown>
-The DC conductivity spectrum and the energy-resolved diffusion coefficient
-of a graphene sheet (128 × 128 supercell, 32,768 atoms), computed from one
-input.
+This tutorial computes the DC conductivity spectrum and the
+energy-resolved diffusion coefficient of a graphene sheet (128 × 128
+supercell, 32,768 atoms) from one input.
 </div>
 
 <div class="rs-chips">
@@ -27,10 +27,10 @@ normalized for a 2D material.
 
 <!-- rsatb-input: examples/tutorials/graphene_transport.json -->
 
-What's new compared with Tutorial 1:
+New compared with Tutorial 1:
 
 - **Three tasks in one input.** They share one setup.
-- **`dc_spectrum`** gives the conductivity at every energy.
+- **`dc_spectrum`** computes the conductivity as a function of energy.
   `"axis": "ab"` tells RSATB that this is a sheet: it divides by the area of
   the sheet, not by a volume padded with vacuum.
 - **`msd`** propagates wave packets for 100 fs and records their
@@ -47,8 +47,8 @@ rsatb run examples/tutorials/graphene_transport.json
 <figure markdown>
 ![DOS, DC conductivity and diffusion of graphene](../assets/figures/tut_graphene_transport.png)
 <figcaption><strong>Left:</strong> the density of states.
-<strong>Centre:</strong> the conductivity of the sheet at each energy — zero
-at the Dirac point and at the band edges. <strong>Right:</strong> the
+<strong>Centre:</strong> the conductivity of the sheet as a function of
+energy; it is zero at the Dirac point and at the band edges. <strong>Right:</strong> the
 diffusion coefficient grows linearly in time at all energies, as expected
 for ballistic transport in a crystal without disorder.</figcaption>
 </figure>
@@ -65,21 +65,21 @@ $$
 
 The computed curves at 0.5 and 1 eV agree with this value.
 
-## What to take away
+## Summary
 
 - Several tasks in one input share the setup.
 - For 2D materials, `"axis": "ab"` normalizes by the sheet area.
 - The time dependence of $D(E,t)$ indicates the transport regime: linear
   (ballistic), constant (diffusive) or decreasing (localized).
 
-??? deep "Under the hood: the magnitude of the DC conductivity"
+??? deep "The magnitude of the DC conductivity"
     Without disorder the DC conductivity of a crystal diverges; the values in
     the plot are set by the energy resolution (256 moments). Physically meaningful DC values need scattering:
     disorder in the Hamiltonian, a cell large enough to hold it, and a
-    resolution finer than the scattering rate. The diffusion curve reveals
-    which regime you are in.
+    resolution finer than the scattering rate. The diffusion curve shows
+    the transport regime.
 
-??? deep "Under the hood: reading the arrays"
+??? deep "Reading the arrays"
     ```python
     import numpy as np
 
@@ -97,8 +97,8 @@ The computed curves at 0.5 and 1 eV agree with this value.
     The theory behind both tasks is in
     [Linear response](../theory/linear-response.md).
 
-## Try next
+## Next steps
 
-- Measure along $y$ with `"axis": "y"` in the `msd` task — graphene is
-  isotropic, so the curves should match.
-- Continue to [Tutorial 5](optics.md): optical spectra.
+- Measure along $y$ with `"axis": "y"` in the `msd` task. Graphene is
+  isotropic, so the curves should agree.
+- [Tutorial 5](optics.md) computes optical spectra.

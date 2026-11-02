@@ -7,10 +7,9 @@ description: The RSATB Python API — Structure, the four model classes, SetupOp
 # Python API
 
 <div class="rs-lead" markdown>
-The JSON input is the primary interface; this is the layer underneath it, for
-calculations an input file cannot express — a structure generated on the fly,
-a parameter sweep, post-processing between observables. Every input key maps
-onto an argument documented here.
+The Python API is for calculations that an input file cannot describe, such
+as structures generated in a script, parameter sweeps, or processing between
+tasks. Each input key corresponds to an argument documented on this page.
 </div>
 
 ```python
@@ -31,14 +30,14 @@ calc = RSATB(structure, model, SetupOptions(nsamples=8), npar=1)
 dos, energy = calc.compute_dos(dE=0.05)
 ```
 
-Three objects and one constructor: the structure says where the atoms are,
-the model what the Hamiltonian is, the options how to run. A worked example is
-[Tutorial 8](../tutorials/python.md).
+A calculation is built from a `Structure`, a model and `SetupOptions`, which
+are passed to the `RSATB` constructor. [Tutorial 8](../tutorials/python.md)
+is a worked example.
 
 ## From an input file
 
-`rsatb.inputs.build_calculation` turns a validated input into exactly these
-objects, so an input can be the starting point a script goes beyond:
+`rsatb.inputs.build_calculation` builds these objects from a validated input,
+so a script can start from an input file:
 
 ```python
 from rsatb.inputs import load_and_resolve, build_calculation, run_tasks
@@ -110,7 +109,7 @@ LcaoModel(hamiltonian, orbitals, pseudopotentials=PseudopotentialFiles(),
           spin="none", log_file="op2c.log")
 HamiltonianFile(path, format="deeptb")          # "deeptb" | "abacus" | "nextham"
 OrbitalFiles(names, dir="")                     # one .orb per species, ascending Z
-PseudopotentialFiles(names=[], dir="")          # optional cross-check velocity only
+PseudopotentialFiles(names=[], dir="")          # optional; for testing only
 ```
 
 ### `TightBindingFileModel`
@@ -119,7 +118,7 @@ PseudopotentialFiles(names=[], dir="")          # optional cross-check velocity 
 TightBindingFileModel(hamiltonian, type_symbols, type_norb, cutoff_radius, spin="none")
 ```
 
-The one model that must be told its basis.
+The basis must be given, because these files do not record orbital counts.
 
 ## Options
 
@@ -136,14 +135,14 @@ PreconditionerOptions(operator_form="solve", tol=1e-7, sptol=1e-5, maxiter=0)
 `run.bounds.mode = "fixed"` in an input. Unknown keyword arguments raise a
 `TypeError`.
 
-Verbosity is process-wide, not an argument: call
+The amount of output is set for the whole process, not per calculation. Call
 `rsatb.set_log_level("silent" | "summary" | "progress" | "debug")` before
 building a calculation.
 
 ## The calculation object
 
-Every `compute_*` method returns NumPy arrays already reduced across MPI
-ranks. Shapes are given in each method's docstring below; note that
+Each `compute_*` method returns NumPy arrays that are already combined over
+the MPI processes. Shapes are given in each method's docstring below; note that
 `compute_dos` returns the k-points concatenated into one flat array, which
 `dos.reshape(-1, len(energy))` splits. The JSON tasks apply these reshapes and
 write the shapes listed under [Output files](outputs.md). A method the model

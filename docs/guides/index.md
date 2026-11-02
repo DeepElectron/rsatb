@@ -7,7 +7,7 @@ description: Short, task-focused guides — choosing a model, importing DFT Hami
 # Guides
 
 <div class="rs-lead" markdown>
-Task-oriented instructions. For an introduction, see the
+Each guide covers one task. For an introduction, start with the
 [tutorials](../tutorials/index.md).
 </div>
 
@@ -17,11 +17,12 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-sitemap-outline:{ .lg } **[Choose a model](choose-model.md)**
 
-    Which model type fits your data, and what each can compute.
+    Choose the model type for your data, and see what each can compute.
 
 -   :material-database-import-outline:{ .lg } **[Import DFT Hamiltonians](hamiltonian-files.md)**
 
-    DeePTB, ABACUS and NextHam files, supercells and spin-orbit coupling.
+    Read DeePTB, ABACUS and NextHam files, with supercells and spin-orbit
+    coupling.
 
 </div>
 
@@ -31,7 +32,7 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-check-decagram-outline:{ .lg } **[Converge a calculation](convergence.md)**
 
-    The four settings that decide whether a result can be trusted.
+    Check the four settings that determine whether a result is converged.
 
 -   :material-calculator-variant-outline:{ .lg } **[Estimate cost first](cost.md)**
 
@@ -39,7 +40,7 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-server-network:{ .lg } **[Run on a cluster](parallel.md)**
 
-    MPI processes, OpenMP threads and k-point groups.
+    Choose MPI processes, OpenMP threads and k-point groups.
 
 </div>
 
@@ -53,6 +54,6 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-robot-outline:{ .lg } **[Automate with scripts and agents](agents.md)**
 
-    Machine-readable checks, the JSON Schema, and `llms.txt`.
+    Use the machine-readable checks, the JSON Schema and `llms.txt`.
 
 </div>

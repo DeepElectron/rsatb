@@ -7,8 +7,8 @@ description: Every rsatb subcommand and flag — doc, template, check, show, sch
 # Command line
 
 <div class="rs-lead" markdown>
-One program, seven subcommands. Where the `rsatb` command is not on `PATH`,
-`python -m rsatb.cli` is the same program.
+The `rsatb` command has seven subcommands. Where `rsatb` is not on `PATH`,
+`python -m rsatb.cli` runs the same program.
 </div>
 
 ```text
@@ -36,7 +36,7 @@ Topics: `input`, `structure`, `model`, `model.sktb`, `model.sktb.parameters`,
 
 ## `rsatb template`
 
-Write a working input to start from.
+Write an example input to start from.
 
 ```text
 rsatb template [-o OUTPUT] [--list] [--force] [name]
@@ -44,12 +44,12 @@ rsatb template [-o OUTPUT] [--list] [--force] [name]
 
 | Template | |
 |---|---|
-| `minimal` | The shortest input that validates: a structure file, one SK hopping, a DOS |
-| `sktb` | Graphene written inline with a single $p_z$ hopping; no data files, runs as written |
+| `minimal` | A minimal input: a structure file, one Slater-Koster hopping and a density of states |
+| `sktb` | Graphene written in the input, with a single $p_z$ hopping; no data files are needed |
 | `sktb-transport` | An 8×8 graphene supercell with the DC conductivity spectrum and the MSD |
-| `lcao` | A precomputed Hamiltonian plus `.orb` and `.upf` files on a 2×2×2 mesh |
-| `dftb` | A `.skf` parameter set from a released DFTB directory |
-| `tb_file` | An orthogonal H(R) straight from a file, along a k-point line |
+| `lcao` | A DFT Hamiltonian file and its `.orb` file, on a 2×2×2 k-point mesh |
+| `dftb` | A DFTB parameter set (`.skf` files) for diamond |
+| `tb_file` | An orthogonal H(R) file for a 1D chain, along a k-point line |
 
 `-o` refuses to overwrite an existing file unless `--force` is given.
 
@@ -64,14 +64,14 @@ rsatb check [--json] [--no-files] input
 | Flag | |
 |---|---|
 | `--json` | machine-readable report on stdout: `{"input", "ok", "issues": [{"severity", "path", "message", "hint"}]}` |
-| `--no-files` | skip the does-this-file-exist checks |
+| `--no-files` | skip the checks that files exist |
 
 Exit status is **0** if the input is valid (warnings allowed) and **1** if any
 error was found.
 
 ## `rsatb show`
 
-Print the input with every default filled in, exactly as `run` will see it.
+Print the input with all defaults filled in, as `run` uses it.
 
 ```text
 rsatb show [-o OUTPUT] input
@@ -88,13 +88,13 @@ rsatb schema [-o OUTPUT]
 ```
 
 !!! tip "Editor completion"
-    Point your editor's JSON-schema setting at `rsatb.schema.json` — in VS
-    Code, a `"$schema"` key is not accepted by RSATB (unknown keys are
-    errors), so map it through `json.schemas` in the settings instead.
+    Point your editor's JSON-schema setting at `rsatb.schema.json`. In VS
+    Code, use the `json.schemas` setting rather than a `"$schema"` key in the
+    input, because RSATB rejects unknown keys.
 
 ## `rsatb run`
 
-Set up and compute.
+Set up the calculation and compute the tasks.
 
 ```text
 rsatb run [--dry-run] [-o OUTPUT_DIR] [--log-level {silent,summary,progress,debug}] input
@@ -107,23 +107,24 @@ rsatb run [--dry-run] [-o OUTPUT_DIR] [--log-level {silent,summary,progress,debu
 | `--log-level` | how much to report (default `summary`) |
 
 Run under MPI with `mpirun -n N rsatb run input.json` or `srun rsatb run
-input.json`. A run refuses to start if `check` finds an error, rather than
-failing partway through setup. An empty `tasks` list sets the calculation up
-and reports the derived basis and spectral window, as a quick end-to-end test.
+input.json`. A run does not start if `check` finds an error. With an empty
+`tasks` list, the run sets up the calculation and reports the basis and the
+energy window.
 
 ### Log levels
 
 | Level | Adds |
 |---|---|
 | `silent` | nothing (faults and input warnings still print) |
-| `summary` | one line per phase, and the profile of where wall time and memory went |
-| `progress` | bounded per-iteration reporting: Newton–Schulz steps, task batches |
+| `summary` | one line per phase, and the time and memory of each phase |
+| `progress` | the progress of iterations: Newton–Schulz steps, task batches |
 | `debug` | everything else |
 
-Levels are cumulative. Output goes to stdout; only rank 0 reports. From
+Levels are cumulative. Output goes to stdout, from MPI process 0 only. From
 Python, call `rsatb.set_log_level("progress")` before building a calculation.
 
 ## `rsatb info`
 
-What this build supports: models, tasks, radial forms, Hamiltonian file
-formats, whether the solver loads, and the MPI rank count.
+Print what this build supports: models, tasks, radial forms and Hamiltonian
+file formats, whether the compiled solver loads, and the number of MPI
+processes.

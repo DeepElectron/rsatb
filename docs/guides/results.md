@@ -30,8 +30,8 @@ energy = dos["energy"]
 rho = dos["dos"][0] / (emax - emin)     # per-orbital DOS, integrates to 1
 ```
 
-Scalars such as `emin` or a Fermi level live only in `summary.json`; arrays
-live in the archive named by each result's `file`.
+Scalars such as `emin` or a Fermi level are stored only in `summary.json`;
+arrays are stored in the archive named by each result's `file`.
 
 ## Density of states
 

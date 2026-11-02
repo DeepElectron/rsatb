@@ -7,7 +7,8 @@ description: Complete reference for the RSATB command line, input file, output f
 # Reference
 
 <div class="rs-lead" markdown>
-Input options, output files, command line and Python API.
+The complete description of the input file, the output files, the command
+line and the Python API.
 </div>
 
 <div class="grid cards" markdown>
@@ -16,27 +17,28 @@ Input options, output files, command line and Python API.
 
     ---
 
-    `rsatb doc`, `template`, `check`, `show`, `schema`, `run`, `info` — every
-    flag.
+    The subcommands of `rsatb` (`doc`, `template`, `check`, `show`,
+    `schema`, `run`, `info`) and their options.
 
 -   :material-code-json:{ .lg } **[Input file](input/index.md)**
 
     ---
 
-    Every section, model family and task: keys, types, units, defaults,
-    constraints.
+    All keys of the input file, with their types, units, defaults and
+    allowed values.
 
 -   :material-file-table-outline:{ .lg } **[Output files](outputs.md)**
 
     ---
 
-    What each task writes — array names, shapes, units — and `summary.json`.
+    The arrays each task writes, with names, shapes and units, and the
+    `summary.json` record.
 
 -   :material-language-python:{ .lg } **[Python API](python.md)**
 
     ---
 
-    `RSATB`, `Structure`, the model classes and options, for scripts that go
-    beyond an input file.
+    The classes for Python scripts: `RSATB`, `Structure`, the model classes
+    and the options.
 
 </div>

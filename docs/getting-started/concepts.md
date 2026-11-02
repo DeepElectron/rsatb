@@ -15,36 +15,37 @@ sections.
 
 ```json
 {
-  "structure": { },   // where the atoms are
-  "model":     { },   // what the Hamiltonian is
-  "run":       { },   // how to run: k-points, sampling, ...
-  "tasks":     [ ],   // what to compute
-  "output":    { }    // where to write results
+  "structure": { },   // atomic structure
+  "model":     { },   // Hamiltonian
+  "run":       { },   // k-points, random vectors, numerical settings
+  "tasks":     [ ],   // calculations, in order
+  "output":    { }    // output directory and format
 }
 ```
 
-Only `structure` and `model` are required; the others have sensible defaults.
+Only `structure` and `model` are required; the other sections have default values.
 
 <div class="grid cards rs-grid-2" markdown>
 
 -   :material-atom-variant:{ .lg } **[`structure`](../reference/input/structure.md)**
 
-    A structure file (POSCAR, CIF, XYZ) or atoms written inline. Add
-    `supercell` to repeat the cell.
+    The atoms are read from a structure file (POSCAR, CIF, XYZ) or written
+    in the input. `supercell` repeats the cell.
 
 -   :material-function-variant:{ .lg } **[`model`](../reference/input/model/index.md)**
 
-    The Hamiltonian: hand-written parameters, DFT output, DFTB files, or a
-    tight-binding file.
+    The Hamiltonian is given by Slater-Koster parameters, a DFT Hamiltonian
+    file, DFTB parameter files or a tight-binding file.
 
 -   :material-tune-variant:{ .lg } **[`run`](../reference/input/run.md)**
 
-    Which k-points, how many random vectors, and a few numerical settings.
+    This section sets the k-points, the number of random vectors and other
+    numerical settings.
 
 -   :material-format-list-checks:{ .lg } **[`tasks`](../reference/input/tasks/index.md)**
 
-    A list of what to compute, in order — a density of states, a
-    conductivity, a map…
+    The calculations to run, in order, for example a density of states, a
+    conductivity or a real-space map.
 
 </div>
 
@@ -61,10 +62,10 @@ the tasks in order, so several tasks in one input share the setup.
   moved together.
 - **Units are fixed:** eV, Å, K and fs.
 
-## Which model can compute what
+## Tasks available for each model
 
-Some observables need extra ingredients from the model. `rsatb check` tells
-you if a request isn't possible.
+Some tasks need operators that not every model type provides. `rsatb check`
+reports a task that the model cannot run.
 
 | Model | Density of states | Conductivity & optics | Real-space maps |
 |---|:---:|:---:|:---:|
@@ -73,9 +74,9 @@ you if a request isn't possible.
 | `dftb` | ✓ | — | — |
 | `tb_file` | ✓ | ✓ | — |
 
-More detail: [Choose a model](../guides/choose-model.md).
+The reasons are given in [Choose a model](../guides/choose-model.md).
 
-## Commands at a glance
+## Commands
 
 | Command | What it does |
 |---|---|
@@ -85,4 +86,4 @@ More detail: [Choose a model](../guides/choose-model.md).
 | `rsatb run FILE` | run the calculation |
 | `rsatb doc [TOPIC]` | describe the input options |
 
-All flags: [Command line](../reference/cli.md).
+All options are listed in [Command line](../reference/cli.md).

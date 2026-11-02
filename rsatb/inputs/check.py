@@ -33,15 +33,11 @@ from .nodes import Issue, Node, Obj, WARNING, join_path
 # `capabilities()`. If a family's table changes in C++ and not here, that test
 # fails.
 _CAPABILITY_DOC = {
-    "sktb": "an SKTB model is orthogonal unless 'overlap' is given, and an "
-            "orthogonal Slater-Koster model supplies velocity and position for free",
-    "lcao": "LCAO is always non-orthogonal; the velocity is the commutator "
-            "built from H, S and the dipole integrals, so it needs no "
-            "pseudopotential files",
-    "dftb": "DFTB carries both H and S, and neither velocity nor position is "
-            "available for a non-orthogonal Slater-Koster model yet",
-    "tb_file": "a file-backed tight-binding model is orthogonal, so velocity and "
-               "position follow from H(R)",
+    "sktb": "an sktb model provides velocity and position only when it is "
+            "orthogonal, that is, without 'overlap'",
+    "lcao": "an lcao model computes velocity and position from its orbital files",
+    "dftb": "a dftb model provides neither velocity nor position",
+    "tb_file": "a tb_file model is orthogonal and provides velocity and position",
 }
 
 # Which tasks need which operator, and which need the Gamma point. msd runs
@@ -213,9 +209,9 @@ def check_consistency(document: dict) -> List[Issue]:
         if file_format in ("abacus", "nextham"):
             issues.append(Issue(
                 "model.hamiltonian.format",
-                "a '{}' file is a non-orthogonal LCAO Hamiltonian in ABACUS's orbital "
-                "order; the orthogonal tb_file model cannot use it".format(file_format),
-                hint="use model.type 'lcao' with the .orb files the run used"))
+                "a '{}' file holds a non-orthogonal LCAO Hamiltonian, which the "
+                "tb_file model cannot read".format(file_format),
+                hint="use model.type 'lcao' with the .orb files of the ABACUS calculation"))
 
     # A spinor basis carries a complex H(R), which the ABACUS and NextHam
     # readers deliver and the DeePTB reader does not; and the real-space tasks
@@ -224,8 +220,9 @@ def check_consistency(document: dict) -> List[Issue]:
     if spinor and family == "lcao" and model.get("hamiltonian", {}).get("format", "deeptb") == "deeptb":
         issues.append(Issue(
             "model.spin",
-            "a spinor basis needs a complex H(R), which the 'deeptb' reader does not read",
-            hint="use the 'abacus' or 'nextham' format for an nspin=4 (spin-orbit) H(R)"))
+            "spin '{}' needs a complex H(R), which the 'deeptb' format does not "
+            "provide".format(model.get("spin")),
+            hint="use the 'abacus' or 'nextham' format for a spin-orbit (nspin = 4) H(R)"))
 
     labels = {}
     for index, task in enumerate(tasks):
@@ -241,32 +238,29 @@ def check_consistency(document: dict) -> List[Issue]:
 
         if kind in _NEEDS_VELOCITY and not caps["velocity"]:
             issues.append(Issue(
-                where, "'{}' needs the velocity operator, which the '{}' model with "
-                       "these inputs does not supply".format(kind, family),
+                where, "'{}' requires the velocity operator, which this {} model "
+                       "does not provide".format(kind, family),
                 hint=why))
         if kind in _SPIN_DEGENERATE_ONLY and spinor:
             issues.append(Issue(
-                where, "'{}' is implemented for a spin-degenerate basis only, and this "
-                       "model is spinor (spin '{}')".format(kind, model.get("spin")),
-                hint="the spectral and transport tasks support spin-orbit; real-space "
-                     "maps do not yet"))
+                where, "'{}' requires a spin-degenerate basis, but this model has "
+                       "spin '{}'".format(kind, model.get("spin")),
+                hint="with spin-orbit coupling, the density of states, conductivity "
+                     "and optical tasks are available"))
         if kind in _NEEDS_ORBITAL_FILES and family != "lcao":
             issues.append(Issue(
-                where, "'{}' needs the radial orbital files, which only an LCAO model "
-                       "carries".format(kind),
-                hint="a Slater-Koster or file-backed model describes its basis by label "
-                     "only, so there is nothing to evaluate in real space"))
+                where, "'{}' requires an lcao model, whose orbital files give the "
+                       "orbitals in real space".format(kind)))
         if kind in _NEEDS_GAMMA_ONLY:
             if n_kpoint != 1:
                 issues.append(Issue(
-                    where, "'{}' currently requires a single Gamma point, but "
+                    where, "'{}' requires a single k-point at Gamma, but "
                            "run.kpoints has {}".format(kind, n_kpoint)))
             elif not _has_gamma(kpoints):
                 issues.append(Issue(where, "'{}' requires the Gamma point".format(kind)))
         elif kind in _NEEDS_GAMMA and not _has_gamma(kpoints):
             issues.append(Issue(
-                where, "'{}' is evaluated at Gamma, which is not in "
-                       "run.kpoints".format(kind)))
+                where, "'{}' requires the Gamma point in run.kpoints".format(kind)))
 
     npar = run.get("npar", 1)
     if npar > n_kpoint:
@@ -282,11 +276,10 @@ def check_consistency(document: dict) -> List[Issue]:
     if precondition.get("operator_form", "solve") == "sandwich" and precondition.get("maxiter", 0) == 0:
         issues.append(Issue(
             "run.preconditioner.maxiter",
-            "operator_form 'sandwich' propagates Z H Z, and with maxiter 0 Z is the "
-            "unrefined graph seed, so its error lands in the spectrum",
+            "operator_form 'sandwich' applies Z = S^-1/2 directly, and with maxiter 0 "
+            "Z is not refined, so its error enters the results",
             severity=WARNING,
-            hint="set maxiter (e.g. 20) to refine Z, or use operator_form 'solve', where "
-                 "the seed only preconditions an exact CG solve"))
+            hint="set maxiter (for example 20), or use operator_form 'solve'"))
 
     issues.extend(_check_radial_tails(model))
     return issues
@@ -421,5 +414,5 @@ def summarize(resolved: dict) -> List[str]:
         lines.append("tasks         {}".format(", ".join(
             task.get("label") or task.get("type", "?") for task in tasks)))
     else:
-        lines.append("tasks         none -- sets up and reports the spectral window")
+        lines.append("tasks         none: the run sets up and reports the energy window")
     return lines

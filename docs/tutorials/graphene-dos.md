@@ -7,8 +7,9 @@ description: Tutorial 1 — the density of states of graphene from a hand-writte
 # Graphene density of states
 
 <div class="rs-lead" markdown>
-A nearest-neighbour $p_z$ model of graphene, first in the two-atom cell and
-then in a 128 × 128 supercell, compared with the exact density of states.
+This tutorial computes the density of states of graphene with a
+nearest-neighbour $p_z$ model, first in the two-atom cell and then in a
+128 × 128 supercell, and compares it with the exact result.
 </div>
 
 <div class="rs-chips">
@@ -24,13 +25,13 @@ small cell, and how to set the energy resolution of a density of states.
 ## Step 1 — a two-atom cell
 
 Graphene has two carbon atoms per cell, each with one $p_z$ orbital, joined to
-three neighbours by a hopping of $-2.7$ eV. The input:
+three neighbours by a hopping of $-2.7$ eV. The input file is:
 
 <!-- rsatb-input: examples/01_sktb_graphene.json -->
 
-Four sections, read top to bottom:
+The input has four sections:
 
-| Section | Here it says |
+| Section | Content |
 |---|---|
 | `structure` | two carbon atoms in a hexagonal cell, periodic in-plane |
 | `model` | one $p_z$ orbital per carbon, hopping $-2.7$ eV to neighbours within 1.6 Å |
@@ -86,7 +87,7 @@ the resolution is now finer than the gaps between the energy levels of this
 finite cell, so individual levels show through.</figcaption>
 </figure>
 
-## What to take away
+## Summary
 
 - `supercell` repeats the structure; the model is unchanged.
 - `dE` sets the energy resolution. A finer resolution costs more and is only
@@ -94,7 +95,7 @@ finite cell, so individual levels show through.</figcaption>
 - The statistical error decreases with the number of orbitals, so eight
   random vectors were sufficient here (details below).
 
-??? deep "Under the hood: the number of random vectors"
+??? deep "The number of random vectors"
     RSATB does not diagonalize the Hamiltonian. It estimates the density of
     states from random vectors, and the statistical error falls as
     $1/\sqrt{n_{\text{samples}} \times N_{\text{orbitals}}}$. With 32,768 orbitals,
@@ -102,7 +103,7 @@ finite cell, so individual levels show through.</figcaption>
     need many more. The details are in
     [Random-state traces](../theory/stochastic-trace.md).
 
-??? deep "Under the hood: normalizing the result"
+??? deep "Normalizing the result"
     The `dos` array is scaled so that it integrates to the width of the
     energy range, $E_{\max} - E_{\min}$. Divide by that width to get states per eV
     per orbital:
@@ -119,8 +120,8 @@ finite cell, so individual levels show through.</figcaption>
     energy, rho = d["energy"], d["dos"][0] / (emax - emin)
     ```
 
-## Try next
+## Next steps
 
 - Set `nsamples` to 1 and compare the noise on the fine curve.
-- Continue to [Tutorial 2](lcao-diamond.md): the same workflow with a
-  Hamiltonian from a DFT code.
+- [Tutorial 2](lcao-diamond.md) repeats this workflow with a Hamiltonian
+  from a DFT code.

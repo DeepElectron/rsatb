@@ -7,8 +7,8 @@ description: Tutorial 5 — density of states, optical conductivity and dielectr
 # Optical spectra
 
 <div class="rs-lead" markdown>
-The optical conductivity and dielectric function of a 128-atom diamond
-supercell, together with its density of states, from one input.
+This tutorial computes the optical conductivity, the dielectric function
+and the density of states of a 128-atom diamond supercell from one input.
 </div>
 
 <div class="rs-chips">
@@ -26,13 +26,13 @@ converged.
 
 <!-- rsatb-input: examples/tutorials/diamond_optics.json -->
 
-What's new:
+New in this input:
 
 - **A supercell instead of k-points.** The two-atom cell is repeated
   4 × 4 × 4 (128 atoms) and computed at a single k-point; the supercell
   samples the Brillouin zone.
 - **The `ac` task** computes the optical conductivity. `mu` is the chemical
-  potential — here a value inside diamond's band gap — and `temp` the
+  potential, here a value inside the band gap of diamond, and `temp` the
   temperature.
 
 ## Run it
@@ -51,21 +51,21 @@ the dielectric function derived from it.</figcaption>
 
 ## Checks
 
-- **Absorption onset near 5.4 eV, maximum at 11.5 eV.** The onset is at the
-  direct gap of this Hamiltonian; the maximum is close to the main absorption
-  peak of diamond, near 12 eV.
+- **The absorption starts near 5.4 eV and peaks at 11.5 eV.** The onset is
+  at the direct gap of this Hamiltonian; the maximum is close to the main
+  absorption peak of diamond, near 12 eV.
 - **Cubic symmetry.** The $xx$, $yy$ and $zz$ components agree within 6% at
   the peak, and the $xy$ component is below 1% of them.
 
-!!! warning "This is a quick, tutorial-sized run"
-    It uses 16 random vectors and a coarse frequency grid (0.68 eV steps), so
-    the curves are noisy — the absorption even dips slightly below zero in
-    places. For publishable spectra, use
+!!! warning "Tutorial-sized settings"
+    The input uses 16 random vectors and a coarse frequency grid (0.68 eV
+    steps), so the curves are noisy, and the absorption is slightly negative
+    in places. For publishable spectra, use
     `examples/07_lcao_diamond_dos_ac.json` (128 vectors, twice the
     resolution), or `examples/08_lcao_diamond888_dos_ac.json` on 1,024 atoms.
     Both are sized for a compute node.
 
-## What to take away
+## Summary
 
 - The DOS and the optical spectrum share one setup.
 - A supercell at one k-point samples the Brillouin zone; larger cells give
@@ -73,19 +73,20 @@ the dielectric function derived from it.</figcaption>
 - Convergence is checked by comparing with a run with more samples, finer
   resolution or a larger cell.
 
-??? deep "Under the hood: the band picture in the DOS"
+??? deep "Discrete levels in the DOS"
     A 128-atom cell at one k-point has a discrete set of energy levels, so the
     raw density of states (grey) is a comb of sharp lines. The blue curve is
     the same data with 0.6 eV of Gaussian smoothing, for display only. On
     this cell the gap runs from about 13.3 to 17.8 eV.
 
-??? deep "Under the hood: what sets the frequency resolution"
+??? deep "What sets the frequency resolution"
     The `ac` task samples the electrons' response at `nt` time steps spread
-    over the whole energy range of the model, 0 to about 136 eV here. That
-    range is wide because of the DFT basis, not the physics, so 200 steps give
-    0.68 eV spacing. Doubling `nt` halves it — at double the cost.
+    over the whole energy range of the model, 0 to about 136 eV here. The
+    range is wide because of the overlap of the DFT basis, so 200 steps give a
+    spacing of 0.68 eV. Doubling `nt` halves the spacing and doubles the
+    cost.
 
-??? deep "Under the hood: reading the arrays"
+??? deep "Reading the arrays"
     The arrays are complex, with six tensor components on the last axis in the
     order (xx, xy, xz, yy, yz, zz):
 
@@ -102,6 +103,7 @@ the dielectric function derived from it.</figcaption>
 
     The theory is in [Linear response](../theory/linear-response.md).
 
-## Try next
+## Next steps
 
-Continue to [Tutorial 6](realspace.md): where the electrons are in space.
+[Tutorial 6](realspace.md) computes the electron density and the local
+density of states on a grid.

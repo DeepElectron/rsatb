@@ -9,9 +9,9 @@ description: What every task writes to disk — array names, shapes, units — a
 <div class="rs-lead" markdown>
 A run writes into `output.dir`: one archive per task, named after the task's
 `label` (default: the task type), plus `summary.json`, the record of the run.
-`output.prefix` is prepended to every name. Rank 0 writes everything except
-the real-space grids of [`ldos`](#ldos) and [`density`](#density), which every
-rank writes its own piece of.
+`output.prefix` is added to the start of each name. MPI process 0 writes
+all files except the real-space grids of [`ldos`](#ldos) and
+[`density`](#density), which each process writes for its own grid points.
 </div>
 
 ```text
@@ -19,7 +19,7 @@ results/
 ├── summary.json          # resolved input, setup, every scalar, every array shape
 ├── dos.npz               # one archive per task, named for its label
 ├── dc_spectrum.npz
-└── ldos.rank00000.npz    # real-space tasks: one file per MPI rank
+└── ldos.rank00000.npz    # real-space tasks: one file per MPI process
 ```
 
 `output.format` chooses `npz` (default, compressed NumPy archives), `json`
@@ -29,11 +29,11 @@ results/
 
 | | |
 |---|---|
-| Leading axis | Every k-resolved array starts with a k-point axis, in the order `run.kpoints` generates them — even with a single k-point. |
+| Leading axis | Every k-resolved array starts with a k-point axis, in the order of `run.kpoints`; the axis is present even for a single k-point. |
 | Energies | eV, absolute (not shifted to the Fermi level). |
 | Tensors | Six components of the symmetric conductivity tensor on the last axis, in the order **(xx, xy, xz, yy, yz, zz)**. |
 | Spin | Transport quantities include both spins: a spin-degenerate basis is counted twice, a spinor basis already holds both. |
-| Conductivity | Normalized by the task's `axis`: S/m for the cell volume (`"abc"`), S — a sheet conductance — for a lattice plane (`"ab"`, `"bc"`, `"ca"`), S·m for a single lattice vector. |
+| Conductivity | Normalized by the task's `axis`: S/m for the cell volume (`"abc"`), S (a sheet conductance) for a lattice plane (`"ab"`, `"bc"`, `"ca"`), S·m for a single lattice vector. |
 
 ## `summary.json` { #summary }
 
@@ -53,7 +53,7 @@ results/
 }
 ```
 
-The summary is enough to reproduce a run: `input` is the fully resolved input,
+The summary records what is needed to reproduce a run: `input` is the resolved input,
 `setup.energy_bounds` is the spectral window every expansion was scaled to,
 and each result lists its scalars, the shape of every array and the file that
 holds them. Arrays are written as soon as their task finishes, so a job that
@@ -73,8 +73,8 @@ Scalars only: `emin`, `emax` (eV), the window the Chebyshev expansions use.
 | `dos` | `(n_k, n_E)` | see below |
 
 !!! note "Normalization"
-    `dos` follows the amplitude convention of the Chebyshev reconstruction:
-    its integral over energy equals the width of the spectral window,
+    The `dos` array is normalized so that its integral over energy equals the
+    width of the spectral window,
     $\int \mathrm{dos}\,dE = E_{\max} - E_{\min}$. Divide by that width for a
     density of states per orbital (integrating to one), and multiply by the
     orbital count of the cell for states/eV of the whole cell:
@@ -93,9 +93,9 @@ Scalars only: `emin`, `emax` (eV), the window the Chebyshev expansions use.
 | `total` | `(n_k, n_E)` | as `dos`; equals `pdos.sum(axis=1)` to rounding |
 | `group_type`, `group_slot` | `(n_group,)` | `orbital_slot` projection only |
 
-Scalars: `n_group`, and `population` — `"lowdin"` under the sandwich operator
-form, `"mulliken"` under the solve form (Mulliken populations may legitimately
-be negative).
+Scalars: `n_group`, and `population`: `"lowdin"` with the sandwich operator
+form, `"mulliken"` with the solve form. Mulliken populations can be
+negative.
 
 ### `occupation` { #occupation }
 
@@ -113,8 +113,8 @@ whose electron count matches the requested `n_electrons`.
 
 ### `ldos` { #ldos }
 
-Written **one file per rank**: `<prefix><label>.rank00000.npz`, …. Each file
-is self-describing and holds only the grid points that rank owns.
+Each MPI process writes one file, `<prefix><label>.rank00000.npz`, …, with
+its own grid points and the information needed to place them in the grid.
 
 | Array | Shape | Meaning |
 |---|---|---|
@@ -133,13 +133,13 @@ Scalars: `n_point` (global point count), `filter_degree`, `n_states`,
 
 ### `density` { #density }
 
-Per-rank files like `ldos`, with `density` of shape `(n_owned,)` in place of
-`ldos` and no energy axis.
+One file per MPI process, as for `ldos`, with `density` of shape
+`(n_owned,)` in place of `ldos` and no energy axis.
 
 Scalars: `n_point`, `filter_degree`, `n_states`, `sampler_residual` and
-`electrons_on_grid` — the grid integral of the map, which approaches the
-occupation sum as the grid is refined and is a free quadrature check. With the
-fragment control variate on (`fragment_buffer > 0`) also `n_fragments`,
+`electrons_on_grid`, the density integrated over the grid. It approaches the
+electron count as the grid is refined, so it checks the grid. With the
+fragment correction (`fragment_buffer > 0`), also `n_fragments`,
 `correction_rms`, `control_beta`; with `energy_windows > 1`, `n_windows`.
 
 ## Electrical and optical response
@@ -179,7 +179,7 @@ fragment control variate on (`fragment_buffer > 0`) also `n_fragments`,
 | `msd` | `(1, n_steps+1, n_kpm)` | $\Delta X^2(E,t)$, Å² |
 | `diffusion` | `(1, n_steps+1, n_kpm)` | $D(E,t)=\tfrac12\,\partial_t\Delta X^2$, Å²/fs |
 
-The k axis is always a singleton: MSD is a Gamma-point observable.
+The k axis has length one, because the MSD is computed at Gamma.
 1 Å²/fs = 0.1 cm²/s.
 
 ### `quantum_metric` { #quantum_metric }

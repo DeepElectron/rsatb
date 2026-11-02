@@ -10,15 +10,15 @@ description: Install RSATB, run a first calculation, and learn the structure of 
 
 -   :material-numeric-1:{ .lg } **[Install](installation.md)**
 
-    Conda or system libraries.
+    Install RSATB with conda or with system libraries.
 
 -   :material-numeric-2:{ .lg } **[Quick start](quickstart.md)**
 
-    A first calculation from a template.
+    Run a first calculation from a template.
 
 -   :material-numeric-3:{ .lg } **[How an input works](concepts.md)**
 
-    The five sections of an input file.
+    The five sections of an input file, and the rules they follow.
 
 </div>
 

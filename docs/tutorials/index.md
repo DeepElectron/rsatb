@@ -7,31 +7,31 @@ description: Eight worked RSATB calculations, from a first density of states to 
 # Learn RSATB by example
 
 <div class="rs-lead" markdown>
-Eight worked examples, each with its input file and the output it
-produced.
+Eight worked examples. Each tutorial shows its input file and the output
+it produced.
 </div>
 
 ## The basics
 
-The density of states with each type of model.
+Tutorials 1 to 3 compute the density of states with each type of model.
 
 <div class="grid cards rs-grid-3" markdown>
 
 -   :material-numeric-1:{ .lg } **[Graphene density of states](graphene-dos.md)**
 
-    A Slater-Koster model, compared with the exact result.
+    Graphene with a Slater-Koster model, compared with the exact result.
 
     <span class="rs-chip rs-chip--beginner">Beginner</span>
 
 -   :material-numeric-2:{ .lg } **[A DFT Hamiltonian](lcao-diamond.md)**
 
-    Diamond from a DFT Hamiltonian and its atomic orbitals.
+    Diamond, from a DFT Hamiltonian and its atomic orbital files.
 
     <span class="rs-chip rs-chip--beginner">Beginner</span>
 
 -   :material-numeric-3:{ .lg } **[Other model types](other-models.md)**
 
-    DFTB parameter files and ready-made tight-binding files.
+    Models read from DFTB parameter files and from tight-binding files.
 
     <span class="rs-chip rs-chip--beginner">Beginner</span>
 
@@ -39,13 +39,13 @@ The density of states with each type of model.
 
 ## Observables
 
-Conductivity and diffusion, optical response, and real-space maps.
+Tutorials 4 to 6 compute transport, optical and real-space quantities.
 
 <div class="grid cards rs-grid-3" markdown>
 
 -   :material-numeric-4:{ .lg } **[Transport](transport.md)**
 
-    Conductivity and diffusion in graphene.
+    The conductivity and diffusion of graphene.
 
     <span class="rs-chip rs-chip--intermediate">Intermediate</span>
 
@@ -57,7 +57,8 @@ Conductivity and diffusion, optical response, and real-space maps.
 
 -   :material-numeric-6:{ .lg } **[Real-space maps](realspace.md)**
 
-    Electron density and local density of states on a 3D grid.
+    The electron density and local density of states of diamond on a 3D
+    grid.
 
     <span class="rs-chip rs-chip--intermediate">Intermediate</span>
 
@@ -69,14 +70,14 @@ Conductivity and diffusion, optical response, and real-space maps.
 
 -   :material-numeric-7:{ .lg } **[ABACUS and NextHam](abacus-nextham.md)**
 
-    Hamiltonians from ABACUS and NextHam: a band check, a metal, spin-orbit
-    coupling.
+    Hamiltonians from ABACUS and NextHam, checked against ABACUS, for a
+    metal and for a semiconductor with spin-orbit coupling.
 
     <span class="rs-chip rs-chip--advanced">Advanced</span>
 
 -   :material-numeric-8:{ .lg } **[Python scripting](python.md)**
 
-    A parameter sweep with the Python API.
+    A strain sweep of graphene with the Python API.
 
     <span class="rs-chip rs-chip--advanced">Advanced</span>
 
