@@ -21,7 +21,9 @@ process (OpenMP threads). Assign resources in that order.
    Set `npar` to the number of k-points or a divisor of it.
 2. **Processes.** Within a group, processes divide the atoms; each process
    must own at least one atom.
-3. **Threads.** Use one thread per physical core.
+3. **Threads.** A process without threads uses one core. On each node,
+   run one process per NUMA domain (or socket) and one thread per physical
+   core within it; hyperthreads do not help.
 
 ## SLURM example
 
@@ -65,12 +67,12 @@ Output is written by process 0 only.
 ## Before submitting
 
 ```bash
-rsatb check input.json                          # no MPI or solver needed
+rsatb check input.json                          # errors and warnings
 python examples/estimate_matvecs.py input.json  # amount of work per task
 ```
 
 `rsatb check` also warns when `npar` leaves k-point groups without work:
 
 ```text
-warning: run.npar: npar is 8 but there are only 4 k-points, so 4 sub-communicators have nothing to do
+warning: run.npar: npar is 8 but there are only 4 k-points, so 4 k-point groups have nothing to do
 ```

@@ -13,20 +13,19 @@ computed from the input before the run.
 </div>
 
 ```console
-$ python examples/estimate_matvecs.py examples/06_matblg_transport.json
-  dos                      19,456 matvecs   1024 time steps x 19 Chebyshev terms
-  msd                     839,398 matvecs   KPM density 706798 + affine time 132600
-  quantum_metric           94,886 matvecs   H0 91808 + velocity 3078
-  total                   953,740
+$ python examples/estimate_matvecs.py examples/tutorials/diamond_optics.json --bounds -8.6 264
+  dos                       3,601 matvecs
+  ac                        6,242 matvecs
+  total                     9,843
 ```
+
+The counts are per random vector and per k-point (output abridged).
 
 The estimate needs the spectral window:
 
 - from the input, if `run.bounds.mode` is `"fixed"`;
 - otherwise from `--bounds EMIN EMAX`,
 - or from `--summary path/to/summary.json` of an earlier run of the same system.
-
-The script requires only Python.
 
 ## From matrix-vector products to run time
 

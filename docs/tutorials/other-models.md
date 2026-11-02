@@ -59,8 +59,7 @@ rsatb run examples/04_tb_file_chain.json
   bounds        [-2.000000, 3.000000] eV
 ```
 
-The file describes a 1D chain whose band runs from −1.5 to 2.5 eV; with the
-0.5 eV padding on each side this gives the reported range.
+The file describes a 1D chain whose band runs from −1.5 to 2.5 eV.
 
 For this model type the basis is declared in the input (`type_norb`,
 `cutoff_radius`), because the files do not record it.

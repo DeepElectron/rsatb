@@ -23,8 +23,7 @@ JSON Schema, a JSON validation report, and the run summary.
 | `rsatb template <name>` | A known-good input to start from |
 
 The input reference on this site, `rsatb doc`, the JSON Schema and
-`rsatb check` are all generated from the same declaration
-(`rsatb/inputs/spec.py`).
+`rsatb check` describe the same input format and always agree.
 
 ## The loop
 
@@ -113,7 +112,7 @@ shape, dtype and file of every array. See [Output files](../reference/outputs.md
 
 ## From Python
 
-The same layer is importable, with no compiled code involved until a run:
+Validation is also available from Python:
 
 ```python
 from rsatb.inputs import load_and_resolve

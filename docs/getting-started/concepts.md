@@ -8,7 +8,7 @@ description: The five sections of an RSATB input file, what each controls, and t
 
 <div class="rs-lead" markdown>
 An RSATB calculation is described by one JSON file with up to five
-sections. All examples, templates and tutorials follow this layout.
+sections.
 </div>
 
 ## The five sections
@@ -48,15 +48,8 @@ Only `structure` and `model` are required; the others have sensible defaults.
 
 </div>
 
-## What happens when you run
-
-1. **Check.** The input is validated; a run with errors does not start.
-2. **Setup.** RSATB builds the Hamiltonian (and overlap) for the structure
-   and estimates its energy range.
-3. **Tasks.** Each task is computed in order, and its result file is written
-   when it finishes.
-
-The setup is done once and shared by all tasks in the input.
+A run validates the input, builds the Hamiltonian once, and then computes
+the tasks in order, so several tasks in one input share the setup.
 
 ## Rules
 
@@ -82,19 +75,12 @@ you if a request isn't possible.
 
 More detail: [Choose a model](../guides/choose-model.md).
 
-??? deep "Under the hood: the setup in detail"
-    During setup RSATB builds the atomic neighbour graph from the model's
-    orbital ranges and distributes it across processes; assembles $H$ (and,
-    for overlapping orbitals, $S$) at each k-point; builds $S^{-1/2}$ when
-    needed; and estimates the energy range that every calculation is scaled
-    to. Background: [Theory](../theory/index.md).
-
 ## Commands at a glance
 
 | Command | What it does |
 |---|---|
 | `rsatb template NAME -o FILE` | write an example input |
-| `rsatb check FILE` | validate an input (no solver or MPI needed) |
+| `rsatb check FILE` | validate an input |
 | `rsatb show FILE` | print the input with every default filled in |
 | `rsatb run FILE` | run the calculation |
 | `rsatb doc [TOPIC]` | describe the input options |

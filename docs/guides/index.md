@@ -39,7 +39,7 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-server-network:{ .lg } **[Run on a cluster](parallel.md)**
 
-    Processes, threads and k-point groups — and two common traps.
+    MPI processes, OpenMP threads and k-point groups.
 
 </div>
 
@@ -49,7 +49,7 @@ Task-oriented instructions. For an introduction, see the
 
 -   :material-chart-line:{ .lg } **[Read and plot results](results.md)**
 
-    Load every output in Python, including grids written in pieces.
+    Load and plot each output in Python.
 
 -   :material-robot-outline:{ .lg } **[Automate with scripts and agents](agents.md)**
 

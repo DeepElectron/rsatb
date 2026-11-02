@@ -44,8 +44,8 @@ It has three parts, mirroring the sections of an input file:
 ## Run it
 
 ```bash
-python examples/tutorials/strain_sweep.py                # one process
-mpirun -n 4 python examples/tutorials/strain_sweep.py    # four processes
+python examples/tutorials/strain_sweep.py
+OMP_NUM_THREADS=4 mpirun -n 2 python examples/tutorials/strain_sweep.py
 ```
 
 ```text
@@ -82,7 +82,6 @@ at zero. Each curve is a 32,768-atom calculation.</figcaption>
     That is RSATB's `exp_poly` radial form $P(r)\,e^{-\lambda r}$, with a
     one-term polynomial $P = t_0 e^{\beta}$ and $\lambda = \beta/a_0$. The
     `r_on`/`r_cut` taper brings it smoothly to zero before second neighbours.
-    Each energy window is $3|t| + 0.5$ eV, as in the output.
 
 ??? deep "Under the hood: API details worth knowing"
     - `Structure.from_arrays` takes **flat** positions (three numbers per atom)

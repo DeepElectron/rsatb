@@ -1,5 +1,5 @@
 ---
-description: A learning path of seven worked RSATB calculations, from a first density of states to real-space maps and Python scripting. Each runs in about two minutes.
+description: Seven worked RSATB calculations, from a first density of states to real-space maps and Python scripting.
 ---
 
 <p class="rs-kicker">Tutorials</p>
@@ -7,9 +7,8 @@ description: A learning path of seven worked RSATB calculations, from a first de
 # Learn RSATB by example
 
 <div class="rs-lead" markdown>
-Seven worked examples. Each uses an input file from the repository and
-shows the output it produced. Later tutorials build on concepts introduced in
-earlier ones.
+Seven worked examples, each with its input file and the output it
+produced.
 </div>
 
 ## The basics

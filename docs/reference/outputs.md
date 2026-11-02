@@ -128,8 +128,7 @@ is self-describing and holds only the grid points that rank owns.
 
 Scalars: `n_point` (global point count), `filter_degree`, `n_states`,
 `sampler_residual`, `capture_min`, `sketch_rank_min`,
-`predicted_rel_error_max`. Reassemble by **scattering** — the pieces are a
-partition, not overlapping copies — as shown in
+`predicted_rel_error_max`. To reassemble the grid, see
 [Read and plot results](../guides/results.md#real-space-grids).
 
 ### `density` { #density }

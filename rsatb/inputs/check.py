@@ -272,7 +272,7 @@ def check_consistency(document: dict) -> List[Issue]:
     if npar > n_kpoint:
         issues.append(Issue(
             "run.npar",
-            "npar is {} but there are only {} k-points, so {} sub-communicators have "
+            "npar is {} but there are only {} k-points, so {} k-point groups have "
             "nothing to do".format(npar, n_kpoint, npar - n_kpoint),
             severity=WARNING))
 

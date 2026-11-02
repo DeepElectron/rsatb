@@ -7,9 +7,8 @@ description: Every rsatb subcommand and flag — doc, template, check, show, sch
 # Command line
 
 <div class="rs-lead" markdown>
-One program, seven subcommands. Only `run` needs the compiled solver and MPI;
-the rest are pure Python and work anywhere the package is installed. Where the
-console script is not on `PATH`, `python -m rsatb.cli` is the same program.
+One program, seven subcommands. Where the `rsatb` command is not on `PATH`,
+`python -m rsatb.cli` is the same program.
 </div>
 
 ```text

@@ -503,10 +503,10 @@ RUN = Obj(
     "operators.",
     {
         "npar": F(_int(
-            "How many k-point-parallel sub-communicators the ranks are split "
-            "into. Ranks within one sub-communicator share a k-point and "
-            "divide the atoms; every rank must own at least one atom, so npar "
-            "is the knob that puts spare ranks on k-points instead.",
+            "How many k-point groups the MPI processes are split into. "
+            "Groups work on different k-points; the processes within a group "
+            "divide the atoms. Every process must own at least one atom, so "
+            "extra processes are best put into more groups.",
             minimum=1), default=1),
         "nsamples": F(_int("Random vectors in the stochastic trace. The statistical "
                            "error falls as 1/sqrt(nsamples * N_orbital).", minimum=1),

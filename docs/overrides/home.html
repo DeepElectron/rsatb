@@ -50,7 +50,7 @@
       </div>
 <pre class="rs-k-cmds"><span>$</span> rsatb template sktb -o run.json
 <span>$</span> rsatb check run.json
-<span>$</span> mpirun -n 64 rsatb run run.json</pre>
+<span>$</span> OMP_NUM_THREADS=8 mpirun -n 64 rsatb run run.json</pre>
     </div>
     {#- Two specimens, cross-faded: a 2D moiré and a device cross-section. -#}
     <figure class="rs-k-hero__art">
@@ -74,7 +74,6 @@
   <section class="rs-k-sources" aria-label="Supported Hamiltonians">
     <div class="rs-k-sources__head">
       <p class="rs-k-label">Supported Hamiltonians</p>
-      <p>Selected with <code>model.type</code> in the input file.</p>
     </div>
     <div class="rs-k-sources__grid">
       <a href="{{ 'guides/hamiltonian-files/' | url }}">
@@ -131,8 +130,8 @@
         <p class="rs-k-label">Architecture</p>
         <h2>Three numerical components,<br>one setup per input.</h2>
       </div>
-      <p>All tasks in an input share the atomic graph, the Hamiltonian, the
-      overlap factor and the spectral window, which are built once.</p>
+      <p>Every supported Hamiltonian and every observable goes through the
+      same three components.</p>
     </header>
     <div class="rs-k-sys">
       <div class="rs-k-tree" aria-hidden="true">
@@ -187,8 +186,7 @@
         <p class="rs-k-label">Observables</p>
         <h2>Twelve task types.</h2>
       </div>
-      <p>Tasks are listed in the input and computed in order. Each writes a
-      NumPy archive; <code>summary.json</code> records the run.</p>
+      <p>Several observables can be requested in one run.</p>
     </header>
     <div class="rs-k-index">
       <div>

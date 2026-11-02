@@ -73,9 +73,8 @@ alpha = ac["absorption_coefficient"][0, :, XX]   # 1/cm
 
 ## Real-space grids { #real-space-grids }
 
-`ldos` and `density` are written one file per rank, each holding the grid
-points that rank owns. The pieces are a partition, so reassemble them by
-**scattering** into a flat array:
+`ldos` and `density` are written one file per MPI process, each holding
+some of the grid points and their indices. Put each file's points in place:
 
 ```python
 import glob

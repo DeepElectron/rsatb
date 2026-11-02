@@ -48,8 +48,7 @@ rsatb run examples/01_sktb_graphene.json
 ```
 
 The two eigenvalues of the two-atom cell at $\Gamma$ are
-$\pm 3 \times 2.7 = \pm 8.1$ eV; the reported range adds 0.5 eV of padding on
-each side.
+$\pm 3 \times 2.7 = \pm 8.1$ eV, inside this range.
 
 ## Step 2 — a supercell
 

@@ -51,9 +51,6 @@ calculation, model, options = build_calculation(resolved)
 results = run_tasks(calculation, resolved["tasks"], options)
 ```
 
-`rsatb.inputs` imports nothing compiled until `build_calculation` or
-`run_tasks` is called, so validation works without the solver.
-
 ## Structure
 
 ```python

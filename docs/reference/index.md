@@ -7,8 +7,7 @@ description: Complete reference for the RSATB command line, input file, output f
 # Reference
 
 <div class="rs-lead" markdown>
-Input options, output files, command line and Python API. The input
-reference is generated from the schema that `rsatb check` uses.
+Input options, output files, command line and Python API.
 </div>
 
 <div class="grid cards" markdown>

@@ -7,8 +7,8 @@ description: The numerical methods behind RSATB — stochastic traces, Chebyshev
 # How RSATB works
 
 <div class="rs-lead" markdown>
-Background on the numerical methods. The tutorials and guides do not
-depend on these pages; they explain what the main settings control.
+The numerical methods, and what the main settings control. The
+tutorials and guides can be followed without these pages.
 </div>
 
 !!! tip "Summary"
@@ -59,9 +59,6 @@ $$
 
 </div>
 
-!!! note "Design notes"
-    The derivations, measurements and rejected alternatives behind each
-    algorithm live in the repository's
-    [`doc/`](https://github.com/DeepElectron/rsatb/tree/main/doc) directory
-    — for example the survey-sampling LDOS estimator, the spectral MSD route
-    and the inverse-square-root memory model. These pages are the overview.
+!!! note "Derivations"
+    Full derivations and measurements are in the repository's
+    [`doc/`](https://github.com/DeepElectron/rsatb/tree/main/doc) directory.
