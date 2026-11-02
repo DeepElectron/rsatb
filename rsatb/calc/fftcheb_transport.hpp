@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <complex>
 #include <stdexcept>
 #include <string>
@@ -77,18 +78,6 @@ inline double fermi_dirac_energy(double energy, double mu, double temp) {
 
     const double tmp = std::exp(beta * (energy - mu));
     return 1.0 / (1.0 + tmp);
-}
-
-inline double fermi_dirac_derivative_energy(double energy, double mu, double temp) {
-    if (temp <= 0.0) {
-        return 0.0;
-    }
-
-    const double kb = 8.617333262e-5; // eV/K
-    const double beta = 1.0 / (temp * kb);
-    const double x = 0.5 * beta * (energy - mu);
-    const double sech = 1.0 / std::cosh(x);
-    return 0.25 * beta * sech * sech;
 }
 
 // Estimate the per-row footprint of the temporary
@@ -989,6 +978,20 @@ inline double interpolate_spectrum_component(
 
 // Integrate a precomputed zero-temperature spectrum against -df/dE to obtain
 // sigma(mu, T). At T=0 this reduces to interpolation on the Chebyshev grid.
+//
+// sigma(E) is taken piecewise linear between the grid's energies, and -df/dE
+// is integrated against it EXACTLY on every segment. The window -df/dE is a
+// few kT wide -- 0.1 eV at room temperature -- while the Chebyshev nodes sit
+// ~ pi * half_span / n_moments apart, which is 1.1 eV for Al at 500 moments
+// and still 0.25 eV at 4000. A trapezoid over the nodes therefore sampled the
+// window at one node or none: the result swung with where mu fell between
+// nodes, from 0.05 S/m to 1.1e7 S/m for one Al spectrum whose smooth value is
+// 1.7-1.8e6 S/m across the same 0.5 eV. On one segment [e0, e1] with
+// s(E) = s0 + m (E - e0) and f the Fermi function,
+//
+//   int -f' s dE = s0 (f(e0) - f(e1)) + m (F(e1) - F(e0) - f(e1) (e1 - e0)),
+//
+// F(E) = E - kT log(1 + exp((E - mu) / kT)) being an antiderivative of f.
 inline void integrate_dc_spectrum(
     const std::vector<double>& sigma_spectrum,
     const std::vector<double>& energy,
@@ -1009,16 +1012,29 @@ inline void integrate_dc_spectrum(
         return;
     }
 
+    const double kt = 8.617333262e-5 * temp;  // eV
+    // The antiderivative F of f, stable for any |E - mu| / kT.
+    auto antiderivative = [&](double e) {
+        const double x = (e - mu) / kt;
+        const double softplus = std::max(x, 0.0) + std::log1p(std::exp(-std::abs(x)));
+        return e - kt * softplus;
+    };
+
     for (size_t i = 1; i < n_energy; ++i) {
         const double e0 = energy[i - 1];
         const double e1 = energy[i];
-        const double w0 = fermi_dirac_derivative_energy(e0, mu, temp);
-        const double w1 = fermi_dirac_derivative_energy(e1, mu, temp);
         const double de = e1 - e0;
+        if (!(de > 0.0)) {
+            throw std::runtime_error("integrate_dc_spectrum: energies must be strictly ascending");
+        }
+        const double f0 = fermi_dirac_energy(e0, mu, temp);
+        const double f1 = fermi_dirac_energy(e1, mu, temp);
+        const double weight = f0 - f1;                                          // int -f'
+        const double moment = antiderivative(e1) - antiderivative(e0) - f1 * de;  // int -f' (E - e0)
         for (int comp = 0; comp < 6; ++comp) {
             const double s0 = sigma_spectrum[(i - 1) * 6 + static_cast<size_t>(comp)];
             const double s1 = sigma_spectrum[i * 6 + static_cast<size_t>(comp)];
-            sigma_out[comp] += 0.5 * (w0 * s0 + w1 * s1) * de;
+            sigma_out[comp] += s0 * weight + (s1 - s0) / de * moment;
         }
     }
 }
