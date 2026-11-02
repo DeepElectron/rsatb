@@ -1,0 +1,193 @@
+/* RSATB landing page.
+ *
+ * Set like a printed monograph: a running head, a large serif title, one
+ * engraved plate, sections numbered in the margin, contents with dotted
+ * leaders, numbered plates of evidence, a colophon. Typography carries the
+ * design; colour is only the palette in rsatb.css -- paper, ink, ink-blue for
+ * links, vermilion for marks.
+ */
+
+.rs-ed { font-family: var(--rs-serif); color: var(--rs-ink); padding-bottom: 2rem; }
+.md-typeset .rs-ed a { color: var(--rs-brand); font-weight: 400; }
+.md-typeset .rs-ed a:hover { color: var(--rs-brand-strong); }
+
+/* Masthead */
+.rs-ed-mast { padding: 2.6rem 0 0; }
+.rs-ed-runner {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 1rem;
+  font-family: var(--rs-sans); font-size: .6rem; font-weight: 500;
+  letter-spacing: .14em; text-transform: uppercase; color: var(--rs-muted);
+  border-top: 2px solid var(--rs-ink); border-bottom: 1px solid var(--rs-ink);
+  padding: .5rem 0; margin-bottom: 2.8rem;
+}
+.rs-ed-runner span:nth-child(2) {
+  font-family: var(--rs-serif); font-style: italic; text-transform: none;
+  letter-spacing: .01em; font-size: .8rem; font-weight: 400; color: var(--rs-ink-2);
+}
+.md-typeset .rs-ed-title {
+  font-family: var(--rs-serif); font-weight: 300; font-size: 4.1rem; line-height: 1.02;
+  letter-spacing: -.025em; color: var(--rs-ink); margin: 0 0 2.4rem; max-width: 46rem;
+}
+.md-typeset .rs-ed-title em { font-style: italic; font-weight: 300; color: var(--rs-brand); }
+.rs-ed-intro {
+  display: grid; grid-template-columns: 1fr 13rem; gap: 3rem; align-items: start;
+  border-top: 1px solid var(--rs-rule); padding-top: 1.4rem;
+}
+.md-typeset .rs-ed-lede { font-size: 1.12rem; line-height: 1.62; color: var(--rs-ink-2); margin: 0; }
+.md-typeset .rs-ed-lede::first-letter {
+  float: left; font-size: 3.7rem; line-height: .8; font-weight: 400;
+  padding: .32rem .5rem 0 0; color: var(--rs-ink);
+}
+.rs-ed-links { display: flex; flex-direction: column; gap: .55rem; padding-top: .25rem; }
+.md-typeset .rs-ed-links a {
+  font-family: var(--rs-sans); font-size: .74rem; font-weight: 500; color: var(--rs-ink);
+  border-bottom: 1px solid var(--rs-rule); padding: 0 0 .5rem;
+  display: flex; justify-content: space-between;
+}
+.md-typeset .rs-ed-links a::after {
+  /* a drawn chevron: no glyph to go missing */
+  content: ""; width: .38rem; height: .38rem; margin: .32rem .15rem 0 0;
+  border-top: 1.5px solid var(--rs-vermilion); border-right: 1.5px solid var(--rs-vermilion);
+  transform: rotate(45deg); transition: transform .2s;
+}
+.md-typeset .rs-ed-links a:hover { text-decoration: none; color: var(--rs-brand); border-bottom-color: var(--rs-brand); }
+.md-typeset .rs-ed-links a:hover::after { transform: translateX(3px) rotate(45deg); }
+.md-typeset .rs-ed-links a:first-child { color: var(--rs-brand); }
+
+/* Plate I, drawn by docs/scripts/make_figures.py from a real run */
+/* Material shrinks figures to their content; plates run the full measure. */
+.md-typeset .rs-ed-plate, .md-typeset .rs-ed-fig { display: block; width: 100%; max-width: none; }
+.md-typeset .rs-ed-plate { margin: 3.4rem 0 0; }
+.rs-plate { display: block; width: 100%; height: auto; overflow: visible; }
+.rs-plate .cheb { fill: none; stroke: var(--rs-ink); stroke-width: .7; opacity: .08; }
+.rs-plate .dos { fill: none; stroke: var(--rs-ink); stroke-width: 1.25; stroke-linejoin: round; }
+.rs-plate .dos-fill { fill: var(--rs-brand); opacity: .07; }
+.rs-plate .axis { stroke: var(--rs-ink); stroke-width: .8; }
+.rs-plate .tick { font-family: var(--md-code-font-family); font-size: 11px; fill: var(--rs-muted); }
+.rs-plate .mark { fill: var(--rs-vermilion); }
+.rs-plate .lead { fill: none; stroke: var(--rs-vermilion); stroke-width: .8; }
+.rs-plate .ann { font-family: var(--rs-serif); font-style: italic; font-size: 17px; fill: var(--rs-ink); }
+.rs-plate .ann-sub { font-family: var(--md-code-font-family); font-size: 10.5px; fill: var(--rs-muted); }
+.md-typeset .rs-ed figcaption {
+  font-family: var(--rs-serif); font-size: .84rem; line-height: 1.55; color: var(--rs-ink-2);
+  max-width: 38rem; margin: .9rem 0 0; text-align: left;
+}
+.rs-ed-platenum {
+  font-variant: small-caps; letter-spacing: .06em; color: var(--rs-vermilion);
+  margin-right: .25rem; font-style: normal;
+}
+
+/* Numbered sections: a margin numeral, the body, an optional side note */
+.rs-ed-sec {
+  display: grid; grid-template-columns: 4.2rem 1fr 11rem; gap: 0 2rem;
+  border-top: 1px solid var(--rs-ink); margin-top: 4.2rem; padding-top: 1.1rem;
+}
+.rs-ed-num { font-family: var(--rs-serif); font-size: 2.2rem; font-weight: 300; line-height: 1; color: var(--rs-vermilion); }
+.md-typeset .rs-ed-body h2 {
+  font-family: var(--rs-serif); font-weight: 400; font-size: 1.85rem;
+  margin: 0 0 1.4rem; letter-spacing: -.015em;
+}
+.md-typeset .rs-ed-body h3 {
+  font-family: var(--rs-sans); font-size: .62rem; font-weight: 600; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--rs-muted); margin: 0 0 .6rem;
+}
+.rs-ed-margin {
+  font-family: var(--rs-serif); font-style: italic; font-size: .82rem; line-height: 1.5;
+  color: var(--rs-muted); margin-top: 3.2rem; border-left: 1px solid var(--rs-rule); padding-left: 1rem;
+  align-self: start;
+}
+.rs-ed-fact { display: block; margin-bottom: 1.1rem; font-style: normal; }
+.rs-ed-fact b {
+  display: block; font-family: var(--rs-serif); font-weight: 400; font-size: 1.5rem;
+  color: var(--rs-ink); letter-spacing: -.01em; line-height: 1.2;
+}
+
+/* I. three commands, numbered in lower-case roman */
+.md-typeset ol.rs-ed-steps { list-style: none; margin: 0; padding: 0; counter-reset: step; }
+.md-typeset ol.rs-ed-steps li {
+  counter-increment: step; margin: 0; padding: 1rem 0 1rem 2.4rem; position: relative;
+  border-bottom: 1px solid var(--rs-rule);
+}
+.md-typeset ol.rs-ed-steps li:first-child { padding-top: 0; }
+.md-typeset ol.rs-ed-steps li::before {
+  content: counter(step, lower-roman) "."; position: absolute; left: 0;
+  font-style: italic; color: var(--rs-muted); font-size: .98rem;
+}
+.md-typeset ol.rs-ed-steps code { background: transparent; padding: 0; font-size: .74rem; color: var(--rs-ink); }
+.md-typeset ol.rs-ed-steps p { margin: .3rem 0 0; font-size: .98rem; line-height: 1.55; color: var(--rs-ink-2); }
+
+/* II. contents with dotted leaders */
+.rs-ed-toc { display: grid; grid-template-columns: 1fr 1fr; gap: 2.5rem; }
+.md-typeset .rs-ed-toc ul { list-style: none; margin: 0; padding: 0; }
+.md-typeset .rs-ed-toc li { margin: 0; }
+.md-typeset .rs-ed-toc a {
+  display: flex; align-items: baseline; gap: .5rem; color: var(--rs-ink);
+  font-size: .98rem; padding: .32rem 0;
+}
+.md-typeset .rs-ed-toc a i { flex: 1; border-bottom: 1px dotted var(--rs-faint); transform: translateY(-.25rem); }
+.md-typeset .rs-ed-toc a b {
+  font-family: var(--rs-sans); font-weight: 500; font-size: .64rem;
+  color: var(--rs-muted); letter-spacing: .04em; text-transform: uppercase;
+}
+.md-typeset .rs-ed-toc a:hover { text-decoration: none; }
+.md-typeset .rs-ed-toc a:hover span { color: var(--rs-brand); }
+.md-typeset .rs-ed-toc a:hover b { color: var(--rs-vermilion); }
+
+/* III. plates of evidence */
+.md-typeset .rs-ed-fig { margin: 0 0 2.2rem; }
+.md-typeset .rs-ed-fig img { width: 100%; border: 0; border-radius: 0; }
+.rs-ed-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 2rem; }
+
+/* IV. further reading */
+.md-typeset dl.rs-ed-read { margin: 0; }
+.md-typeset dl.rs-ed-read > div {
+  display: grid; grid-template-columns: 9rem 1fr; gap: 1.5rem; align-items: baseline;
+  padding: .7rem 0; border-bottom: 1px solid var(--rs-rule);
+}
+.md-typeset dl.rs-ed-read dt { font-size: 1.08rem; font-weight: 400; }
+.md-typeset dl.rs-ed-read dd { margin: 0; color: var(--rs-ink-2); font-size: .98rem; line-height: 1.5; }
+
+/* Colophon */
+.rs-ed-colophon {
+  margin-top: 4.6rem; padding-top: 1.1rem; border-top: 2px solid var(--rs-ink);
+  font-size: .84rem; color: var(--rs-muted); max-width: 40rem;
+}
+.md-typeset .rs-ed-colophon p { margin: 0 0 .5rem; }
+.md-typeset .rs-ed-set { font-style: italic; }
+
+/* Supported Hamiltonians, set as element tiles */
+.rs-ed-sources { margin-top: 3rem; }
+.md-typeset .rs-ed-sources__label {
+  font-family: var(--rs-sans); font-size: .6rem; font-weight: 600; letter-spacing: .14em;
+  text-transform: uppercase; color: var(--rs-muted); margin: 0 0 .8rem;
+}
+.rs-ed-tiles { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: .6rem; }
+.md-typeset a.rs-tile {
+  position: relative; display: flex; flex-direction: column;
+  aspect-ratio: 1 / 1.08; padding: .55rem .65rem .6rem;
+  border: 1px solid var(--rs-ink); background: var(--rs-surface);
+  color: var(--rs-ink); text-decoration: none; transition: background .2s, border-color .2s;
+}
+.md-typeset a.rs-tile:hover { background: var(--rs-surface-2); border-color: var(--rs-brand); text-decoration: none; }
+.rs-tile__key { font-family: var(--md-code-font-family); font-size: .55rem; color: var(--rs-muted); line-height: 1.2; }
+.rs-tile__kind {
+  position: absolute; top: .55rem; right: .65rem;
+  font-family: var(--rs-sans); font-size: .5rem; font-weight: 600; letter-spacing: .1em;
+  text-transform: uppercase; color: var(--rs-vermilion);
+}
+.rs-tile__sym {
+  font-family: var(--rs-serif); font-size: 2.5rem; font-weight: 400; line-height: 1;
+  margin: auto 0 .2rem; letter-spacing: -.01em; transition: color .2s;
+}
+.md-typeset a.rs-tile:hover .rs-tile__sym { color: var(--rs-brand); }
+.rs-tile__name { font-family: var(--rs-sans); font-size: .68rem; font-weight: 600; line-height: 1.25; }
+.rs-tile__note { font-family: var(--rs-serif); font-style: italic; font-size: .68rem; line-height: 1.3; color: var(--rs-muted); margin-top: .15rem; min-height: 1.8em; }
+
+@media screen and (max-width: 60em) {
+  .rs-ed-tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .md-typeset .rs-ed-title { font-size: 2.8rem; }
+  .rs-ed-intro, .rs-ed-toc, .rs-ed-pair { grid-template-columns: 1fr; gap: 1.5rem; }
+  .rs-ed-sec { grid-template-columns: 2.6rem 1fr; }
+  .rs-ed-margin { grid-column: 2; margin-top: 1rem; }
+  .rs-ed-runner span:nth-child(3) { display: none; }
+}

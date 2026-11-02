@@ -1,56 +1,211 @@
-{#- Landing page: a light hero above the page's own Markdown. -#}
+{#-
+  Landing page, set like a printed scientific monograph: a masthead, one
+  engraved plate drawn from a real run, numbered sections with marginal
+  numerals, contents with dotted leaders, plates of evidence, a colophon.
+-#}
 {% extends "main.html" %}
 
 {% block styles %}
   {{ super() }}
   <style>
     /* extra_css loads after this block, so outrank its reading-width rule. */
-    .md-main .md-content .md-content__inner { max-width: 62rem; }
+    .md-main .md-content .md-content__inner { max-width: 60rem; margin-top: 0; padding-top: 0; }
     .md-main .md-main__inner { margin-top: 0; }
-    .md-content__inner > h1, .md-content__button { display: none; }
+    .md-content__button { display: none; }
   </style>
 {% endblock %}
 
-{% block tabs %}
-  {{ super() }}
-  <section class="rs-hero" aria-label="Introduction">
-    <div class="rs-hero__inner">
-      <div>
-        <div class="rs-pill"><b>Open source</b> Random-state ab-initio tight binding</div>
-        <h1>Electronic structure for <span class="rs-gradient">million&#8209;atom</span> systems.</h1>
-        <p class="rs-hero__lead">
-          Give RSATB a Hamiltonian and a short JSON file. Get densities of
-          states, conductivities, optical spectra and real-space maps &mdash;
-          on a laptop or across a cluster.
-        </p>
-        <div class="rs-hero__actions">
-          <a class="rs-btn rs-btn--primary" href="{{ 'getting-started/quickstart/' | url }}">
-            Get started
-            <svg viewBox="0 0 24 24"><path d="M13.2 5.3 19.9 12l-6.7 6.7-1.4-1.4 4.3-4.3H4v-2h12.1l-4.3-4.3z"/></svg>
-          </a>
-          <a class="rs-btn rs-btn--ghost" href="{{ 'tutorials/' | url }}">Browse tutorials</a>
-        </div>
-        <p class="rs-hero__note">Python&nbsp;3.9+ &middot; MPI&nbsp;+&nbsp;OpenMP &middot; Apache&nbsp;2.0</p>
-      </div>
-      <div class="rs-window" aria-label="Example session">
-        <div class="rs-window__bar"><i></i><i></i><i></i><span>graphene.json</span></div>
-<pre><span class="p">$ </span>rsatb template sktb -o graphene.json
-<span class="p">$ </span>rsatb check graphene.json
-<span class="o">graphene.json: valid</span>
-<span class="p">$ </span>rsatb run graphene.json
-<span class="c">  bounds   </span><span class="k">[-8.6, 8.6] eV</span>
-<span class="c">  dos      </span><svg class="rs-tick" viewBox="0 0 16 16" aria-label="done"><path d="M3 8.5 6.5 12 13 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg> <span class="o">done</span></pre>
-        <div class="rs-window__plot">
-          {% include "partials/rs-spark.html" %}
-          <div class="rs-window__label"><span>density of states</span><span>32,768 atoms</span></div>
-        </div>
-      </div>
+{% block content %}
+<div class="rs-ed">
+
+  <header class="rs-ed-mast">
+    <div class="rs-ed-runner">
+      <span>RSATB</span>
+      <span>Random-state ab-initio tight binding</span>
+      <span>Version 0.1 &middot; Apache 2.0</span>
     </div>
-    <div class="rs-stats">
-      <div class="rs-stat"><b>1,004,760</b><span>atoms in the scaling benchmark</span></div>
-      <div class="rs-stat"><b>5.92 M</b><span>orbitals in a production run</span></div>
-      <div class="rs-stat"><b>12</b><span>observables from one input</span></div>
-      <div class="rs-stat"><b>4</b><span>Hamiltonian families supported</span></div>
+    <h1 class="rs-ed-title">Electrons, counted<br>one <em>random state</em><br>at a time.</h1>
+    <div class="rs-ed-intro">
+      <p class="rs-ed-lede">
+        RSATB computes the electronic properties of very large systems &mdash;
+        densities of states, conductivities, optical spectra, maps of where the
+        electrons sit &mdash; from a tight-binding or DFT Hamiltonian and a short
+        JSON file. It never diagonalizes. It follows a handful of random states
+        instead, so its cost grows only in proportion to the number of atoms.
+      </p>
+      <nav class="rs-ed-links" aria-label="Start here">
+        <a href="{{ 'getting-started/quickstart/' | url }}">Begin with the quick start</a>
+        <a href="{{ 'tutorials/' | url }}">Read the tutorials</a>
+        <a href="{{ 'getting-started/installation/' | url }}">Install</a>
+      </nav>
+    </div>
+  </header>
+
+  {#- Supported Hamiltonian sources, as element tiles: the symbol, the code,
+      what it is, and (top left) the model.type that reads it. -#}
+  <section class="rs-ed-sources" aria-label="Supported Hamiltonians">
+    <p class="rs-ed-sources__label">Reads the Hamiltonians you already have</p>
+    <div class="rs-ed-tiles">
+      <a class="rs-tile" href="{{ 'guides/hamiltonian-files/' | url }}">
+        <span class="rs-tile__key">lcao</span><span class="rs-tile__kind">DFT</span>
+        <span class="rs-tile__sym">Ab</span>
+        <span class="rs-tile__name">ABACUS</span>
+        <span class="rs-tile__note">H(R) from out_mat_hs2, incl. spin&ndash;orbit</span>
+      </a>
+      <a class="rs-tile" href="{{ 'guides/hamiltonian-files/' | url }}">
+        <span class="rs-tile__key">lcao</span><span class="rs-tile__kind">ML</span>
+        <span class="rs-tile__sym">Nh</span>
+        <span class="rs-tile__name">NextHam</span>
+        <span class="rs-tile__note">Predicted H(R), atom-pair HDF5</span>
+      </a>
+      <a class="rs-tile" href="{{ 'tutorials/lcao-diamond/' | url }}">
+        <span class="rs-tile__key">lcao &middot; tb_file</span><span class="rs-tile__kind">ML</span>
+        <span class="rs-tile__sym">Dp</span>
+        <span class="rs-tile__name">DeePTB</span>
+        <span class="rs-tile__note">LCAO or Slater-Koster exports</span>
+      </a>
+      <a class="rs-tile" href="{{ 'tutorials/graphene-dos/' | url }}">
+        <span class="rs-tile__key">sktb</span><span class="rs-tile__kind">Model</span>
+        <span class="rs-tile__sym">Sk</span>
+        <span class="rs-tile__name">Slater&ndash;Koster</span>
+        <span class="rs-tile__note">Hoppings written in the input</span>
+      </a>
+      <a class="rs-tile" href="{{ 'tutorials/other-models/' | url }}">
+        <span class="rs-tile__key">dftb</span><span class="rs-tile__kind">DFTB</span>
+        <span class="rs-tile__sym">Df</span>
+        <span class="rs-tile__name">DFTB</span>
+        <span class="rs-tile__note">.skf sets such as mio and 3ob</span>
+      </a>
+      <a class="rs-tile" href="{{ 'tutorials/other-models/' | url }}">
+        <span class="rs-tile__key">tb_file</span><span class="rs-tile__kind">Any</span>
+        <span class="rs-tile__sym">Tb</span>
+        <span class="rs-tile__name">Tight-binding H(R)</span>
+        <span class="rs-tile__note">Any orthogonal Hamiltonian file</span>
+      </a>
     </div>
   </section>
+
+  <figure class="rs-ed-plate">
+    {% include "partials/rs-plate.html" %}
+    <figcaption>
+      <span class="rs-ed-platenum">Plate I.</span>
+      The density of states of graphene, computed by RSATB for 32,768 atoms
+      from eight random vectors on a single process. The faint lines behind it
+      are Chebyshev polynomials &mdash; the functions the curve is assembled
+      from.
+    </figcaption>
+  </figure>
+
+  <section class="rs-ed-sec">
+    <div class="rs-ed-num">I</div>
+    <div class="rs-ed-body">
+      <h2>In three commands</h2>
+      <ol class="rs-ed-steps">
+        <li>
+          <code>rsatb template sktb -o run.json</code>
+          <p>Begin from a working input: where the atoms are, what the
+          Hamiltonian is, and what to compute.</p>
+        </li>
+        <li>
+          <code>rsatb check run.json</code>
+          <p>Every key, file and request is verified before anything runs.
+          A typo is an error with a suggestion, never a silent default.</p>
+        </li>
+        <li>
+          <code>mpirun -n 64 rsatb run run.json</code>
+          <p>The same file runs on a laptop or across a cluster. Results are
+          written as NumPy archives, with a summary of exactly what was
+          computed.</p>
+        </li>
+      </ol>
+    </div>
+    <aside class="rs-ed-margin">
+      Inputs can be written and checked anywhere Python runs; only the final
+      command needs the compiled solver.
+    </aside>
+  </section>
+
+  <section class="rs-ed-sec">
+    <div class="rs-ed-num">II</div>
+    <div class="rs-ed-body">
+      <h2>Contents</h2>
+      <div class="rs-ed-toc">
+        <div>
+          <h3>What it computes</h3>
+          <ul>
+            <li><a href="{{ 'tutorials/graphene-dos/' | url }}"><span>Density of states</span><i></i><b>Tutorial 1</b></a></li>
+            <li><a href="{{ 'tutorials/transport/' | url }}"><span>Conductivity and diffusion</span><i></i><b>Tutorial 4</b></a></li>
+            <li><a href="{{ 'tutorials/optics/' | url }}"><span>Optical spectra</span><i></i><b>Tutorial 5</b></a></li>
+            <li><a href="{{ 'tutorials/realspace/' | url }}"><span>Electron density and local DOS</span><i></i><b>Tutorial 6</b></a></li>
+            <li><a href="{{ 'reference/input/tasks/pdos/' | url }}"><span>Projected density of states</span><i></i><b>Reference</b></a></li>
+            <li><a href="{{ 'reference/input/tasks/fermi_level/' | url }}"><span>Fermi level and occupation</span><i></i><b>Reference</b></a></li>
+          </ul>
+        </div>
+        <div>
+          <h3>How to run it well</h3>
+          <ul>
+            <li><a href="{{ 'guides/choose-model/' | url }}"><span>Choosing a model</span><i></i><b>Guide</b></a></li>
+            <li><a href="{{ 'guides/hamiltonian-files/' | url }}"><span>Importing DFT Hamiltonians</span><i></i><b>Guide</b></a></li>
+            <li><a href="{{ 'guides/convergence/' | url }}"><span>Converging a result</span><i></i><b>Guide</b></a></li>
+            <li><a href="{{ 'guides/parallel/' | url }}"><span>Running on a cluster</span><i></i><b>Guide</b></a></li>
+            <li><a href="{{ 'tutorials/python/' | url }}"><span>Scripting from Python</span><i></i><b>Tutorial 7</b></a></li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="rs-ed-sec">
+    <div class="rs-ed-num">III</div>
+    <div class="rs-ed-body">
+      <h2>Evidence</h2>
+      <figure class="rs-ed-fig">
+        <img src="{{ 'assets/figures/fig_validation.png' | url }}" alt="RSATB against exact diagonalization for diamond, silicon and aluminium across six observables" loading="lazy">
+        <figcaption><span class="rs-ed-platenum">Plate II.</span> Against exact
+        diagonalization: diamond, silicon and aluminium, across the density of
+        states, charge density, local DOS, electrical and optical conductivity,
+        and diffusion.</figcaption>
+      </figure>
+      <figure class="rs-ed-fig">
+        <img src="{{ 'assets/figures/fig_scaling.png' | url }}" alt="CPU, memory and wall-time scaling to one million atoms" loading="lazy">
+        <figcaption><span class="rs-ed-platenum">Plate III.</span> Cost and memory
+        grow in proportion to the system, up to 1,004,760 atoms; adding nodes
+        with the system keeps the wall time nearly constant.</figcaption>
+      </figure>
+      <figure class="rs-ed-fig">
+        <img src="{{ 'assets/figures/fig_application.png' | url }}" alt="Twisted trilayer graphene supermoire application" loading="lazy">
+        <figcaption><span class="rs-ed-platenum">Plate IV.</span> A 455,140-atom
+        twisted trilayer graphene supermoir&eacute; &mdash; 5.92 million orbitals
+        &mdash; resolved in energy and in space.</figcaption>
+      </figure>
+    </div>
+    <aside class="rs-ed-margin">
+      <span class="rs-ed-fact"><b>1,004,760</b> atoms in the largest scaling run.</span>
+      <span class="rs-ed-fact"><b>5.92&nbsp;M</b> orbitals in the largest application.</span>
+      <span class="rs-ed-fact"><b>12</b> observables from one input.</span>
+    </aside>
+  </section>
+
+  <section class="rs-ed-sec">
+    <div class="rs-ed-num">IV</div>
+    <div class="rs-ed-body">
+      <h2>Further reading</h2>
+      <dl class="rs-ed-read">
+        <div><dt><a href="{{ 'getting-started/' | url }}">Get started</a></dt><dd>Install, run a first input, and learn its five sections.</dd></div>
+        <div><dt><a href="{{ 'tutorials/' | url }}">Tutorials</a></dt><dd>Seven worked calculations, each about two minutes.</dd></div>
+        <div><dt><a href="{{ 'guides/' | url }}">Guides</a></dt><dd>Importing data, convergence, cost and clusters.</dd></div>
+        <div><dt><a href="{{ 'reference/' | url }}">Reference</a></dt><dd>Every option, output and command, generated from the source.</dd></div>
+        <div><dt><a href="{{ 'theory/' | url }}">Theory</a></dt><dd>Why it works, for the curious.</dd></div>
+      </dl>
+    </div>
+  </section>
+
+  <footer class="rs-ed-colophon">
+    <p>RSATB is developed by <a href="https://floatingcatty.github.io/">Zhanghao Zhouyin</a>,
+    Department of Physics, McGill University, and released under the Apache License 2.0.
+    If you use it, please <a href="{{ 'about/citation/' | url }}">cite the software</a>.</p>
+    <p class="rs-ed-set">Set in Newsreader, Inter and JetBrains Mono.</p>
+  </footer>
+
+</div>
 {% endblock %}

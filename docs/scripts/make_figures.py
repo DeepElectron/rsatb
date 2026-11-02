@@ -11,8 +11,12 @@ of what a tutorial input actually produced. To refresh them:
     python docs/scripts/make_figures.py
 
 A figure whose run has not been made is skipped with a message. The script
-also writes docs/overrides/partials/rs-spark.html, the DOS trace in the
-landing-page terminal, from the graphene run.
+also writes docs/overrides/partials/rs-plate.html, Plate I of the landing
+page, from the graphene run.
+
+Colours are the site palette (docs/assets/stylesheets/rsatb.css): ink for
+structure, ink-blue for RSATB data, vermilion for references and marks, and
+ramps between paper and those two for maps and families of curves.
 """
 
 import glob
@@ -25,18 +29,23 @@ import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
+from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 EXAMPLES = ROOT / "examples"
 OUT = ROOT / "docs" / "assets" / "figures"
-SPARK = ROOT / "docs" / "overrides" / "partials" / "rs-spark.html"
+PLATE = ROOT / "docs" / "overrides" / "partials" / "rs-plate.html"
 
-INK = "#0b1324"
-MUTED = "#667085"
-RULE = "#e3e6ec"
-ACCENT = "#0b7f91"
-ACCENT_2 = "#4fb7c5"
-WARM = "#c27a12"
+PAPER = "#faf8f3"
+INK = "#1c1b19"
+MUTED = "#6f6a60"
+RULE = "#e3ddd0"
+ACCENT = "#2c4a8a"      # ink-blue: RSATB data
+WARM = "#b8432a"        # vermilion: references, marks
+# Ramps for maps and families of curves, paper -> ink-blue and paper -> vermilion -> ink.
+BLUES = LinearSegmentedColormap.from_list("rs_blues", [PAPER, "#9fb0d3", ACCENT, "#14223f"])
+EMBER = LinearSegmentedColormap.from_list("rs_ember", [PAPER, "#e6b7a4", WARM, "#3a1a10"])
+FAMILY = LinearSegmentedColormap.from_list("rs_family", ["#9fb0d3", ACCENT, "#14223f"])
 XX = 0
 
 plt.rcParams.update({
@@ -47,7 +56,7 @@ plt.rcParams.update({
     "axes.linewidth": 0.8,
     "axes.spines.top": False,
     "axes.spines.right": False,
-    "axes.grid": True,
+    "axes.grid": False,
     "grid.color": RULE,
     "grid.linewidth": 0.6,
     "xtick.color": MUTED,
@@ -144,28 +153,83 @@ def fig_graphene_dos():
             spark = (e, rho)
     fig.tight_layout(w_pad=2.5)
     _save(fig, "tut_graphene_dos.png")
-    _spark(*spark)
+    _plate(*spark, emin, emax)
 
 
-def _spark(e, rho):
-    """Landing-page sparkline: the graphene DOS as an SVG path."""
-    x = (e - e.min()) / (e.max() - e.min()) * 400.0
-    y = 68.0 - rho / rho.max() * 60.0
-    step = max(1, len(x) // 300)
-    pts = " ".join("{:.1f},{:.1f}".format(a, b) for a, b in zip(x[::step], y[::step]))
-    # Colours come from the stylesheet (classes line / fill-top / base), so
-    # the trace follows the light and dark schemes.
-    SPARK.write_text(
-        '<svg class="rs-spark" viewBox="0 0 400 72" preserveAspectRatio="none" aria-hidden="true">'
-        '<defs><linearGradient id="rs-spark-f" x1="0" y1="0" x2="0" y2="1">'
-        '<stop class="fill-top" offset="0" stop-opacity=".22"/>'
-        '<stop class="fill-top" offset="1" stop-opacity="0"/></linearGradient></defs>'
-        '<polygon points="0,68 {pts} 400,68" fill="url(#rs-spark-f)"/>'
-        '<polyline class="line" points="{pts}" fill="none" stroke-width="1.6" '
-        'stroke-linejoin="round" vector-effect="non-scaling-stroke"/>'
-        '<line class="base" x1="0" y1="68.5" x2="400" y2="68.5" stroke-width="1" '
-        'vector-effect="non-scaling-stroke"/></svg>\n'.format(pts=pts))
-    print("wrote", SPARK.relative_to(ROOT))
+def _plate(e, rho, emin, emax, t=2.7):
+    """Landing-page Plate I: the graphene DOS as an engraved ink line.
+
+    Drawn as SVG from the run itself. Behind it, faintly, the Chebyshev
+    polynomials T_1..T_9 on the same (scaled) energy axis -- the functions the
+    curve is assembled from. Annotations sit at the computed features: the van
+    Hove peaks at +-|t| and the Dirac point. Colours and type come from the
+    stylesheet (classes), so the plate follows the light and dark schemes.
+    """
+    W, x0, x1, base, top = 1000.0, 50.0, 950.0, 300.0, 64.0
+
+    def X(energy):
+        return x0 + (energy - emin) / (emax - emin) * (x1 - x0)
+
+    def Y(value):
+        return base - value / rho.max() * (base - top)
+
+    def poly(xs, ys):
+        return " ".join("{:.1f},{:.1f}".format(a, b) for a, b in zip(xs, ys))
+
+    parts = []
+    # Chebyshev ghosts: T_n(x) = cos(n arccos x) on the scaled axis.
+    xs = np.linspace(-1.0, 1.0, 400)
+    mid, amp = (base + top) / 2.0, (base - top) / 2.0 * 0.92
+    for n in range(1, 10):
+        tn = np.cos(n * np.arccos(xs))
+        ex = emin + (xs + 1.0) / 2.0 * (emax - emin)
+        parts.append('<polyline class="cheb" points="{}"/>'.format(poly(X(ex), mid - amp * tn)))
+
+    step = max(1, len(e) // 700)
+    line = poly(X(e[::step]), Y(rho[::step]))
+    parts.append('<polygon class="dos-fill" points="{:.1f},{:.1f} {} {:.1f},{:.1f}"/>'.format(
+        X(e[0]), base, line, X(e[-1]), base))
+    parts.append('<polyline class="dos" points="{}"/>'.format(line))
+    parts.append('<line class="axis" x1="{:.1f}" y1="{:.1f}" x2="{:.1f}" y2="{:.1f}"/>'.format(
+        x0, base, x1, base))
+    for tick in (-8, -4, 0, 4, 8):
+        parts.append('<line class="axis" x1="{0:.1f}" y1="{1:.1f}" x2="{0:.1f}" y2="{2:.1f}"/>'
+                     '<text class="tick" x="{0:.1f}" y="{3:.1f}" text-anchor="middle">{4}</text>'.format(
+                         X(tick), base, base + 6, base + 24, "{:+d}".format(tick) if tick else "0"))
+    parts.append('<text class="tick" x="{:.1f}" y="{:.1f}" text-anchor="end">energy / eV</text>'.format(
+        x1, base + 46))
+
+    # Van Hove peaks: the maximum of the curve near -|t| and +|t|.
+    for sign, anchor, dx in ((-1, "end", -18), (1, "start", 18)):
+        window = np.abs(e - sign * t) < 0.4
+        i = np.flatnonzero(window)[np.argmax(rho[window])]
+        px, py = X(e[i]), Y(rho[i])
+        lx, ly = px + dx * 3.2, py - 18
+        parts.append('<circle class="mark" cx="{:.1f}" cy="{:.1f}" r="3"/>'.format(px, py))
+        parts.append('<polyline class="lead" points="{:.1f},{:.1f} {:.1f},{:.1f} {:.1f},{:.1f}"/>'.format(
+            px, py - 5, px + dx, ly, lx, ly))
+        parts.append('<text class="ann" x="{:.1f}" y="{:.1f}" text-anchor="{}">van Hove singularity</text>'
+                     '<text class="ann-sub" x="{:.1f}" y="{:.1f}" text-anchor="{}">E = {}|t|</text>'.format(
+                         lx + (6 if sign > 0 else -6), ly + 5, anchor,
+                         lx + (6 if sign > 0 else -6), ly + 22, anchor, "+" if sign > 0 else "−"))
+
+    # Dirac point: the zero of the DOS at E = 0. Labelled below the axis,
+    # where nothing else is drawn, clear of the "0" tick.
+    dx0 = X(0.0)
+    ly = base + 52
+    parts.append('<circle class="mark" cx="{:.1f}" cy="{:.1f}" r="3"/>'.format(dx0, base))
+    parts.append('<polyline class="lead" points="{:.1f},{:.1f} {:.1f},{:.1f} {:.1f},{:.1f}"/>'.format(
+        dx0 + 3, base + 4, dx0 + 34, ly - 5, dx0 + 60, ly - 5))
+    parts.append('<text class="ann" x="{:.1f}" y="{:.1f}">Dirac point</text>'
+                 '<text class="ann-sub" x="{:.1f}" y="{:.1f}">E = 0, the density vanishes linearly</text>'.format(
+                     dx0 + 66, ly, dx0 + 66, ly + 17))
+
+    PLATE.parent.mkdir(parents=True, exist_ok=True)
+    PLATE.write_text(
+        '<svg class="rs-plate" viewBox="0 0 {:.0f} 380" role="img" '
+        'aria-label="Density of states of graphene, with van Hove singularities and the Dirac point">'
+        '{}</svg>\n'.format(W, "".join(parts)))
+    print("wrote", PLATE.relative_to(ROOT))
 
 
 def fig_graphene_transport():
@@ -191,10 +255,10 @@ def fig_graphene_transport():
 
     ax = axes[2]
     t, E, D = msd["time_fs"], msd["energy"], msd["diffusion"][0]
-    cmap = plt.get_cmap("viridis")
+    cmap = FAMILY
     for i, target in enumerate((0.5, 1.0, 2.0, 2.7)):
         j = int(np.argmin(abs(E - target)))
-        ax.plot(t, D[:, j] * 0.1, lw=1.2, color=cmap(0.15 + 0.22 * i),
+        ax.plot(t, D[:, j] * 0.1, lw=1.2, color=cmap(0.05 + 0.3 * i),
                 label="E = {:.1f} eV".format(E[j]))
     ax.set(xlabel="Time (fs)", ylabel=r"$D(E,t)$ (cm$^2$/s)", title="Diffusion: ballistic, clean",
            xlim=(0, t[-1]), ylim=(0, None))
@@ -210,7 +274,7 @@ def fig_strain():
         return
     d = np.load(path)
     strains = d["strains"]
-    cmap = plt.get_cmap("viridis")
+    cmap = FAMILY
     fig, ax = plt.subplots(figsize=(6.4, 3.0))
     for i, s in enumerate(strains):
         ax.plot(d["energy_{}".format(i)], d["dos_{}".format(i)], lw=1.1,
@@ -317,9 +381,9 @@ def fig_diamond_realspace():
     picks = [(0, "valence band"), (len(energies) // 2, "band gap"),
              (len(energies) - 1, "conduction band")]
     fig, axes = plt.subplots(1, 1 + len(picks), figsize=(11.0, 2.75))
-    panels = [(axes[0], plane(rho), "magma", r"density (e/Å$^3$)")]
+    panels = [(axes[0], plane(rho), EMBER, r"density (e/Å$^3$)")]
     for ax, (idx, where) in zip(axes[1:], picks):
-        panels.append((ax, plane(ldos[idx]), "viridis",
+        panels.append((ax, plane(ldos[idx]), BLUES,
                        "LDOS, {:.0f} eV · {}".format(energies[idx], where)))
     for ax, values, cmap, title in panels:
         im = ax.pcolormesh(X, Y, values, cmap=cmap, shading="gouraud", rasterized=True)

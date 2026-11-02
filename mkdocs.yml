@@ -67,6 +67,7 @@ theme:
 
 extra_css:
   - assets/stylesheets/rsatb.css
+  - assets/stylesheets/landing.css
   - https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css
 
 extra_javascript:
