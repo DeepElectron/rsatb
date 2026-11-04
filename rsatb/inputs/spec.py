@@ -560,7 +560,10 @@ TASK = Union(
             "structure set up correctly.",
             {"label": LABEL}),
         "dos": Obj(
-            "Density of states.",
+            "Density of states, in states/eV of the simulated cell with both "
+            "spins counted. Each value is the average over one bin of the energy "
+            "grid, so it integrates to the number of states over the whole "
+            "spectrum, and to the electron count up to the Fermi level.",
             {
                 "label": LABEL,
                 "dE": F(_num("Energy resolution. The number of Chebyshev "
@@ -808,9 +811,9 @@ TASK = Union(
             "as much as one occupation task.",
             {
                 "label": LABEL,
-                "n_electrons": F(_num("Target electron count. No spin factor is "
-                                      "applied: for a spin-degenerate basis, give "
-                                      "half the number of electrons.",
+                "n_electrons": F(_num("Target number of electrons in the simulated "
+                                      "cell, both spins counted: the number the "
+                                      "dos integrates to up to the Fermi level.",
                                       exclusive_minimum=0.0), required=True),
                 "temp": F(_num("Temperature.", unit="K", minimum=0.0), required=True),
                 "indicator_threshold": F(

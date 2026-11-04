@@ -138,6 +138,39 @@ int main(int argc, char** argv) {
         all_ok = all_ok && ok;
     }
 
+    // 2b. The bin density conserves the trace for any line, also one near the
+    // interval's end, where its width in x falls far below the grid step and
+    // point samples of the density count it several times over or not at all.
+    if (rank == 0) {
+        const int nt_bins = 50;
+        const int n_line = 2000;
+        bool ok = true;
+        double worst_bins = 0.0, worst_points = 0.0;
+        for (double x0 : {0.0, 0.5, -0.9, -0.99, 0.999, -0.9973}) {
+            std::vector<double> line(n_line);
+            for (int n = 0; n < n_line; ++n) line[n] = std::cos(n * std::acos(x0));
+            const std::vector<double> bins = kpm_bin_density(line, nt_bins);
+            std::vector<double> x_points(2 * nt_bins);
+            for (int i = 0; i < 2 * nt_bins; ++i) x_points[i] = static_cast<double>(i - nt_bins) / nt_bins;
+            const std::vector<double> points = evaluate_kpm_density(line, x_points, 0.5 / nt_bins);
+            double area_bins = 0.0, area_points = 0.0, lowest = 0.0;
+            for (int i = 0; i < 2 * nt_bins; ++i) {
+                area_bins += bins[i] / nt_bins;
+                area_points += points[i] / nt_bins;
+                lowest = std::min(lowest, bins[i]);
+            }
+            worst_bins = std::max(worst_bins, std::abs(area_bins - 1.0));
+            worst_points = std::max(worst_points, std::abs(area_points - 1.0));
+            ok = ok && std::abs(area_bins - 1.0) < 1e-11 && lowest > -1e-9;
+        }
+        std::cout << "  bin density: max |area - 1| = " << worst_bins
+                  << " (point samples: " << worst_points << ")" << std::endl;
+        // The case for the bins: the point samples must really be this wrong.
+        ok = ok && worst_points > 0.1;
+        std::cout << (ok ? "BIN DENSITY PASSED" : "BIN DENSITY FAILED") << std::endl;
+        all_ok = all_ok && ok;
+    }
+
     // 3. Correlation series from moments against the analytic cos(0.5 t)
     // (exact here), single vector and multivector.
     std::vector<cd> cdos_mom = moments_corr(cheby, psi_in, nt);

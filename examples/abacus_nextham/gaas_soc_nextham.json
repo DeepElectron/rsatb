@@ -23,7 +23,7 @@
   "tasks": [
     {"type": "dos", "dE": 0.3},
     {
-      "_comment": "The electron count at mid-gap (ABACUS's bands: VBM 7.400 eV, CBM 8.189 eV). Ga and As ONCV-FR carry 13 + 5 valence electrons, and a spinor basis holds both spins, so the occupation trace is the full count with no factor 2: 8 cells x 18 = 144.",
+      "_comment": "The electron count at mid-gap (ABACUS's bands: VBM 7.400 eV, CBM 8.189 eV). Ga and As ONCV-FR carry 13 + 5 valence electrons, so the simulated cell holds 8 x 18 = 144.",
       "type": "occupation",
       "mu": 7.795,
       "temp": 300.0

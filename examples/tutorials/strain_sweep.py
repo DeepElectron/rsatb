@@ -65,8 +65,8 @@ def main():
         dos, energy = calc.compute_dos(dE=0.1)      # flat: (n_kpoint * n_energy,)
         dos = dos.reshape(-1, len(energy))[0]        # the single (Gamma) k-point
         emin, emax = calc.energy_bounds()
-        # Normalise to one state per orbital: the raw DOS integrates to emax - emin.
-        curves.append((energy, dos / (emax - emin)))
+        # Per state: the DOS is in states/eV of the cell and integrates to n_states.
+        curves.append((energy, dos / calc.n_states()))
         if rank == 0:
             t = T0 * math.exp(-BETA * strain)
             print("strain {:5.1%}   |t| = {:.3f} eV   window [{:.2f}, {:.2f}] eV".format(

@@ -240,6 +240,67 @@ std::vector<double> evaluate_kpm_density(
     return rho;
 }
 
+// The kernel-smoothed density averaged over the bins of the uniform grid
+// x_i = (i - nt) / nt, i = 0 .. 2 nt - 1: bin i runs half a step either side of
+// x_i, the first starts at -1 and the last ends at +1, so the bins cover the
+// interval and step * sum_i rho_i = mu_0 exactly, whatever the spectrum.
+//
+// Point samples of rho do not have that property on a grid this coarse. The
+// kernel has a constant width in theta = acos(x), so a line at x has a width
+// proportional to sqrt(1 - x^2) in x, far below the grid step near the interval
+// ends -- which is where an LCAO spectrum's flat semi-core bands sit, its window
+// being set by the overlap's small eigenvalues. A point sample then counts such a
+// line several times over or not at all: Al at 11 valence electrons per atom
+// integrated to 607 electrons, not 297, up to the Fermi level.
+//
+// The bin average comes from the closed form of the integrated density (the same
+// construction as VASP's DOSCAR, whose DOS is a difference of integrated DOS):
+//   F(x) = int_{-1}^{x} rho = (g_0 mu_0 (pi - theta)
+//                              - 2 sum_{n>=1} g_n mu_n sin(n theta) / n) / pi.
+// Its only other effect is to widen a line by the bin, sqrt(1 + (step/sigma)^2/12)
+// = 6% at the DOS task's two points per dE.
+template <typename ScalarT>
+std::vector<double> kpm_bin_density(
+    const std::vector<ScalarT>& moments,
+    int nt,
+    KpmKernel kernel = KpmKernel::Jackson
+) {
+    const int n_moments = static_cast<int>(moments.size());
+    const size_t n_bin = static_cast<size_t>(2 * nt);
+    std::vector<double> rho(n_bin, 0.0);
+    if (n_moments == 0) {
+        return rho;
+    }
+    const std::vector<double> g = kpm_kernel_weights(kernel, n_moments);
+    const double step = 1.0 / nt;
+
+    std::vector<double> integrated(n_bin + 1, 0.0);
+    #pragma omp parallel for schedule(static)
+    for (int e = 0; e <= static_cast<int>(n_bin); ++e) {
+        const double x = e == 0 ? -1.0
+                       : e == static_cast<int>(n_bin) ? 1.0
+                       : (e - nt - 0.5) * step;
+        const double theta = std::acos(x);
+        // sin(n theta) by its recurrence: one multiply per term.
+        double s_prev = 0.0;
+        double s_curr = std::sin(theta);
+        double sum = 0.0;
+        for (int n = 1; n < n_moments; ++n) {
+            sum += g[static_cast<size_t>(n)] *
+                   static_cast<cd>(moments[static_cast<size_t>(n)]).real() * s_curr / n;
+            const double s_next = 2.0 * x * s_curr - s_prev;
+            s_prev = s_curr;
+            s_curr = s_next;
+        }
+        integrated[static_cast<size_t>(e)] =
+            (g[0] * static_cast<cd>(moments[0]).real() * (M_PI - theta) - 2.0 * sum) / M_PI;
+    }
+    for (size_t i = 0; i < n_bin; ++i) {
+        rho[i] = (integrated[i + 1] - integrated[i]) / step;
+    }
+    return rho;
+}
+
 template <typename ScalarT>
 void reconstruct_spectrum_from_moments(
     const std::vector<ScalarT>& moments,

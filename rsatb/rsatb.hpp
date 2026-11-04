@@ -284,6 +284,9 @@ public:
     /// Callers need it to place energies: every Chebyshev observable is
     /// defined on the open interval, and the reconstruction returns zero at
     /// and beyond the endpoints.
+    /// States in the simulated cell, both spins counted: the integral of the DOS.
+    double n_states() { return observable_context().StatesInCell(); }
+
     std::pair<double, double> energy_bounds() {
         auto& ops = require_operators();
         return std::make_pair(ops.emin(), ops.emax());

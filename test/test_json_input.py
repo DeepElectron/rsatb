@@ -509,6 +509,53 @@ def test_a_graphene_dos_runs_from_json(tmp_path, capsys):
     assert arrays["energy"].shape[0] == arrays["dos"].shape[1]
 
 
+@pytest.mark.order(-1)
+@pytest.mark.parametrize("method", ["kpm", "corr"])
+def test_the_dos_counts_states_and_electrons(tmp_path, capsys, method):
+    """The DOS integrates to the cell's states, and to its electrons up to mu.
+
+    Graphene at half filling: 8 atoms x 1 pz x 2 spins = 16 states, 8 electrons.
+    One electron per atom is what the Fermi level then holds, and with both
+    spins counted that is also what the density and transport tasks mean.
+    """
+    pytest.importorskip("_rsatb")
+    numpy = pytest.importorskip("numpy")
+    document = copy.deepcopy(templates.get("sktb"))
+    document["structure"]["supercell"] = [2, 2, 1]
+    document["run"]["nsamples"] = 16
+    document["run"]["kpoints"] = {"mesh": [8, 8, 1]}
+    document["tasks"] = [{"type": "dos", "dE": 0.1, "method": method},
+                         {"type": "pdos", "dE": 0.1, "projection": "atom"},
+                         {"type": "fermi_level", "n_electrons": 8, "temp": 300.0}]
+    document["output"] = {"dir": str(tmp_path / "out")}
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(document))
+
+    assert main(["run", str(path)]) == 0
+
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    scalars = {r["type"]: r["scalars"] for r in summary["results"]}
+    assert scalars["dos"]["n_states"] == 16
+    assert scalars["fermi_level"]["n_electrons"] == pytest.approx(8, rel=1e-6)
+
+    arrays = numpy.load(str(tmp_path / "out" / "dos.npz"))
+    energy, dos = arrays["energy"], arrays["dos"].mean(axis=0)
+    assert numpy.trapezoid(dos, energy) == pytest.approx(16, rel=1e-4)
+    # Per k-point too: a line narrower than the grid must not count more than once.
+    rows = numpy.trapezoid(arrays["dos"], energy, axis=1)
+    assert numpy.abs(rows - 16).max() < 1e-2
+    mu = scalars["fermi_level"]["mu"]
+    filled = energy <= mu
+    assert numpy.trapezoid(dos[filled], energy[filled]) == pytest.approx(8, rel=1e-2)
+
+    # The projections carry the same unit: each atom holds 2 of the 16 states.
+    pdos = numpy.load(str(tmp_path / "out" / "pdos.npz"))
+    assert numpy.trapezoid(pdos["total"].mean(axis=0), pdos["energy"]) == pytest.approx(16, rel=1e-4)
+    per_atom = numpy.trapezoid(pdos["pdos"].mean(axis=0), pdos["energy"], axis=-1)
+    assert per_atom.shape == (8,)
+    assert per_atom.sum() == pytest.approx(16, rel=1e-4)
+
+
 def test_the_axis_choices_volume_is_rejected_only_at_check_time():
     """Cartesian letters and the non-cyclic 'ac' are not volume axes.
 

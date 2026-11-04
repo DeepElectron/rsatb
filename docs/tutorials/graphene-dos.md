@@ -104,9 +104,11 @@ finite cell, so individual levels show through.</figcaption>
     [Random-state traces](../theory/stochastic-trace.md).
 
 ??? deep "Normalizing the result"
-    The `dos` array is scaled so that it integrates to the width of the
-    energy range, $E_{\max} - E_{\min}$. Divide by that width to get states per eV
-    per orbital:
+    The `dos` array is in states/eV of the simulated cell, with both spins
+    counted, so it integrates to the number of states of the cell, and to the
+    number of electrons up to the Fermi level. That number is stored as
+    `n_states` in `summary.json`. Divide by it to get states per eV per state,
+    which integrates to one:
 
     ```python
     import json
@@ -114,10 +116,10 @@ finite cell, so individual levels show through.</figcaption>
 
     run = "examples/tutorials/results/graphene_dos"
     summary = json.load(open(f"{run}/summary.json"))
-    emin, emax = summary["setup"]["energy_bounds"]
+    result = next(r for r in summary["results"] if r["label"] == "coarse")
 
     d = np.load(f"{run}/coarse.npz")
-    energy, rho = d["energy"], d["dos"][0] / (emax - emin)
+    energy, rho = d["energy"], d["dos"][0] / result["scalars"]["n_states"]
     ```
 
 ## Next steps

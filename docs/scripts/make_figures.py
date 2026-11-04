@@ -88,6 +88,12 @@ def _save(fig, name):
     print("wrote", (OUT / name).relative_to(ROOT))
 
 
+def n_states(summary, label="dos"):
+    """The states the named result's DOS integrates to."""
+    result = next(r for r in summary["results"] if r["label"] == label)
+    return result["scalars"]["n_states"]
+
+
 def _gaussian(x, centres, fwhm, weights=None):
     sigma = fwhm / (2.0 * np.sqrt(2.0 * np.log(2.0)))
     out = np.zeros_like(x)
@@ -135,7 +141,7 @@ def fig_graphene_dos():
     spark = None
     for ax, label in zip(axes, ("coarse", "fine")):
         d = np.load(run / "{}.npz".format(label))
-        e, rho = d["energy"], d["dos"][0] / (emax - emin)
+        e, rho = d["energy"], d["dos"][0] / n_states(summary, label=label)
         exact = graphene_exact(n_cell, 2.7, e, tasks[label]["dE"])
         ax.fill_between(e, rho, color=ACCENT, alpha=0.08, lw=0)
         ax.plot(e, exact, color=WARM, lw=2.6, alpha=0.45, label="exact, same k-points")
@@ -238,14 +244,13 @@ def fig_graphene_transport():
     summary = _results(run)
     if summary is None:
         return
-    emin, emax = summary["setup"]["energy_bounds"]
     dos = np.load(run / "dos.npz")
     dc = np.load(run / "dc_spectrum.npz")
     msd = np.load(run / "msd.npz")
 
     fig, axes = plt.subplots(1, 3, figsize=(10.2, 2.9))
     ax = axes[0]
-    ax.plot(dos["energy"], dos["dos"][0] / (emax - emin), color=ACCENT, lw=1.1)
+    ax.plot(dos["energy"], dos["dos"][0] / n_states(summary), color=ACCENT, lw=1.1)
     ax.set(xlabel="Energy (eV)", ylabel="DOS (states / eV / orbital)", title="Density of states",
            xlim=(-8.5, 8.5), ylim=(0, None))
 
@@ -292,7 +297,6 @@ def fig_diamond_optics():
     summary = _results(run)
     if summary is None:
         return
-    emin, emax = summary["setup"]["energy_bounds"]
     dos = np.load(run / "dos.npz")
     ac = np.load(run / "ac.npz")
     mu = [t for t in summary["input"]["tasks"] if t["type"] == "ac"][0]["mu"]
@@ -300,7 +304,7 @@ def fig_diamond_optics():
     fig, axes = plt.subplots(1, 3, figsize=(10.2, 2.9))
     ax = axes[0]
     e = dos["energy"] - mu
-    rho = dos["dos"][0] / (emax - emin)
+    rho = dos["dos"][0] / n_states(summary)
     keep = (e > -25) & (e < 15)
     # A Gamma-point 4x4x4 cell has a discrete spectrum; broaden for display
     # (as examples/plot_dos_ac.py does) and keep the raw comb underneath.
@@ -394,10 +398,9 @@ def fig_abacus_nextham():
     for name, colour, lw, ls, label in (("al_abacus", ACCENT, 1.6, "-", "ABACUS file"),
                                         ("al_nextham", WARM, 0.9, "--", "NextHam file")):
         s = summaries[name]
-        emin, emax = s["setup"]["energy_bounds"]
         d = np.load(runs[name] / "dos.npz")
         mu = [r for r in s["results"] if r["type"] == "fermi_level"][0]["scalars"]["mu"]
-        rho = d["dos"].mean(axis=0) / (emax - emin) * 21      # per atom: 21 orbitals (4s4p1d)
+        rho = d["dos"].mean(axis=0) / (27 * 2)                # the axis: per atom, per spin
         e = d["energy"] - mu
         keep = (e > -16) & (e < 10)
         # Both inputs compute the DOS at dE = 1 eV; plotted as RSATB writes it.

@@ -20,14 +20,13 @@ import numpy as np
 
 run = "results/graphene"
 summary = json.load(open(f"{run}/summary.json"))
-emin, emax = summary["setup"]["energy_bounds"]
 
 for result in summary["results"]:
     print(result["label"], result["type"], result["seconds"], "s", result["scalars"])
 
 dos = np.load(f"{run}/dos.npz")
 energy = dos["energy"]
-rho = dos["dos"][0] / (emax - emin)     # per-orbital DOS, integrates to 1
+rho = dos["dos"][0]                     # states/eV of the cell, both spins
 ```
 
 Scalars such as `emin` or a Fermi level are stored only in `summary.json`;
@@ -40,7 +39,7 @@ import matplotlib.pyplot as plt
 
 fig, ax = plt.subplots(figsize=(5, 3))
 ax.plot(energy, rho, lw=1.2)
-ax.set(xlabel="E (eV)", ylabel="DOS (states/eV/orbital)")
+ax.set(xlabel="E (eV)", ylabel="DOS (states/eV/cell)")
 fig.tight_layout()
 fig.savefig("dos.png", dpi=200)
 ```

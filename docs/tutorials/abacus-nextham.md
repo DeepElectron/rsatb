@@ -110,8 +110,8 @@ New in this input:
   the primitive Brillouin zone on a 6 × 6 × 6 grid. `npar` = 8 gives each
   k-point its own group of processes.
 - **`fermi_level`** finds the chemical potential that holds `n_electrons`.
-  Al carries 11 valence electrons per atom in this basis; a spin-degenerate
-  basis holds one spin, so the count is $27 \times 11 / 2 = 148.5$.
+  Al carries 11 valence electrons per atom, so the cell holds
+  $27 \times 11 = 297$.
 - **`dc`** computes the DC conductivity at `mu` = 11.55 eV, the Fermi level
   of this k-point sampling.
 
@@ -124,7 +124,7 @@ OMP_NUM_THREADS=4 mpirun -n 8 rsatb run al_abacus.json
   parallel      npar=8, nsamples=16
   tasks         dos, fermi_level, dc
   ...
-  fermi_level: n_electrons=148.5, ..., mu=11.635, ...
+  fermi_level: n_electrons=297, ..., mu=11.635, ...
 ```
 
 - **Fermi level.** 11.64 eV, against 11.55 eV from exact diagonalization of

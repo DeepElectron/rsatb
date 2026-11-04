@@ -129,8 +129,11 @@ class RSATB:
                 reconstructed from the same moments.
 
         Returns:
-            tuple: (dos, energy) as NumPy arrays. `dos` holds all k-points in one
-            flat array; `dos.reshape(-1, len(energy))` separates them.
+            tuple: (dos, energy) as NumPy arrays. `dos` is in states/eV of the
+            simulated cell, both spins counted: it integrates to n_states() over
+            the whole spectrum and to the electron count up to the Fermi level.
+            It holds all k-points in one flat array;
+            `dos.reshape(-1, len(energy))` separates them.
         """
         dos_out, omega_out = self._cpp_obj.compute_dos(dE, method)
         return np.array(dos_out), np.array(omega_out)
@@ -155,7 +158,8 @@ class RSATB:
         Returns:
             dict with keys:
                 energy: (2*nt,) energy grid in eV.
-                pdos: (n_kpoint, n_group, 2*nt) projected DOS.
+                pdos: (n_kpoint, n_group, 2*nt) projected DOS, in states/eV as
+                    compute_dos.
                 total: (n_kpoint, 2*nt) total DOS; equals pdos.sum(axis=1) up to
                     rounding.
                 n_group: number of groups.
@@ -274,6 +278,14 @@ class RSATB:
             full[:, out["point_index"]] = out["ldos"]
             out["grid"] = full.reshape((n_energy,) + tuple(out["shape"]))
         return out
+
+    def n_states(self):
+        """Return the states in the simulated cell, both spins counted.
+
+        The DOS integrates to this over the whole spectrum: twice the basis size
+        for a spin-degenerate basis, the basis size for a spinor one.
+        """
+        return self._cpp_obj.n_states()
 
     def energy_bounds(self):
         """Return the energy window (emin, emax) that the expansions are scaled to.
@@ -432,7 +444,7 @@ class RSATB:
         The expansion degree is chosen after the moments are computed, from the
         sampled spectrum. For extended systems it is set by the smoothness of the
         DOS near mu, not by the temperature, so it does not grow as the
-        temperature is lowered. No spin factor is applied.
+        temperature is lowered.
 
         Args:
             mu (float): Chemical potential in eV.
@@ -444,8 +456,9 @@ class RSATB:
             n_max (int, optional): Maximum expansion degree.
 
         Returns:
-            dict: n_electrons, band_energy (eV), mu, n_moments, indicator,
-            indicator_fired. indicator_fired is False when n_max was reached
+            dict: n_electrons (of the simulated cell, both spins counted),
+            band_energy (eV), mu, n_moments, indicator, indicator_fired.
+            indicator_fired is False when n_max was reached
             before the indicator fell below its threshold.
         """
         return self._cpp_obj.compute_occupation(mu, temp, indicator_threshold, n_max)
@@ -459,9 +472,8 @@ class RSATB:
         for example at several temperatures, cost little.
 
         Args:
-            n_electrons (float): Target electron count. No spin factor is
-                applied: for a spin-degenerate basis, give half the number of
-                electrons.
+            n_electrons (float): Target electron count of the simulated cell,
+                both spins counted.
             temp (float): Temperature in K.
             indicator_threshold (float, optional): Threshold of the error
                 indicator; see compute_occupation.

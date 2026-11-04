@@ -19,9 +19,9 @@
   "tasks": [
     {"type": "dos", "dE": 1.0},
     {
-      "_comment": "ONCV Al carries 11 valence electrons (2s2 2p6 3s2 3p1). The count is the trace of the occupation over the basis of the structure, with no spin factor: a spin-degenerate basis holds one spin, so 27 atoms x 11 / 2. Expect mu near 11.55 eV: exact diagonalization of this 6x6x6 sampling gives 11.547 eV, and the 16-sample stochastic trace lands within ~0.1 eV of it (11.635 eV in the run recorded in README.md). ABACUS's E_Fermi, 11.021 eV (data/al/abacus/E_Fermi_eV), is that of its 12x12x12 mesh (exact: 11.016 eV) -- a metal's Fermi level moves with the sampling, so mu has to come from the sampling it is used with.",
+      "_comment": "ONCV Al carries 11 valence electrons (2s2 2p6 3s2 3p1). The count is that of the simulated cell, both spins: 27 atoms x 11. Expect mu near 11.55 eV: exact diagonalization of this 6x6x6 sampling gives 11.547 eV, and the 16-sample stochastic trace lands within ~0.1 eV of it (11.635 eV in the run recorded in README.md). ABACUS's E_Fermi, 11.021 eV (data/al/abacus/E_Fermi_eV), is that of its 12x12x12 mesh (exact: 11.016 eV) -- a metal's Fermi level moves with the sampling, so mu has to come from the sampling it is used with.",
       "type": "fermi_level",
-      "n_electrons": 148.5,
+      "n_electrons": 297,
       "temp": 300.0
     },
     {

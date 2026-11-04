@@ -32,7 +32,7 @@ results/
 | Leading axis | Every k-resolved array starts with a k-point axis, in the order of `run.kpoints`; the axis is present even for a single k-point. |
 | Energies | eV, absolute (not shifted to the Fermi level). |
 | Tensors | Six components of the symmetric conductivity tensor on the last axis, in the order **(xx, xy, xz, yy, yz, zz)**. |
-| Spin | Transport quantities include both spins: a spin-degenerate basis is counted twice, a spinor basis already holds both. |
+| Spin | The DOS, electron counts and transport quantities include both spins: a spin-degenerate basis is counted twice, a spinor basis already holds both. The `ldos` is per spin. |
 | Conductivity | Normalized by the task's `axis`: S/m for the cell volume (`"abc"`), S (a sheet conductance) for a lattice plane (`"ab"`, `"bc"`, `"ca"`), S·m for a single lattice vector. |
 
 ## `summary.json` { #summary }
@@ -70,19 +70,26 @@ Scalars only: `emin`, `emax` (eV), the window the Chebyshev expansions use.
 | Array | Shape | Units |
 |---|---|---|
 | `energy` | `(n_E,)` | eV |
-| `dos` | `(n_k, n_E)` | see below |
+| `dos` | `(n_k, n_E)` | states/eV of the simulated cell, both spins counted |
+
+Scalars: `n_states`.
 
 !!! note "Normalization"
-    The `dos` array is normalized so that its integral over energy equals the
-    width of the spectral window,
-    $\int \mathrm{dos}\,dE = E_{\max} - E_{\min}$. Divide by that width for a
-    density of states per orbital (integrating to one), and multiply by the
-    orbital count of the cell for states/eV of the whole cell:
+    Over the whole spectrum the `dos` array integrates to `n_states`, the
+    number of states of the simulated cell: twice the number of basis
+    functions for a spin-degenerate basis, the number of basis functions for a
+    spinor one. Averaged over k-points and integrated up to the Fermi level, it
+    gives the electron count of [`fermi_level`](#fermi_level).
 
     ```python
-    emin, emax = summary["setup"]["energy_bounds"]
-    rho_per_orbital = dos / (emax - emin)        # ∫ rho dE = 1
+    n_electrons = np.trapezoid(dos.mean(axis=0)[energy <= mu], energy[energy <= mu])
+    rho_per_state = dos / n_states               # ∫ rho dE = 1
     ```
+
+    Each value is the average of the DOS over a bin of the energy grid, centred
+    on that energy, so the integrals are exact however narrow a peak is compared
+    with the grid. The integral up to `mu` is the count to within one bin of
+    the DOS at `mu`.
 
 ### `pdos` { #pdos }
 
@@ -93,13 +100,14 @@ Scalars only: `emin`, `emax` (eV), the window the Chebyshev expansions use.
 | `total` | `(n_k, n_E)` | as `dos`; equals `pdos.sum(axis=1)` to rounding |
 | `group_type`, `group_slot` | `(n_group,)` | `orbital_slot` projection only |
 
-Scalars: `n_group`, and `population`: `"lowdin"` with the sandwich operator
+Scalars: `n_states`, `n_group`, and `population`: `"lowdin"` with the sandwich operator
 form, `"mulliken"` with the solve form. Mulliken populations can be
 negative.
 
 ### `occupation` { #occupation }
 
-Scalars: `n_electrons` (no spin factor), `band_energy` (eV), `mu` (eV),
+Scalars: `n_electrons` (of the simulated cell, both spins counted),
+`band_energy` (eV, of the same electrons), `mu` (eV),
 `n_moments`, `indicator`, `indicator_fired`. `indicator_fired = false` means
 the degree cap `n_max` was reached before the error indicator fell below its
 threshold.
@@ -121,7 +129,7 @@ its own grid points and the information needed to place them in the grid.
 | `shape` | `(3,)` | grid dimensions `(n0, n1, n2)` |
 | `energy` | `(n_E,)` | eV |
 | `point_index` | `(n_owned,)` | flat global index of each owned point |
-| `ldos` | `(n_E, n_owned)` | LDOS at those points |
+| `ldos` | `(n_E, n_owned)` | LDOS at those points, states/eV/Å³ per spin: for a spin-degenerate basis, $2\int \mathrm{ldos}\,d^3r$ over the cell is the `dos` |
 | `capture` | `(n_E,)` | captured fraction of the energy window |
 | `sketch_rank` | `(n_E,)` | effective sketch rank |
 | `predicted_rel_error` | `(n_E,)` | $\sqrt{2(1-\text{capture})/\text{rank}}$ |

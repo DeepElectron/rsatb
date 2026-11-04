@@ -27,7 +27,7 @@ and local density of states on a grid, and to load the result.
 
 Three tasks, in order:
 
-1. **`fermi_level`** finds the chemical potential that holds 256 electron
+1. **`fermi_level`** finds the chemical potential that holds 512 electron
    pairs, two per carbon atom.
 2. **`density`** maps the electron density on a grid with 0.25 Å spacing.
 3. **`ldos`** maps the local density of states at seven energies.
@@ -45,7 +45,7 @@ rsatb run examples/tutorials/diamond_realspace.json
 ```
 
 ```text
-  fermi_level: n_electrons=256, mu=13.7787, ...
+  fermi_level: n_electrons=512, mu=13.7787, ...
   density: n_point=68921, electrons_on_grid=510.189, ...
   ldos: n_point=68921, predicted_rel_error_max=0.0661694, ...
 ```
@@ -62,7 +62,7 @@ different spatial distribution.</figcaption>
 ## Checks
 
 - **Electron count.** The density integrated over the grid gives 510.2 electrons,
-  against the exact $2 \times 256 = 512$, a difference of 0.4% that is the noise of 32 random
+  against the exact 512, a difference of 0.4% that is the noise of 32 random
   vectors.
 - **The Fermi level is in the gap.** In an insulator, any chemical potential
   inside the gap holds the same number of electrons; `fermi_level` returns

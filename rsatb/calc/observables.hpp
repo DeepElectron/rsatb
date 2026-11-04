@@ -120,6 +120,12 @@ struct ObservableContext {
     /// are degenerate, 1 when it is a spinor basis holding both explicitly.
     double SpinDegeneracy() const { return spin_components == 2 ? 1.0 : 2.0; }
 
+    /// States in the simulated cell, both spins counted: what the DOS integrates
+    /// to over the whole spectrum, and the most electrons the cell can hold.
+    double StatesInCell() const {
+        return SpinDegeneracy() * static_cast<double>(atomic_data->norb());
+    }
+
     setup::OperatorSet& RequireOperators() const {
         if (operators == nullptr) {
             throw std::runtime_error(
@@ -308,6 +314,10 @@ inline double TransportNormalizationVolume(vbcsr::atomic::AtomicData& atomic_dat
 // Both kernels honour dE as their broadening FWHM and report on the same
 // uniform 2*nt energy grid, so switching methods changes the kernel, not
 // the resolution, the cost class, or the output shape.
+//
+// The result is in states/eV of the simulated cell, both spins counted: over
+// the whole spectrum it integrates to StatesInCell(), and up to the Fermi level
+// to the electron count fermi_level and occupation report.
 inline void ComputeDos(const ObservableContext& context, double de_ev, std::vector<double>& dos_out, std::vector<double>& omega_out,
                        const std::string& method = "kpm") {
     RSATB_PHASE("task/dos");
@@ -367,11 +377,6 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
         double shift = (ops.emax() + ops.emin()) / 2.0;
 
         if (method == "kpm") {
-            std::vector<double> x_grid(2 * nt);
-            for (int i = 0; i < nt; ++i) {
-                x_grid[i] = static_cast<double>(i - nt) / nt;
-                x_grid[nt + i] = static_cast<double>(i) / nt;
-            }
             for (const auto& kp : ops.local_kpoints()) {
                 int k_idx = kp.first;
                 auto cheby = context.MakeChebyshev(ops.kpoint_state(k_idx));
@@ -385,8 +390,8 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
                 // unnormalised inverse FFT of C(t) sampled at dt = pi gives
                 // 2*rho_scaled, so the KPM density (integral mu_0 = 1) is
                 // scaled by 2 as well. Verified against "corr" in test_dos.
-                const std::vector<double> rho =
-                    rsatb::calc::evaluate_kpm_density(mu, x_grid, 0.5 / nt);
+                // A bin average, not a point sample: see kpm_bin_density.
+                const std::vector<double> rho = rsatb::calc::kpm_bin_density(mu, nt);
                 size_t offset = k_idx * 2 * nt;
                 for (int i = 0; i < 2 * nt; ++i) {
                     local_dos[offset + i] = 2.0 * rho[i];
@@ -432,6 +437,13 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
             }
         }
 
+        // Both routes above give 2 rho(x), rho being the density in the scaled
+        // variable x = (E - shift) / half_width, of unit integral since the
+        // sample vectors are unit-norm. So per unit of E the density of one unit
+        // of trace is 2 rho / span, and the trace is StatesInCell().
+        const double to_states_per_ev = context.StatesInCell() / span;
+        for (double& value : local_dos) value *= to_states_per_ev;
+
         dos_out = std::move(local_dos);
         context.GatherKPointResults(&dos_out);
 
@@ -452,7 +464,7 @@ inline void ComputeDos(const ObservableContext& context, double de_ev, std::vect
 // orbitals, the solve form onto Mulliken populations (which may legitimately
 // go negative). See pdos.hpp for the derivation. KPM (Jackson) only: the
 // correlation route reconstructs per group just as linearly, but nothing
-// production asks for it yet.
+// production asks for it yet. In states/eV of the simulated cell, as ComputeDos.
 inline void ComputePdos(const ObservableContext& context, double de_ev,
                         const std::string& projection, std::vector<double>& pdos_out,
                         std::vector<double>& total_out, std::vector<double>& omega_out,
@@ -505,12 +517,8 @@ inline void ComputePdos(const ObservableContext& context, double de_ev,
 
     const double scale = half_width;
     const double shift = (ops.emax() + ops.emin()) / 2.0;
-    std::vector<double> x_grid(2 * nt);
-    for (int i = 0; i < nt; ++i) {
-        x_grid[i] = static_cast<double>(i - nt) / nt;
-        x_grid[nt + i] = static_cast<double>(i) / nt;
-    }
 
+    const double to_states_per_ev = context.StatesInCell() / span;  // as ComputeDos
     const size_t per_k = static_cast<size_t>(groups.n_groups) * 2 * nt;
     std::vector<double> local_pdos(ops.global_nk() * per_k, 0.0);
     std::vector<double> local_total(ops.global_nk() * static_cast<size_t>(2 * nt), 0.0);
@@ -527,21 +535,19 @@ inline void ComputePdos(const ObservableContext& context, double de_ev,
                 ? kpm_pdos_moments(*cheby, *context.samples->sample_vec, N, groups)
                 : kpm_pdos_moments(*cheby, *context.samples->sample_multi_vec, N, groups);
 
-        // Same amplitude convention as ComputeDos (x2 against the unnormalised
-        // inverse FFT of the correlation route), so total == the dos task's
-        // output and the group rows sum to it.
-        const std::vector<double> rho_total =
-            evaluate_kpm_density(mom.total, x_grid, 0.5 / nt);
+        // Same amplitude as ComputeDos, so total == the dos task's output and
+        // the group rows sum to it.
+        const std::vector<double> rho_total = kpm_bin_density(mom.total, nt);
         for (int i = 0; i < 2 * nt; ++i) {
-            local_total[k_idx * static_cast<size_t>(2 * nt) + i] = 2.0 * rho_total[i];
+            local_total[k_idx * static_cast<size_t>(2 * nt) + i] = 2.0 * rho_total[i] * to_states_per_ev;
         }
         std::vector<std::complex<double>> mu_g(N);
         for (int g = 0; g < groups.n_groups; ++g) {
             for (int m = 0; m < N; ++m) mu_g[m] = mom.at(g, m);
-            const std::vector<double> rho = evaluate_kpm_density(mu_g, x_grid, 0.5 / nt);
+            const std::vector<double> rho = kpm_bin_density(mu_g, nt);
             double* out = local_pdos.data() + k_idx * per_k +
                           static_cast<size_t>(g) * 2 * nt;
-            for (int i = 0; i < 2 * nt; ++i) out[i] = 2.0 * rho[i];
+            for (int i = 0; i < 2 * nt; ++i) out[i] = 2.0 * rho[i] * to_states_per_ev;
         }
     }
 
@@ -1139,8 +1145,9 @@ inline void ComputeQuantumMetric(
 // ---------------------------------------------------------------------------
 
 struct OccupationResult {
-    // Stochastic trace estimates: Tr[f(H)] and Tr[H f(H)] averaged over
-    // k-points. No spin-degeneracy factor is applied.
+    // Stochastic trace estimates of g_s Tr[f(H)] and g_s Tr[H f(H)], averaged
+    // over k-points: the electrons of the simulated cell, both spins counted,
+    // and their band energy. A spin-degenerate basis has g_s = 2.
     double n_electrons = 0.0;
     double band_energy = 0.0;
     double mu = 0.0;
@@ -1229,8 +1236,7 @@ inline OccupationResult ComputeOccupation(const ObservableContext& context,
     }
     detail::ReduceScalars(context, sums, 2, MPI_SUM);
 
-    const double trace_scale = static_cast<double>(context.atomic_data->norb()) /
-                               static_cast<double>(ops.global_nk());
+    const double trace_scale = context.StatesInCell() / static_cast<double>(ops.global_nk());
     res.n_electrons = trace_scale * sums[0];
     res.band_energy = trace_scale * sums[1];
 
@@ -1275,8 +1281,7 @@ inline OccupationResult ComputeFermiLevel(
     const std::vector<TraceMoments> kmoms =
         detail::LocalTraceMoments(context, temp, anchor, opt, &res);
 
-    const double trace_scale = static_cast<double>(context.atomic_data->norb()) /
-                               static_cast<double>(ops.global_nk());
+    const double trace_scale = context.StatesInCell() / static_cast<double>(ops.global_nk());
     auto trace_sum = [&](double mu_trial, KpmKernel kernel, bool energy_weighted) {
         double local = 0.0;
         for (const TraceMoments& tm : kmoms) {

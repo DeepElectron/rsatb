@@ -45,6 +45,7 @@ def _dos(calc, task, options, result):
     dos, energy = calc.compute_dos(task["dE"], method=task.get("method", "kpm"))
     result.arrays["energy"] = energy
     result.arrays["dos"] = np.asarray(dos).reshape(_n_kpoint(options), -1)
+    result.scalars["n_states"] = float(calc.n_states())
 
 
 def _ldos(calc, task, options, result):
@@ -90,6 +91,7 @@ def _pdos(calc, task, options, result):
     result.arrays["pdos"] = out["pdos"]
     result.arrays["total"] = out["total"]
     result.scalars["n_group"] = int(out["n_group"])
+    result.scalars["n_states"] = float(calc.n_states())
     result.scalars["population"] = out["population"]
     # Which atom type and orbital slot each group is; empty for projection
     # "atom", whose group id is already the atom's input index.

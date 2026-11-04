@@ -88,7 +88,7 @@ large systems), timed on a shared, loaded node:
 |---|---|---|
 | `al_abacus.json` | 9.5 min | mu = 11.64 eV (exact for this 6x6x6 sampling: 11.547 eV; ABACUS's own 12x12x12: 11.021 eV); sigma_dc = 1.84 / 1.94 / 2.02 MS/m (xx / yy / zz) at 300 K |
 | `al_nextham.json` | 7.7 min | the same: DOS equal to 3.5e-9, same mu and sigma_dc |
-| `gaas_soc_nextham.json` | 3.0 min | 144.4 electrons at mid-gap (exact: 144 -- a spinor basis counts both spins); Re sigma_xx(omega) 0 below the gap, 0.18 MS/m at 0.93 eV, 0.77 MS/m at 1.86 eV |
+| `gaas_soc_nextham.json` | 3.0 min | 144.4 electrons at mid-gap (exact: 144); Re sigma_xx(omega) 0 below the gap, 0.18 MS/m at 0.93 eV, 0.77 MS/m at 1.86 eV |
 
 The inputs are sized to run in minutes: Al's 8 au orbitals give each atom
 ~200 neighbours and a 415 eV spectral window, so cell size and resolution are
@@ -111,5 +111,4 @@ convert the ABACUS output once with `to_nextham.py`.
 ## Not yet supported
 
 Spinor (spin-orbit) runs do the spectral and transport tasks; the real-space
-`ldos` and `density` maps are spin-degenerate only. DeePTB spinor files are
-not read.
+`ldos` and `density` maps are spin-degenerate only.

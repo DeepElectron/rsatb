@@ -600,6 +600,7 @@ PYBIND11_MODULE(_rsatb, m) {
              return std::make_pair(dos_out, omega_out);
          }, py::arg("dE"), py::arg("method") = "kpm")
         .def("cell", &rsatb::RSATB::cell)
+        .def("n_states", &rsatb::RSATB::n_states)
         .def("energy_bounds", &rsatb::RSATB::energy_bounds)
         // Reference-extraction hook: one operator as global COO triplets.
         // `which` selects H, S, or a velocity representation piece for

@@ -12,7 +12,7 @@
     "preconditioner": {"operator_form": "sandwich", "maxiter": 20}
   },
   "tasks": [
-    {"type": "fermi_level", "n_electrons": 256, "temp": 3000.0},
+    {"type": "fermi_level", "n_electrons": 512, "temp": 3000.0},
     {"type": "density", "mu": 16.2253, "temp": 3000.0, "spacing": 0.25, "n_samples": 32},
     {"type": "ldos", "energies": {"min": 8.0, "max": 20.0, "n": 7}, "eta": 0.5,
      "spacing": 0.25, "n_samples": 32}
