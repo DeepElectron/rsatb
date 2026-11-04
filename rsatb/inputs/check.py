@@ -213,16 +213,16 @@ def check_consistency(document: dict) -> List[Issue]:
                 "tb_file model cannot read".format(file_format),
                 hint="use model.type 'lcao' with the .orb files of the ABACUS calculation"))
 
-    # A spinor basis carries a complex H(R), which the ABACUS and NextHam
-    # readers deliver and the DeePTB reader does not; and the real-space tasks
-    # are spin-degenerate only.
+    # A spinor basis carries a complex H(R), which every file format delivers
+    # and a Slater-Koster table, having no spin-orbit parameters, cannot; and the
+    # real-space tasks are spin-degenerate only.
     spinor = model.get("spin", "none") in ("noncollinear", "spinorbit")
-    if spinor and family == "lcao" and model.get("hamiltonian", {}).get("format", "deeptb") == "deeptb":
+    if spinor and family in ("sktb", "dftb"):
         issues.append(Issue(
             "model.spin",
-            "spin '{}' needs a complex H(R), which the 'deeptb' format does not "
-            "provide".format(model.get("spin")),
-            hint="use the 'abacus' or 'nextham' format for a spin-orbit (nspin = 4) H(R)"))
+            "spin '{}' needs a spinor H(R), which a '{}' model cannot provide: its "
+            "tables hold no spin-orbit parameters".format(model.get("spin"), family),
+            hint="read a spin-orbit H(R) from a file, with an 'lcao' or 'tb_file' model"))
 
     labels = {}
     for index, task in enumerate(tasks):

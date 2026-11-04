@@ -36,7 +36,7 @@ inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(
 
     switch (file.format) {
         case HamiltonianFormat::kDeeptbHdf5:
-            return std::make_unique<DeeptbHdf5Reader>(file.path);
+            return std::make_unique<DeeptbHdf5Reader>(file.path, layout.spin_components);
         case HamiltonianFormat::kAbacusCsr:
             return std::make_unique<AbacusCsrReader>(file.path, layout, comm);
         case HamiltonianFormat::kNextHamHdf5:
@@ -50,16 +50,22 @@ inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(
 /// Opens `file` for a caller that has no basis layout to offer. The formats
 /// that need none are read rank by rank, so this one is not collective.
 ///
+/// Args:
+///   file: The path and its format tag.
+///   spin_components: 2 for a spinor basis, whose blocks are complex.
 /// Throws:
 ///   std::runtime_error for a format that needs a layout, naming why.
-inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(const HamiltonianFile& file) {
+inline std::unique_ptr<HamiltonianReader> OpenHamiltonianFile(const HamiltonianFile& file,
+                                                              int spin_components = 1) {
     if (NeedsBasisLayout(file.format)) {
         throw std::runtime_error(
             "The '" + ToString(file.format) + "' Hamiltonian format is written in ABACUS's "
             "orbital order, which can only be converted knowing each atom's orbital shells; "
             "open it through a model that reads them from orbital files (LCAO).");
     }
-    return OpenHamiltonianFile(file, FileBasisLayout{}, MPI_COMM_SELF);
+    FileBasisLayout layout;
+    layout.spin_components = spin_components;
+    return OpenHamiltonianFile(file, layout, MPI_COMM_SELF);
 }
 
 }  // namespace io

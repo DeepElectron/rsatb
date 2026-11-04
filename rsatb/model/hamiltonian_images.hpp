@@ -209,7 +209,7 @@ std::unique_ptr<vbcsr::atomic::ImageContainer<T>> BuildHamiltonianImagesFromFile
             const Placement& at = placements[p];
             if (block.rows != at.inorb || block.cols != at.jnorb) {
                 if (mismatch.empty()) {
-                    mismatch = "Hamiltonian file block (" + std::to_string(at.atom_i) + ", " +
+                    mismatch = "File block (" + std::to_string(at.atom_i) + ", " +
                                std::to_string(at.atom_j) + ") is " + std::to_string(block.rows) +
                                "x" + std::to_string(block.cols) + ", but the model basis expects " +
                                std::to_string(at.inorb) + "x" + std::to_string(at.jnorb) + ".";
@@ -233,6 +233,69 @@ std::unique_ptr<vbcsr::atomic::ImageContainer<T>> BuildHamiltonianImagesFromFile
 
     img->assemble();
     return img;
+}
+
+/// Builds S(R) from a file of real blocks over spatial orbitals.
+///
+/// A spinor basis takes S (x) I2: the orbitals' spatial overlap, spin diagonal
+/// and interleaved, as op2c builds it. A pair absent from the file has zero
+/// overlap, like any other block, but an atom always overlaps itself: an absent
+/// onsite block is a wrong file, and would otherwise surface as a failure of the
+/// S^-1/2 iteration much later.
+///
+/// Args:
+///   ad: The atomic graph, which fixes the (i, j, R) blocks to ask for.
+///   reader: An open overlap file, with real blocks.
+///   spin_components: Basis-size multiplier for one spatial orbital.
+/// Throws:
+///   std::runtime_error if an onsite block is absent or a block's dimensions
+///   disagree with the basis.
+inline std::unique_ptr<vbcsr::atomic::ImageContainer<double>> BuildOverlapImagesFromFile(
+    vbcsr::atomic::AtomicData& ad,
+    const rsatb::io::HamiltonianReader& reader,
+    int spin_components
+) {
+    class SpinDiagonalOverlap : public rsatb::io::HamiltonianReader {
+    public:
+        SpinDiagonalOverlap(const rsatb::io::HamiltonianReader& file, int components)
+            : file_(file), components_(components) {}
+
+        rsatb::io::HamiltonianFormat format() const override { return file_.format(); }
+        rsatb::io::FileMetadata metadata() const override { return file_.metadata(); }
+
+        void ReadBlocks(const std::vector<rsatb::io::BlockKey>& requests,
+                        const rsatb::io::BlockSink& sink) const override {
+            std::vector<char> found(requests.size(), 0);
+            rsatb::io::DenseBlock expanded;
+            file_.ReadBlocks(requests, [&](size_t request, const rsatb::io::DenseBlock& block) {
+                found[request] = 1;
+                const int c = components_;
+                expanded.Resize(block.rows * c, block.cols * c);
+                for (int row = 0; row < block.rows; ++row) {
+                    for (int col = 0; col < block.cols; ++col) {
+                        const double value = block.values[static_cast<size_t>(row) * block.cols + col];
+                        for (int s = 0; s < c; ++s) {
+                            expanded.values[static_cast<size_t>(c * row + s) * expanded.cols + c * col + s] = value;
+                        }
+                    }
+                }
+                sink(request, expanded);
+            });
+            for (size_t request = 0; request < requests.size(); ++request) {
+                const rsatb::io::BlockKey& key = requests[request];
+                if (!found[request] && key.i == key.j && key.shift == rsatb::io::CellShift{{0, 0, 0}}) {
+                    throw std::runtime_error("The overlap file has no onsite block for atom " +
+                                             std::to_string(key.i) + ".");
+                }
+            }
+        }
+
+    private:
+        const rsatb::io::HamiltonianReader& file_;
+        int components_;
+    };
+
+    return BuildHamiltonianImagesFromFileOf<double>(ad, SpinDiagonalOverlap(reader, spin_components));
 }
 
 /// Builds H(R) from a file: real, or complex when the reader's blocks are

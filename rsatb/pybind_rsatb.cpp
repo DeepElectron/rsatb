@@ -531,9 +531,13 @@ PYBIND11_MODULE(_rsatb, m) {
                          rsatb::model::OrbitalFiles orbitals,
                          rsatb::model::PseudopotentialFiles pseudopotentials,
                          const std::string& spin,
-                         std::string log_file) {
+                         std::string log_file,
+                         py::object overlap) {
                  rsatb::model::LcaoConfig config;
                  config.hamiltonian = std::move(hamiltonian);
+                 if (!overlap.is_none()) {
+                     config.overlap = py::cast<rsatb::io::HamiltonianFile>(overlap);
+                 }
                  config.orbitals = std::move(orbitals);
                  config.pseudopotentials = std::move(pseudopotentials);
                  config.spin = rsatb::model::ParseSpinSpec(spin);
@@ -544,7 +548,8 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("orbitals"),
              py::arg("pseudopotentials") = rsatb::model::PseudopotentialFiles{},
              py::arg("spin") = "none",
-             py::arg("log_file") = "op2c.log");
+             py::arg("log_file") = "op2c.log",
+             py::arg("overlap") = py::none());
 
     py::class_<rsatb::RSATB>(m, "RSATB")
         // The model is kept alive by the RSATB instance because velocity and

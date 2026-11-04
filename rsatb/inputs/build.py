@@ -180,6 +180,8 @@ def build_model(config: dict):
                 dir=pseudopotentials.get("dir", "")),
             spin=spin,
             log_file=config.get("log_file", "op2c.log"),
+            overlap=(HamiltonianFile(config["overlap"]["path"], format=config["overlap"]["format"])
+                     if "overlap" in config else None),
         )
 
     if family == "dftb":

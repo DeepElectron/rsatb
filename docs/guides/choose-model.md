@@ -69,6 +69,8 @@ step, and its spectral window is usually wider, so each step costs more. See
 ## Spin
 
 `spin` on any model is one of `none`, `collinear`, `noncollinear` or
-`spinorbit`. `noncollinear` and `spinorbit` double the basis. For an `lcao`
-model read from an nspin = 4 ABACUS or NextHam file, use `spinorbit`: see
+`spinorbit`. `noncollinear` and `spinorbit` double the basis, which needs a
+Hamiltonian read from a file: an `sktb` or `dftb` model has no spin-orbit
+parameters. For an `lcao`
+model read from an nspin = 4 DeePTB, ABACUS or NextHam file, use `spinorbit`: see
 [Import DFT Hamiltonians](hamiltonian-files.md#spin-orbit).

@@ -307,15 +307,28 @@ def _spinor_lcao(file_format, tasks=()):
     }
 
 
-@pytest.mark.parametrize("file_format", ["abacus", "nextham"])
-def test_a_spin_orbit_hamiltonian_is_read_from_abacus_order_files(file_format):
+@pytest.mark.parametrize("file_format", ["deeptb", "abacus", "nextham"])
+def test_a_spin_orbit_hamiltonian_is_read_from_every_format(file_format):
     _, issues = check.resolve(_spinor_lcao(file_format), check_paths=False)
     assert errors(issues) == []
 
 
-def test_a_spin_orbit_hamiltonian_is_not_read_from_deeptb():
-    _, issues = check.resolve(_spinor_lcao("deeptb"), check_paths=False)
+def test_slater_koster_tables_cannot_be_spinor():
+    model = copy.deepcopy(templates.get("sktb"))
+    model["model"]["spin"] = "spinorbit"
+    _, issues = check.resolve(model, check_paths=False)
     assert paths(errors(issues)) == ["model.spin"]
+
+
+def test_the_overlap_file_is_an_optional_deeptb_file():
+    document = _spinor_lcao("deeptb")
+    document["model"]["overlap"] = {"path": "overlaps.h5"}
+    resolved, issues = check.resolve(document, check_paths=False)
+    assert errors(issues) == []
+    assert resolved["model"]["overlap"]["format"] == "deeptb"
+    document["model"]["overlap"]["format"] = "abacus"
+    _, issues = check.resolve(document, check_paths=False)
+    assert paths(errors(issues)) == ["model.overlap.format"]
 
 
 @pytest.mark.parametrize("kind", ["ldos", "density"])

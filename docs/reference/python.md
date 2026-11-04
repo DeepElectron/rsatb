@@ -106,8 +106,9 @@ DftbModel.from_skf_directory(skf_dir, basis, heteronuclear="reject_ambiguous", s
 
 ```python
 LcaoModel(hamiltonian, orbitals, pseudopotentials=PseudopotentialFiles(),
-          spin="none", log_file="op2c.log")
+          spin="none", log_file="op2c.log", overlap=None)
 HamiltonianFile(path, format="deeptb")          # "deeptb" | "abacus" | "nextham"
+                                                # overlap: a "deeptb" file, or computed
 OrbitalFiles(names, dir="")                     # one .orb per species, ascending Z
 PseudopotentialFiles(names=[], dir="")          # optional; for testing only
 ```
@@ -161,6 +162,7 @@ RuntimeError: compute_ac requires a velocity-capable model/operator setup.
         - __init__
         - from_graph
         - energy_bounds
+        - n_states
         - compute_dos
         - compute_pdos
         - compute_occupation

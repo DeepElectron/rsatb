@@ -446,6 +446,126 @@ TEST(NextHamHdf5Reader, RejectsOverlapSpinMismatchAndMismatchedFiles) {
     MPI_Barrier(MPI_COMM_WORLD);
 }
 
+// DeePTB, as its ABACUS parser writes it: an atom of 2 spatial orbitals and one
+// of 1, H in single-precision compound complex, spin-blocked, one direction of
+// the Hermitian pair stored. Entry value (si, oi, sj, oj) encodes its own indices.
+const std::string kDeeptbSpinorPath = "/tmp/rsatb_test_deeptb_spinor.h5";
+
+Complex SpinorEntry(int si, int oi, int sj, int oj) {
+    return Complex(1000 * si + 100 * oi + 10 * sj + oj, 1 + si + 2 * oi + 4 * sj + 8 * oj);
+}
+
+void WriteDeeptbSpinor() {
+    if (Rank() != 0) return;
+    struct C64 { float r, i; };
+    H5::CompType type(sizeof(C64));
+    type.insertMember("r", 0, H5::PredType::NATIVE_FLOAT);
+    type.insertMember("i", sizeof(float), H5::PredType::NATIVE_FLOAT);
+    H5::H5File file(kDeeptbSpinorPath, H5F_ACC_TRUNC);
+    H5::Group group = file.createGroup("0");
+    const int n_i = 2, n_j = 1;
+    std::vector<C64> block(static_cast<size_t>(2 * n_i) * 2 * n_j);
+    for (int si = 0; si < 2; ++si)
+        for (int oi = 0; oi < n_i; ++oi)
+            for (int sj = 0; sj < 2; ++sj)
+                for (int oj = 0; oj < n_j; ++oj) {
+                    const Complex v = SpinorEntry(si, oi, sj, oj);
+                    block[static_cast<size_t>(si * n_i + oi) * (2 * n_j) + sj * n_j + oj] =
+                        C64{static_cast<float>(v.real()), static_cast<float>(v.imag())};
+                }
+    const hsize_t dims[2] = {static_cast<hsize_t>(2 * n_i), static_cast<hsize_t>(2 * n_j)};
+    group.createDataSet("0_1_1_0_-2", type, H5::DataSpace(2, dims)).write(block.data(), type);
+    // A spin-degenerate-sized block, for the rejection below.
+    const hsize_t odd[2] = {3, 3};
+    std::vector<C64> three(9, C64{1.0f, 0.0f});
+    group.createDataSet("2_2_0_0_0", type, H5::DataSpace(2, odd)).write(three.data(), type);
+    // Real, in single precision, as overlaps.h5 holds it.
+    const hsize_t real_dims[2] = {2, 1};
+    const float real_values[2] = {0.25f, -0.5f};
+    group.createDataSet("3_4_0_1_0", H5::PredType::NATIVE_FLOAT, H5::DataSpace(2, real_dims))
+        .write(real_values, H5::PredType::NATIVE_FLOAT);
+}
+
+TEST(DeeptbHdf5Reader, SpinorBlocksArriveInterleavedAndConjugateTransposed) {
+    WriteDeeptbSpinor();
+    MPI_Barrier(MPI_COMM_WORLD);
+    FileBasisLayout layout;
+    layout.spin_components = 2;
+    auto reader = rsatb::io::OpenHamiltonianFile(
+        HamiltonianFile{kDeeptbSpinorPath, HamiltonianFormat::kDeeptbHdf5}, layout, MPI_COMM_WORLD);
+    ASSERT_TRUE(reader->complex_blocks());
+
+    BlockKey stored;
+    stored.i = 0; stored.j = 1; stored.shift = {{1, 0, -2}};
+    BlockKey partner;
+    partner.i = 1; partner.j = 0; partner.shift = {{-1, 0, 2}};
+    BlockKey absent;
+    absent.i = 0; absent.j = 1; absent.shift = {{5, 5, 5}};
+
+    int seen = 0;
+    reader->ReadComplexBlocks({stored, partner, absent}, [&](size_t request, const DenseBlockOf<Complex>& block) {
+        ++seen;
+        ASSERT_NE(request, 2u);
+        const int n_i = 2, n_j = 1;
+        for (int si = 0; si < 2; ++si)
+            for (int oi = 0; oi < n_i; ++oi)
+                for (int sj = 0; sj < 2; ++sj)
+                    for (int oj = 0; oj < n_j; ++oj) {
+                        const Complex want = SpinorEntry(si, oi, sj, oj);
+                        const int row = 2 * oi + si, col = 2 * oj + sj;
+                        if (request == 0) {
+                            ASSERT_EQ(block.rows, 4);
+                            ASSERT_EQ(block.cols, 2);
+                            EXPECT_EQ(block.values[static_cast<size_t>(row) * block.cols + col], want);
+                        } else {
+                            ASSERT_EQ(block.rows, 2);
+                            ASSERT_EQ(block.cols, 4);
+                            EXPECT_EQ(block.values[static_cast<size_t>(col) * block.cols + row], std::conj(want));
+                        }
+                    }
+    });
+    EXPECT_EQ(seen, 2);
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST(DeeptbHdf5Reader, RejectsABlockNoSpinorBasisCanHold) {
+    FileBasisLayout layout;
+    layout.spin_components = 2;
+    auto reader = rsatb::io::OpenHamiltonianFile(
+        HamiltonianFile{kDeeptbSpinorPath, HamiltonianFormat::kDeeptbHdf5}, layout, MPI_COMM_WORLD);
+    BlockKey odd;
+    odd.i = 2; odd.j = 2;
+    EXPECT_THROW(reader->ReadComplexBlocks({odd}, [](size_t, const DenseBlockOf<Complex>&) {}),
+                 std::runtime_error);
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
+TEST(DeeptbHdf5Reader, ReadsRealSinglePrecisionBlocksAndKeepsSpinApart) {
+    auto reader = rsatb::io::OpenHamiltonianFile(
+        HamiltonianFile{kDeeptbSpinorPath, HamiltonianFormat::kDeeptbHdf5});
+    EXPECT_FALSE(reader->complex_blocks());
+    BlockKey key;
+    key.i = 3; key.j = 4; key.shift = {{0, 1, 0}};
+    BlockKey partner;
+    partner.i = 4; partner.j = 3; partner.shift = {{0, -1, 0}};
+    int seen = 0;
+    reader->ReadBlocks({key, partner}, [&](size_t request, const DenseBlockOf<double>& block) {
+        ++seen;
+        EXPECT_EQ(block.values.size(), 2u);
+        EXPECT_EQ(block.values[0], 0.25);
+        EXPECT_EQ(block.values[1], -0.5);
+        EXPECT_EQ(block.rows, request == 0 ? 2 : 1);
+    });
+    EXPECT_EQ(seen, 2);
+    // A real-basis reader does not offer complex blocks, nor a spinor one real ones.
+    EXPECT_THROW(reader->ReadComplexBlocks({key}, [](size_t, const DenseBlockOf<Complex>&) {}),
+                 std::runtime_error);
+    auto spinor = rsatb::io::OpenHamiltonianFile(
+        HamiltonianFile{kDeeptbSpinorPath, HamiltonianFormat::kDeeptbHdf5}, 2);
+    EXPECT_THROW(spinor->ReadBlocks({key}, [](size_t, const DenseBlockOf<double>&) {}), std::runtime_error);
+    MPI_Barrier(MPI_COMM_WORLD);
+}
+
 TEST(OpenHamiltonianFile, AbacusOrderFormatsNeedALayout) {
     EXPECT_THROW(rsatb::io::OpenHamiltonianFile(HamiltonianFile{TextPath<double>(), HamiltonianFormat::kAbacusCsr}),
                  std::runtime_error);
@@ -468,7 +588,8 @@ int main(int argc, char** argv) {
     MPI_Barrier(MPI_COMM_WORLD);
     if (Rank() == 0) {
         for (const auto& path : {TextPath<double>(), BinaryPath<double>(), NextHamPath<double>(),
-                                 TextPath<Complex>(), BinaryPath<Complex>(), NextHamPath<Complex>()}) {
+                                 TextPath<Complex>(), BinaryPath<Complex>(), NextHamPath<Complex>(),
+                                 kDeeptbSpinorPath}) {
             std::remove(path.c_str());
         }
     }

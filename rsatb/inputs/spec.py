@@ -69,9 +69,10 @@ HAMILTONIAN_FILE = Obj(
                          "H(R) that ABACUS writes with out_mat_hs2 (hrs1_nao.csr, or "
                          "data-HR-sparse_SPIN0.csr in older versions), as text or "
                          "binary. 'nextham': NextHam's HR_atom_pairs.h5. The 'abacus' "
-                         "and 'nextham' formats need an 'lcao' model, a structure that "
-                         "lists the atoms in the order of the ABACUS calculation, and "
-                         "spin 'spinorbit' for a spin-orbit (nspin = 4) calculation.",
+                         "and 'nextham' formats need an 'lcao' model and a structure "
+                         "that lists the atoms in the order of the ABACUS calculation. "
+                         "All three need spin 'spinorbit' for a spin-orbit (nspin = 4) "
+                         "Hamiltonian.",
                          choices=("deeptb", "abacus", "nextham")), default="deeptb"),
     })
 
@@ -336,6 +337,20 @@ MODEL = Union(
             ".orb files.",
             {
                 "hamiltonian": F(HAMILTONIAN_FILE, required=True),
+                "overlap": F(Obj(
+                    "A file holding the overlap S(R), to use instead of computing "
+                    "it from the orbital files; for example the overlaps.h5 written "
+                    "next to a DeePTB hamiltonians.h5. The orbital files are still "
+                    "needed for the basis and the position operator.",
+                    {
+                        "path": F(_path("Path to the overlap file, relative to the "
+                                        "input file's directory unless absolute."),
+                                  required=True),
+                        "format": F(_str("File format. 'deeptb': DeePTB HDF5, with real "
+                                         "blocks over spatial orbitals also when the "
+                                         "Hamiltonian has spin-orbit coupling.",
+                                         choices=("deeptb",)), default="deeptb"),
+                    })),
                 "orbitals": F(Obj(
                     "Numerical atomic orbital files, one per species, in "
                     "order of increasing atomic number.",

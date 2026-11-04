@@ -160,8 +160,7 @@ New in this input:
 - **The orbital files** are listed in order of increasing atomic number: Ga
   (31) before As (33).
 - **`occupation`** counts the electrons below `mu`, here placed in the
-  middle of the band gap. A spinor basis holds both spins, so the count is the
-  full $8 \times (13 + 5) = 144$.
+  middle of the band gap. The cell holds $8 \times (13 + 5) = 144$.
 - **`ac`** computes the optical conductivity with the same `mu`.
 
 ```bash
@@ -211,7 +210,7 @@ coupling, on this input's frequency grid (0.93 eV steps).</figcaption>
     `infer.py` runs the trained model, and `post_process.py --convert-only`
     writes `HR_atom_pairs.h5`. Point `hamiltonian.path` at that file; the
     `SR_atom_pairs.h5` written next to it is not needed, because RSATB
-    computes the overlap from the orbital files.
+    computes the overlap from the orbital files, unless `model.overlap` names a file.
 
     Without a trained model, `examples/abacus_nextham/to_nextham.py` writes
     an ABACUS Hamiltonian in NextHam's format, as was done for this example.

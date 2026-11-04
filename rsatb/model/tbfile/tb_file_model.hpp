@@ -95,7 +95,7 @@ public:
     }
 
     HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const override {
-        auto reader = io::OpenHamiltonianFile(hamiltonian_);
+        auto reader = io::OpenHamiltonianFile(hamiltonian_, spin_.Components());
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }
 

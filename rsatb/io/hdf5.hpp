@@ -96,8 +96,15 @@ private:
             hsize_t dims[3] = {0, 0, 0};
             dataspace.getSimpleExtentDims(dims, nullptr);
 
-            const bool is_complex_dataset = (rank == 3);
-            if (is_complex_dataset && dims[2] != 2) {
+            // h5py, and so DeePTB, writes complex numbers as a rank-2 compound
+            // of members r and i, in single or double precision; HDF5 converts
+            // them to doubles member by member, on the names.
+            const bool is_compound = dataset.getTypeClass() == H5T_COMPOUND;
+            if (is_compound && rank != 2) {
+                throw std::runtime_error("Compound ijR datasets must use shape [m, n]");
+            }
+            const bool is_complex_dataset = (rank == 3) || is_compound;
+            if (rank == 3 && dims[2] != 2) {
                 throw std::runtime_error("Complex ijR datasets must use shape [m, n, 2]");
             }
 
@@ -128,7 +135,14 @@ private:
             }
 
             std::vector<double> raw(static_cast<size_t>(dims[0]) * static_cast<size_t>(dims[1]) * 2);
-            dataset.read(raw.data(), H5::PredType::NATIVE_DOUBLE);
+            if (is_compound) {
+                H5::CompType memory_type(2 * sizeof(double));
+                memory_type.insertMember("r", 0, H5::PredType::NATIVE_DOUBLE);
+                memory_type.insertMember("i", sizeof(double), H5::PredType::NATIVE_DOUBLE);
+                dataset.read(raw.data(), memory_type);
+            } else {
+                dataset.read(raw.data(), H5::PredType::NATIVE_DOUBLE);
+            }
 
             for (int row = 0; row < *m; ++row) {
                 for (int col = 0; col < *n; ++col) {
@@ -136,7 +150,9 @@ private:
                     const int src_col = transpose ? row : col;
                     const size_t idx = (static_cast<size_t>(src_row) * static_cast<size_t>(dims[1]) +
                                         static_cast<size_t>(src_col)) * 2;
-                    const std::complex<double> value(raw[idx], raw[idx + 1]);
+                    // The stored partner of a Hermitian pair gives this block as
+                    // its conjugate transpose: H_ij(R) = H_ji(-R)^dagger.
+                    const std::complex<double> value(raw[idx], transpose ? -raw[idx + 1] : raw[idx + 1]);
 
                     if constexpr (std::is_same_v<ScalarT, std::complex<double>>) {
                         (*v)[static_cast<size_t>(row) * static_cast<size_t>(*n) + static_cast<size_t>(col)] = value;

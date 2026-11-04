@@ -1,5 +1,5 @@
 ---
-description: Read H(R) from DeePTB HDF5, ABACUS out_mat_hs2 CSR, or NextHam HR_atom_pairs.h5 — orbital files, atom order, supercells and spin-orbit coupling.
+description: Read H(R) from DeePTB HDF5, ABACUS out_mat_hs2 CSR, or NextHam HR_atom_pairs.h5, and S(R) from DeePTB HDF5 — orbital files, atom order, supercells and spin-orbit coupling.
 ---
 
 <p class="rs-kicker">Guide</p>
@@ -36,7 +36,7 @@ files.
 
 | `format` | File |
 |---|---|
-| `deeptb` (default) | DeePTB HDF5 |
+| `deeptb` (default) | DeePTB HDF5: `hamiltonians.h5`, or `predicted_hamiltonians.h5` for a model's prediction |
 | `abacus` | ABACUS `out_mat_hs2` output: `hrs1_nao.csr` (older versions: `data-HR-sparse_SPIN0.csr`), text or binary |
 | `nextham` | NextHam `HR_atom_pairs.h5` |
 
@@ -55,8 +55,25 @@ RSATB does not reorder atoms.
     that group atoms by species change the order and the Hamiltonian no
     longer matches the structure.
 
-The overlap matrix is always computed from the orbital files; overlap files
-written by ABACUS or NextHam are not used.
+## The overlap
+
+By default the overlap is computed from the orbital files. A DeePTB file can
+replace it, which is what a model trained on both matrices needs, since its
+Hamiltonian belongs with its own overlap:
+
+```json
+"model": {
+  "type": "lcao",
+  "hamiltonian": {"path": "hamiltonians.h5", "format": "deeptb"},
+  "overlap": {"path": "overlaps.h5", "format": "deeptb"},
+  "orbitals": {"names": ["C_gga_7au_100Ry_2s2p1d.orb"], "dir": "orbitals"}
+}
+```
+
+The orbital files are still required: they give the number of orbitals and the
+cutoff radius of each species, and the position operator behind the velocity.
+Blocks missing from the file are zero, except that every atom must have an
+onsite block. Overlap files written by ABACUS or NextHam are not read.
 
 ## Supercells
 
@@ -70,8 +87,8 @@ primitive-cell Hamiltonian file is needed:
 
 ## Spin-orbit coupling { #spin-orbit }
 
-Hamiltonians from spin-orbit calculations (ABACUS or NextHam with
-`nspin = 4`) are read with `"spin": "spinorbit"`:
+Hamiltonians from spin-orbit calculations (`nspin = 4`) are read with
+`"spin": "spinorbit"`, in all three formats:
 
 ```json
 "model": {
@@ -84,7 +101,13 @@ Hamiltonians from spin-orbit calculations (ABACUS or NextHam with
 
 The Hamiltonian is then complex and the basis includes spin. All spectral
 and transport tasks are available; the real-space tasks `ldos` and `density`
-are not.
+are not. A `deeptb` file holds blocks of twice the orbitals, with complex
+values, and its overlap file, if there is one, holds the real blocks of the
+spatial orbitals. An orthogonal DeePTB Hamiltonian with spin-orbit coupling is
+read the same way by a `tb_file` model, whose `type_norb` then counts both spins.
+
+The `sktb` and `dftb` models have no spin-orbit parameters, so they cannot use a
+spinor basis.
 
 ## Checking an import
 

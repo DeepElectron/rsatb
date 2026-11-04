@@ -5,7 +5,9 @@
 //
 // The Hamiltonian arrives as a format-tagged file. Everything else -- the
 // overlap, the position operator, and (given pseudopotentials) the velocity --
-// is computed from the orbital basis through op2c.
+// is computed from the orbital basis through op2c. The overlap can also come
+// from a file: a model trained on H and S predicts both, and that H belongs
+// with that S.
 //
 // An LCAO basis is non-orthogonal by construction, so the orbital files are
 // required rather than optional. Previously they were inferred from whether
@@ -49,6 +51,7 @@ struct PseudopotentialFiles {
 
 struct LcaoConfig {
     io::HamiltonianFile hamiltonian;
+    io::HamiltonianFile overlap;              // optional: S(R) instead of op2c's
     OrbitalFiles orbitals;                    // required: LCAO is non-orthogonal
     PseudopotentialFiles pseudopotentials;    // optional: enables velocity
     SpinSpec spin;
@@ -87,15 +90,11 @@ public:
                 std::to_string(config.orbitals.names.size()) + " orbital files, " +
                 std::to_string(config.pseudopotentials.names.size()) + " pseudopotential files).");
         }
-        // A spinor H(R) is complex and interleaved by spin. The ABACUS and
-        // NextHam readers deliver exactly that; DeePTB spinor files are
-        // spin-block per atom and its reader is real-only.
-        if (config.spin.IsSpinor() &&
-            config.hamiltonian.format == io::HamiltonianFormat::kDeeptbHdf5) {
+        if (!config.overlap.empty() &&
+            config.overlap.format != io::HamiltonianFormat::kDeeptbHdf5) {
             throw std::runtime_error(
-                "LCAO with a spinor basis (spin '" + ToString(config.spin.treatment) +
-                "') reads its complex H(R) from the 'abacus' or 'nextham' formats; the "
-                "'deeptb' reader is spin-degenerate only.");
+                "An LCAO overlap file must be in the 'deeptb' format, not '" +
+                io::ToString(config.overlap.format) + "'.");
         }
 
         auto model = std::unique_ptr<LcaoModel>(new LcaoModel(std::move(config), comm));
@@ -137,6 +136,7 @@ public:
     HamiltonianImages BuildHamiltonianImages(AtomicData& atomic_data) const override {
         RSATB_PHASE("setup/hamiltonian_read");
         io::FileBasisLayout layout;
+        layout.spin_components = config_.spin.Components();
         if (io::NeedsBasisLayout(config_.hamiltonian.format)) {
             layout = FileLayout(atomic_data);
         }
@@ -145,6 +145,11 @@ public:
     }
 
     std::unique_ptr<ImageContainer> BuildOverlapImages(AtomicData& atomic_data) const override {
+        if (!config_.overlap.empty()) {
+            RSATB_PHASE("setup/overlap_read");
+            auto reader = io::OpenHamiltonianFile(config_.overlap);
+            return BuildOverlapImagesFromFile(atomic_data, *reader, config_.spin.Components());
+        }
         RSATB_PHASE("setup/overlap_build");
         return integrals_->build_overlap(atomic_data);
     }
