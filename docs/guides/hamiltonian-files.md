@@ -75,6 +75,37 @@ cutoff radius of each species, and the position operator behind the velocity.
 Blocks missing from the file are zero, except that every atom must have an
 onsite block. Overlap files written by ABACUS or NextHam are not read.
 
+## Models without orbital files { #no-orbitals }
+
+A fitted tight-binding model with an overlap, such as DeePTB's `nnsk` or `mix`,
+has $H(\mathbf R)$ and $S(\mathbf R)$ but no orbitals behind them. Read its
+files with a `tb_file` model, which takes the basis from the input:
+
+```json
+"model": {
+  "type": "tb_file",
+  "hamiltonian": {"path": "predicted_hamiltonians.h5", "format": "deeptb"},
+  "overlap": {"path": "predicted_overlaps.h5", "format": "deeptb"},
+  "type_symbols": ["Mo", "S"],
+  "type_norb": [9, 9],
+  "cutoff_radius": [2.4, 2.4],
+  "position": "mulliken"
+}
+```
+
+Set `cutoff_radius` so that every pair in the file is within $r_i + r_j$: pairs
+outside it are not read. Without orbitals the dipole integrals do not exist, so
+without `position` the model has no velocity, and offers the DOS, PDOS,
+occupation and Fermi level.
+
+`"position": "mulliken"` takes $X_{ij}(\mathbf R) = \tfrac12(\mathbf r_i +
+\mathbf R + \mathbf r_j)\, S_{ij}(\mathbf R)$, which adds the transport tasks.
+Band velocities are then exact. The error of interband terms grows with the
+transition energy, so `dc` and low-energy `msd` are its uses, and `ac` away
+from low frequency is not reliable. Measured against true dipole integrals on
+two DFT bases, the interband $|v|^2$ was within 12% at 1–3 eV for GaAs and a factor
+of 2 too large for Al, and far too large above 10 eV in both.
+
 ## Supercells
 
 `structure.supercell` repeats the primitive cell, and the primitive-cell

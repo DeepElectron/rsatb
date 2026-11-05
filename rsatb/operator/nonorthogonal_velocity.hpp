@@ -20,7 +20,19 @@
 // X0 is the one ingredient needing real orbital integrals (two-centre dipoles,
 // no pseudopotentials); dropping it is NOT an approximation -- the measured
 // f-sum inflates by three orders of magnitude without it (doc section 7) --
-// which is why a model with an overlap but no position stays velocity-less.
+// which is why a model with an overlap but no position stays velocity-less
+// unless its input asks for the Mulliken position below.
+//
+// That position, X_ij(R) = (r_i + R + r_j) / 2 S_ij(R), is what a tight-binding
+// model with an overlap and no orbitals (a fitted SK model, an
+// environment-corrected one) has instead. It is the non-orthogonal form of the
+// diagonal position every orthogonal model assumes: an electron sits on its
+// atoms. It gives xbar = M[S] / 2 and delta = -M[S] / 2, with no absolute
+// coordinate left in either. In the eigenbasis it differs from the true operator
+// by i (E_n - E_m) (Delta + M[S] / 2)_nm, so band velocities are exact and the
+// error grows with the transition energy. Measured against op2c's X0 (Mulliken /
+// true |v|^2): GaAs SOC 1.12 at 1-3 eV and 0.81 at 6-12 eV; fcc Al 1.96 and 16;
+// and the f-sum over 1000 times too large in both, from the highest transitions.
 //
 // Every piece lives on the atomic graph, i.e. the H/S sparsity pattern:
 // cheaper per application than an explicit-integral velocity on its denser
@@ -52,6 +64,79 @@ namespace op {
 /// Throws:
 ///   std::runtime_error if the position triplet lacks matrices (an orthogonal
 ///   diagonal cannot dress a non-orthogonal commutator) or graphs mismatch.
+namespace detail {
+
+/// Adds `uniform * in`, or `uniform * diag(r_axis) * in`, block by block. All
+/// operands share the atomic graph but not necessarily identical stored patterns,
+/// so a combination is assembled by ADDing the operands into a fresh matrix rather
+/// than by aligned in-place arithmetic.
+inline void AddScaledRows(vbcsr::atomic::AtomicData& atomic_data, VelocityTriplet::Matrix& out,
+                          VelocityTriplet::Matrix& in, bool row_position_scale, int axis,
+                          VelocityTriplet::Scalar uniform) {
+    using Scalar = VelocityTriplet::Scalar;
+    vbcsr::DistGraph* graph = atomic_data.get_graph();
+    const int n_owned = static_cast<int>(graph->owned_global_indices.size());
+    const auto& row_ptr = in.row_ptr();
+    const auto& col_ind = in.col_ind();
+    for (int row = 0; row < n_owned; ++row) {
+        double r[3] = {0.0, 0.0, 0.0};
+        if (row_position_scale) atomic_data.get_pos(row, &r[0], &r[1], &r[2]);
+        const Scalar factor = row_position_scale ? uniform * Scalar(r[axis], 0.0) : uniform;
+        const int row_dim = graph->block_sizes[row];
+        for (int k = row_ptr[row]; k < row_ptr[row + 1]; ++k) {
+            const int col = col_ind[k];
+            const int col_dim = graph->block_sizes[col];
+            const Scalar* data = in.block_data(k);
+            if (data == nullptr) continue;
+            std::vector<Scalar> scaled(static_cast<size_t>(row_dim) * col_dim);
+            for (size_t t = 0; t < scaled.size(); ++t) scaled[t] = factor * data[t];
+            out.update_local_block(row, col, scaled.data(), row_dim, col_dim,
+                                   vbcsr::AssemblyMode::ADD, vbcsr::kCanonicalBlockLayout);
+        }
+    }
+}
+
+}  // namespace detail
+
+/// Builds the Mulliken position at one k-point; see the note at the top.
+///
+/// Args:
+///   atomic_data: Geometry and the reference graph.
+///   overlap_images: S(R) on that graph.
+///   kpoint: The k-point.
+/// Returns:
+///   A PositionTriplet of full matrices, in the gauge of X0(k).
+inline std::unique_ptr<PositionTriplet> BuildMullikenPosition(
+    vbcsr::atomic::AtomicData& atomic_data,
+    vbcsr::atomic::ImageContainer<double>& overlap_images,
+    const KPoint& kpoint
+) {
+    using Matrix = VelocityTriplet::Matrix;
+    using Scalar = VelocityTriplet::Scalar;
+    vbcsr::DistGraph* graph = atomic_data.get_graph();
+
+    std::unique_ptr<Matrix> ket_store[3];
+    Matrix* ket_s[3];
+    for (int a = 0; a < 3; ++a) {
+        ket_store[a] = std::make_unique<Matrix>(graph);
+        ket_s[a] = ket_store[a].get();
+    }
+    AccumulateBondMoment(atomic_data, overlap_images, kpoint, Scalar(1.0, 0.0),
+                         MomentWeight::kKetPosition, ket_s);
+    std::unique_ptr<Matrix> overlap_k(
+        overlap_images.sample_k(kpoint, vbcsr::atomic::PhaseConvention::R_AND_POSITION));
+
+    auto triplet = std::make_unique<PositionTriplet>();
+    PositionAxisData* axes[3] = {&triplet->x, &triplet->y, &triplet->z};
+    for (int a = 0; a < 3; ++a) {
+        axes[a]->matrix = std::make_unique<Matrix>(graph);
+        detail::AddScaledRows(atomic_data, *axes[a]->matrix, *ket_s[a], false, a, Scalar(0.5, 0.0));
+        detail::AddScaledRows(atomic_data, *axes[a]->matrix, *overlap_k, true, a, Scalar(0.5, 0.0));
+        axes[a]->matrix->assemble();
+    }
+    return triplet;
+}
+
 template <typename T>
 std::unique_ptr<VelocityTriplet> BuildNonorthogonalCommutatorVelocity(
     vbcsr::atomic::AtomicData& atomic_data,
@@ -100,44 +185,16 @@ std::unique_ptr<VelocityTriplet> BuildNonorthogonalCommutatorVelocity(
     AccumulateBondMoment(atomic_data, overlap_images, kpoint, Scalar(1.0, 0.0),
                          MomentWeight::kKetPosition, ket_s);
 
-    // xbar = X0 - diag(r_bra) S0 and delta = X0 - ket_s, block by block. All
-    // operands share the atomic graph, but not necessarily identical stored
-    // patterns, so each combination is assembled by ADDing the operands into a
-    // fresh matrix rather than by aligned in-place arithmetic.
-    const int n_owned = static_cast<int>(graph->owned_global_indices.size());
-    auto add_scaled_rows = [&](Matrix& out, Matrix& in, bool row_position_scale, int axis,
-                               Scalar uniform) {
-        const auto& row_ptr = in.row_ptr();
-        const auto& col_ind = in.col_ind();
-        for (int row = 0; row < n_owned; ++row) {
-            double r[3] = {0.0, 0.0, 0.0};
-            if (row_position_scale) atomic_data.get_pos(row, &r[0], &r[1], &r[2]);
-            const Scalar factor = row_position_scale ? uniform * Scalar(r[axis], 0.0)
-                                                     : uniform;
-            const int row_dim = graph->block_sizes[row];
-            for (int k = row_ptr[row]; k < row_ptr[row + 1]; ++k) {
-                const int col = col_ind[k];
-                const int col_dim = graph->block_sizes[col];
-                const Scalar* data = in.block_data(k);
-                if (data == nullptr) continue;
-                std::vector<Scalar> scaled(static_cast<size_t>(row_dim) * col_dim);
-                for (size_t t = 0; t < scaled.size(); ++t) scaled[t] = factor * data[t];
-                out.update_local_block(row, col, scaled.data(), row_dim, col_dim,
-                                       vbcsr::AssemblyMode::ADD,
-                                       vbcsr::kCanonicalBlockLayout);
-            }
-        }
-    };
-
+    // xbar = X0 - diag(r_bra) S0 and delta = X0 - ket_s, block by block.
     for (int a = 0; a < 3; ++a) {
         axes[a]->xbar = std::make_unique<Matrix>(graph);
-        add_scaled_rows(*axes[a]->xbar, *pos_axes[a]->matrix, false, a, Scalar(1.0, 0.0));
-        add_scaled_rows(*axes[a]->xbar, overlap_k, true, a, Scalar(-1.0, 0.0));
+        detail::AddScaledRows(atomic_data, *axes[a]->xbar, *pos_axes[a]->matrix, false, a, Scalar(1.0, 0.0));
+        detail::AddScaledRows(atomic_data, *axes[a]->xbar, overlap_k, true, a, Scalar(-1.0, 0.0));
         axes[a]->xbar->assemble();
 
         axes[a]->delta = std::make_unique<Matrix>(graph);
-        add_scaled_rows(*axes[a]->delta, *pos_axes[a]->matrix, false, a, Scalar(1.0, 0.0));
-        add_scaled_rows(*axes[a]->delta, *ket_s[a], false, a, Scalar(-1.0, 0.0));
+        detail::AddScaledRows(atomic_data, *axes[a]->delta, *pos_axes[a]->matrix, false, a, Scalar(1.0, 0.0));
+        detail::AddScaledRows(atomic_data, *axes[a]->delta, *ket_s[a], false, a, Scalar(-1.0, 0.0));
         axes[a]->delta->assemble();
     }
     return triplet;

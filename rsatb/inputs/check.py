@@ -37,13 +37,16 @@ _CAPABILITY_DOC = {
             "orthogonal, that is, without 'overlap'",
     "lcao": "an lcao model computes velocity and position from its orbital files",
     "dftb": "a dftb model provides neither velocity nor position",
-    "tb_file": "a tb_file model is orthogonal and provides velocity and position",
+    "tb_file": "a tb_file model provides velocity and position when it is orthogonal, "
+               "or with 'overlap' when it sets 'position': 'mulliken'",
 }
 
 # Which tasks need which operator, and which need the Gamma point. msd runs
 # on the commutator velocity alone (both its kernels do), so it sits with
 # the other velocity consumers.
 _NEEDS_VELOCITY = ("ac", "dc", "dc_spectrum", "quantum_metric", "msd")
+# What the Mulliken position gets only approximately (operator/nonorthogonal_velocity.hpp).
+_MULLIKEN_INTERBAND = ("ac", "quantum_metric")
 _NEEDS_GAMMA_ONLY = ("ldos",)
 _NEEDS_GAMMA = ("msd",)
 _NEEDS_ORBITAL_FILES = ("ldos",)
@@ -64,7 +67,10 @@ def capabilities(model: dict) -> Dict[str, bool]:
     if family == "dftb":
         return {"overlap": True, "velocity": False, "position": False}
     if family == "tb_file":
-        return {"overlap": False, "velocity": True, "position": True}
+        if "overlap" not in model:
+            return {"overlap": False, "velocity": True, "position": True}
+        mulliken = model.get("position") == "mulliken"
+        return {"overlap": True, "velocity": mulliken, "position": mulliken}
     return {"overlap": False, "velocity": False, "position": False}
 
 
@@ -224,6 +230,15 @@ def check_consistency(document: dict) -> List[Issue]:
             "tables hold no spin-orbit parameters".format(model.get("spin"), family),
             hint="read a spin-orbit H(R) from a file, with an 'lcao' or 'tb_file' model"))
 
+    # The Mulliken position is built from the overlap, and is a choice.
+    mulliken = family == "tb_file" and model.get("position") == "mulliken"
+    if mulliken and "overlap" not in model:
+        issues.append(Issue(
+            "model.position",
+            "the Mulliken position is built from the overlap, and this model has none",
+            hint="an orthogonal basis takes the diagonal position: remove 'position', "
+                 "or add 'overlap'"))
+
     labels = {}
     for index, task in enumerate(tasks):
         kind = task.get("type", "")
@@ -236,6 +251,14 @@ def check_consistency(document: dict) -> List[Issue]:
                 hint="give one of them an explicit 'label'"))
         labels[label] = index
 
+        if mulliken and kind in _MULLIKEN_INTERBAND:
+            issues.append(Issue(
+                where, "'{}' depends on interband velocities, which the Mulliken "
+                       "position only approximates, increasingly with the transition "
+                       "energy".format(kind),
+                severity=WARNING,
+                hint="band velocities are exact, so 'dc' and low-energy 'msd' are "
+                     "its reliable uses"))
         if kind in _NEEDS_VELOCITY and not caps["velocity"]:
             issues.append(Issue(
                 where, "'{}' requires the velocity operator, which this {} model "

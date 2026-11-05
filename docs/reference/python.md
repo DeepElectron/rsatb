@@ -116,7 +116,8 @@ PseudopotentialFiles(names=[], dir="")          # optional; for testing only
 ### `TightBindingFileModel`
 
 ```python
-TightBindingFileModel(hamiltonian, type_symbols, type_norb, cutoff_radius, spin="none")
+TightBindingFileModel(hamiltonian, type_symbols, type_norb, cutoff_radius, spin="none",
+                      overlap=None, position=None)   # position: "mulliken", needs overlap
 ```
 
 The basis must be given, because these files do not record orbital counts.

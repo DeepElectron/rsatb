@@ -320,6 +320,42 @@ def test_slater_koster_tables_cannot_be_spinor():
     assert paths(errors(issues)) == ["model.spin"]
 
 
+def _tb_file(**extra):
+    model = {"type": "tb_file", "hamiltonian": {"path": "h.h5"}, "type_symbols": ["C"],
+             "type_norb": [4], "cutoff_radius": [1.6]}
+    model.update(extra)
+    return model
+
+
+@pytest.mark.parametrize("extra, velocity", [
+    ({}, True),
+    ({"overlap": {"path": "s.h5"}}, False),
+    ({"overlap": {"path": "s.h5"}, "position": "mulliken"}, True),
+])
+def test_a_tb_file_velocity_follows_its_overlap_and_position(extra, velocity):
+    document = {"structure": {"file": "a.vasp"}, "model": _tb_file(**extra),
+                "tasks": [{"type": "dc", "mu": 0.0, "temp": 300.0, "n_moments": 10}]}
+    _, issues = check.resolve(document, check_paths=False)
+    assert (paths(errors(issues)) == []) == velocity
+
+
+def test_the_mulliken_position_needs_an_overlap():
+    document = {"structure": {"file": "a.vasp"}, "model": _tb_file(position="mulliken"), "tasks": []}
+    _, issues = check.resolve(document, check_paths=False)
+    assert paths(errors(issues)) == ["model.position"]
+
+
+@pytest.mark.parametrize("kind, warned", [("ac", True), ("dc", False)])
+def test_the_mulliken_position_warns_where_interband_weight_matters(kind, warned):
+    task = {"type": kind, "mu": 0.0, "temp": 300.0}
+    task.update({"ac": {"nt": 10, "n_kpm": 10}, "dc": {"n_moments": 10}}[kind])
+    document = {"structure": {"file": "a.vasp"}, "tasks": [task],
+                "model": _tb_file(overlap={"path": "s.h5"}, position="mulliken")}
+    _, issues = check.resolve(document, check_paths=False)
+    assert errors(issues) == []
+    assert any("Mulliken" in str(issue) for issue in warnings(issues)) == warned
+
+
 def test_the_overlap_file_is_an_optional_deeptb_file():
     document = _spinor_lcao("deeptb")
     document["model"]["overlap"] = {"path": "overlaps.h5"}

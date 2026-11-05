@@ -181,3 +181,124 @@ def test_a_spinor_basis_takes_the_spatial_overlap_spin_diagonal(tmp_path):
     spatial = np.block([[onsite[0], hop], [hop.T, onsite[1]]])
     expected = np.kron(spatial, np.eye(2))      # index 2 orb + s
     assert np.abs(_dense(calc, "S") - expected).max() < 1e-6
+
+
+# --- a fitted model with an overlap and no orbitals --------------------------
+
+
+def _nonorthogonal_chain(directory, spinor):
+    """Two orbitals per atom, S(R) and H(R) known, one direction of each pair stored."""
+    generator = np.random.default_rng(11)
+    onsite_s = np.eye(2) + 0.02 * (lambda a: a + a.T)(generator.normal(size=(2, 2)))
+    hop_s = 0.12 * generator.normal(size=(2, 2))
+    dim = 4 if spinor else 2
+    if spinor:
+        onsite_h = _random_hermitian(4, generator)
+        hop_h = generator.normal(size=(4, 4)) + 1j * generator.normal(size=(4, 4))
+        store = lambda block: _spin_blocked(block).astype(np.complex64)     # noqa: E731
+    else:
+        onsite_h = (lambda a: a + a.T)(generator.normal(size=(2, 2)))
+        hop_h = generator.normal(size=(2, 2))
+        store = lambda block: block.astype(np.float64)      # noqa: E731
+    with h5py.File(directory / "h.h5", "w") as file:
+        group = file.create_group("0")
+        group["0_0_0_0_0"] = store(onsite_h)
+        group["0_0_1_0_0"] = store(hop_h)
+    with h5py.File(directory / "s.h5", "w") as file:
+        group = file.create_group("0")
+        group["0_0_0_0_0"] = onsite_s.astype(np.float64)
+        group["0_0_1_0_0"] = hop_s.astype(np.float64)
+    return dim
+
+
+def _chain_at(directory, x, name="c.vasp"):
+    path = directory / name
+    path.write_text("chain\n1.0\n3 0 0\n0 20 0\n0 0 20\nH\n1\nCartesian\n{} 0.5 0.7\n".format(x))
+    return path
+
+
+def _mulliken_calc(directory, spinor, kpoints, x=0.0, position="mulliken"):
+    model = TightBindingFileModel(
+        hamiltonian=HamiltonianFile(str(directory / "h.h5"), format="deeptb"),
+        type_symbols=["H"], type_norb=[4 if spinor else 2], cutoff_radius=[1.6],
+        spin="spinorbit" if spinor else "none",
+        overlap=HamiltonianFile(str(directory / "s.h5"), format="deeptb"), position=position)
+    return RSATB(Structure.from_file(str(_chain_at(directory, x))), model,
+                 SetupOptions(kpoints=kpoints, compute_bounds=False, energy_bounds=[-30.0, 30.0]))
+
+
+def _velocity(calc, k):
+    H, S, bond, xbar, delta = (_dense_axis(calc, w, k) for w in ("H", "S", "bond", "xbar", "delta"))
+    Sinv = np.linalg.inv(S)
+    return H, S, 1j * (bond - xbar @ Sinv @ H + H @ Sinv @ delta), xbar, delta
+
+
+def _dense_axis(calc, which, k):
+    rows, cols, values = calc._cpp_obj.dump_operator_coo(which, 0, k)
+    size = int(max(rows.max(), cols.max())) + 1
+    out = np.zeros((size, size), dtype=complex)
+    np.add.at(out, (rows, cols), values)
+    return out
+
+
+@pytest.mark.parametrize("spinor", [False, True])
+def test_the_mulliken_velocity_gives_the_band_velocity(tmp_path, spinor):
+    """V_nn = -dE/dk, from H(R) and S(R) alone; -, as rsatb's Bloch phase is e^{-ikR}."""
+    import scipy.linalg as la
+    _nonorthogonal_chain(tmp_path, spinor)
+    a, k, step = 3.0, 0.137, 1e-4
+    calc = _mulliken_calc(tmp_path, spinor, [[k - step, 0, 0], [k, 0, 0], [k + step, 0, 0]])
+
+    energies = [la.eigh(_dense_axis(calc, "H", i), _dense_axis(calc, "S", i), eigvals_only=True) for i in (0, 2)]
+    derivative = (energies[1] - energies[0]) / (2 * step) * a / (2 * np.pi)
+
+    H, S, velocity, xbar, delta = _velocity(calc, 1)
+    # Nothing but displacements in the pieces: xbar = M[S] / 2 = -delta.
+    assert np.abs(xbar + delta).max() < 1e-13
+    e, c = la.eigh(H, S)
+    in_bands = c.conj().T @ velocity @ c
+    assert np.abs(in_bands - in_bands.conj().T).max() < 1e-12
+    assert np.abs(np.diag(in_bands).real + derivative).max() < 1e-5    # the difference's truncation
+
+
+@pytest.mark.parametrize("spinor", [False, True])
+def test_the_mulliken_velocity_does_not_depend_on_the_origin(tmp_path, spinor):
+    _nonorthogonal_chain(tmp_path, spinor)
+    _, _, here, _, _ = _velocity(_mulliken_calc(tmp_path, spinor, [[0.137, 0, 0]], x=0.0), 0)
+    _, _, far, _, _ = _velocity(_mulliken_calc(tmp_path, spinor, [[0.137, 0, 0]], x=41.3), 0)
+    assert np.abs(here - far).max() < 1e-10
+
+
+def test_a_tb_overlap_without_a_position_has_no_velocity(tmp_path):
+    _nonorthogonal_chain(tmp_path, False)
+    model = TightBindingFileModel(
+        hamiltonian=HamiltonianFile(str(tmp_path / "h.h5"), format="deeptb"), type_symbols=["H"],
+        type_norb=[2], cutoff_radius=[1.6], overlap=HamiltonianFile(str(tmp_path / "s.h5"), format="deeptb"))
+    assert model.capabilities.overlap
+    assert not model.capabilities.velocity
+    assert not model.capabilities.position
+    with pytest.raises(RuntimeError, match="built from the overlap"):
+        TightBindingFileModel(hamiltonian=HamiltonianFile(str(tmp_path / "h.h5"), format="deeptb"),
+                              type_symbols=["H"], type_norb=[2], cutoff_radius=[1.6], position="mulliken")
+
+
+def test_a_mulliken_run_from_the_input(tmp_path, capsys):
+    _nonorthogonal_chain(tmp_path, False)
+    _chain_at(tmp_path, 0.0)
+    document = {
+        "structure": {"file": str(tmp_path / "c.vasp"), "supercell": [8, 1, 1]},
+        "model": {"type": "tb_file", "type_symbols": ["H"], "type_norb": [2], "cutoff_radius": [1.6],
+                  "hamiltonian": {"path": str(tmp_path / "h.h5"), "format": "deeptb"},
+                  "overlap": {"path": str(tmp_path / "s.h5"), "format": "deeptb"},
+                  "position": "mulliken"},
+        "run": {"nsamples": 4, "kpoints": {"mesh": [4, 1, 1]}},
+        "tasks": [{"type": "dos", "dE": 0.5},
+                  {"type": "dc", "n_moments": 100, "mu": 0.0, "temp": 300.0, "axis": "a"}],
+        "output": {"dir": str(tmp_path / "out")},
+    }
+    path = tmp_path / "input.json"
+    path.write_text(json.dumps(document))
+    assert main(["run", str(path)]) == 0
+    summary = json.loads((tmp_path / "out" / "summary.json").read_text())
+    assert next(r for r in summary["results"] if r["type"] == "dos")["scalars"]["n_states"] == 32
+    assert np.isfinite(np.load(str(tmp_path / "out" / "dc.npz"))["sigma"]).all()

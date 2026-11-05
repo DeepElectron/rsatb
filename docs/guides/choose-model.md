@@ -20,7 +20,7 @@ flowchart TD
   Q -->|Slater-Koster parameters you can write down| SK[sktb]
   Q -->|a directory of DFTB .skf files| DF[dftb]
   Q -->|H&#40;R&#41; from a DFT or ML code + .orb files| LC[lcao]
-  Q -->|an H&#40;R&#41; file already in an orthogonal basis| TB[tb_file]
+  Q -->|an H&#40;R&#41; file without orbital files| TB[tb_file]
 ```
 
 | You have | `model.type` | Overlap | Basis comes from |
@@ -28,7 +28,7 @@ flowchart TD
 | Onsite energies and two-centre hoppings you write | [`sktb`](../reference/input/model/sktb.md) | only if you give `overlap` | `basis` you declare |
 | DFTB parameters (mio, 3ob, …) | [`dftb`](../reference/input/model/dftb.md) | always | `basis` you declare |
 | A DFT/ML Hamiltonian (DeePTB, ABACUS, NextHam) plus its numerical orbitals | [`lcao`](../reference/input/model/lcao.md) | always, computed from the `.orb` files | the `.orb` files |
-| An orthogonal H(R) file, e.g. a DeePTB Slater-Koster export | [`tb_file`](../reference/input/model/tb_file.md) | never | `type_norb`, `cutoff_radius` you declare |
+| An H(R) file without orbital files, e.g. a DeePTB Slater-Koster export | [`tb_file`](../reference/input/model/tb_file.md) | only if you give `overlap` | `type_norb`, `cutoff_radius` you declare |
 
 ## What each can compute
 
@@ -38,7 +38,9 @@ flowchart TD
 | `sktb` with `overlap` | ✓ | — | — | — |
 | `dftb` | ✓ | — | — | — |
 | `lcao` | ✓ | ✓ | ✓ | ✓ |
-| `tb_file` | ✓ | ✓ | ✓ | — |
+| `tb_file`, orthogonal | ✓ | ✓ | ✓ | — |
+| `tb_file` with `overlap` | ✓ | — | — | — |
+| `tb_file` with `overlap` and `"position": "mulliken"` | ✓ | [approximate](hamiltonian-files.md#no-orbitals) | ✓ | — |
 
 The reasons are:
 

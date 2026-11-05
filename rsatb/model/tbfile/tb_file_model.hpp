@@ -1,8 +1,8 @@
 #ifndef RSATB_MODEL_TB_FILE_MODEL_HPP
 #define RSATB_MODEL_TB_FILE_MODEL_HPP
 
-// Tight-binding model read from a precomputed Hamiltonian file, with no
-// overlap.
+// Tight-binding model read from a precomputed Hamiltonian file, orthogonal
+// unless an overlap file is given too.
 //
 // This is the fourth combination noted during the interface redesign: a
 // file-backed H that is already in an orthogonal basis, which is what a
@@ -15,6 +15,11 @@
 // formats carry no basis header, so orbital counts cannot be derived. That is
 // a property of the format, and `Create` cross-checks what it can against the
 // blocks actually present in the file.
+//
+// A fitted model with an overlap (DeePTB's nnsk and mix, say) has H(R) and S(R)
+// but no orbitals, so it has no dipole integrals and so no true position. It
+// reads its overlap here and has no velocity, unless the input asks for the
+// Mulliken position (operator/nonorthogonal_velocity.hpp says what that costs).
 
 #include "../model.hpp"
 #include "../hamiltonian_images.hpp"
@@ -42,6 +47,11 @@ struct TightBindingFileConfig {
     std::vector<double> cutoff_radius;
 
     SpinSpec spin;
+
+    /// S(R), real over spatial orbitals; empty for an orthogonal basis.
+    io::HamiltonianFile overlap;
+    /// "mulliken", or empty: with an overlap, no position and no velocity.
+    std::string position;
 };
 
 class TightBindingFileModel : public Model {
@@ -58,6 +68,23 @@ public:
                 "order; use the 'lcao' model with the orbital files it was computed in.");
         }
 
+        if (!config.overlap.empty() &&
+            config.overlap.format != io::HamiltonianFormat::kDeeptbHdf5) {
+            throw std::runtime_error(
+                "A tight-binding overlap file must be in the 'deeptb' format, not '" +
+                io::ToString(config.overlap.format) + "'.");
+        }
+        if (!config.position.empty() && config.position != "mulliken") {
+            throw std::runtime_error(
+                "Tight-binding file position must be 'mulliken' or unset, not '" +
+                config.position + "'.");
+        }
+        if (!config.position.empty() && config.overlap.empty()) {
+            throw std::runtime_error(
+                "The Mulliken position is built from the overlap, and this model has none: "
+                "an orthogonal basis takes the diagonal position.");
+        }
+
         BasisSpec basis;
         basis.type_symbols = std::move(config.type_symbols);
         basis.type_norb = std::move(config.type_norb);
@@ -65,7 +92,8 @@ public:
         basis.Validate("Tight-binding file");
 
         auto model = std::unique_ptr<TightBindingFileModel>(
-            new TightBindingFileModel(std::move(config.hamiltonian), std::move(basis), config.spin, comm));
+            new TightBindingFileModel(std::move(config.hamiltonian), std::move(config.overlap),
+                                      config.position == "mulliken", std::move(basis), config.spin, comm));
         return model;
     }
 
@@ -75,17 +103,21 @@ public:
 
     const SpinSpec& spin() const override { return spin_; }
 
-    /// Returns an orthogonal capability set.
-    ///
-    /// Velocity and position follow from the Hamiltonian images and the atomic
-    /// positions, as for any orthogonal basis.
     /// H from the file; v and r from the generic route.
     ///
-    /// The file carries H(R) already in an orthogonal basis -- there is no
-    /// overlap to read and none to compute -- and orthogonality is exactly the
+    /// Without an overlap file the basis is orthogonal, which is exactly the
     /// condition the commutator velocity and the diagonal position need. So
-    /// this model builds one operator and inherits two.
+    /// this model builds one operator and inherits two. With one, there is no
+    /// position to dress the velocity with unless the input chose Mulliken's.
     OperatorSources operator_sources() const override {
+        if (!overlap_.empty()) {
+            return OperatorSources{
+                /*hamiltonian=*/OperatorSource::kModel,
+                /*overlap=*/OperatorSource::kModel,
+                /*velocity=*/mulliken_position_ ? OperatorSource::kGeneric : OperatorSource::kUnavailable,
+                /*position=*/mulliken_position_ ? OperatorSource::kMulliken : OperatorSource::kUnavailable,
+            };
+        }
         return OperatorSources{
             /*hamiltonian=*/OperatorSource::kModel,
             /*overlap=*/OperatorSource::kUnavailable,
@@ -99,16 +131,24 @@ public:
         return BuildHamiltonianImagesFromFile(atomic_data, *reader);
     }
 
-    /// Returns nullptr: this model is orthogonal by construction.
-    std::unique_ptr<ImageContainer> BuildOverlapImages(AtomicData&) const override {
-        return nullptr;
+    /// Returns S(R) from the overlap file, or nullptr for an orthogonal basis.
+    std::unique_ptr<ImageContainer> BuildOverlapImages(AtomicData& atomic_data) const override {
+        if (overlap_.empty()) {
+            return nullptr;
+        }
+        auto reader = io::OpenHamiltonianFile(overlap_);
+        return BuildOverlapImagesFromFile(atomic_data, *reader, spin_.Components());
     }
 
 private:
-    TightBindingFileModel(io::HamiltonianFile hamiltonian, BasisSpec basis, SpinSpec spin, MPI_Comm comm)
-        : hamiltonian_(std::move(hamiltonian)), basis_(std::move(basis)), spin_(spin), comm_(comm) {}
+    TightBindingFileModel(io::HamiltonianFile hamiltonian, io::HamiltonianFile overlap, bool mulliken_position,
+                          BasisSpec basis, SpinSpec spin, MPI_Comm comm)
+        : hamiltonian_(std::move(hamiltonian)), overlap_(std::move(overlap)),
+          mulliken_position_(mulliken_position), basis_(std::move(basis)), spin_(spin), comm_(comm) {}
 
     io::HamiltonianFile hamiltonian_;
+    io::HamiltonianFile overlap_;
+    bool mulliken_position_ = false;
     BasisSpec basis_;
     SpinSpec spin_;
     MPI_Comm comm_ = MPI_COMM_WORLD;

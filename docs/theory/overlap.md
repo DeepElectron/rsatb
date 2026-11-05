@@ -94,3 +94,9 @@ An `lcao` model computes the dipole integrals from its numerical orbitals, so
 the velocity is available for every `lcao` model. A non-orthogonal `sktb` or
 `dftb` model has no orbital functions to integrate, so it provides neither
 position nor velocity, and the transport tasks are not available for it.
+
+A non-orthogonal `tb_file` model has no orbital functions either, but can choose
+`"position": "mulliken"`, $X_{ij}(\mathbf R) = \tfrac12(\mathbf r_i + \mathbf R
++ \mathbf r_j) S_{ij}(\mathbf R)$. In the eigenbasis this differs from the true
+velocity by a term proportional to $E_n - E_m$, so band velocities are exact and
+the error grows with the transition energy.

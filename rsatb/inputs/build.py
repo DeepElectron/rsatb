@@ -200,6 +200,9 @@ def build_model(config: dict):
             type_norb=list(config["type_norb"]),
             cutoff_radius=list(config["cutoff_radius"]),
             spin=spin,
+            overlap=(HamiltonianFile(config["overlap"]["path"], format=config["overlap"]["format"])
+                     if "overlap" in config else None),
+            position=config.get("position"),
         )
 
     raise ValueError("Unsupported model type: {!r}".format(family))

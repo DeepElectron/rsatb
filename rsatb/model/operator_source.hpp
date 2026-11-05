@@ -48,6 +48,12 @@ enum class OperatorSource {
     /// orthogonal basis; the generic VELOCITY is correct whenever its dipole
     /// ingredient exists.
     kGeneric,
+    /// The position only: the Mulliken approximation built from the overlap,
+    /// for a non-orthogonal model with no orbitals to integrate a dipole from.
+    /// A choice the input makes, never a default: it is exact for band
+    /// velocities and uncontrolled for interband weight (operator/
+    /// nonorthogonal_velocity.hpp).
+    kMulliken,
 };
 
 inline const char* ToString(OperatorSource source) {
@@ -55,6 +61,7 @@ inline const char* ToString(OperatorSource source) {
         case OperatorSource::kUnavailable: return "unavailable";
         case OperatorSource::kModel:       return "model";
         case OperatorSource::kGeneric:     return "generic";
+        case OperatorSource::kMulliken:    return "mulliken";
     }
     return "unknown";
 }
@@ -92,13 +99,20 @@ struct OperatorSources {
             throw std::runtime_error(
                 family + " must build its own Hamiltonian; no other source exists.");
         }
-        if (overlap == OperatorSource::kGeneric) {
+        if (overlap == OperatorSource::kGeneric || overlap == OperatorSource::kMulliken) {
             throw std::runtime_error(
                 family + " names a generic overlap, which does not exist: an overlap "
                 "comes from the model's integrals or the basis is orthogonal.");
         }
+        if (hamiltonian == OperatorSource::kMulliken || velocity == OperatorSource::kMulliken) {
+            throw std::runtime_error(family + ": 'mulliken' is a source of the position only.");
+        }
         const bool non_orthogonal = overlap != OperatorSource::kUnavailable;
         if (!non_orthogonal) {
+            if (position == OperatorSource::kMulliken) {
+                throw std::runtime_error(
+                    family + " names the Mulliken position without an overlap to build it from.");
+            }
             return;
         }
         if (position == OperatorSource::kGeneric) {

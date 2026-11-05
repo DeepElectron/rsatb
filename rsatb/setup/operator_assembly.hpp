@@ -96,13 +96,16 @@ inline std::unique_ptr<OperatorSet> BuildOperatorSet(
             if (parts.overlap_images) {
                 // Captures the H container itself (real or complex), which
                 // stays put when `parts` is moved into the operator set.
+                const bool mulliken = sources.position == OperatorSource::kMulliken;
                 parts.velocity_builder = parts.hamiltonian_images.Visit(
-                    [&model, s_images = parts.overlap_images.get()](const auto& images)
+                    [&model, mulliken, s_images = parts.overlap_images.get()](const auto& images)
                         -> op::VelocityBuilder {
                         const auto* h_images = &images;
-                        return [&model, h_images, s_images](
+                        return [&model, mulliken, h_images, s_images](
                                    vbcsr::atomic::AtomicData& atomic_data, const op::KPoint& kpoint) {
-                            auto position = model.BuildPosition(atomic_data, kpoint);
+                            auto position = mulliken
+                                ? op::BuildMullikenPosition(atomic_data, *s_images, kpoint)
+                                : model.BuildPosition(atomic_data, kpoint);
                             std::unique_ptr<op::VelocityTriplet::Matrix> overlap_k(
                                 s_images->sample_k(kpoint,
                                                    vbcsr::atomic::PhaseConvention::R_AND_POSITION));
@@ -114,6 +117,7 @@ inline std::unique_ptr<OperatorSet> BuildOperatorSet(
                 parts.velocity_builder = op::MakeCommutatorVelocityBuilder(parts.hamiltonian_images);
             }
             break;
+        case OperatorSource::kMulliken:     // refused by Validate() above
         case OperatorSource::kUnavailable:
             break;
     }
@@ -127,6 +131,12 @@ inline std::unique_ptr<OperatorSet> BuildOperatorSet(
             break;
         case OperatorSource::kGeneric:
             parts.position_builder = op::MakeDiagonalPositionBuilder();
+            break;
+        case OperatorSource::kMulliken:
+            parts.position_builder = [s_images = parts.overlap_images.get()](
+                                         vbcsr::atomic::AtomicData& atomic_data, const op::KPoint& kpoint) {
+                return op::BuildMullikenPosition(atomic_data, *s_images, kpoint);
+            };
             break;
         case OperatorSource::kUnavailable:
             break;

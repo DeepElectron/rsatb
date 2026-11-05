@@ -498,15 +498,24 @@ PYBIND11_MODULE(_rsatb, m) {
             "both shells of a channel is genuinely ambiguous in the file format and is refused.");
 
     py::class_<rsatb::model::TightBindingFileModel, rsatb::model::Model>(m, "TightBindingFileModel",
-        "Orthogonal tight-binding model read from a Hamiltonian file.\n\n"
+        "Tight-binding model read from a Hamiltonian file, orthogonal unless an\n"
+        "overlap file is given.\n\n"
         "The one model that must be told its basis: the supported file formats\n"
         "carry no basis header.")
         .def(py::init([](rsatb::io::HamiltonianFile hamiltonian,
                          std::vector<std::string> type_symbols,
                          std::vector<int> type_norb,
                          std::vector<double> cutoff_radius,
-                         const std::string& spin) {
+                         const std::string& spin,
+                         py::object overlap,
+                         py::object position) {
                  rsatb::model::TightBindingFileConfig config;
+                 if (!overlap.is_none()) {
+                     config.overlap = py::cast<rsatb::io::HamiltonianFile>(overlap);
+                 }
+                 if (!position.is_none()) {
+                     config.position = py::cast<std::string>(position);
+                 }
                  config.hamiltonian = std::move(hamiltonian);
                  config.type_symbols = std::move(type_symbols);
                  config.type_norb = std::move(type_norb);
@@ -519,9 +528,14 @@ PYBIND11_MODULE(_rsatb, m) {
              py::arg("type_norb"),
              py::arg("cutoff_radius"),
              py::arg("spin") = "none",
-             "Orthogonal tight-binding model read from a precomputed Hamiltonian file.\n\n"
+             py::arg("overlap") = py::none(),
+             py::arg("position") = py::none(),
+             "Tight-binding model read from a precomputed Hamiltonian file.\n\n"
              "Unlike the other models the basis must be given: the supported file formats "
-             "carry no basis header, so orbital counts cannot be derived.");
+             "carry no basis header, so orbital counts cannot be derived.\n\n"
+             "overlap: a 'deeptb' file of S(R); absent means an orthogonal basis.\n"
+             "position: 'mulliken' gives a model with an overlap a velocity, exact for "
+             "band velocities and approximate for interband weight; absent means none.");
 
     py::class_<rsatb::model::LcaoModel, rsatb::model::Model>(m, "LcaoModel",
         "LCAO model: a precomputed Hamiltonian plus numerical atomic orbitals.\n\n"

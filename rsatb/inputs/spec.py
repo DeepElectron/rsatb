@@ -76,6 +76,18 @@ HAMILTONIAN_FILE = Obj(
                          choices=("deeptb", "abacus", "nextham")), default="deeptb"),
     })
 
+OVERLAP_FILE = Obj(
+    "A file holding the overlap S(R), for example the overlaps.h5 or "
+    "predicted_overlaps.h5 written next to a DeePTB Hamiltonian.",
+    {
+        "path": F(_path("Path to the overlap file, relative to the input file's "
+                        "directory unless absolute."), required=True),
+        "format": F(_str("File format. 'deeptb': DeePTB HDF5, with real blocks over "
+                         "spatial orbitals also when the Hamiltonian has spin-orbit "
+                         "coupling.",
+                         choices=("deeptb",)), default="deeptb"),
+    })
+
 
 # --- structure -------------------------------------------------------------
 
@@ -337,20 +349,10 @@ MODEL = Union(
             ".orb files.",
             {
                 "hamiltonian": F(HAMILTONIAN_FILE, required=True),
-                "overlap": F(Obj(
-                    "A file holding the overlap S(R), to use instead of computing "
-                    "it from the orbital files; for example the overlaps.h5 written "
-                    "next to a DeePTB hamiltonians.h5. The orbital files are still "
-                    "needed for the basis and the position operator.",
-                    {
-                        "path": F(_path("Path to the overlap file, relative to the "
-                                        "input file's directory unless absolute."),
-                                  required=True),
-                        "format": F(_str("File format. 'deeptb': DeePTB HDF5, with real "
-                                         "blocks over spatial orbitals also when the "
-                                         "Hamiltonian has spin-orbit coupling.",
-                                         choices=("deeptb",)), default="deeptb"),
-                    })),
+                "overlap": F(OVERLAP_FILE,
+                             note="To use instead of computing S from the orbital files. "
+                                  "The orbital files are still needed for the basis and "
+                                  "the position operator."),
                 "orbitals": F(Obj(
                     "Numerical atomic orbital files, one per species, in "
                     "order of increasing atomic number.",
@@ -414,6 +416,17 @@ MODEL = Union(
                                          "r_i + r_j.",
                                          min_length=1), required=True),
                 "spin": F(SPIN, default="none"),
+                "overlap": F(OVERLAP_FILE,
+                             note="Absent means an orthogonal basis."),
+                "position": F(_str(
+                    "The position operator of a model with 'overlap', which has no "
+                    "orbitals to compute one from. 'mulliken': (r_i + r_j) / 2 times "
+                    "the overlap. It gives the velocity, and so the transport tasks: "
+                    "band velocities are exact, and the error of interband terms "
+                    "grows with the transition energy, so 'dc' and low-energy 'msd' "
+                    "are its uses, and 'ac' away from low frequency is not reliable. "
+                    "Absent: a model with 'overlap' has no velocity.",
+                    choices=("mulliken",))),
             },
             checks=[lambda v, p: _equal_lengths(
                 v, p, ("type_symbols", "type_norb", "cutoff_radius"))]),

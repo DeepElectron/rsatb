@@ -71,13 +71,13 @@ For this model type the basis is declared in the input (`type_norb`,
 | hopping parameters you can write down | `sktb` ([Tutorial 1](graphene-dos.md)) |
 | output of a DFT code, plus orbital files | `lcao` ([Tutorial 2](lcao-diamond.md)) |
 | a DFTB parameter set | `dftb` |
-| an orthogonal $H(\mathbf R)$ file | `tb_file` |
+| an $H(\mathbf R)$ file without orbital files | `tb_file` |
 
 ??? deep "What each model can compute"
     DFTB parameters include an overlap but no position information, so a
     `dftb` model computes densities of states and populations, but not
-    conductivities or optical spectra. A `tb_file` model is orthogonal, so
-    the velocity operator is available and all transport tasks can be run.
+    conductivities or optical spectra. An orthogonal `tb_file` model has the
+    velocity operator, so all transport tasks can be run.
     The full table is in [Choose a model](../guides/choose-model.md).
 
 ## Next steps
